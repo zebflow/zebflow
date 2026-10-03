@@ -5,10 +5,10 @@
 //!
 //! | Node              | Purpose                               |
 //! |-------------------|---------------------------------------|
-//! | `n.ms.publish`    | Upsert a layer in the registry        |
-//! | `n.ms.unpublish`  | Remove a layer from the registry      |
-//! | `n.ms.get`        | Get layer metadata                    |
-//! | `n.ms.list`       | List all published layers             |
+//! | `ms.layer.publish`    | Upsert a layer in the registry        |
+//! | `ms.layer.unpublish`  | Remove a layer from the registry      |
+//! | `ms.layer.get`        | Get layer metadata                    |
+//! | `ms.layer.list`       | List all published layers             |
 
 use std::sync::Arc;
 
@@ -31,10 +31,10 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const PUBLISH_KIND: &str = "n.ms.publish";
-pub const UNPUBLISH_KIND: &str = "n.ms.unpublish";
-pub const GET_KIND: &str = "n.ms.get";
-pub const LIST_KIND: &str = "n.ms.list";
+pub const PUBLISH_KIND: &str = "ms.layer.publish";
+pub const UNPUBLISH_KIND: &str = "ms.layer.unpublish";
+pub const GET_KIND: &str = "ms.layer.get";
+pub const LIST_KIND: &str = "ms.layer.list";
 
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
@@ -476,7 +476,7 @@ pub fn publish_definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Publish a GeoParquet layer", "ms.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --source-kind geoparquet --min-zoom 8 --max-zoom 14")
+            crate::pipeline::model::NodeExample::dsl("Publish a GeoParquet layer", "ms.layer.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --source-kind geoparquet --min-zoom 8 --max-zoom 14")
                 .output(serde_json::json!({ "ms": { "operation": "publish", "layer": { "name": "suburbs", "path": "suburbs", "source_kind": "geoparquet" } } }))
                 .note("A page loads it with `zeb/deckgl` from `/ms/{owner}/{project}/suburbs` (help topic `guide/mapserver`)."),
         ],
@@ -525,7 +525,7 @@ pub fn unpublish_definition() -> NodeDefinition {
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Retire a layer", "ms.unpublish --name suburbs")
+            crate::pipeline::model::NodeExample::dsl("Retire a layer", "ms.layer.unpublish --name suburbs")
                 .output(serde_json::json!({ "ms": { "operation": "unpublish", "removed": true, "layer_id": "suburbs" } })),
         ],
         ..Default::default()
@@ -539,7 +539,7 @@ pub fn get_definition() -> NodeDefinition {
         title: "MS Get".to_string(),
         description: "Read one published map layer's registry entry by `--name`: its path, url, source, zoom range, style and cache \
             settings. Adds `ms: { operation: \"get\", layer }` to the payload. Use it in an admin page's pipeline to show \
-            what is live, or before `ms.publish` to decide between create and update; a name that is not published fails the node."
+            what is live, or before `ms.layer.publish` to decide between create and update; a name that is not published fails the node."
             .to_string(),
         input_schema: json!({"type": "object"}),
         output_schema: json!({
@@ -572,7 +572,7 @@ pub fn get_definition() -> NodeDefinition {
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Show a layer's settings", "ms.get --name suburbs")
+            crate::pipeline::model::NodeExample::dsl("Show a layer's settings", "ms.layer.get --name suburbs")
                 .output(serde_json::json!({ "ms": { "operation": "get", "layer": { "name": "suburbs", "path": "suburbs", "source_kind": "geoparquet", "min_zoom": 8, "max_zoom": 14 } } })),
         ],
         ..Default::default()
@@ -584,7 +584,7 @@ pub fn list_definition() -> NodeDefinition {
         kind: LIST_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "MS List".to_string(),
-        description: "List every map layer this project has published, with the same registry fields `ms.get` returns for one. \
+        description: "List every map layer this project has published, with the same registry fields `ms.layer.get` returns for one. \
             No flags. Adds `ms: { operation: \"list\", count, layers }` to the payload — a page reads `input.ms.layers`. \
             This is the registry, not the file store: a GeoParquet file nobody published is not in it."
             .to_string(),
@@ -612,7 +612,7 @@ pub fn list_definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Layers for a map picker", "ms.list")
+            crate::pipeline::model::NodeExample::dsl("Layers for a map picker", "ms.layer.list")
                 .output(serde_json::json!({ "ms": { "operation": "list", "count": 1, "layers": [{ "name": "suburbs", "path": "suburbs" }] } })),
         ],
         ..Default::default()

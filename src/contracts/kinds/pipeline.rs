@@ -602,7 +602,7 @@ pub fn validate_pipeline_activation(graph: &PipelineGraph) -> Result<(), Contrac
 /// trigger node (ad-hoc bodies) are not judged: they have nothing to be
 /// reachable from.
 fn first_unreachable_node(graph: &PipelineGraph) -> Option<String> {
-    let is_trigger = |kind: &str| kind.contains(".trigger");
+    let is_trigger = |kind: &str| kind.starts_with("trigger.") || kind.contains(".trigger");
     let triggers: Vec<&str> = graph
         .nodes
         .iter()
@@ -659,7 +659,7 @@ mod tests {
             description: None,
             metadata: None,
             entry_nodes: vec!["a".to_string()],
-            nodes: vec![node("a", "n.trigger.webhook"), node("b", "n.script"), node("f", "n.web.response")],
+            nodes: vec![node("a", "trigger.webhook"), node("b", "script.result.run"), node("f", "web.response.send")],
             edges: vec![edge("a", "b")],
             notes: Vec::new(),
         };
@@ -766,7 +766,7 @@ mod tests {
           "kind":"Pipeline",
           "metadata":{"name":"default-config"},
           "spec":{"id":"default-config","nodes":[{
-            "id":"trigger","kind":"n.trigger.manual","output_pins":["out"]
+            "id":"trigger","kind":"trigger.manual","output_pins":["out"]
           }],"edges":[]}
         }"#;
         let graph = decode_pipeline_graph(source).expect("default config").spec;
@@ -785,7 +785,7 @@ mod tests {
           "kind":"Pipeline",
           "metadata":{"name":"annotated"},
           "spec":{"id":"annotated","nodes":[{
-            "id":"trigger","kind":"n.trigger.manual","output_pins":["out"]
+            "id":"trigger","kind":"trigger.manual","output_pins":["out"]
           }],"edges":[],"notes":[{
             "id":"note1","text":"Create the oauth2 credential first.",
             "x":120.0,"y":40.0,"width":320.0,"height":140.0,"color":"amber"
@@ -816,7 +816,7 @@ mod tests {
           "kind":"Pipeline",
           "metadata":{"name":"invisible"},
           "spec":{"id":"invisible","nodes":[{
-            "id":"trigger","kind":"n.trigger.manual","output_pins":["out"]
+            "id":"trigger","kind":"trigger.manual","output_pins":["out"]
           }],"edges":[],"notes":[{"id":"trigger","text":"same id as a node, deliberately"}]}
         }"#;
         let spec = decode_pipeline_graph(source).expect("note beside a node").spec;
@@ -836,7 +836,7 @@ mod tests {
           "kind":"Pipeline",
           "metadata":{"name":"plain"},
           "spec":{"id":"plain","nodes":[{
-            "id":"trigger","kind":"n.trigger.manual","output_pins":["out"]
+            "id":"trigger","kind":"trigger.manual","output_pins":["out"]
           }],"edges":[]}
         }"#;
         let spec = decode_pipeline_graph(source).expect("plain pipeline").spec;

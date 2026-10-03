@@ -1,20 +1,20 @@
 //! `n.ws.client.send` — send a message through an active outbound WebSocket client connection.
 //!
 //! This node sends a message through a WS connection managed by `WsClientManager`.
-//! The connection must be established by an `n.trigger.ws.client` node in an active pipeline.
+//! The connection must be established by an `trigger.socket` node in an active pipeline.
 //!
 //! # Config flags
 //!
 //! | Flag | Type | Default | Description |
 //! |---|---|---|---|
-//! | `--connection` | string | (required) | Node ID of the `n.trigger.ws.client` trigger that owns the connection |
+//! | `--connection` | string | (required) | Node ID of the `trigger.socket` trigger that owns the connection |
 //! | `--message` | any | whole payload | What to send — a literal or `{{ expr }}` |
 //!
 //! # Example
 //!
 //! ```text
-//! | n.trigger.ws.client --url wss://stream.example.com/feed
-//! | n.script -- "return { reply: 'pong' };"
+//! | trigger.socket --url wss://stream.example.com/feed
+//! | script.result.run -- "return { reply: 'pong' };"
 //! | n.ws.client.send --connection trigger_node_id --message "{{ input.reply }}"
 //! ```
 
@@ -42,7 +42,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Network],
         title: "WS Client Send".to_string(),
         description: "Send a message through an active outbound WebSocket client connection. \
-            The connection must be owned by an n.trigger.ws.client node in an active pipeline. \
+            The connection must be owned by an trigger.socket node in an active pipeline. \
             Use --connection to specify which trigger's connection to send through. \
             Use --message to send a literal or {{ expr }}; omit it to send the whole payload."
             .to_string(),
@@ -98,7 +98,7 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Subscribe after connecting", r#"ws.client.send --connection n0 --message "{{ { op: 'subscribe', symbols: ['AUDUSD'] } }}""#)
-                .note("`--connection` is the id of the `trigger.ws.client` node that owns the socket (`n0` in pipe mode). Payload passes through unchanged."),
+                .note("`--connection` is the id of the `trigger.socket` node that owns the socket (`n0` in pipe mode). Payload passes through unchanged."),
         ],
         ..Default::default()
     }
@@ -106,7 +106,7 @@ pub fn definition() -> NodeDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// Node ID of the `n.trigger.ws.client` node whose connection to use.
+    /// Node ID of the `trigger.socket` node whose connection to use.
     #[serde(default)]
     pub connection: String,
     /// JSON pointer into the payload to extract the message body.

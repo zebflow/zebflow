@@ -2,7 +2,7 @@
 //!
 //! This module is the **single source of truth** for how nodes are authored in Zebflow.
 //! Every built-in node lives under [`basic`], in the folder of its DSL family:
-//! `n.fs.save` is `basic/fs/save.rs`, `n.kv.get` is `basic/kv/get.rs`, and a
+//! `n.fs.save` is `basic/fs/save.rs`, `kv.entry.get` is `basic/kv/get.rs`, and a
 //! family with one node keeps it in that folder's `mod.rs`. Helpers several
 //! families use live in [`shared`]. This doc is the living specification —
 //! read it before creating or modifying any node.
@@ -178,11 +178,11 @@
 //!
 //! Write `script_available: false` and `script_bridge: None`.  Every node does.
 //!
-//! A script cannot reach a node handler.  The `n` object handed to an `n.script` body
+//! A script cannot reach a node handler.  The `n` object handed to an `script.result.run` body
 //! is assembled by `build_capabilities_expr` in `language/engines/deno_sandbox/pool.rs`
 //! from pure `time` and `math` helpers; the sandbox exposes two host ops, neither of
 //! which dispatches a node, and hides `Deno.core` from user code.  Declaring `true`
-//! would grant nothing and would put a false "n.script access" claim in the node
+//! would grant nothing and would put a false "script.result.run access" claim in the node
 //! catalog, which is why no definition does.
 //!
 //! The two fields survive because `NodeDefinition` is a frozen `zebflow.com/v1`
@@ -300,7 +300,7 @@
 //! //!
 //! //! # DSL
 //! //! ```text
-//! //! | n.trigger.webhook --path /ping
+//! //! | trigger.webhook --path /ping
 //! //! | n.example.echo --tag hello
 //! //! ```
 //!
@@ -449,8 +449,8 @@ pub fn validate_node_definition_contract(def: &NodeDefinition) -> Result<(), Vec
     let kind = def.kind.trim();
     if kind.is_empty() {
         errors.push("kind must not be empty".to_string());
-    } else if !kind.starts_with("n.") {
-        errors.push(format!("kind '{}' must start with 'n.'", kind));
+    } else if kind.split('.').count() < 2 || kind.split('.').any(|segment| segment.is_empty()) {
+        errors.push(format!("kind '{}' must be dotted segments, e.g. 'fs.image.thumbnail'", kind));
     }
     if def.title.trim().is_empty() {
         errors.push("title must not be empty".to_string());
@@ -717,7 +717,7 @@ pub fn builtin_nodes_markdown_reference() -> String {
         "## Node kinds (live — from `builtin_node_definitions()`)\n\n\
          This block matches the pipeline editor / node API: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
          - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
-         - **One kind:** `help_nodes` with `kind=\"n.script\"` (or `script`, `trigger.webhook`, etc.).\n\n\
+         - **One kind:** `help_nodes` with `kind=\"script.result.run\"` (or `script`, `trigger.webhook`, etc.).\n\n\
          ---\n\n",
     );
     for def in basic::builtin_node_definitions() {
@@ -732,7 +732,7 @@ mod tests {
     /// A composite node is a pipeline in JSON, so a setting its inner node no
     /// longer reads still parses and is silently ignored. That is how the
     /// embedding node went on sending empty requests for nine days after
-    /// `http.request` renamed `body_path` to `body`. Every node in every
+    /// `http.response.fetch` renamed `body_path` to `body`. Every node in every
     /// bundled function must use only settings its kind declares.
     #[test]
     fn every_composite_node_uses_only_settings_its_inner_nodes_read() {
@@ -849,7 +849,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        for kind in ["n.table.query", "n.table.convert", "n.script"] {
+        for kind in ["table.query.run", "table.data.convert", "script.result.run"] {
             let flags = flags_of(kind);
             assert!(
                 flags.iter().any(|(flag, key)| flag == "--preview" && key == "preview.out"),
@@ -864,7 +864,7 @@ mod tests {
                 "{kind} no longer stores anything flat at `preview`: {flags:?}"
             );
         }
-        for kind in ["n.table.query", "n.table.convert"] {
+        for kind in ["table.query.run", "table.data.convert"] {
             let flags = flags_of(kind);
             assert!(
                 flags.iter().any(|(flag, key)| flag == "--preview-rows" && key == "preview_rows"),
@@ -882,8 +882,7 @@ mod tests {
         let basic = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pipeline/nodes/basic");
         let families: std::collections::BTreeSet<String> = super::builtin_node_definitions()
             .iter()
-            .filter_map(|def| def.kind.strip_prefix("n."))
-            .map(|rest| rest.split('.').next().unwrap_or(rest).to_string())
+            .map(|def| def.kind.strip_prefix("n.").unwrap_or(&def.kind).split('.').next().unwrap_or_default().to_string())
             .collect();
 
         let mut failures = Vec::new();

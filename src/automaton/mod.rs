@@ -1,6 +1,6 @@
 //! # Automaton
 //!
-//! What `n.ai.agent` and the Studio assistant run on. Five pieces, nothing
+//! What `ai.text.generate` and the Studio assistant run on. Five pieces, nothing
 //! else:
 //!
 //! - [`infra::llm_interface`] — the one LLM call interface: `LlmCall`
@@ -29,7 +29,7 @@
 //!
 //! ## Security model
 //!
-//! A tool is offered only when the host names it (for `n.ai.agent`: one of the
+//! A tool is offered only when the host names it (for `ai.text.generate`: one of the
 //! project's function pipelines, by slug). There are no shell tools. The step
 //! budget is a hard cap on model calls per run. The only source of an LLM
 //! secret is a project credential; there is no environment fallback.

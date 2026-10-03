@@ -1,4 +1,4 @@
-//! `ai.*` — nodes that call a model: `ai.agent`, `ai.tts`.
+//! `ai.*` — nodes that call a model: `ai.text.generate`, `ai.audio.generate`.
 
 use crate::pipeline::NodeDefinition;
 

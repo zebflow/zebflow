@@ -31,10 +31,10 @@
       {
         "rel_path": "definition.json",
         "kind": "node_definition",
-        "size_bytes": 30,
+        "size_bytes": 28,
         "reason": "package",
         "encoding": "text",
-        "content": "{\n  \"kind\": \"n.x.demo.load\"\n}\n"
+        "content": "{\n  \"kind\": \"x.demo.load\"\n}\n"
       },
       {
         "rel_path": "icon.svg",

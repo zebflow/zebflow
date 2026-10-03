@@ -770,7 +770,7 @@ impl DependencyLockService {
             });
         }
 
-        // Fifth family: unresolved `n.function.call` targets. A missing
+        // Fifth family: unresolved `function.result.call` targets. A missing
         // function pipeline cannot be installed from anywhere, so the honest
         // response is a precise report — import verifies through it and never
         // refuses on it.
@@ -784,7 +784,7 @@ impl DependencyLockService {
                 status: DependencyResolutionStatus::Missing,
                 version: String::new(),
                 source: "project".to_string(),
-                message: "n.function.call targets a pipeline with an n.trigger.function \
+                message: "function.result.call targets a pipeline with an trigger.function \
                           entry that does not exist in this project; it should have \
                           travelled with the project"
                     .to_string(),
@@ -1448,29 +1448,29 @@ fn safe_node_bundle_path(package_dir: &Path, relative: &str) -> Result<PathBuf, 
     Ok(package_dir.join(relative_path))
 }
 
-/// `n.function.call` targets and `n.trigger.function` providers found by one
+/// `function.result.call` targets and `trigger.function` providers found by one
 /// project scan. A target with no provider is the fifth report family: a
 /// function pipeline cannot be fetched from anywhere — it should have
 /// travelled with the project (`kinds/project-bundle/README.md`).
 #[derive(Debug, Default)]
 struct FunctionPipelineScan {
-    /// Slugs named by `n.function.call` nodes.
+    /// Slugs named by `function.result.call` nodes.
     targets: BTreeSet<String>,
-    /// Slugs of pipelines carrying an `n.trigger.function` entry — the only
+    /// Slugs of pipelines carrying an `trigger.function` entry — the only
     /// pipelines the call resolver accepts.
     providers: BTreeSet<String>,
 }
 
 impl FunctionPipelineScan {
     fn record(&mut self, relative: &str, nodes: &[crate::pipeline::model::PipelineNode]) {
-        if nodes.iter().any(|node| node.kind == "n.trigger.function") {
+        if nodes.iter().any(|node| node.kind == "trigger.function") {
             self.providers
                 .insert(crate::platform::services::project::name_from_file_rel_path(
                     relative,
                 ));
         }
         for node in nodes {
-            if node.kind != "n.function.call" {
+            if node.kind != "function.result.call" {
                 continue;
             }
             if let Some(slug) = node
@@ -2378,7 +2378,7 @@ mod tests {
 	                "title":"Example",
 	                "description":"Example composite node bundle.",
 	                "nodes":[{
-	                  "kind":"n.x.example.thing",
+	                  "kind":"x.example.thing",
 	                  "title":"Example",
 	                  "description":"Execute the example function.",
 	                  "trigger":{"type":"webhook"},
@@ -2397,7 +2397,7 @@ mod tests {
                 source_id: "project/example".to_string(),
                 entry: "nodes/example/definition.json".to_string(),
                 integrity: directory_tree_sha256(&package_dir).unwrap(),
-                definitions: vec!["n.x.example.thing".to_string()],
+                definitions: vec!["x.example.thing".to_string()],
             },
         );
         service.write("owner", "project", &lock).unwrap();
@@ -2431,7 +2431,7 @@ mod tests {
             entry_nodes: vec!["custom".to_string()],
             nodes: vec![PipelineNode {
                 id: "custom".to_string(),
-                kind: "n.x.example.absent".to_string(),
+                kind: "x.example.absent".to_string(),
                 input_pins: Vec::new(),
                 output_pins: vec!["out".to_string()],
                 config: serde_json::json!({}),
@@ -2465,7 +2465,7 @@ mod tests {
                 "entry_nodes":["custom"],
                 "nodes":[{
                   "id":"custom",
-                  "kind":"n.x.example.thing",
+                  "kind":"x.example.thing",
                   "output_pins":["out"]
                 }],
                 "edges":[]
@@ -2480,7 +2480,7 @@ mod tests {
         assert!(!report.ok);
         assert!(report.items.iter().any(|item| {
             item.family == "node_kind"
-                && item.name == "n.x.example.thing"
+                && item.name == "x.example.thing"
                 && item.status == DependencyResolutionStatus::Missing
         }));
     }
@@ -2498,7 +2498,7 @@ mod tests {
         // One resolvable target: `present-fn` exists and carries the
         // function trigger. One dangling target: `absent-fn` does not exist.
         // One near-miss: `not-a-function` exists but has no
-        // `n.trigger.function` entry, so the call resolver would never accept
+        // `trigger.function` entry, so the call resolver would never accept
         // it and the report must not either.
         std::fs::write(
             pipelines.join("present-fn.zf.json"),
@@ -2509,7 +2509,7 @@ mod tests {
               "spec":{
                 "id":"present-fn",
                 "entry_nodes":["t"],
-                "nodes":[{"id":"t","kind":"n.trigger.function","output_pins":["out"]}],
+                "nodes":[{"id":"t","kind":"trigger.function","output_pins":["out"]}],
                 "edges":[]
               }
             }"#,
@@ -2524,7 +2524,7 @@ mod tests {
               "spec":{
                 "id":"not-a-function",
                 "entry_nodes":["t"],
-                "nodes":[{"id":"t","kind":"n.trigger.webhook","output_pins":["out"]}],
+                "nodes":[{"id":"t","kind":"trigger.webhook","output_pins":["out"]}],
                 "edges":[]
               }
             }"#,
@@ -2540,12 +2540,12 @@ mod tests {
                 "id":"caller",
                 "entry_nodes":["t"],
                 "nodes":[
-                  {"id":"t","kind":"n.trigger.webhook","output_pins":["out"]},
-                  {"id":"a","kind":"n.function.call","output_pins":["out","error"],
+                  {"id":"t","kind":"trigger.webhook","output_pins":["out"]},
+                  {"id":"a","kind":"function.result.call","output_pins":["out","error"],
                    "config":{"function":"present-fn"}},
-                  {"id":"b","kind":"n.function.call","output_pins":["out","error"],
+                  {"id":"b","kind":"function.result.call","output_pins":["out","error"],
                    "config":{"function":"absent-fn"}},
-                  {"id":"c","kind":"n.function.call","output_pins":["out","error"],
+                  {"id":"c","kind":"function.result.call","output_pins":["out","error"],
                    "config":{"function":"not-a-function"}}
                 ],
                 "edges":[]
@@ -2589,7 +2589,7 @@ mod tests {
             },
             entry: "nodes/example/definition.json".to_string(),
             integrity: format!("sha256:{}", digest.to_string().repeat(64)),
-            definitions: vec!["n.x.example.thing".to_string()],
+            definitions: vec!["x.example.thing".to_string()],
         }
     }
 

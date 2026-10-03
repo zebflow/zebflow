@@ -1,4 +1,4 @@
-//! n.fs.decompress — extract one archive into project file storage.
+//! fs.archive.extract — extract one archive into project file storage.
 //!
 //! First slice supports only `tar.gz`.
 
@@ -21,7 +21,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.fs.decompress";
+pub const NODE_KIND: &str = "fs.archive.extract";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -201,9 +201,9 @@ pub fn definition() -> NodeDefinition {
         }],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Unpack an uploaded archive", "fs.decompress --folder imports/latest --delete-source")
+            crate::pipeline::model::NodeExample::dsl("Unpack an uploaded archive", "fs.archive.extract --folder imports/latest --delete-source")
                 .input(serde_json::json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/bundle.tar.gz", "filename": "bundle.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
-                .output(serde_json::json!({ "decompressed": { "source": "uploads/bundle.tar.gz", "folder": "imports/latest", "store": "local", "format": "tar.gz", "files": [{ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "imports/latest/a.csv", "filename": "a.csv", "mime": "text/csv", "kind": "csv", "size": 120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.decompress", "trust": "untrusted" }] } })),
+                .output(serde_json::json!({ "decompressed": { "source": "uploads/bundle.tar.gz", "folder": "imports/latest", "store": "local", "format": "tar.gz", "files": [{ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "imports/latest/a.csv", "filename": "a.csv", "mime": "text/csv", "kind": "csv", "size": 120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.archive.extract", "trust": "untrusted" }] } })),
         ],
         ..Default::default()
     }
@@ -342,7 +342,7 @@ impl NodeHandler for Node {
             )
         })??;
 
-        let files = scratch.push_tree_refs(&store, &output_abs, &folder, "fs.decompress", &trust)?;
+        let files = scratch.push_tree_refs(&store, &output_abs, &folder, "fs.archive.extract", &trust)?;
 
         // The archive goes once every member is written, and a failed delete
         // fails the node.

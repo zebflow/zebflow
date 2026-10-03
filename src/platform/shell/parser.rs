@@ -200,7 +200,7 @@ fn command_accepts_opaque_body(prefix: &str) -> bool {
 ///
 /// `expand_kind` only knows native shorthands, so anything provided by a bundle
 /// has to be resolved by existence. Namespace is deliberately not consulted: a
-/// curated `n.telegram.send` and a third-party `n.x.acme.thing` are both just
+/// curated `n.telegram.send` and a third-party `x.acme.thing` are both just
 /// kinds the catalog either has or does not.
 fn resolve_catalog_kind(raw_kind: &str, definitions: &[NodeDefinition]) -> Option<String> {
     if let Some(kind) = expand_kind(raw_kind) {
@@ -318,100 +318,28 @@ fn note_to_statement(note: &PipelineNote, with_id: bool) -> String {
     parts.join(" ")
 }
 
-/// The short name the DSL writes for a kind: `n.web.response` → `web.response`.
-/// The catalogue's kinds all carry the `n.` prefix, so this is the inverse of
-/// `expand_kind` for every kind the alias table knows, and a plain strip of
-/// the prefix for the rest.
+/// The name the DSL writes for a kind. A kind is written as itself; the
+/// `n.` strip only serves kinds the 0.11 renames have not reached yet.
 pub fn short_kind(kind: &str) -> String {
     kind.strip_prefix("n.").unwrap_or(kind).to_string()
 }
 
-pub fn expand_kind(short: &str) -> Option<&'static str> {
-    match short {
-        "trigger.webhook" | "n.trigger.webhook" => Some("n.trigger.webhook"),
-        "trigger.schedule" | "n.trigger.schedule" => Some("n.trigger.schedule"),
-        "trigger.manual" | "n.trigger.manual" => Some("n.trigger.manual"),
-        "trigger.mcp" | "n.trigger.mcp" => Some("n.trigger.mcp"),
-        "pg.query" | "n.pg.query" => Some("n.pg.query"),
-        "sekejap.insert" | "n.sekejap.insert" => Some("n.sekejap.insert"),
-        "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
-        "sqlite.query" | "n.sqlite.query" => Some("n.sqlite.query"),
-        "sqlite.mutate" | "n.sqlite.mutate" => Some("n.sqlite.mutate"),
-        "table.convert" | "n.table.convert" => Some("n.table.convert"),
-        "table.query" | "n.table.query" => Some("n.table.query"),
-        "script" | "n.script" => Some("n.script"),
-        "concept" | "n.concept" => Some("n.concept"),
-        "web.response" | "n.web.response" => Some("n.web.response"),
-        "web.static.generate" | "n.web.static.generate" => Some("n.web.static.generate"),
-        "web.docs.generate" | "n.web.docs.generate" => Some("n.web.docs.generate"),
-        "http.request" | "n.http.request" => Some("n.http.request"),
-        "mail.send" | "n.mail.send" => Some("n.mail.send"),
-        "zebtune" | "n.zebtune" => Some("n.ai.agent"),
-        "logic.if" | "n.logic.if" => Some("n.logic.if"),
-        "logic.match" | "n.logic.match" => Some("n.logic.match"),
-        "logic.collect" | "n.logic.collect" => Some("n.logic.collect"),
-        "logic.foreach" | "n.logic.foreach" => Some("n.logic.foreach"),
-        "logic.reduce" | "n.logic.reduce" => Some("n.logic.reduce"),
-        "logic.retry" | "n.logic.retry" => Some("n.logic.retry"),
-        "trigger.ws" | "n.trigger.ws" => Some("n.trigger.ws"),
-        "ws.emit" | "n.ws.emit" => Some("n.ws.emit"),
-        "ws.sync_state" | "n.ws.sync_state" => Some("n.ws.sync_state"),
-        "auth.token.create" | "n.auth.token.create" => Some("n.auth.token.create"),
-        "auth.token.verify" | "n.auth.token.verify" => Some("n.auth.token.verify"),
-        "crypto" | "n.crypto" => Some("n.crypto"),
-        "ai.agent" | "n.ai.agent" => Some("n.ai.agent"),
-        "ai.tts" | "n.ai.tts" => Some("n.ai.tts"),
-        "browser.run" | "n.browser.run" => Some("n.browser.run"),
-        "trigger.weberror" | "n.trigger.weberror" => Some("n.trigger.weberror"),
-        "trigger.function" | "n.trigger.function" => Some("n.trigger.function"),
-        "function.call" | "n.function.call" => Some("n.function.call"),
-        "fs.save" | "n.fs.save" => Some("n.fs.save"),
-        "fs.compress" | "n.fs.compress" => Some("n.fs.compress"),
-        "fs.decompress" | "n.fs.decompress" => Some("n.fs.decompress"),
-        "fs.pdf.convert" | "n.fs.pdf.convert" => Some("n.fs.pdf.convert"),
-        "fs.image.thumbnail" | "n.fs.image.thumbnail" => Some("n.fs.image.thumbnail"),
-        "fs.image.chromakey" | "n.fs.image.chromakey" => Some("n.fs.image.chromakey"),
-        "fs.svg.convert" | "n.fs.svg.convert" => Some("n.fs.svg.convert"),
-        "fs.barcode.qr" | "n.fs.barcode.qr" => Some("n.fs.barcode.qr"),
-        "fs.barcode.code128" | "n.fs.barcode.code128" => Some("n.fs.barcode.code128"),
-        "fs.list" | "n.fs.list" => Some("n.fs.list"),
-        "fs.head" | "n.fs.head" => Some("n.fs.head"),
-        "fs.get" | "n.fs.get" => Some("n.fs.get"),
-        "fs.put" | "n.fs.put" => Some("n.fs.put"),
-        "fs.delete" | "n.fs.delete" => Some("n.fs.delete"),
-        "fs.copy" | "n.fs.copy" => Some("n.fs.copy"),
-        "fs.move" | "n.fs.move" => Some("n.fs.move"),
-        "fs.mkdir" | "n.fs.mkdir" => Some("n.fs.mkdir"),
-        "kv.set" | "n.kv.set" => Some("n.kv.set"),
-        "kv.get" | "n.kv.get" => Some("n.kv.get"),
-        "kv.del" | "n.kv.del" => Some("n.kv.del"),
-        "kv.exists" | "n.kv.exists" => Some("n.kv.exists"),
-        "kv.expire" | "n.kv.expire" => Some("n.kv.expire"),
-        "kv.incr" | "n.kv.incr" => Some("n.kv.incr"),
-        "kv.publish" | "n.kv.publish" => Some("n.kv.publish"),
-        "trigger.kv.subscribe" | "n.trigger.kv.subscribe" => Some("n.trigger.kv.subscribe"),
-        "geo.inspect" | "n.geo.inspect" => Some("n.geo.inspect"),
-        "geo.convert" | "n.geo.convert" => Some("n.geo.convert"),
-        "ms.publish" | "n.ms.publish" => Some("n.ms.publish"),
-        "ms.unpublish" | "n.ms.unpublish" => Some("n.ms.unpublish"),
-        "ms.get" | "n.ms.get" => Some("n.ms.get"),
-        "ms.list" | "n.ms.list" => Some("n.ms.list"),
-        "trigger.ws.client" | "n.trigger.ws.client" => Some("n.trigger.ws.client"),
-        "ws.client.send" | "n.ws.client.send" => Some("n.ws.client.send"),
-        // The `input.*` family. Graph mode decides whether a line starts a
-        // node from this table alone, so a family missing here is folded into
-        // the previous statement and refused for a flag it never had.
-        "input.text" | "n.input.text" => Some("n.input.text"),
-        "input.number" | "n.input.number" => Some("n.input.number"),
-        "input.boolean" | "n.input.boolean" => Some("n.input.boolean"),
-        "input.json" | "n.input.json" => Some("n.input.json"),
-        "input.file" | "n.input.file" => Some("n.input.file"),
-        "input.files" | "n.input.files" => Some("n.input.files"),
-        "input.image" | "n.input.image" => Some("n.input.image"),
-        "input.audio" | "n.input.audio" => Some("n.input.audio"),
-        "input.video" | "n.input.video" => Some("n.input.video"),
-        _ => None,
-    }
+/// The native kind a DSL word names, if any. There are no aliases: a kind is
+/// written as itself. Graph mode decides whether a line starts a node from
+/// this alone, so it answers for every native kind without a catalogue.
+pub fn expand_kind(word: &str) -> Option<&'static str> {
+    static NATIVE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    let native = NATIVE.get_or_init(|| {
+        crate::pipeline::nodes::builtin_node_definitions()
+            .into_iter()
+            .map(|def| &*Box::leak(def.kind.into_boxed_str()))
+            .collect()
+    });
+    let word = word.trim();
+    native
+        .iter()
+        .copied()
+        .find(|kind| *kind == word || kind.strip_prefix("n.") == Some(word))
 }
 
 /// Default input/output pins per node kind.
@@ -426,9 +354,9 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
 /// `true`/`false` for its verify operations, could not be branched on from the
 /// DSL at all: the edge was refused as "'true' is not declared by node".
 pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
-    // `n.logic.match` sets its pins per instance from `cases`, so its
+    // `logic.match` sets its pins per instance from `cases`, so its
     // definition cannot answer for one node and the table below still owns it.
-    if kind != "n.logic.match" {
+    if kind != "logic.match" {
         if let Some(def) = crate::pipeline::nodes::builtin_node_definitions()
             .into_iter()
             .find(|def| def.kind == kind)
@@ -439,31 +367,31 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         }
     }
     match kind {
-        "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
+        "trigger.webhook" | "trigger.schedule" | "trigger.manual" | "trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
-        "n.pg.query" | "n.sekejap.query" | "n.sekejap.insert" | "n.sqlite.query"
-        | "n.table.convert" | "n.table.query" | "n.script" | "n.http.request"
-        | "n.logic.collect" | "n.ai.tts" => (vec!["in".to_string()], vec!["out".to_string()]),
-        "n.logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
-        "n.logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
-        "n.logic.retry" => (
+        "pg.query.run" | "sekejap.query.run" | "sekejap.record.create" | "sqlite.query.run"
+        | "table.data.convert" | "table.query.run" | "script.result.run" | "http.response.fetch"
+        | "logic.collect" | "ai.audio.generate" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
+        "logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "logic.retry" => (
             vec!["in".to_string()],
             vec!["retry".to_string(), "failed".to_string()],
         ),
-        "n.logic.if" => (
+        "logic.if" => (
             vec!["in".to_string()],
             vec!["true".to_string(), "false".to_string()],
         ),
-        // n.logic.match: output pins are dynamic (set per-instance from cases config).
+        // logic.match: output pins are dynamic (set per-instance from cases config).
         // Return just ["default"] as the fallback; actual pins are set after config is parsed.
-        "n.logic.match" => (vec!["in".to_string()], vec!["default".to_string()]),
-        "n.web.response" => (vec!["in".to_string()], vec!["out".to_string()]),
-        "n.trigger.ws" | "n.trigger.ws.client" => (vec![], vec!["out".to_string()]),
+        "logic.match" => (vec!["in".to_string()], vec!["default".to_string()]),
+        "web.response.send" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "trigger.room" | "trigger.socket" => (vec![], vec!["out".to_string()]),
         "n.ws.emit" | "n.ws.sync_state" | "n.ws.client.send" => {
             (vec!["in".to_string()], vec!["out".to_string()])
         }
-        "n.function.call" => (
+        "function.result.call" => (
             vec!["in".to_string()],
             vec!["out".to_string(), "error".to_string()],
         ),
@@ -1422,15 +1350,15 @@ fn graph_note_statement(line: &str) -> Option<(String, Vec<String>)> {
 
 /// The config key a node's `-- body` is stored under. One table, used by
 /// register, patch and the DSL renderer alike: `patch … -- "SELECT …"` on a
-/// `sekejap.query` once wrote `body` while the node read `query`, and the old
+/// `sekejap.query.run` once wrote `body` while the node read `query`, and the old
 /// SQL silently won.
 pub fn body_config_key(kind: &str) -> &'static str {
     match kind {
-        "n.pg.query" | "n.sekejap.query" | "n.sqlite.query" | "n.sqlite.mutate" | "n.table.query" => "query",
-        "n.script" => "source",
-        "n.logic.match" | "n.logic.if" => "expression",
-        "n.browser.run" => "code",
-        "n.ai.agent" => "prompt",
+        "pg.query.run" | "sekejap.query.run" | "sqlite.query.run" | "n.sqlite.mutate" | "table.query.run" => "query",
+        "script.result.run" => "source",
+        "logic.match" | "logic.if" => "expression",
+        "browser.page.run" => "code",
+        "ai.text.generate" => "prompt",
         _ => "body",
     }
 }
@@ -1509,7 +1437,7 @@ fn is_graph_node_statement(line: &str) -> bool {
     looks_like_node_kind(raw_kind) || is_dotted_kind(raw_kind) || is_note_keyword(raw_kind)
 }
 
-/// A bundled or installed node's short name (`ai.embedding`, `telegram.send`)
+/// A bundled or installed node's short name (`ai.embedding.generate`, `telegram.send`)
 /// is in no built-in list, so a `[label]` line is a node when its first word
 /// is kind-shaped: lowercase words joined by dots. Without this the line was
 /// glued onto the statement above it and its label went missing; now an
@@ -1537,7 +1465,7 @@ mod tests {
 
     fn preview_graph_node(dsl_flags: &str) -> PipelineNode {
         let dsl = format!(
-            "[a] trigger.manual\n[b] script {dsl_flags} -- return input\n\n[a] -> [b]\n"
+            "[a] trigger.manual\n[b] script.result.run {dsl_flags} -- return input\n\n[a] -> [b]\n"
         );
         let graph = build_pipeline_graph("parser-preview-test", &dsl).expect("graph");
         graph
@@ -1594,7 +1522,7 @@ mod tests {
     fn preview_refuses_a_kind_that_is_not_on_the_list() {
         let err = build_pipeline_graph(
             "parser-preview-bad-kind",
-            "[a] trigger.manual\n[b] script --preview gif -- return input\n\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run --preview gif -- return input\n\n[a] -> [b]\n",
         )
         .expect_err("unknown preview kind must fail");
         assert!(err.contains("unknown preview kind `gif`"), "{err}");
@@ -1603,7 +1531,7 @@ mod tests {
 
     #[test]
     fn preview_flags_round_trip_through_graph_to_dsl() {
-        let dsl = "[a] trigger.manual\n[b] script --preview image:response.file --preview-in json:body -- return input\n\n[a] -> [b]\n";
+        let dsl = "[a] trigger.manual\n[b] script.result.run --preview image:response.file --preview-in json:body -- return input\n\n[a] -> [b]\n";
         let graph = build_pipeline_graph("parser-preview-round-trip", dsl).expect("graph");
         let rendered = graph_to_dsl(&graph);
         assert!(
@@ -1618,7 +1546,7 @@ mod tests {
         let script_preview = |g: &PipelineGraph| {
             g.nodes
                 .iter()
-                .find(|n| n.kind == "n.script")
+                .find(|n| n.kind == "script.result.run")
                 .expect("script node")
                 .config
                 .get("preview")
@@ -1667,7 +1595,7 @@ mod tests {
 
     #[test]
     fn preview_size_suffix_round_trips_and_is_omitted_at_default_size() {
-        let dsl = "[a] trigger.manual\n[b] script --preview table:rows@420x180 --preview-in json@300x90 -- return input\n\n[a] -> [b]\n";
+        let dsl = "[a] trigger.manual\n[b] script.result.run --preview table:rows@420x180 --preview-in json@300x90 -- return input\n\n[a] -> [b]\n";
         let graph = build_pipeline_graph("parser-preview-size-round-trip", dsl).expect("graph");
         let rendered = graph_to_dsl(&graph);
         assert!(rendered.contains("--preview table:rows@420x180"), "{rendered}");
@@ -1677,7 +1605,7 @@ mod tests {
         let script_preview = |g: &PipelineGraph| {
             g.nodes
                 .iter()
-                .find(|n| n.kind == "n.script")
+                .find(|n| n.kind == "script.result.run")
                 .expect("script node")
                 .config
                 .get("preview")
@@ -1707,7 +1635,7 @@ mod tests {
         // And through the DSL the error reaches the caller.
         let err = build_pipeline_graph(
             "parser-preview-bad-size",
-            "[a] trigger.manual\n[b] script --preview image@wide -- return input\n\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run --preview image@wide -- return input\n\n[a] -> [b]\n",
         )
         .expect_err("bad size must fail");
         assert!(err.contains("bad size `wide`"), "{err}");
@@ -1722,7 +1650,7 @@ mod tests {
         let dsl = r#"| trigger.manual | input.text prompt --label "What should happen?" --max 200 | input.image photo --optional | input.file sheet --accept csv,xlsx"#;
         let graph = build_pipeline_graph("parser-positional-test", dsl).expect("graph");
         let text = &graph.nodes[1];
-        assert_eq!(text.kind, "n.input.text");
+        assert_eq!(text.kind, "input.text");
         assert_eq!(text.config["name"], json!("prompt"));
         assert_eq!(text.config["label"], json!("What should happen?"));
         assert_eq!(text.config["max"], json!(200));
@@ -1759,7 +1687,7 @@ mod tests {
         assert_eq!(graph.nodes[1].config["name"], json!("total"));
         assert_eq!(graph.nodes[1].config["min"], json!(1));
 
-        let graph = build_pipeline_graph("parser-positional-none", "| trigger.manual | script stray -- return input")
+        let graph = build_pipeline_graph("parser-positional-none", "| trigger.manual | script.result.run stray -- return input")
             .expect("graph");
         assert!(graph.nodes[1].config.get("name").is_none());
 
@@ -1839,7 +1767,7 @@ mod tests {
     fn repeated_list_reconstructs_source_binding_objects() {
         let node = PipelineNode {
             id: "b".to_string(),
-            kind: "n.table.query".to_string(),
+            kind: "table.query.run".to_string(),
             config: json!({
                 "sources": [
                     { "source": "datasets/posts.csv", "alias": "posts" },
@@ -1863,7 +1791,7 @@ mod tests {
         let dsl = r#"
 run \
   [a] trigger.manual \
-  [b] script -- "return { ok: true };" \
+  [b] script.result.run -- "return { ok: true };" \
   [a] -> [b]
 "#;
 
@@ -1885,13 +1813,13 @@ run \
     #[test]
     fn split_commands_respects_quotes_around_ampersand() {
         let dsl = r#"register pipelines/test [trigger] trigger.manual
-[echo] script -- "if (a && b) { return 1; }"
+[echo] script.result.run -- "if (a && b) { return 1; }"
 [trigger] -> [echo]"#;
         let commands = split_commands(dsl);
         assert_eq!(commands.len(), 1, "&& inside double quotes must not split");
 
         let dsl2 = r#"register pipelines/test [t] trigger.manual
-[s] script -- `${a && b}`
+[s] script.result.run -- `${a && b}`
 [t] -> [s]"#;
         let commands2 = split_commands(dsl2);
         assert_eq!(commands2.len(), 1, "&& inside backticks must not split");
@@ -1904,7 +1832,7 @@ run \
     #[test]
     fn register_graph_body_prefers_graph_marker_before_js_pipe() {
         let dsl = r#"register pipelines/e1/rename [a] trigger.manual
-[b] script -- const left = input.old_name;
+[b] script.result.run -- const left = input.old_name;
 const ok = /old|new/.test(left) || left === "legacy|name";
 return { ok };
 [a] -> [b]"#;
@@ -1943,17 +1871,17 @@ return { ok };
     fn pipe_mode_long_script_body_keeps_downstream_nodes() {
         let dsl = r#"
 | trigger.manual
-| script -- const ok = !!(input.left || input.right);
+| script.result.run -- const ok = !!(input.left || input.right);
 const label = "left|right";
 return { ok, label };
-| script -- return { downstream: input.ok, label: input.label };
+| script.result.run -- return { downstream: input.ok, label: input.label };
 "#;
 
         let graph = build_pipeline_graph("pipe-long-script-body", dsl).expect("graph");
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.edges.len(), 2);
-        assert_eq!(graph.nodes[1].kind, "n.script");
-        assert_eq!(graph.nodes[2].kind, "n.script");
+        assert_eq!(graph.nodes[1].kind, "script.result.run");
+        assert_eq!(graph.nodes[2].kind, "script.result.run");
         let first_source = graph.nodes[1]
             .config
             .get("source")
@@ -1973,7 +1901,7 @@ return { ok, label };
     fn graph_mode_multiline_script_body_keeps_edges() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- const values = [1, 2, 3];
+[b] script.result.run -- const values = [1, 2, 3];
 [1, 2, 3].map((value) => value + 1);
 return { values };
 [a] -> [b]
@@ -2000,7 +1928,7 @@ return { values };
     #[test]
     fn a_graph_line_naming_a_catalogue_node_by_its_short_name_is_its_own_node() {
         let embed = NodeDefinition {
-            kind: "n.ai.embedding".to_string(),
+            kind: "ai.embedding.generate".to_string(),
             title: "AI Embedding".to_string(),
             description: "Embed text.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2015,10 +1943,10 @@ return { values };
             }],
             ..Default::default()
         };
-        let dsl = "[a] trigger.manual\n[b] script -- \"return { text: ['x'] }\"\n[c] ai.embedding --input-expr input.text\n[a] -> [b]\n[b] -> [c]";
+        let dsl = "[a] trigger.manual\n[b] script.result.run -- \"return { text: ['x'] }\"\n[c] ai.embedding.generate --input-expr input.text\n[a] -> [b]\n[b] -> [c]";
         let graph = build_pipeline_graph_with_definitions("short-kind", dsl, &[embed]).expect("graph");
         let c = graph.nodes.iter().find(|n| n.id == "c").expect("[c] is a node, not glued onto [b]'s body");
-        assert_eq!(c.kind, "n.ai.embedding");
+        assert_eq!(c.kind, "ai.embedding.generate");
 
         let unknown = build_pipeline_graph_with_definitions("short-kind", "[a] trigger.manual\n[b] ai.nothing\n[a] -> [b]", &[]);
         assert!(unknown.unwrap_err().contains("ai.nothing"), "an unknown short kind is refused by name");
@@ -2035,7 +1963,7 @@ return { values };
             ..Default::default()
         };
         let third_party = NodeDefinition {
-            kind: "n.x.acme.thing".to_string(),
+            kind: "x.acme.thing".to_string(),
             title: "Acme Thing".to_string(),
             description: "Do the thing.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2054,8 +1982,8 @@ return { values };
             "the n. prefix stays optional for authors"
         );
         assert_eq!(
-            super::resolve_catalog_kind("n.x.acme.thing", &definitions),
-            Some("n.x.acme.thing".to_string())
+            super::resolve_catalog_kind("x.acme.thing", &definitions),
+            Some("x.acme.thing".to_string())
         );
         assert_eq!(
             super::resolve_catalog_kind("n.telegramm.send", &definitions),
@@ -2068,7 +1996,7 @@ return { values };
     fn registry_definitions_parse_composite_dsl_flags() {
         let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
         definitions.push(NodeDefinition {
-            kind: "n.x.openai_embedding.embed".to_string(),
+            kind: "x.openai_embedding.embed".to_string(),
             title: "AI Embedding".to_string(),
             description: "Composite embedding node.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2106,7 +2034,7 @@ return { values };
             "composite-embedding-dsl",
             r#"
 | trigger.manual
-| n.x.openai_embedding.embed --credential qwen-embed --model text-embedding-v4 --input-expr input.text
+| x.openai_embedding.embed --credential qwen-embed --model text-embedding-v4 --input-expr input.text
 "#,
             &definitions,
         )
@@ -2114,7 +2042,7 @@ return { values };
         let node = graph
             .nodes
             .iter()
-            .find(|node| node.kind == "n.x.openai_embedding.embed")
+            .find(|node| node.kind == "x.openai_embedding.embed")
             .expect("composite node");
         assert_eq!(node.config["credential_id"], json!("qwen-embed"));
         assert_eq!(node.config["model"], json!("text-embedding-v4"));
@@ -2125,7 +2053,7 @@ return { values };
     fn registry_definitions_parse_wasm_node_dsl_flags() {
         let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
         definitions.push(NodeDefinition {
-            kind: "n.x.wasmpkg.add".to_string(),
+            kind: "x.wasmpkg.add".to_string(),
             title: "WASM Test Add".to_string(),
             description: "WASM test node.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2163,7 +2091,7 @@ return { values };
         let node = graph
             .nodes
             .iter()
-            .find(|node| node.kind == "n.x.wasmpkg.add")
+            .find(|node| node.kind == "x.wasmpkg.add")
             .expect("wasm node");
         assert_eq!(node.config["a"], json!(2));
         assert_eq!(node.config["b"], json!(3));
@@ -2214,7 +2142,7 @@ return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
         let dsl = r#"
 [fn] trigger.function --title "Inspect CSV" --description "Reads a CSV." --input source:file! "CSV file reference." --input options:any "Provider options." --output ok:boolean! "Whether it worked." --output columns:string[] "Detected columns."
 [fn] -> [done]
-[done] script -- return input;
+[done] script.result.run -- return input;
 "#;
 
         let graph = build_pipeline_graph("function-schema-field-test", dsl).expect("graph");
@@ -2280,7 +2208,7 @@ fn parse_graph_node(
         }
     }
     // For logic.match, output pins are dynamic: the declared cases + the default pin.
-    if full_kind == "n.logic.match" {
+    if full_kind == "logic.match" {
         if let Value::Object(ref map) = config {
             let cases: Vec<String> = map
                 .get("cases")
@@ -2536,13 +2464,13 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
         }
         // Skip body-typed flags (their config_key matches the body key for this node kind)
         let body_key = match node.kind.as_str() {
-            "n.pg.query" => "query",
-            "n.sekejap.query" => "query",
-            "n.sqlite.query" => "query",
+            "pg.query.run" => "query",
+            "sekejap.query.run" => "query",
+            "sqlite.query.run" => "query",
             "n.sqlite.mutate" => "query",
-            "n.table.query" => "query",
-            "n.script" => "source",
-            "n.logic.match" | "n.logic.if" => "expression",
+            "table.query.run" => "query",
+            "script.result.run" => "source",
+            "logic.match" | "logic.if" => "expression",
             _ => "body",
         };
         if flag.config_key == body_key {
@@ -2731,7 +2659,7 @@ fn graph_to_graph_mode(graph: &PipelineGraph) -> String {
 
 // ─── Pipe mode builder ───────────────────────────────────────────────────────
 
-/// Build pipeline from pipe-notation: `trigger.webhook --path /test | pg.query --credential main`
+/// Build pipeline from pipe-notation: `trigger.webhook --path /test | pg.query.run --credential main`
 fn build_pipe_mode(
     id: &str,
     body: &str,
@@ -2770,13 +2698,13 @@ fn build_pipe_mode(
     let first_tokens = tokenize(segments[0]);
     let first_raw_kind = first_tokens.first().map(|s| s.as_str()).unwrap_or("");
     let first_full_kind = expand_kind(first_raw_kind).unwrap_or(first_raw_kind);
-    let has_trigger_first = first_full_kind.starts_with("n.trigger.");
+    let has_trigger_first = first_full_kind.starts_with("trigger.");
 
     // Auto-prepend trigger.manual if first node is not a trigger
     if !has_trigger_first {
         nodes.push(PipelineNode {
             id: "trigger".to_string(),
-            kind: "n.trigger.manual".to_string(),
+            kind: "trigger.manual".to_string(),
             input_pins: vec![],
             output_pins: vec!["out".to_string()],
             config: json!({}),
@@ -2815,7 +2743,7 @@ fn build_pipe_mode(
         }
 
         // For logic.match, output pins are dynamic: the declared cases + the default pin.
-        if full_kind == "n.logic.match" {
+        if full_kind == "logic.match" {
             if let Value::Object(ref map) = config {
                 let cases: Vec<String> = map
                     .get("cases")
@@ -2895,21 +2823,21 @@ mod register_shape_tests {
 
     #[test]
     fn a_body_without_a_leading_pipe_is_refused_not_truncated() {
-        match parse_one_command("register api/x trigger.webhook --path /x --method POST | ai.agent --credential c") {
+        match parse_one_command("register api/x trigger.webhook --path /x --method POST | ai.text.generate --credential c") {
             DslVerb::Invalid { message } => {
                 assert!(message.contains("must start with `|`"), "{message}");
                 assert!(message.contains("trigger.webhook --path /x --method POST"), "{message}");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
-        match parse_one_command("register api/x --title \"T\" -- | trigger.webhook --path /x | ai.agent --credential c") {
+        match parse_one_command("register api/x --title \"T\" -- | trigger.webhook --path /x | ai.text.generate --credential c") {
             DslVerb::Register { body, title, .. } => {
                 assert_eq!(title, "T");
                 assert!(body.starts_with("| trigger.webhook"), "{body}");
             }
             other => panic!("{other:?}"),
         }
-        match parse_one_command("register api/x\n[t] trigger.webhook --path /x\n[a] ai.agent --credential c\n[t] -> [a]") {
+        match parse_one_command("register api/x\n[t] trigger.webhook --path /x\n[a] ai.text.generate --credential c\n[t] -> [a]") {
             DslVerb::Register { body, .. } => assert!(body.starts_with("[t]"), "{body}"),
             other => panic!("{other:?}"),
         }
@@ -2917,12 +2845,12 @@ mod register_shape_tests {
 
     #[test]
     fn a_body_key_that_is_also_a_flag_is_rendered_once() {
-        let g = build_pipeline_graph("p", "trigger.webhook --path /x | logic.if --expr \"$trigger.query.who == 'm'\" | ai.agent --credential c --output-mode final_only -- Classify: {{ input.body.review }}").expect("parse");
+        let g = build_pipeline_graph("p", "trigger.webhook --path /x | logic.if --expr \"$trigger.query.who == 'm'\" | ai.text.generate --credential c --output-mode final_only -- Classify: {{ input.body.review }}").expect("parse");
         let dsl = graph_to_dsl(&g);
         let if_line = dsl.lines().find(|l| l.contains("logic.if")).unwrap();
         assert_eq!(if_line.matches("$trigger.query.who").count(), 1, "{if_line}");
         assert!(!if_line.contains("--expr"), "{if_line}");
-        let agent_line = dsl.lines().find(|l| l.contains("ai.agent")).unwrap();
+        let agent_line = dsl.lines().find(|l| l.contains("ai.text.generate")).unwrap();
         assert_eq!(agent_line.matches("Classify:").count(), 1, "{agent_line}");
         assert!(!agent_line.contains("--prompt"), "{agent_line}");
         // and it round-trips
@@ -2938,7 +2866,7 @@ mod note_tests {
 
     #[test]
     fn graph_mode_note_is_a_note_not_a_node() {
-        let body = "[t] trigger.webhook --path /x\n[r] web.response --template pages/x.tsx\n[t] -> [r]\n[why] note --text \"Create the `smtp` credential first.\" --at 120,40 --size 320x140 --color amber";
+        let body = "[t] trigger.webhook --path /x\n[r] web.response.send --template pages/x.tsx\n[t] -> [r]\n[why] note --text \"Create the `smtp` credential first.\" --at 120,40 --size 320x140 --color amber";
         let graph = build_pipeline_graph("p", body).expect("parse");
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 1);
@@ -2952,7 +2880,7 @@ mod note_tests {
 
     #[test]
     fn pipe_mode_note_does_not_break_the_chain() {
-        let body = "trigger.webhook --path /x | note --text \"first\" | web.response --template pages/x.tsx | note --id tail -- a longer text, after the flags";
+        let body = "trigger.webhook --path /x | note --text \"first\" | web.response.send --template pages/x.tsx | note --id tail -- a longer text, after the flags";
         let graph = build_pipeline_graph("p", body).expect("parse");
         assert_eq!(graph.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["n0", "n1"]);
         assert_eq!(graph.edges.len(), 1);
@@ -2967,8 +2895,8 @@ mod note_tests {
     #[test]
     fn notes_survive_the_dsl_round_trip_in_both_modes() {
         for body in [
-            "trigger.webhook --path /x | web.response --template pages/x.tsx | note --id n1 --text \"keep me\" --at 10,20 --size 200x80 --color blue",
-            "[t] trigger.webhook --path /x\n[a] logic.if --expr \"true\"\n[b] web.response --template pages/a.tsx\n[c] web.response --template pages/b.tsx\n[t] -> [a]\n[a]:then -> [b]\n[a]:else -> [c]\n[n1] note --text \"keep me\" --color blue",
+            "trigger.webhook --path /x | web.response.send --template pages/x.tsx | note --id n1 --text \"keep me\" --at 10,20 --size 200x80 --color blue",
+            "[t] trigger.webhook --path /x\n[a] logic.if --expr \"true\"\n[b] web.response.send --template pages/a.tsx\n[c] web.response.send --template pages/b.tsx\n[t] -> [a]\n[a]:then -> [b]\n[a]:else -> [c]\n[n1] note --text \"keep me\" --color blue",
         ] {
             let first = build_pipeline_graph("p", body).expect("parse");
             let rendered = graph_to_dsl(&first);
@@ -2984,7 +2912,7 @@ mod note_tests {
         assert!(err.contains("unknown flag `--colour`"), "{err}");
         let err = build_pipeline_graph("p", "trigger.webhook --path /x | note --at 12").unwrap_err();
         assert!(err.contains("--at expects x,y"), "{err}");
-        let err = build_pipeline_graph("p", "[t] trigger.webhook --path /x\n[r] web.response --template pages/x.tsx\n[t] -> [r]\n[a] note --text one\n[a] note --text two").unwrap_err();
+        let err = build_pipeline_graph("p", "[t] trigger.webhook --path /x\n[r] web.response.send --template pages/x.tsx\n[t] -> [r]\n[a] note --text one\n[a] note --text two").unwrap_err();
         assert!(err.contains("duplicate note id"), "{err}");
     }
 
@@ -3011,8 +2939,8 @@ mod quoting_tests {
 
     /// Every node in the catalogue must be reachable by the short name the
     /// DSL writes, because `short_kind` is what the help pages, the node
-    /// dialog and every written example print. `n.mail.send` shipped with no
-    /// entry here, so `mail.send` — the form its own help page showed —
+    /// dialog and every written example print. `mail.message.send` shipped with no
+    /// entry here, so `mail.message.send` — the form its own help page showed —
     /// failed to parse, and the error named a flag rather than the kind.
     #[test]
     fn every_catalogue_kind_is_reachable_by_its_short_name() {
@@ -3038,12 +2966,12 @@ mod quoting_tests {
     /// pipeline anyone writes.
     const COMPLEX: &str = r#"
 [t] trigger.webhook --path /orders --method POST
-[k] n.kv.get --key "order:{{ input.query.id }}" --out-key order
+[k] kv.entry.get --key "order:{{ input.query.id }}" --out-key order
 [c] logic.if --expr "input.order !== null"
-[m] n.mail.send --credential relay --to "{{ input.order.email }}" --subject "Order {{ input.query.id }}" --text "Thank you."
-[f] n.kv.set --key "seen:{{ input.query.id }}" --value "{{ input.order }}" --ttl 600
-[w] web.response --status 200 --message "ok"
-[e] web.response --status 404 --message "no such order"
+[m] mail.message.send --credential relay --to "{{ input.order.email }}" --subject "Order {{ input.query.id }}" --text "Thank you."
+[f] kv.entry.put --key "seen:{{ input.query.id }}" --value "{{ input.order }}" --ttl 600
+[w] web.response.send --status 200 --message "ok"
+[e] web.response.send --status 404 --message "no such order"
 
 [t] -> [k]
 [k] -> [c]
@@ -3095,7 +3023,7 @@ mod quoting_tests {
     fn an_unquoted_expression_is_refused_with_advice() {
         let dsl = r#"
 [t] trigger.manual
-[m] n.mail.send --credential relay --to {{ input.email }} --subject hi --text hi
+[m] mail.message.send --credential relay --to {{ input.email }} --subject hi --text hi
 
 [t] -> [m]
 "#;
@@ -3110,7 +3038,7 @@ mod quoting_tests {
     fn a_spaceless_expression_needs_no_quotes() {
         let dsl = r#"
 [t] trigger.manual
-[k] n.kv.get --key {{input.id}} --out-key found
+[k] kv.entry.get --key {{input.id}} --out-key found
 
 [t] -> [k]
 "#;

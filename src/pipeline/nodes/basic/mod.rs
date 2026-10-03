@@ -21,8 +21,8 @@
 //! file-like bytes between nodes without embedding bytes in JSON. File-like
 //! content should move as FileRef metadata, not inline base64, unless a node is
 //! explicitly preserving a legacy shape. Multipart webhook files and
-//! `http.request --response-type bytes` produce temporary FileRefs; FS nodes either
-//! read those bytes (`fs.put`) or validate/promote them (`fs.save`). Durable
+//! `http.response.fetch --response-type bytes` produce temporary FileRefs; FS nodes either
+//! read those bytes (`fs.file.put`) or validate/promote them (`fs.save`). Durable
 //! dataset nodes such as table, geo, and mapserver nodes operate on ZebFS paths,
 //! but payload path keys should accept either a plain path string or a FileRef and
 //! resolve it through [`crate::pipeline::nodes::shared::file_ref`].
@@ -30,15 +30,14 @@
 use crate::pipeline::NodeDefinition;
 
 // One folder per DSL family, one file per node, the path mirroring the kind:
-// `n.fs.save` is `fs/save.rs`, `n.kv.get` is `kv/get.rs`. A family with one
-// node and no submodules keeps that node in its `mod.rs` (`concept`, `crypto`,
+// `n.fs.save` is `fs/save.rs`, `kv.entry.get` is `kv/get.rs`. A family with one
+// node and no submodules keeps that node in its `mod.rs` (`crypto`,
 // `script`). Every family exposes `definitions()`; nothing else is registered
 // here. A test in `crate::pipeline::nodes` refuses a `.rs` file beside this
 // one and a folder that is not a family of the catalogue.
 pub mod ai;
 pub mod auth;
 pub mod browser;
-pub mod concept;
 pub mod crypto;
 pub mod fs;
 pub mod function;
@@ -64,7 +63,6 @@ fn family_definitions() -> Vec<NodeDefinition> {
     items.extend(ai::definitions());
     items.extend(auth::definitions());
     items.extend(browser::definitions());
-    items.extend(concept::definitions());
     items.extend(crypto::definitions());
     items.extend(fs::definitions());
     items.extend(function::definitions());
@@ -125,7 +123,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
 
 /// Derives the UI category and subcategory label from a node kind string.
 fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
-    if kind.starts_with("n.trigger.") {
+    if kind.starts_with("trigger.") {
         return ("trigger", "");
     }
     // The trigger's declaration, next to the trigger: its own family, not
@@ -133,51 +131,51 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with(input::KIND_PREFIX) {
         return ("input", "");
     }
-    if kind.starts_with("n.sekejap.") {
+    if kind.starts_with("sekejap.") {
         return ("data.sekejap", "Sekejap");
     }
-    if kind.starts_with("n.sqlite.") {
+    if kind.starts_with("sqlite.") {
         return ("data.sqlite", "SQLite");
     }
-    if kind.starts_with("n.pg.") {
+    if kind.starts_with("pg.") {
         return ("data.postgres", "Postgres");
     }
-    if kind.starts_with("n.kv.") {
+    if kind.starts_with("kv.") {
         return ("data.kv", "KV Store");
     }
-    if kind.starts_with("n.table.") {
+    if kind.starts_with("table.") {
         return ("data.table", "Table");
     }
-    if kind.starts_with("n.geo.") {
+    if kind.starts_with("geo.") {
         return ("data.geo", "Geo");
     }
-    if kind.starts_with("n.ms.") {
+    if kind.starts_with("ms.") {
         return ("data.mapserver", "MapServer");
     }
-    if kind.starts_with("n.ai.") {
+    if kind.starts_with("ai.") {
         return ("logic.ai", "AI");
     }
-    // `n.concept` is a step described but not built: a logic placeholder, not
+    // `logic.concept` is a step described but not built: a logic placeholder, not
     // an "other" of its own.
-    if kind.starts_with("n.logic.") || kind.starts_with("n.function.") || kind == "n.script" || kind == "n.concept" {
+    if kind.starts_with("logic.") || kind.starts_with("function.") || kind.starts_with("script.") {
         return ("logic", "");
     }
-    if kind.starts_with("n.browser.") {
+    if kind.starts_with("browser.") {
         return ("web.browser", "Browser");
     }
-    if kind.starts_with("n.ws.") {
+    if kind.starts_with("ws.") {
         return ("web.websocket", "WebSocket");
     }
-    if kind.starts_with("n.http.") || kind.starts_with("n.web.") {
+    if kind.starts_with("http.") || kind.starts_with("web.") {
         return ("web", "");
     }
-    if kind.starts_with("n.mail.") {
+    if kind.starts_with("mail.") {
         return ("communication.mail", "Mail");
     }
-    if kind.starts_with("n.auth.") || kind == "n.crypto" {
+    if kind.starts_with("auth.") || kind == "n.crypto" {
         return ("security", "");
     }
-    if kind.starts_with("n.fs.") {
+    if kind.starts_with("fs.") {
         return ("files.fs", "File System");
     }
     if kind.starts_with(crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX) {

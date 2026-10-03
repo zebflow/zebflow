@@ -1,6 +1,6 @@
 ---
 name: zebflow-sekejap
-description: Writing SekejapQL for a Zebflow project's built-in database (`default-multimodel`) — tables, edge tables, GRAPH_TABLE walks, JSONB, full text, paging. Use before the first sekejap.query in a task; covers what this engine version refuses, where its grammar lives for exactly this version, and how to prove a query before saving it.
+description: Writing SekejapQL for a Zebflow project's built-in database (`default-multimodel`) — tables, edge tables, GRAPH_TABLE walks, JSONB, full text, paging. Use before the first sekejap.query.run in a task; covers what this engine version refuses, where its grammar lives for exactly this version, and how to prove a query before saving it.
 license: MIT
 metadata:
   version: "1"
@@ -24,7 +24,7 @@ short form with examples; this skill is the order of work.
 - Then read the declared source: the project's DDL file (often
   `data/model/*.sql`, or whatever `docs/structure.md` names) — it is the
   only place an empty table's columns and its edge tables are written down.
-- `pipeline_run body="| trigger.function | sekejap.query -- \"SHOW CREATE TABLE posts\""`
+- `pipeline_run body="| trigger.function | sekejap.query.run -- \"SHOW CREATE TABLE posts\""`
   answers from the engine itself; `SHOW EDGES` lists every edge table.
 - Look at three real rows before writing a filter: values, enums and nulls
   only show in data.

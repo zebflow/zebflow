@@ -318,7 +318,7 @@ review lists every one of them.
 
 `preview_pipeline` read a stored pipeline as raw JSON and looked for a top-level
 `nodes` array. A stored pipeline is a `Pipeline` envelope whose nodes live under
-`spec`, so no `n.web.response` node was ever seen and a published pipeline
+`spec`, so no `web.response.send` node was ever seen and a published pipeline
 bundle carried no page.
 
 ## 8. What the extension allowlist changed

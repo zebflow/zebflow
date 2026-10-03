@@ -18,7 +18,7 @@ Open decisions to resolve before normalizing the spec/docs:
 
 4. Static generation in spec
 - Should the RWE spec now officially acknowledge:
-  - `n.web.static.generate`
+  - `web.site.generate`
   - `n.web.docs.generate`
   - shared static artifact/site layer
 - Or should node-level static generation remain outside the core RWE spec?
@@ -83,7 +83,7 @@ Open decisions to resolve before normalizing the spec/docs:
 - This means node config can depend on more than the upstream payload alone.
 
 4. Template/web render state
-- For `n.web.response` / static web generation, the rendered template state starts from the payload,
+- For `web.response.send` / static web generation, the rendered template state starts from the payload,
   then trigger fields are injected from metadata:
   - `auth`
   - `params`

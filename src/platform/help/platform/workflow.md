@@ -186,14 +186,14 @@ pipeline_register
   file_rel_path=pages/blog-list.zf.json
   body="""
   | trigger.webhook --path /blog --method GET
-  | pg.query --credential main-db -- "
+  | pg.query.run --credential main-db -- "
       SELECT id, slug, title, created_at
       FROM posts
       WHERE status = 'published'
       ORDER BY created_at DESC
       LIMIT 20
     "
-  | web.response --template pages/blog-list.tsx
+  | web.response.send --template pages/blog-list.tsx
   """
 ```
 
@@ -204,14 +204,14 @@ pipeline_register
   file_rel_path=pages/blog-post.zf.json
   body="""
   | trigger.webhook --path /blog/post --method GET
-  | pg.query --credential main-db -- "
+  | pg.query.run --credential main-db -- "
       SELECT id, slug, title, body, created_at
       FROM posts
       WHERE slug = '{{input.query.slug}}'
         AND status = 'published'
       LIMIT 1
     "
-  | web.response --template pages/blog-post.tsx
+  | web.response.send --template pages/blog-post.tsx
   """
 ```
 
@@ -223,12 +223,12 @@ pipeline_register
   body="""
   | trigger.webhook --path /admin/posts --method GET \
       --auth-type jwt --auth-credential session-key --auth-required-role admin
-  | pg.query --credential main-db -- "
+  | pg.query.run --credential main-db -- "
       SELECT id, slug, title, status, created_at
       FROM posts
       ORDER BY created_at DESC
     "
-  | web.response --template pages/admin-posts.tsx
+  | web.response.send --template pages/admin-posts.tsx
   """
 ```
 
@@ -240,13 +240,13 @@ pipeline_register
   body="""
   | trigger.webhook --path /admin/post --method GET \
       --auth-type jwt --auth-credential session-key --auth-required-role admin
-  | pg.query --credential main-db -- "
+  | pg.query.run --credential main-db -- "
       SELECT id, slug, title, body, status
       FROM posts
       WHERE slug = '{{input.query.slug}}'
       LIMIT 1
     "
-  | web.response --template pages/admin-editor.tsx
+  | web.response.send --template pages/admin-editor.tsx
   """
 ```
 
@@ -258,11 +258,11 @@ pipeline_register
   body="""
   | trigger.webhook --path /admin/post --method PUT \
       --auth-type jwt --auth-credential session-key --auth-required-role admin
-  | script -- "
+  | script.result.run -- "
       const { slug, title, body, status } = input.body
       return { slug, title, body, status: status || 'draft' }
     "
-  | pg.query --credential main-db -- "
+  | pg.query.run --credential main-db -- "
       INSERT INTO posts (slug, title, body, status)
       VALUES ('{{input.slug}}', '{{input.title}}', '{{input.body}}', '{{input.status}}')
       ON CONFLICT (slug) DO UPDATE
@@ -272,7 +272,7 @@ pipeline_register
             updated_at = now()
       RETURNING id, slug
     "
-  | web.response --location /admin/posts
+  | web.response.send --location /admin/posts
   """
 ```
 
@@ -543,7 +543,7 @@ Pipeline 'pages/blog-list.zf.json' executed.
 }
 --- node trace (2 nodes, 8ms total) ---
   ✓  n0  (trigger.webhook)  0ms
-  ✓  n1  (pg.query)  8ms
+  ✓  n1  (pg.query.run)  8ms
 ```
 
 If a node shows `✗`, inspect that node ID and fix before moving on.
@@ -604,6 +604,6 @@ docs_agent_write
 | Use `pipeline_get_invocations` to debug scheduled runs | (when scheduler involved) |
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

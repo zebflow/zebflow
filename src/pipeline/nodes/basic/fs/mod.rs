@@ -1,7 +1,7 @@
-//! `fs.*` — project file storage (ZebFS): `fs.save`, `fs.list`, `fs.head`,
-//! `fs.get`, `fs.put`, `fs.delete`, `fs.copy`, `fs.move`, `fs.mkdir`,
-//! `fs.compress`, `fs.decompress`; and by format, `fs.pdf.convert`,
-//! `fs.image.thumbnail`, `fs.image.chromakey`, `fs.svg.convert` (`fs/<format>/<verb>.rs`);
+//! `fs.*` — project file storage (ZebFS): `fs.save`, `fs.folder.list`, `fs.file.head`,
+//! `fs.file.get`, `fs.file.put`, `fs.file.delete`, `fs.file.copy`, `fs.file.move`, `fs.folder.create`,
+//! `fs.archive.create`, `fs.archive.extract`; and by format, `fs.pdf.convert`,
+//! `fs.image.thumbnail`, `fs.image.chromakey`, `fs.image.render` (`fs/<format>/<verb>.rs`);
 //! and codes a scanner reads, `fs.barcode.qr`, `fs.barcode.code128` (`fs/barcode/<symbology>/`).
 //!
 //! Every node that stores a file answers it as a bare FileRef — the eleven

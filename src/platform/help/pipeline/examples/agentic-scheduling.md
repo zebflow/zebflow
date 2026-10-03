@@ -2,7 +2,7 @@
 
 ## What this builds
 
-Scheduled pipelines that invoke `ai.agent` with no tools — one model call per
+Scheduled pipelines that invoke `ai.text.generate` with no tools — one model call per
 run — to analyze data, generate summaries, classify items, or make decisions. Results are
 stored in Sekejap and optionally sent out over HTTP.
 
@@ -30,7 +30,7 @@ an import job); this doc only reads it.
 
 ---
 
-## `ai.agent` — how it takes input
+## `ai.text.generate` — how it takes input
 
 `--prompt` is the prompt, literal or `{{ expr }}`, resolved against the
 payload; a long one goes after `--`. Without `--prompt` the goal is read from
@@ -58,49 +58,49 @@ parsed JSON when `--schema` was given and passed. With `--schema` there is no
 
 ```
 | trigger.schedule --cron "0 * * * *"
-| script -- "return { cutoff: Date.now() - 3600000 }"
-| sekejap.query --params "{{ [input.cutoff] }}" -- "SELECT * FROM events WHERE ts > $1"
-| ai.agent --credential my-llm --output-mode final_only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.rows }}
-| script -- "const r = input.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
-| sekejap.query --read-only false --params "{{ [input.key, input.summary, input.patterns, input.anomalies, input.period, input.generated_at] }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+| script.result.run -- "return { cutoff: Date.now() - 3600000 }"
+| sekejap.query.run --params "{{ [input.cutoff] }}" -- "SELECT * FROM events WHERE ts > $1"
+| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.rows }}
+| script.result.run -- "const r = input.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
+| sekejap.query.run --read-only false --params "{{ [input.key, input.summary, input.patterns, input.anomalies, input.period, input.generated_at] }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
 ```
 
 ### daily-metrics-report — aggregate + report + send
 
 ```
 | trigger.schedule --cron "0 8 * * *"
-| script -- "return { cutoff: Date.now() - 86400000 }"
-| sekejap.query --params "{{ [input.cutoff] }}" -- "SELECT * FROM ai_summaries WHERE generated_at > $1"
-| ai.agent --credential my-llm --output-mode final_only --system-prompt "Reply with the markdown report only, no commentary." -- Write a daily operations report in markdown from these hourly summaries — executive summary, key metrics, trends, recommendations. Summaries: {{ input.rows }}
-| kv.get --key report_webhook_url --out-key webhook_url --durable
-| http.request --url "{{ input.webhook_url }}" --method POST --body "{{ { report: input.response } }}"
+| script.result.run -- "return { cutoff: Date.now() - 86400000 }"
+| sekejap.query.run --params "{{ [input.cutoff] }}" -- "SELECT * FROM ai_summaries WHERE generated_at > $1"
+| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "Reply with the markdown report only, no commentary." -- Write a daily operations report in markdown from these hourly summaries — executive summary, key metrics, trends, recommendations. Summaries: {{ input.rows }}
+| kv.entry.get --key report_webhook_url --out-key webhook_url --durable
+| http.response.fetch --url "{{ input.webhook_url }}" --method POST --body "{{ { report: input.response } }}"
 ```
 
-`kv.get` merges `{ webhook_url }` into the payload alongside `input.response`
-— nothing is lost. Set `report_webhook_url` once via `kv.set` (or a Settings
+`kv.entry.get` merges `{ webhook_url }` into the payload alongside `input.response`
+— nothing is lost. Set `report_webhook_url` once via `kv.entry.put` (or a Settings
 page) before this pipeline runs; there is no `env` scope to read a URL from.
 
 ### queue-classifier — AI classify and route
 
 ```
 | trigger.schedule --cron "*/15 * * * *"
-| sekejap.query -- "SELECT * FROM incoming_queue WHERE processed = false LIMIT 10"
-| ai.agent --credential my-llm --output-mode final_only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.rows }}
+| sekejap.query.run -- "SELECT * FROM incoming_queue WHERE processed = false LIMIT 10"
+| ai.text.generate --credential my-llm --output-mode final_only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.rows }}
 | logic.foreach --items-expr "input.data"
-| sekejap.query --read-only false --params "{{ [$item.urgency, $item.category, $item.key] }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
+| sekejap.query.run --read-only false --params "{{ [$item.urgency, $item.category, $item.key] }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
 ```
 
 `logic.foreach` fans out one run per array element; `$item` stays in scope
-for every downstream node in that run even after `sekejap.query` replaces
+for every downstream node in that run even after `sekejap.query.run` replaces
 `input`.
 
 ### admin-reports — view AI reports
 
 ```
 | trigger.webhook --path /admin/reports --method GET
-| sekejap.query -- "SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 30"
-| script -- "return { reports: input.rows }"
-| web.response --template pages/admin-reports.tsx
+| sekejap.query.run -- "SELECT * FROM ai_summaries ORDER BY generated_at DESC LIMIT 30"
+| script.result.run -- "return { reports: input.rows }"
+| web.response.send --template pages/admin-reports.tsx
 ```
 
 ---
@@ -108,13 +108,13 @@ for every downstream node in that run even after `sekejap.query` replaces
 ## Nodes Used
 
 - `trigger.schedule` — cron-based scheduling (`0 * * * *` = hourly, `0 8 * * *` = daily 8am)
-- `sekejap.query` — SQL against Sekejap; output is `{ columns, rows, row_count, affected_rows, duration_ms }`
+- `sekejap.query.run` — SQL against Sekejap; output is `{ columns, rows, row_count, affected_rows, duration_ms }`
 - `script` — shape rows for insert
-- `ai.agent` — analysis, classification, report generation; `--schema` returns checked JSON as `data`
+- `ai.text.generate` — analysis, classification, report generation; `--schema` returns checked JSON as `data`
 - `logic.foreach` — one downstream run per classified item
-- `kv.get` / `kv.set` — hold the webhook URL (there is no `env` scope)
-- `http.request` — send the report to an external webhook
-- `web.response` — admin reporting page
+- `kv.entry.get` / `kv.entry.put` — hold the webhook URL (there is no `env` scope)
+- `http.response.fetch` — send the report to an external webhook
+- `web.response.send` — admin reporting page
 
 ---
 
@@ -123,6 +123,6 @@ for every downstream node in that run even after `sekejap.query` replaces
 - `pages/admin-reports.tsx` — display AI-generated summaries with timestamps
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

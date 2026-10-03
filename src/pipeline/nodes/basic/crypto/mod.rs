@@ -42,38 +42,38 @@
 //!
 //! Verify operations (`bcrypt_verify`, `argon2_verify`) route to the `true`
 //! or `false` pin, forwarding the original payload unchanged — no extra
-//! `n.logic.if` node needed.
+//! `logic.if` node needed.
 //!
 //! # Example pipelines
 //!
 //! **User registration — hash a password:**
 //! ```text
-//! | n.trigger.webhook --path /auth/register --method POST
+//! | trigger.webhook --path /auth/register --method POST
 //! | n.crypto --op bcrypt_hash
-//! | n.pg.query --credential main-db -- "INSERT INTO users (email, pw_hash) VALUES ({{ input.email }}, {{ input.result }})"
+//! | pg.query.run --credential main-db -- "INSERT INTO users (email, pw_hash) VALUES ({{ input.email }}, {{ input.result }})"
 //! ```
 //!
 //! **User login — verify password and issue JWT:**
 //! ```text
-//! | n.trigger.webhook --path /auth/login --method POST
-//! | n.pg.query --credential main-db -- "SELECT pw_hash AS hash FROM users WHERE email = {{ input.email }}"
+//! | trigger.webhook --path /auth/login --method POST
+//! | pg.query.run --credential main-db -- "SELECT pw_hash AS hash FROM users WHERE email = {{ input.email }}"
 //! | n.crypto --op bcrypt_verify
-//! | [true]  → n.auth.token.create --credential jwt-key
-//! | [false] → n.script -- "return { _status: 401, error: 'Invalid credentials' }"
+//! | [true]  → auth.token.create --credential jwt-key
+//! | [false] → script.result.run -- "return { _status: 401, error: 'Invalid credentials' }"
 //! ```
 //!
 //! **Webhook signature check (HMAC-SHA256):**
 //! ```text
-//! | n.trigger.webhook --path /webhooks/github --method POST
+//! | trigger.webhook --path /webhooks/github --method POST
 //! | n.crypto --op hmac_sha256 --key "{{ input.webhook_secret }}"
-//! | n.logic.if -- "payload.result === payload.expected_sig"
+//! | logic.if -- "payload.result === payload.expected_sig"
 //! ```
 //!
 //! **Generate a secure session token:**
 //! ```text
-//! | n.trigger.webhook --path /auth/session --method POST
+//! | trigger.webhook --path /auth/session --method POST
 //! | n.crypto --op random_hex --length 32
-//! | n.pg.query --credential main-db -- "INSERT INTO sessions (token, user_id) VALUES ({{ input.result }}, {{ input.user_id }})"
+//! | pg.query.run --credential main-db -- "INSERT INTO sessions (token, user_id) VALUES ({{ input.result }}, {{ input.user_id }})"
 //! ```
 
 use async_trait::async_trait;

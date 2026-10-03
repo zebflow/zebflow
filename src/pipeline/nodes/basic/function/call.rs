@@ -1,8 +1,8 @@
-//! `n.function.call` — invokes a function pipeline by slug.
+//! `function.result.call` — invokes a function pipeline by slug.
 //!
 //! # Pipeline position
 //!
-//! Middleware node. Calls another active pipeline that starts with `n.trigger.function`.
+//! Middleware node. Calls another active pipeline that starts with `trigger.function`.
 //! On success routes through `out`; on failure (pipeline not found, execution error)
 //! routes through `error`.
 //!
@@ -14,8 +14,8 @@
 //!
 //! # DSL
 //! ```text
-//! | function.call --function my-fn --input-value "{{ input.body }}"
-//! | function.call --function my-fn --input '{"user_id": "abc"}'
+//! | function.result.call --function my-fn --input-value "{{ input.body }}"
+//! | function.result.call --function my-fn --input '{"user_id": "abc"}'
 //! ```
 //!
 //! # Input/output
@@ -38,7 +38,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.function.call";
+pub const NODE_KIND: &str = "function.result.call";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -129,7 +129,7 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.call --function find-user --input "{{ { email: input.body.email } }}""#)
+            crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.result.call --function find-user --input "{{ { email: input.body.email } }}""#)
                 .output(serde_json::json!({ "user": { "_key": "u_1", "email": "a@x.io" } }))
                 .note("Whatever `jobs/find-user`'s last node produced."),
         ],
@@ -184,7 +184,7 @@ impl NodeHandler for Node {
             None => {
                 return Err(PipelineError::new(
                     "FW_NODE_FUNCTION_CALL_NO_PLATFORM",
-                    "function.call: platform not injected into engine",
+                    "function.result.call: platform not injected into engine",
                 ));
             }
         };
@@ -218,7 +218,7 @@ impl NodeHandler for Node {
             Ok(result) => Ok(NodeExecutionOutput {
                 output_pins: vec!["out".to_string()],
                 payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "result": result })),
-                trace: vec![format!("function.call: '{}' ok", slug)],
+                trace: vec![format!("function.result.call: '{}' ok", slug)],
             }),
             Err(e) => Ok(NodeExecutionOutput {
                 output_pins: vec!["error".to_string()],
@@ -227,7 +227,7 @@ impl NodeHandler for Node {
                     serde_json::json!({ "error": { "code": e.code, "message": e.message } }),
                 ),
                 trace: vec![format!(
-                    "function.call: '{}' error: {} — {}",
+                    "function.result.call: '{}' error: {} — {}",
                     slug, e.code, e.message
                 )],
             }),

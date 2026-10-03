@@ -67,8 +67,8 @@ pub const FILE_REF_KINDS: [&str; 11] = [
 
 /// A durable FileRef for bytes a node has just written to the native store.
 ///
-/// The one builder for every node that keeps a file — `fs.save`, `fs.put`,
-/// `fs.compress` — so all of them derive `kind` through [`infer_kind`] and
+/// The one builder for every node that keeps a file — `fs.save`, `fs.file.put`,
+/// `fs.archive.create` — so all of them derive `kind` through [`infer_kind`] and
 /// take the digest from the bytes they wrote, never from a claim. `trust` is
 /// the caller's: a node that re-encodes says `sanitized`, one that writes
 /// what it was handed carries the source's word forward.

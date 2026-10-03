@@ -1,4 +1,4 @@
-//! `n.trigger.mcp` — expose a pipeline as an MCP tool.
+//! `trigger.mcp` — expose a pipeline as an MCP tool.
 //!
 //! This node is a **routing declaration**, not an active processor.  At
 //! compile time the pipeline runtime extracts [`McpTriggerSpec`] from the
@@ -30,15 +30,15 @@
 //! **Greeting tool:**
 //! ```text
 //! | trigger.mcp --tool-name greet_user --tool-description "Greet a user by name" --params name:string
-//! | script -- "return { greeting: 'Hello, ' + input.arguments.name + '!' };"
-//! | web.response
+//! | script.result.run -- "return { greeting: 'Hello, ' + input.arguments.name + '!' };"
+//! | web.response.send
 //! ```
 //!
 //! **Database lookup tool:**
 //! ```text
 //! | trigger.mcp --tool-name lookup_user --tool-description "Look up user by email" --params email:string
-//! | pg.query --credential main-db --params "{{ [input.arguments.email] }}" -- "SELECT * FROM users WHERE email = $1"
-//! | web.response
+//! | pg.query.run --credential main-db --params "{{ [input.arguments.email] }}" -- "SELECT * FROM users WHERE email = $1"
+//! | web.response.send
 //! ```
 
 use async_trait::async_trait;
@@ -51,10 +51,10 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.trigger.mcp";
+pub const NODE_KIND: &str = "trigger.mcp";
 const OUTPUT_PIN_OUT: &str = "out";
 
-/// Return the [`NodeDefinition`] for `n.trigger.mcp`.
+/// Return the [`NodeDefinition`] for `trigger.mcp`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -170,13 +170,13 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("A tool that looks up stock", r#"trigger.mcp --tool-name stock_lookup --tool-description "Current stock level for one SKU. Use before promising availability." --params sku:string"#)
                 .input(serde_json::json!({ "sku": "MUG-01" }))
                 .output(serde_json::json!({ "sku": "MUG-01" }))
-                .note("Then `| sekejap.query --params \"{{ [input.sku] }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
+                .note("Then `| sekejap.query.run --params \"{{ [input.sku] }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
         ],
         ..Default::default()
     }
 }
 
-/// Configuration for `n.trigger.mcp`.
+/// Configuration for `trigger.mcp`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// MCP tool name — the identifier used in `tools/list` and `tools/call`.
@@ -192,7 +192,7 @@ pub struct Config {
     pub parameters: String,
 }
 
-/// `n.trigger.mcp` node instance.
+/// `trigger.mcp` node instance.
 pub struct Node {
     #[allow(dead_code)]
     config: Config,
@@ -226,7 +226,7 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
             trace: vec![format!(
-                "n.trigger.mcp: passthrough (tool={})",
+                "trigger.mcp: passthrough (tool={})",
                 self.config.tool_name
             )],
         })

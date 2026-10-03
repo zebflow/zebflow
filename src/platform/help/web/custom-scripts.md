@@ -54,7 +54,7 @@ import { formatAddress } from "@/scripts/format-address";
 | `RWE_SECURITY_GLOBAL` | `eval`, `Function` | none — write the code |
 | `RWE_SECURITY_RAW_HTML` | `dangerouslySetInnerHTML` (always off) | render elements; `<Markdown>` / `renderDocumentHtml` on the server for rich text |
 | `RWE_SECURITY_DYNAMIC_IMPORT` | `import()` while the project's strict mode is on (the default) | static `import { d3 } from "zeb/d3"` |
-| `RWE_SECURITY_FETCH` | a literal `fetch("https://host/…")` to a host outside the project's allow-list (default: `registry.npmjs.org`, `jsr.io`) | call your own webhook (`/wh/…`) and let `http.request` reach the outside; or add the host in Settings → Policy |
+| `RWE_SECURITY_FETCH` | a literal `fetch("https://host/…")` to a host outside the project's allow-list (default: `registry.npmjs.org`, `jsr.io`) | call your own webhook (`/wh/…`) and let `http.response.fetch` reach the outside; or add the host in Settings → Policy |
 
 A refusal is a compile error at save time (`file_write` reports it; `POST
 /templates/diagnostics` checks without saving), which is the point: the

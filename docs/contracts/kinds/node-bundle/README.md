@@ -110,7 +110,7 @@ root.
     },
     "nodes": [
       {
-        "kind": "n.x.ml.dataset.load",
+        "kind": "x.ml.dataset.load",
         "title": "Load Dataset",
         "description": "Fetch and parse a training dataset.",
         "icon": "",
@@ -135,7 +135,7 @@ root.
         }
       },
       {
-        "kind": "n.x.ml.gb.train",
+        "kind": "x.ml.gb.train",
         "title": "Train Gradient Boosting",
         "description": "Train a model from the incoming dataset.",
         "icon": "icons/train.svg",
@@ -157,7 +157,7 @@ root.
         }
       },
       {
-        "kind": "n.x.ml.job.done",
+        "kind": "x.ml.job.done",
         "title": "On Training Finished",
         "description": "Start a pipeline when a training job reports completion.",
         "icon": "",
@@ -229,17 +229,17 @@ anything the document declares. One authoring contract, two consumption paths.
 | Scope | Consumed at | Namespace | Guaranteed present |
 | --- | --- | --- | --- |
 | `Platform` | build time, shipped in the binary | `n.*` | yes |
-| `Project` | install time, into one project | `n.x.{package_token}.*` | no |
+| `Project` | install time, into one project | `x.{package_token}.*` | no |
 
 Zebflow curates `n.*` and guarantees uniqueness there, which is why a platform
-bundle needs no package scoping. Everyone else gets `n.x.{package_token}.*`,
+bundle needs no package scoping. Everyone else gets `x.{package_token}.*`,
 where `package_token` is `spec.package` with every hyphen replaced by an
 underscore, because kind segments allow underscores but not hyphens.
 
 ```text
 platform bundle             → n.telegram.send
-package "ml"                → n.x.ml.gb.train
-package "openai-embedding"  → n.x.openai_embedding.embed
+package "ml"                → x.ml.gb.train
+package "openai-embedding"  → x.openai_embedding.embed
 ```
 
 For a project-scope bundle, kind ownership is structural: the kind names the
@@ -248,7 +248,7 @@ kind, and uninstall can prove which kinds a bundle owns.
 
 This rule is enforced by `validate_bundle_namespace(spec, scope)` rather than by
 `NodeBundleContract::validate`, because the same bytes are legal in one scope
-and illegal in the other. A curated bundle may not use `n.x.`, and an installed
+and illegal in the other. A curated bundle may not use `x.`, and an installed
 bundle may not claim a curated name.
 
 The remaining segments are free. `NodeDefinition` still governs kind syntax:
@@ -355,9 +355,9 @@ So a project also carries the **interface** of every third-party node it uses:
 ```text
 repo/
   zeb.lock                        which bundle, which digest, which source
-  pipelines/blog.zf.json          references n.x.acme.thing
+  pipelines/blog.zf.json          references x.acme.thing
   nodes/
-    n.x.acme.thing.json           a frozen NodeDefinition document
+    x.acme.thing.json           a frozen NodeDefinition document
 
 data/
   hub/nodes/acme/                 the materialized bundle
@@ -371,7 +371,7 @@ known contract instead of guessing.
 
 Rules:
 
-- Only `n.x.*` kinds get an interface. Curated `n.*` nodes are guaranteed by the
+- Only `x.*` kinds get an interface. Curated `n.*` nodes are guaranteed by the
   platform and carry no portability risk.
 - Only kinds a project's pipelines actually reference. `repo/` states this
   project's dependencies, not a mirror of everything installed.
@@ -537,13 +537,13 @@ Four limits, stated rather than implied:
   external calls" — remains what an author means by it, not what the runtime can
   prove they meant.
 - A node that reaches the network through a destination the egress guard never
-  sees as a URL — `n.ai.agent`, `n.pg.query`, `n.table.query`,
-  `n.ws.client.send`, `n.trigger.ws.client` — is **refused** inside any bundle,
+  sees as a URL — `ai.text.generate`, `pg.query.run`, `table.query.run`,
+  `n.ws.client.send`, `trigger.socket` — is **refused** inside any bundle,
   rather than allowed through unchecked. A bundle needing one of those cannot be
   confined by a host list today, and that is true whether it declared hosts or
   not: an empty list weakens the host allowlist and nothing else, so an author
   gains nothing by staying silent.
-- `n.script` is refused inside a bundle only where the Deno sandbox has been
+- `script.result.run` is refused inside a bundle only where the Deno sandbox has been
   granted network access — `dangerZone.allowNet`, or any
   `allowList.externalFetchHosts` entry. As shipped the sandbox denies `fetch`,
   so a script reaches nothing a host guard would need to read.
@@ -646,7 +646,7 @@ Declared-host enforcement, in `src/pipeline/engines/composite_host.rs`,
 38. every embedded bundle runs under its own declaration: no inner node is
     refused as uncheckable, and every host its functions name outright is one it
     declared
-39. `n.script` runs inside a bundle under the shipped sandbox, and is refused
+39. `script.result.run` runs inside a bundle under the shipped sandbox, and is refused
     once that sandbox is granted network access
 
 ### Live and browser evidence, 2026-08-18
@@ -655,10 +655,10 @@ Verified on an isolated instance, covering both curated and third-party paths:
 
 Curated:
 
-- 68 nodes with `n.telegram.*` and `n.ai.embedding` in the curated namespace,
+- 68 nodes with `n.telegram.*` and `ai.embedding.generate` in the curated namespace,
   `source` derived from the manifest, `available` on every item, and no kind
-  left in a pre-`n.x.` namespace
-- native `n.ai.agent` and composite `n.ai.embedding` coexist without collision
+  left in a pre-`x.` namespace
+- native `ai.text.generate` and composite `ai.embedding.generate` coexist without collision
 - the DSL registers a pipeline using a curated composite
 - activation runs the composite `on_activate` hook, which executed
   `register-webhook` and reached the Telegram API
@@ -672,11 +672,11 @@ Third-party:
   `POST .../nodes/install/review` and `POST .../nodes/install`
 - the same flow through the Hub page: choose file, review every category,
   install, both endpoints returning 200
-- bundle bytes landed in `data/hub/nodes/acme/`, and both `n.x.acme.*` kinds
+- bundle bytes landed in `data/hub/nodes/acme/`, and both `x.acme.*` kinds
   appeared as `community` with `source: wasm`
 - a third-party WASM node executed, returning its own export
 - saving a pipeline that references them materialised
-  `repo/nodes/n.x.acme.train.json` and `n.x.acme.score.json`, and nothing for
+  `repo/nodes/x.acme.train.json` and `x.acme.score.json`, and nothing for
   curated kinds
 - uninstall removed the bundle while the interfaces survived, and the catalog
   then reported both kinds with real pins and `available: false`

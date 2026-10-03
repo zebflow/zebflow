@@ -9,7 +9,7 @@ The token comes from `GET /api/projects/{owner}/{project}/mcp/session`; the
 same route accepts `PUT` to toggle MCP on/off for the project and `DELETE` to
 remove the session, and `POST .../mcp/session/reset-token` mints a new token.
 
-Every active pipeline built with an `n.trigger.mcp` node is exposed as an
+Every active pipeline built with an `trigger.mcp` node is exposed as an
 additional callable tool on that project's MCP server, alongside the fixed
 tool set (`pipeline_register`, `pipeline_execute`, `file_read`, `help`, and
 the rest — see `help("platform/agent")`).

@@ -7,11 +7,11 @@ use serde_json::Value;
 
 /// Keys that are never scanned for expressions.
 /// These hold code/markup that may legitimately contain `{{` for other purposes.
-// `markup` is compiled TSX, `source` is n.script's body, `code` is
-// n.browser.run's body — all three are programs, and a program containing a
+// `markup` is compiled TSX, `source` is script.result.run's body, `code` is
+// browser.page.run's body — all three are programs, and a program containing a
 // literal `{{` must reach its own compiler untouched. `code` was missing:
 // a browser script with `{{` in it was silently mangled by this resolver
-// before it ever compiled, while the functionally identical n.script body
+// before it ever compiled, while the functionally identical script.result.run body
 // was immune. Found by the 2026-09-09 parameter-convention sweep.
 const SKIP_KEYS: &[&str] = &["markup", "source", "code"];
 
@@ -169,9 +169,9 @@ mod tests {
 
     /// A program body must reach its own compiler untouched.
     ///
-    /// n.browser.run's `code` used to be scanned like ordinary config: a
+    /// browser.page.run's `code` used to be scanned like ordinary config: a
     /// browser script containing a literal `{{` was mangled by the global
-    /// templater before it compiled, while n.script's `source` was immune.
+    /// templater before it compiled, while script.result.run's `source` was immune.
     #[test]
     fn a_code_body_is_never_scanned_for_templates() {
         let config = serde_json::json!({

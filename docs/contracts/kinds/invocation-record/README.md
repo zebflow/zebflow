@@ -111,7 +111,7 @@ into. Four rules, in order of authority:
 
 **A secret typed into a free-text config field is not defended, and cannot be.**
 Writing `http://user:hunter2@host/` into a `url`, or a password into an
-`n.script` body, puts it in the run history in full. This is the same act as
+`script.result.run` body, puts it in the run history in full. This is the same act as
 pasting a password into a chat message: the mechanism that keeps it out —
 credentials — was available and was bypassed. No redaction rule can tell a
 secret from ordinary text inside a field whose whole purpose is free text, and
@@ -128,7 +128,7 @@ identifier.
 | --- | --- |
 | Every webhook response, success or failure | header `X-Request-Id: <run_id>` |
 | The error page a hidden 5xx shows (`project-configuration`, `errors`) | the first eight characters of `run_id`, readable aloud; lookups accept a prefix |
-| Every outbound `http.request` a run makes, whatever its trigger | header `X-Request-Id: <run_id>` forwarded, so a failure in another service traces back to the run that caused it |
+| Every outbound `http.response.fetch` a run makes, whatever its trigger | header `X-Request-Id: <run_id>` forwarded, so a failure in another service traces back to the run that caused it |
 | Schedule, function, WebSocket, KV triggers | the run has the same `run_id`; nothing to answer, so no header |
 | The MCP endpoint | an agent's call is a request: the same header on its response |
 

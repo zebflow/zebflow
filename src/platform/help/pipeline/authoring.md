@@ -7,7 +7,7 @@ console); the JSON is generated. This page is the underlying model.
 The DSL itself: `help("pipeline/dsl")`.
 
 > Before a node references something by name, read the real value:
-> - `web.response --template <path>` — an exact `rel_path` from `file_list`, ending in `.tsx`. A wrong path is a 500 at request time.
+> - `web.response.send --template <path>` — an exact `rel_path` from `file_list`, ending in `.tsx`. A wrong path is a 500 at request time.
 > - `--credential <id>` — an exact id from `credential_list`. Connection slugs (`connection_list`) are for `connection_describe`, not for `--credential`.
 > - `--auth-credential <id>` — the `jwt_signing_key` (or hmac / api_key) credential id.
 
@@ -57,11 +57,11 @@ zebflow:
     "id": "api/login",
     "entry_nodes": ["n0"],
     "nodes": [
-      { "id": "n0", "kind": "n.trigger.webhook", "input_pins": [], "output_pins": ["out"],
+      { "id": "n0", "kind": "trigger.webhook", "input_pins": [], "output_pins": ["out"],
         "config": { "path": "/api/login", "method": "POST" } },
-      { "id": "n1", "kind": "n.sekejap.query", "input_pins": ["in"], "output_pins": ["out"],
+      { "id": "n1", "kind": "sekejap.query.run", "input_pins": ["in"], "output_pins": ["out"],
         "config": { "query": "SELECT * FROM users WHERE email = $1", "params": "{{ [input.body.email] }}" } },
-      { "id": "n2", "kind": "n.web.response", "input_pins": ["in"], "output_pins": ["out"],
+      { "id": "n2", "kind": "web.response.send", "input_pins": ["in"], "output_pins": ["out"],
         "config": { "template": "pages/login.tsx" } }
     ],
     "edges": [
@@ -113,7 +113,7 @@ trigger.webhook --path /api/login --method POST   →   POST /wh/acme/shop/api/l
 ```
 
 The same route answers a browser (HTML or redirect) and a `fetch` (JSON) —
-`web.response` decides by what it is given, and auth failures follow the
+`web.response.send` decides by what it is given, and auth failures follow the
 request kind (303 to the credential's `auth_redirect` for navigations, 401/403
 JSON otherwise). Clients that send `Accept: text/event-stream` get the run as
 an SSE stream instead of one response.
@@ -156,9 +156,9 @@ A node's flags are declared in its definition and the parser refuses any it
 does not know, so `help(topic="pipeline/nodes/<kind>")` is the reference.
 Three conventions hold everywhere:
 
-- **Query nodes take SQL in the body**: `sekejap.query --params "{{ [input.body.id] }}" -- "SELECT … WHERE id = $1"`. `--query "…"` is the same thing as a flag. `sqlite.*` binds `?1, ?2`.
+- **Query nodes take SQL in the body**: `sekejap.query.run --params "{{ [input.body.id] }}" -- "SELECT … WHERE id = $1"`. `--query "…"` is the same thing as a flag. `sqlite.*` binds `?1, ?2`.
 - **`script` takes code in the body**: `script -- "return { ok: true }"`. `input` and `ctx` are in scope; the return value is the next payload.
 - **Any value with `{{ }}` or a space is one quoted argument.** A whole-value expression keeps its JSON type; an interpolated one stringifies.
 
-Node kinds and short aliases: the DSL accepts `sekejap.query` for
-`n.sekejap.query`; the stored JSON always holds the full kind.
+Node kinds and short aliases: the DSL accepts `sekejap.query.run` for
+`sekejap.query.run`; the stored JSON always holds the full kind.

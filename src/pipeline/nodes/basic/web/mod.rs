@@ -1,4 +1,4 @@
-//! `web.*` — answering and building the web: `web.response`,
+//! `web.*` — answering and building the web: `web.response.send`,
 //! `web.docs_generate`, `web.static_generate`, `web.static_site`.
 
 use crate::pipeline::NodeDefinition;

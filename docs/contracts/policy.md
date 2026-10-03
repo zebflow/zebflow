@@ -20,7 +20,7 @@ platform session   opaque random token · cookie zebflow_session · HttpOnly · 
                    (ZEBFLOW_COOKIE_SECURE overrides) · 24 h · in memory: a restart signs everyone out
 MCP session        Bearer token per project · capabilities allow-listed per session (project.read,
                    templates.write, pipelines.execute …) · rotation epoch · auto-reset · revocable
-project JWT        n.auth.token.create / n.auth.token.verify · algorithm pinned by the credential,
+project JWT        auth.token.create / auth.token.verify · algorithm pinned by the credential,
                    never by the token header (RS256 verifier refuses an HS256 token) · exp always
                    checked · aud checked when set · roles claim as string or array
 passwords          argon2 (platform users) · bcrypt available to pipelines (n.crypto)
@@ -54,7 +54,7 @@ reads only its own credentials (`owner/project` is the store's key).
 | a project user's JWT | that project's routes for its roles, until `exp` | short `exp`; roles in the token; the other area's credential |
 | an MCP token | the tools its capabilities allow, in one project | capability list; rotation; revoke in Settings |
 | a platform session | the Studio as that user, ≤ 24 h | logout removes it; restart clears all; Strict cookie stops cross-site use |
-| a running `n.script` | nothing outside the sandbox: no net, no fs, no env, 1 s | `confinement.md` §1 |
+| a running `script.result.run` | nothing outside the sandbox: no net, no fs, no env, 1 s | `confinement.md` §1 |
 | a node bundle | what its capabilities *declare* — disclosure, not a ceiling | `confinement.md` §0, open |
 | the SQLite catalog file alone | no credential value (sealed) | §2 — the key file is separate |
 

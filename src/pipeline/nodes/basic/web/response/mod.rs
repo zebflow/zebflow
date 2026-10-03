@@ -1,4 +1,4 @@
-//! `n.web.response` — terminate the HTTP request with an explicit response.
+//! `web.response.send` — terminate the HTTP request with an explicit response.
 //!
 //! Single unified node for all web response concerns. Without `--template` it
 //! serves the pipeline payload as JSON (or a redirect / plain-text message).
@@ -8,16 +8,16 @@
 //!
 //! | Intent | DSL |
 //! |---|---|
-//! | Serve pipeline output as JSON | `\| web.response` |
-//! | Serve specific field as JSON | `\| web.response --body "{{ input.rows }}"` |
-//! | Render HTML page | `\| web.response --template pages/home.tsx` |
-//! | Redirect | `\| web.response --location /somewhere` |
-//! | Error with message | `\| web.response --status 403 --message "Access denied"` |
-//! | Error page | `\| web.response --template pages/404.tsx --status 404` |
-//! | Set session cookie | `\| web.response --template pages/home.tsx --set-cookie "name=session,value={{ input.token }},http-only"` |
-//! | Serve a project file (manifest, robots, icon) | `\| web.response --file pwa/manifest.webmanifest` |
-//! | Serve a service worker | `\| web.response --file pwa/site.sw.ts --header Service-Worker-Allowed=/` |
-//! | Serve one file out of a folder by URL parameter | `\| web.response --folder pwa/icons --file "{{ input.params.file }}"` |
+//! | Serve pipeline output as JSON | `\| web.response.send` |
+//! | Serve specific field as JSON | `\| web.response.send --body "{{ input.rows }}"` |
+//! | Render HTML page | `\| web.response.send --template pages/home.tsx` |
+//! | Redirect | `\| web.response.send --location /somewhere` |
+//! | Error with message | `\| web.response.send --status 403 --message "Access denied"` |
+//! | Error page | `\| web.response.send --template pages/404.tsx --status 404` |
+//! | Set session cookie | `\| web.response.send --template pages/home.tsx --set-cookie "name=session,value={{ input.token }},http-only"` |
+//! | Serve a project file (manifest, robots, icon) | `\| web.response.send --file pwa/manifest.webmanifest` |
+//! | Serve a service worker | `\| web.response.send --file pwa/site.sw.ts --header Service-Worker-Allowed=/` |
+//! | Serve one file out of a folder by URL parameter | `\| web.response.send --folder pwa/icons --file "{{ input.params.file }}"` |
 //!
 //! # `--file` — a project file as the response
 //!
@@ -63,7 +63,7 @@ use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandle
 use crate::pipeline::{NodeDefinition, PipelineError};
 use crate::rwe::{CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, TemplateSource};
 
-pub const NODE_KIND: &str = "n.web.response";
+pub const NODE_KIND: &str = "web.response.send";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -79,7 +79,7 @@ pub fn definition() -> NodeDefinition {
              200. `--template pages/x.tsx` (exact `file_list` path, `.tsx` required): render the page with the payload as its `input`. \
              `--location /path`: redirect (302 unless `--status 303`). `--status`, `--set-cookie \"name=…,value=…,http-only,max-age=…\"`, \
              `--header K=V`, `--message \"text\"`, `--body \"{{ expr }}\"`. There is no `--route`; the route is the trigger's `--path`. \
-             A 404 or 400 is a `logic.if` whose `false` pin reaches a second `web.response` with that `--status` — a script cannot set one. \
+             A 404 or 400 is a `logic.if` whose `false` pin reaches a second `web.response.send` with that `--status` — a script cannot set one. \
              `--file pwa/manifest.webmanifest`: answer a project file, content type by extension, a `.ts` compiled to JavaScript \
              (a service worker: `--file pwa/site.sw.ts` behind `--path /sw.js`). `--folder pwa/icons --file \"{{ input.params.file }}\"`: \
              one file out of a folder, the name from the route, never outside it."
@@ -317,16 +317,16 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Render a page", "web.response --template pages/posts.tsx")
+            crate::pipeline::model::NodeExample::dsl("Render a page", "web.response.send --template pages/posts.tsx")
                 .note("The payload (e.g. `{ rows }`) is the page's `input`; the body must show no `RWE component error`."),
-            crate::pipeline::model::NodeExample::dsl("Redirect after a form POST", "web.response --location /admin/posts --status 303"),
-            crate::pipeline::model::NodeExample::dsl("JSON with a status", r#"web.response --status 400 --body "{{ { error: 'title is required' } }}""#),
-            crate::pipeline::model::NodeExample::dsl("Set the session cookie and go home", r#"web.response --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax""#),
-            crate::pipeline::model::NodeExample::dsl("The web-app manifest, a file in the project", "web.response --file pwa/manifest.webmanifest")
+            crate::pipeline::model::NodeExample::dsl("Redirect after a form POST", "web.response.send --location /admin/posts --status 303"),
+            crate::pipeline::model::NodeExample::dsl("JSON with a status", r#"web.response.send --status 400 --body "{{ { error: 'title is required' } }}""#),
+            crate::pipeline::model::NodeExample::dsl("Set the session cookie and go home", r#"web.response.send --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax""#),
+            crate::pipeline::model::NodeExample::dsl("The web-app manifest, a file in the project", "web.response.send --file pwa/manifest.webmanifest")
                 .note("Behind `trigger.webhook --path /manifest.webmanifest`; pages link it with `head.links: [{ rel: \"manifest\", href: \"/manifest.webmanifest\" }]`."),
-            crate::pipeline::model::NodeExample::dsl("The service worker, compiled from TypeScript", "web.response --file pwa/site.sw.ts")
+            crate::pipeline::model::NodeExample::dsl("The service worker, compiled from TypeScript", "web.response.send --file pwa/site.sw.ts")
                 .note("Behind `--path /sw.js`. The file starts with `self.__ZF = { version, source }`; the page registers it once with `navigator.serviceWorker.register(\"/sw.js\")`."),
-            crate::pipeline::model::NodeExample::dsl("One icon out of a folder", r#"web.response --folder pwa/icons --file "{{ input.params.file }}""#)
+            crate::pipeline::model::NodeExample::dsl("One icon out of a folder", r#"web.response.send --folder pwa/icons --file "{{ input.params.file }}""#)
                 .note("Behind `--path /pwa/{file}`. The name may not leave the folder, so this is safe to expose."),
         ],
         failure_semantics: vec![
@@ -504,7 +504,7 @@ pub fn resolve_file_rel_path(folder: Option<&str>, file: &str) -> Result<String,
     }
     let file = file.trim();
     if file.is_empty() {
-        return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "web.response --file needs a path, e.g. pwa/manifest.webmanifest"));
+        return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "web.response.send --file needs a path, e.g. pwa/manifest.webmanifest"));
     }
     match folder.map(str::trim).filter(|f| !f.is_empty()) {
         Some(folder) => {
@@ -521,7 +521,7 @@ pub fn resolve_file_rel_path(folder: Option<&str>, file: &str) -> Result<String,
         None => {
             let parts = clean(file, "file")?;
             if parts.is_empty() {
-                return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "web.response --file needs a path"));
+                return Err(PipelineError::new("FW_NODE_WEB_RESPONSE_FILE", "web.response.send --file needs a path"));
             }
             Ok(parts.join("/"))
         }
@@ -860,7 +860,7 @@ mod tests {
                 bus: None,
             })
             .await
-            .expect("execute web.response");
+            .expect("execute web.response.send");
 
         assert_eq!(output.payload["__zf_response"]["body"], input_payload);
     }

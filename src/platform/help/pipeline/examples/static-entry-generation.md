@@ -51,7 +51,7 @@ Minimal version as a callable function pipeline:
 
 ```zf
 | trigger.function --description "Generate the static page for one entry" --input "entry_slug:string!" "Slug of the entry to generate"
-| script -- "
+| script.result.run -- "
 const collection = {
   name: 'Field Notes',
   slug: 'field-notes'
@@ -74,7 +74,7 @@ return {
   generated_at: new Date().toISOString()
 };
 "
-| web.static.generate \
+| web.site.generate \
     --template pages/static-entry-page.tsx \
     --path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html" \
     --route "/collections/{{ input.collection.slug }}/{{ input.entry.slug }}" \
@@ -97,7 +97,7 @@ This is a more realistic content-backed version:
 
 ```zf
 | trigger.function --description "Generate the static page for one content entry" --input "entry_id:string!" "Entry UUID"
-| pg.query --credential content-db --params "{{ [input.entry_id] }}" -- "
+| pg.query.run --credential content-db --params "{{ [input.entry_id] }}" -- "
 SELECT
   e.entry_id::text AS entry_id,
   e.slug AS entry_slug,
@@ -111,7 +111,7 @@ FROM content.entry e
 JOIN content.collection c ON c.collection_id = e.collection_id
 WHERE e.entry_id = $1::uuid
 "
-| script -- "
+| script.result.run -- "
 const row = input.rows?.[0];
 if (!row) throw new Error('entry not found');
 return {
@@ -131,7 +131,7 @@ return {
   generated_at: new Date().toISOString()
 };
 "
-| web.static.generate \
+| web.site.generate \
     --template pages/static-entry-page.tsx \
     --path "collections/{{ input.collection.slug }}/{{ input.entry.slug }}/index.html"
 ```
@@ -151,7 +151,7 @@ One run should generate one artifact. That gives:
 Later, when one label rename touches thousands of pages, the pipeline should:
 1. compute the dirty entry/collection/tag set
 2. loop or fan out over that set
-3. call `web.static.generate` once per artifact
+3. call `web.site.generate` once per artifact
 
 That is much easier to debug than hiding traversal and parallelism inside one giant node.
 

@@ -3,7 +3,7 @@
 //! URL: `GET /ws/{owner}/{project}/rooms/{room_id}`
 //!
 //! 1. **Admission** — before anything of the room is sent, the connection must be
-//!    allowed by the room's `n.trigger.ws` pipelines (see [`admission`]).
+//!    allowed by the room's `trigger.room` pipelines (see [`admission`]).
 //! 2. **Join** — through [`crate::infra::transport::ws::WsHub::join_room`]; the
 //!    session receives `joined` with the current state.
 //! 3. **Events** — inbound `{event, payload}` messages run the matching pipelines
@@ -31,7 +31,7 @@ pub(super) const DISCONNECT_EVENT: &str = "$disconnect";
 /// Close code sent when a connection is not admitted to a room.
 const CLOSE_UNAUTHORIZED: u16 = 4401;
 
-/// Whether a `n.trigger.ws` with `t_room` / `t_event` handles `event` in `room_id`.
+/// Whether a `trigger.room` with `t_room` / `t_event` handles `event` in `room_id`.
 /// Reserved `$` events reach only triggers that name them.
 pub(super) fn trigger_matches(t_room: &str, t_event: &str, room_id: &str, event: &str) -> bool {
     let room_match = t_room.is_empty() || t_room == room_id;
@@ -41,7 +41,7 @@ pub(super) fn trigger_matches(t_room: &str, t_event: &str, room_id: &str, event:
 
 /// Whether a connection may enter a room, from the auth its triggers require.
 ///
-/// `requires_auth` holds one entry per `n.trigger.ws` that can fire in the room.
+/// `requires_auth` holds one entry per `trigger.room` that can fire in the room.
 /// A room with no triggers, or with any open trigger, admits everyone (anything
 /// it shows can be acted on without signing in anyway); otherwise the connection
 /// must pass at least one trigger's auth.
@@ -247,7 +247,7 @@ async fn run_session_events(
     }
 }
 
-/// Run every pipeline whose `n.trigger.ws` matches `event`, one after another.
+/// Run every pipeline whose `trigger.room` matches `event`, one after another.
 async fn run_event(ctx: &SessionCtx, auth: &mut AuthCache, event: &str, payload: Value) {
     let pipelines = ctx.state.platform.pipeline_runtime.list_project(&ctx.owner, &ctx.project);
     for compiled in pipelines {

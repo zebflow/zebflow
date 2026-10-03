@@ -1,4 +1,4 @@
-//! `ZebtuneAgent` — the model loop `n.ai.agent` runs.
+//! `ZebtuneAgent` — the model loop `ai.text.generate` runs.
 //!
 //! ```text
 //! ZebtuneAgent::run(goal, tool_defs, executor, verifier, step_callback)

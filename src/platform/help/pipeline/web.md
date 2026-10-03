@@ -1,12 +1,12 @@
-# Responses — `web.response`
+# Responses — `web.response.send`
 
-Everything a pipeline sends back over HTTP goes through `web.response`: JSON,
+Everything a pipeline sends back over HTTP goes through `web.response.send`: JSON,
 a rendered page, a redirect, a cookie, a header. Nothing is implicit — a
 script cannot set a status or a header; it returns the next payload and the
-graph decides which `web.response` answers.
+graph decides which `web.response.send` answers.
 
 For writing a rendered page to project storage instead of answering the
-request, `web.static.generate` renders the same templates
+request, `web.site.generate` renders the same templates
 (`help("pipeline/examples/static-entry-generation")`).
 
 ## Flags
@@ -15,7 +15,7 @@ The table is rendered from the node's definition when this page is read, so
 it cannot lag behind the code; `help("pipeline/nodes/web.response")` has the
 same rows with their schemas and examples.
 
-<!-- node-flags:web.response -->
+<!-- node-flags:web.response.send -->
 
 Quote any value that contains `{{ }}` or a space as one argument;
 `--location {{ input.url }}` unquoted is cut at the first space and refused.
@@ -44,39 +44,39 @@ Logout is `--set-cookie "name=session,value=,max-age=0"`.
 
 ```
 | trigger.webhook --path /api/posts --method GET
-| sekejap.query -- "SELECT id, title FROM posts ORDER BY created_at DESC"
-| web.response --body "{{ input.rows }}"
+| sekejap.query.run -- "SELECT id, title FROM posts ORDER BY created_at DESC"
+| web.response.send --body "{{ input.rows }}"
 ```
 
 **A page**
 
 ```
 | trigger.webhook --path /blog --method GET
-| sekejap.query -- "SELECT id, title, published_at FROM posts ORDER BY published_at DESC LIMIT 20"
-| web.response --template pages/blog-home.tsx
+| sekejap.query.run -- "SELECT id, title, published_at FROM posts ORDER BY published_at DESC LIMIT 20"
+| web.response.send --template pages/blog-home.tsx
 ```
 
 **Found or 404** — branch, then answer on each pin
 
 ```
 [a] trigger.webhook --path /blog/:slug --method GET
-[b] sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+[b] sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
 [c] logic.if --expr "input.rows.length > 0"
-[d] web.response --template pages/post.tsx
-[e] web.response --status 404 --template pages/not-found.tsx
+[d] web.response.send --template pages/post.tsx
+[e] web.response.send --status 404 --template pages/not-found.tsx
 [a] -> [b]
 [b] -> [c]
 [c]:true -> [d]
 [c]:false -> [e]
 ```
 
-**A designed 404 for paths nobody registered** — a `trigger.weberror`
+**A designed 404 for paths nobody registered** — a `trigger.error`
 pipeline, not a webhook. A webhook `--path /*` or `/:path` is not a
 catch-all; it never sees a path that matched nothing.
 
 ```
-| trigger.weberror --code 404
-| web.response --status 404 --template pages/not-found.tsx
+| trigger.error --code 404
+| web.response.send --status 404 --template pages/not-found.tsx
 ```
 
 `--code 4xx`, `5xx` or empty widen it; the most specific active one wins.
@@ -86,28 +86,28 @@ The payload is `{ error_code, error_message, original_path, method }`.
 
 ```
 | trigger.webhook --path /go/signup --method GET
-| web.response --location "/auth/register?source=landing"
+| web.response.send --location "/auth/register?source=landing"
 ```
 
 **Redirect to a computed URL**
 
 ```
 | trigger.webhook --path /after-login --method GET --auth-type jwt --auth-credential jwt_main
-| sekejap.query --params "{{ [$trigger.auth.sub] }}" -- "SELECT home FROM users WHERE id = $1"
-| web.response --location "{{ input.rows[0]?.home || '/home' }}"
+| sekejap.query.run --params "{{ [$trigger.auth.sub] }}" -- "SELECT home FROM users WHERE id = $1"
+| web.response.send --location "{{ input.rows[0]?.home || '/home' }}"
 ```
 
 **Login — mint a token, set the cookie**
 
 ```
 [a] trigger.webhook --path /auth/login --method POST
-[b] sekejap.query --params "{{ [input.body.email] }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
+[b] sekejap.query.run --params "{{ [input.body.email] }}" -- "SELECT id, name, password_hash, roles FROM users WHERE email = $1"
 [c] logic.if --expr "input.rows.length === 1"
 [d] crypto --op argon2_verify --value "{{ $nodes.a.body.password }}" --hash "{{ input.rows[0].password_hash }}"
-[e] script -- "const u = input.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
+[e] script.result.run -- "const u = input.rows[0]; return { id: u.id, name: u.name, roles: u.roles || ['member'] }"
 [f] auth.token.create --credential jwt_main --claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"
-[g] web.response --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"
-[h] web.response --status 401 --body "{{ { error: 'invalid credentials' } }}"
+[g] web.response.send --location /home --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"
+[h] web.response.send --status 401 --body "{{ { error: 'invalid credentials' } }}"
 [a] -> [b]
 [b] -> [c]
 [c]:true -> [d]
@@ -131,15 +131,15 @@ recipe with registration: `help("pipeline/examples/cookie-jwt-auth")`.
 
 ```
 | trigger.webhook --path /api/data --method GET
-| sekejap.query -- "SELECT * FROM data"
-| web.response --body "{{ input.rows }}" --header Cache-Control=max-age=60 --header X-Version=2
+| sekejap.query.run -- "SELECT * FROM data"
+| web.response.send --body "{{ input.rows }}" --header Cache-Control=max-age=60 --header X-Version=2
 ```
 
 ## What a template receives
 
-The payload becomes the page's `input`, and `web.response` merges the request
+The payload becomes the page's `input`, and `web.response.send` merges the request
 context into it — `route`, `params`, `query`, `search`, `headers`, `auth` — so
-they are there even after `sekejap.query` replaced the payload. `input.auth`
+they are there even after `sekejap.query.run` replaced the payload. `input.auth`
 carries only the claims minted with `:public`; a token whose claims are all
 private gives `input.auth = null` in the browser, while the same claims stay
 complete in `$trigger.auth` and `ctx.trigger.auth` server-side.
@@ -162,15 +162,15 @@ export default function Dashboard(input) {
 `{{ }}` works in every flag value and is resolved just before the response:
 
 ```
-| web.response --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.rows[0].slug }}"
-| web.response --header "X-User-Id={{ $trigger.auth.sub }}"
+| web.response.send --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.rows[0].slug }}"
+| web.response.send --header "X-User-Id={{ $trigger.auth.sub }}"
 ```
 
 Scope: `input`, `$trigger`, `$nodes` — `help("pipeline/dsl")`.
 
 ## Project files and an installable app — `--file`
 
-`web.response --file` answers a project file: content type by extension, a
+`web.response.send --file` answers a project file: content type by extension, a
 `.ts` compiled to JavaScript, everything else byte for byte. That is how a
 robots.txt, a sitemap, an icon or a web-app manifest is served, and how a
 service worker is: every script served this way starts with
@@ -178,9 +178,9 @@ service worker is: every script served this way starts with
 worker can key its cache on them.
 
 ```text
-register pipelines/pwa/manifest -- | trigger.webhook --path /manifest.webmanifest --method GET | web.response --file pwa/manifest.webmanifest
-register pipelines/pwa/worker   -- | trigger.webhook --path /sw.js --method GET               | web.response --file pwa/site.sw.ts
-register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method GET          | web.response --folder pwa/icons --file "{{ input.params.file }}"
+register pipelines/pwa/manifest -- | trigger.webhook --path /manifest.webmanifest --method GET | web.response.send --file pwa/manifest.webmanifest
+register pipelines/pwa/worker   -- | trigger.webhook --path /sw.js --method GET               | web.response.send --file pwa/site.sw.ts
+register pipelines/pwa/icons    -- | trigger.webhook --path /pwa/{file} --method GET          | web.response.send --folder pwa/icons --file "{{ input.params.file }}"
 ```
 
 - The manifest is a JSON file you write (`name`, `id`, `start_url`, `scope`

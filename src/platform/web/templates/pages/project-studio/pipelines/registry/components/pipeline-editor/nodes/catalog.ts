@@ -1,74 +1,74 @@
 import type { NodeCatalogEntry } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/types";
 
 const NODE_KIND_COLORS: Record<string, string> = {
-  "n.trigger.webhook": "#065f46",
-  "n.trigger.mcp": "#155e75",
-  "n.trigger.schedule": "#14532d",
-  "n.trigger.manual": "#166534",
-  "n.trigger.weberror": "#7f1d1d",
-  "n.trigger.ws": "#064e3b",
-  "n.trigger.ws.client": "#064e3b",
-  "n.script": "#1e3a8a",
-  "n.http.request": "#7c2d12",
-  "n.sekejap.query": "#0f766e",
-  "n.table.convert": "#0f766e",
-  "n.table.query": "#0f766e",
-  "n.pg.query": "#7c3aed",
+  "trigger.webhook": "#065f46",
+  "trigger.mcp": "#155e75",
+  "trigger.schedule": "#14532d",
+  "trigger.manual": "#166534",
+  "trigger.error": "#7f1d1d",
+  "trigger.room": "#064e3b",
+  "trigger.socket": "#064e3b",
+  "script.result.run": "#1e3a8a",
+  "http.response.fetch": "#7c2d12",
+  "sekejap.query.run": "#0f766e",
+  "table.data.convert": "#0f766e",
+  "table.query.run": "#0f766e",
+  "pg.query.run": "#7c3aed",
   "n.web.render": "#be185d",
-  "n.web.static.generate": "#c2410c",
+  "web.site.generate": "#c2410c",
   "n.web.docs.generate": "#c2410c",
-  "n.ai.agent": "#4338ca",
-  "n.ai.tts": "#4338ca",
-  "n.logic.if": "#0e7490",
-  "n.logic.match": "#0e7490",
-  "n.logic.collect": "#0e7490",
-  "n.logic.foreach": "#0e7490",
-  "n.logic.reduce": "#0e7490",
-  "n.logic.retry": "#0e7490",
+  "ai.text.generate": "#4338ca",
+  "ai.audio.generate": "#4338ca",
+  "logic.if": "#0e7490",
+  "logic.match": "#0e7490",
+  "logic.collect": "#0e7490",
+  "logic.foreach": "#0e7490",
+  "logic.reduce": "#0e7490",
+  "logic.retry": "#0e7490",
   "n.ws.sync_state": "#064e3b",
   "n.ws.emit": "#065f46",
   "n.ws.client.send": "#064e3b",
-  "n.auth.token.create": "#78350f",
+  "auth.token.create": "#78350f",
   "n.crypto": "#6b21a8",
-  "n.browser.run": "#0369a1",
-  "n.trigger.function": "#166534",
+  "browser.page.run": "#0369a1",
+  "trigger.function": "#166534",
   "n.sekejap.mutate": "#0f766e",
-  "n.function.call": "#1e40af",
-  "n.web.response": "#9d174d",
-  "n.ms.publish": "#0f766e",
-  "n.ms.unpublish": "#0f766e",
-  "n.ms.get": "#0f766e",
-  "n.ms.list": "#0f766e",
-  "n.fs.list": "#0c4a6e",
-  "n.fs.head": "#0c4a6e",
-  "n.fs.get": "#0c4a6e",
-  "n.fs.put": "#0c4a6e",
-  "n.fs.delete": "#0c4a6e",
-  "n.fs.copy": "#0c4a6e",
-  "n.fs.move": "#0c4a6e",
-  "n.fs.mkdir": "#0c4a6e",
+  "function.result.call": "#1e40af",
+  "web.response.send": "#9d174d",
+  "ms.layer.publish": "#0f766e",
+  "ms.layer.unpublish": "#0f766e",
+  "ms.layer.get": "#0f766e",
+  "ms.layer.list": "#0f766e",
+  "fs.folder.list": "#0c4a6e",
+  "fs.file.head": "#0c4a6e",
+  "fs.file.get": "#0c4a6e",
+  "fs.file.put": "#0c4a6e",
+  "fs.file.delete": "#0c4a6e",
+  "fs.file.copy": "#0c4a6e",
+  "fs.file.move": "#0c4a6e",
+  "fs.folder.create": "#0c4a6e",
   "n.fs.save": "#0c4a6e",
-  "n.fs.compress": "#0c4a6e",
-  "n.fs.decompress": "#0c4a6e",
-  "n.fs.pdf.convert": "#0c4a6e",
-  "n.fs.image.thumbnail": "#4a1d96",
-  "n.fs.image.chromakey": "#4a1d96",
-  "n.fs.svg.convert": "#4a1d96",
-  "n.kv.set": "#b45309",
-  "n.kv.get": "#b45309",
-  "n.kv.exists": "#b45309",
-  "n.kv.del": "#b45309",
-  "n.kv.expire": "#b45309",
-  "n.kv.incr": "#b45309",
-  "n.kv.publish": "#b45309",
-  "n.trigger.kv.subscribe": "#b45309",
-  "n.geo.inspect": "#0f766e",
-  "n.geo.convert": "#0f766e",
+  "fs.archive.create": "#0c4a6e",
+  "fs.archive.extract": "#0c4a6e",
+  "fs.pdf.convert": "#0c4a6e",
+  "fs.image.thumbnail": "#4a1d96",
+  "fs.image.chromakey": "#4a1d96",
+  "fs.image.render": "#4a1d96",
+  "kv.entry.put": "#b45309",
+  "kv.entry.get": "#b45309",
+  "kv.entry.head": "#b45309",
+  "kv.entry.delete": "#b45309",
+  "kv.entry.expire": "#b45309",
+  "kv.entry.increment": "#b45309",
+  "kv.message.publish": "#b45309",
+  "trigger.topic": "#b45309",
+  "geo.dataset.inspect": "#0f766e",
+  "geo.dataset.convert": "#0f766e",
 };
 
 export function nodeColor(kind: string): string {
   if (NODE_KIND_COLORS[kind]) return NODE_KIND_COLORS[kind];
-  if (kind.startsWith("n.x.")) return "#6d28d9";
+  if (kind.startsWith("x.")) return "#6d28d9";
   return "#334155";
 }
 
@@ -81,28 +81,28 @@ export function canonicalNodeKind(kind: string): string {
 }
 
 export function isTriggerNodeKind(kind: string): boolean {
-  return canonicalNodeKind(kind).startsWith("n.trigger.");
+  return canonicalNodeKind(kind).startsWith("trigger.");
 }
 
 export function triggerKindFromNodeKind(kind: string): string {
   const canonical = canonicalNodeKind(kind);
-  return isTriggerNodeKind(canonical) ? canonical.slice("n.trigger.".length) : "";
+  return isTriggerNodeKind(canonical) ? canonical.slice("trigger.".length) : "";
 }
 
 /** Fallback category derivation from node kind prefix (used when ui_category is not set). */
 export function categoryForNodeKind(kind: string): string {
   const canonical = canonicalNodeKind(kind);
-  if (canonical.startsWith("n.trigger.")) return "trigger";
-  if (canonical.startsWith("n.logic.") || canonical.startsWith("n.function.") || canonical.startsWith("n.ai.")) return "logic";
-  if (canonical.startsWith("n.ms.")) return "data";
-  if (canonical.startsWith("n.fs.")) return "files";
-  if (canonical.startsWith("n.auth.") || canonical.startsWith("n.crypto")) return "security";
-  if (canonical.startsWith("n.web.") || canonical.startsWith("n.ws.") || canonical.startsWith("n.http.") || canonical.startsWith("n.browser.")) return "web";
-  if (canonical.startsWith("n.geo.") || canonical.startsWith("n.kv.") || canonical.startsWith("n.mem.") || canonical.startsWith("n.pg.") || canonical.startsWith("n.sqlite.") || canonical.startsWith("n.sekejap.") || canonical.startsWith("n.table.")) return "data";
+  if (canonical.startsWith("trigger.")) return "trigger";
+  if (canonical.startsWith("logic.") || canonical.startsWith("function.") || canonical.startsWith("ai.")) return "logic";
+  if (canonical.startsWith("ms.")) return "data";
+  if (canonical.startsWith("fs.")) return "files";
+  if (canonical.startsWith("auth.") || canonical.startsWith("n.crypto")) return "security";
+  if (canonical.startsWith("web.") || canonical.startsWith("ws.") || canonical.startsWith("http.") || canonical.startsWith("browser.")) return "web";
+  if (canonical.startsWith("geo.") || canonical.startsWith("kv.") || canonical.startsWith("mem.") || canonical.startsWith("pg.") || canonical.startsWith("sqlite.") || canonical.startsWith("sekejap.") || canonical.startsWith("table.")) return "data";
   // Installed nodes carry their own ui_category. This fallback only runs when a
   // bundle left it empty, and the kind never encodes the implementation.
-  if (canonical.startsWith("n.x.")) return "installed";
-  if (canonical === "n.script" || canonical === "n.concept") return "logic";
+  if (canonical.startsWith("x.")) return "installed";
+  if (canonical === "script.result.run" || canonical === "logic.concept") return "logic";
   return "other";
 }
 
@@ -190,9 +190,9 @@ export function normalizeNodePins(
   if (pinRole === "output" && canonicalKind === "n.web.render") return [];
   if (
     pinRole === "input" &&
-    (canonicalKind === "n.trigger.webhook" ||
-      canonicalKind === "n.trigger.schedule" ||
-      canonicalKind === "n.trigger.manual")
+    (canonicalKind === "trigger.webhook" ||
+      canonicalKind === "trigger.schedule" ||
+      canonicalKind === "trigger.manual")
   ) {
     return [];
   }
@@ -261,7 +261,7 @@ export function deriveNodeOutputPins(
   fallback: string[] = []
 ): string[] {
   const canonicalKind = canonicalNodeKind(kind);
-  if (canonicalKind !== "n.logic.match") {
+  if (canonicalKind !== "logic.match") {
     return normalizeNodePins(canonicalKind, "output", rawPins, fallback);
   }
   const cases = normalizeMatchCases(config?.cases);
@@ -281,7 +281,7 @@ export function deriveNodeOutputLabels(
 ): Record<string, string> {
   const canonicalKind = canonicalNodeKind(kind);
   const labels: Record<string, string> = {};
-  if (canonicalKind === "n.logic.match") {
+  if (canonicalKind === "logic.match") {
     normalizeMatchCases(config?.cases).forEach((item) => {
       labels[item.pin] = item.label || item.value || item.pin;
     });

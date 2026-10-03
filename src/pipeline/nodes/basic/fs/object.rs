@@ -4,14 +4,14 @@
 //! FileRef IR and backend/lifecycle rules, read
 //! `src/pipeline/nodes/shared/file_ref.rs`.
 //!
-//! `fs.put --source-key` accepts text-like JSON, legacy byte envelopes, and FileRef
+//! `fs.file.put --source-key` accepts text-like JSON, legacy byte envelopes, and FileRef
 //! metadata. FileRef values are read through the shared helper instead of treating
 //! `ref` as a local filesystem path.
 //!
-//! `fs.put`, `fs.copy` and `fs.move` answer the stored file at `fs.object` as a
+//! `fs.file.put`, `fs.file.copy` and `fs.file.move` answer the stored file at `fs.object` as a
 //! **bare durable FileRef** — the eleven contract fields and nothing else. The
 //! store path is `fs.object.ref` (and the envelope's `fs.path`); a URL is not a
-//! node's business. `fs.list` entries and `fs.head` describe objects the node
+//! node's business. `fs.folder.list` entries and `fs.file.head` describe objects the node
 //! did not write, so they stay plain stats.
 
 use std::sync::Arc;
@@ -36,14 +36,14 @@ use crate::pipeline::{
 use crate::platform::services::PlatformService;
 use crate::zebfs::model::{ZebFsEntry, ZebFsEntryKind, ZebFsStat};
 
-pub const LIST_NODE_KIND: &str = "n.fs.list";
-pub const HEAD_NODE_KIND: &str = "n.fs.head";
-pub const GET_NODE_KIND: &str = "n.fs.get";
-pub const PUT_NODE_KIND: &str = "n.fs.put";
-pub const DELETE_NODE_KIND: &str = "n.fs.delete";
-pub const COPY_NODE_KIND: &str = "n.fs.copy";
-pub const MOVE_NODE_KIND: &str = "n.fs.move";
-pub const MKDIR_NODE_KIND: &str = "n.fs.mkdir";
+pub const LIST_NODE_KIND: &str = "fs.folder.list";
+pub const HEAD_NODE_KIND: &str = "fs.file.head";
+pub const GET_NODE_KIND: &str = "fs.file.get";
+pub const PUT_NODE_KIND: &str = "fs.file.put";
+pub const DELETE_NODE_KIND: &str = "fs.file.delete";
+pub const COPY_NODE_KIND: &str = "fs.file.copy";
+pub const MOVE_NODE_KIND: &str = "fs.file.move";
+pub const MKDIR_NODE_KIND: &str = "fs.folder.create";
 
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
@@ -145,7 +145,7 @@ pub fn list_definition() -> NodeDefinition {
     );
     def.examples = vec![example(
         "List a folder",
-        "fs.list --path uploads",
+        "fs.folder.list --path uploads",
         json!({ "fs": { "operation": "list", "path": "uploads", "count": 1, "entries": [{ "path": "uploads/a1.jpg", "kind": "object", "size": 1723, "modified": "2026-09-13T04:00:00Z" }] } }),
     )];
     def
@@ -156,7 +156,7 @@ pub fn head_definition() -> NodeDefinition {
         HEAD_NODE_KIND,
         "FS Head",
         "Read one file's metadata (size, kind, modified, content_type) without reading its bytes. Needs `--path`. \
-         Adds `fs: { operation, path, object }` to the payload. Use it to check that a file exists before `fs.get`; \
+         Adds `fs: { operation, path, object }` to the payload. Use it to check that a file exists before `fs.file.get`; \
          a missing path fails the node, it does not return null.",
         vec![scalar_flag("--path", "path", "Object or prefix path.")],
         vec![text_field("path", "Path", "Object or prefix path.")],
@@ -164,7 +164,7 @@ pub fn head_definition() -> NodeDefinition {
     );
     def.examples = vec![example(
         "Stat a file",
-        "fs.head --path uploads/a1.jpg",
+        "fs.file.head --path uploads/a1.jpg",
         json!({ "fs": { "operation": "head", "path": "uploads/a1.jpg", "object": { "path": "uploads/a1.jpg", "size": 1723, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "image/jpeg" } } }),
     )];
     def
@@ -229,7 +229,7 @@ pub fn get_definition() -> NodeDefinition {
     });
     def.examples = vec![example(
         "Read a text file",
-        "fs.get --path docs/notes.md",
+        "fs.file.get --path docs/notes.md",
         json!({ "fs": { "operation": "get", "path": "docs/notes.md", "object": { "path": "docs/notes.md", "content": "# Notes\n…", "base64": null, "size": 42, "kind": "object" } } }),
     )];
     def
@@ -242,8 +242,8 @@ pub fn put_definition() -> NodeDefinition {
         "Write one file into the project's file store. Needs `--filename` (in `--folder`, default `files`) or an exact `--path`, and one source: \
          `--text` (literal or {{ expr }}), `--base64`, or `--source-key <dot.path>` (a string, a FileRef, or JSON in the payload). \
          Adds `fs: { operation, path, object }` to the payload, \
-         where `object` is a bare durable FileRef (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `origin: fs.put`, …) and nothing else. \
-         For a browser upload use `fs.save`, not this; `fs.put` is for content the pipeline already has.",
+         where `object` is a bare durable FileRef (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `origin: fs.file.put`, …) and nothing else. \
+         For a browser upload use `fs.save`, not this; `fs.file.put` is for content the pipeline already has.",
         destination_flags("Destination folder (default: files).", "Destination name.")
             .into_iter()
             .chain([
@@ -296,8 +296,8 @@ pub fn put_definition() -> NodeDefinition {
     );
     def.examples = vec![example(
         "Write a generated file",
-        "fs.put --folder exports --filename report.json --source-key report",
-        json!({ "report": { "total": 3 }, "fs": { "operation": "put", "path": "exports/report.json", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/report.json", "filename": "report.json", "mime": "application/json", "kind": "json", "size": 812, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.put", "trust": "generated" } } }),
+        "fs.file.put --folder exports --filename report.json --source-key report",
+        json!({ "report": { "total": 3 }, "fs": { "operation": "put", "path": "exports/report.json", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/report.json", "filename": "report.json", "mime": "application/json", "kind": "json", "size": 812, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.put", "trust": "generated" } } }),
     )];
     def
 }
@@ -323,7 +323,7 @@ pub fn delete_definition() -> NodeDefinition {
     );
     def.examples = vec![example(
         "Delete an upload",
-        "fs.delete --path \"{{ input.body.path }}\"",
+        "fs.file.delete --path \"{{ input.body.path }}\"",
         json!({ "fs": { "operation": "delete", "path": "uploads/a1.jpg", "deleted": true } }),
     )];
     def
@@ -335,13 +335,13 @@ pub fn copy_definition() -> NodeDefinition {
         "FS Copy",
         "Copy one file inside the project's file store. Needs `--from` and a destination: `--folder` (keeps the name), \
          `--filename`, or an exact `--path`. Adds `fs: { operation: \"copy\", path, object }` to the payload, where `object` is a durable FileRef for the copy \
-         (`origin: fs.copy`). An existing destination is an error unless `--on-conflict` says otherwise. \
+         (`origin: fs.file.copy`). An existing destination is an error unless `--on-conflict` says otherwise. \
          A copy is private like any object until the owner exposes its folder in Studio → Files.",
     );
     def.examples = vec![example(
         "Keep a copy of an upload",
-        "fs.copy --from \"{{ input.saved.ref }}\" --folder images",
-        json!({ "fs": { "operation": "copy", "path": "images/a1.jpg", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "images/a1.jpg", "filename": "a1.jpg", "mime": "image/jpeg", "kind": "image", "size": 1723, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.copy", "trust": "generated" } } }),
+        "fs.file.copy --from \"{{ input.saved.ref }}\" --folder images",
+        json!({ "fs": { "operation": "copy", "path": "images/a1.jpg", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "images/a1.jpg", "filename": "a1.jpg", "mime": "image/jpeg", "kind": "image", "size": 1723, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.copy", "trust": "generated" } } }),
     )];
     def
 }
@@ -352,13 +352,13 @@ pub fn move_definition() -> NodeDefinition {
         "FS Move",
         "Move one file inside the project's file store: copy to the destination (`--folder`, `--filename` or `--path`), then delete `--from`. \
          Adds `fs: { operation: \"move\", path, object }` to the payload, where `object` is a durable FileRef at the \
-         new path (`origin: fs.move`). Any FileRef still pointing at `--from` \
+         new path (`origin: fs.file.move`). Any FileRef still pointing at `--from` \
          is now dangling — update the row that stored it.",
     );
     def.examples = vec![example(
         "Archive a processed file",
-        "fs.move --from \"{{ input.fs.path }}\" --folder archive/inbox",
-        json!({ "fs": { "operation": "move", "path": "archive/inbox/a1.csv", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "archive/inbox/a1.csv", "filename": "a1.csv", "mime": "text/csv", "kind": "csv", "size": 9021, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.move", "trust": "generated" } } }),
+        "fs.file.move --from \"{{ input.fs.path }}\" --folder archive/inbox",
+        json!({ "fs": { "operation": "move", "path": "archive/inbox/a1.csv", "object": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "archive/inbox/a1.csv", "filename": "a1.csv", "mime": "text/csv", "kind": "csv", "size": 9021, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.file.move", "trust": "generated" } } }),
     )];
     def
 }
@@ -368,7 +368,7 @@ pub fn mkdir_definition() -> NodeDefinition {
         MKDIR_NODE_KIND,
         "FS Mkdir",
         "Create a folder in the project's file store. Needs `--path`. Adds `fs: { operation: \"mkdir\", path, object }` to the payload. \
-         Rarely needed: `fs.put`, `fs.save` and `fs.copy` create the folders they write into; use this only for a folder that \
+         Rarely needed: `fs.file.put`, `fs.save` and `fs.file.copy` create the folders they write into; use this only for a folder that \
          must exist before anything is in it (a listing page, an upload target).",
         vec![scalar_flag("--path", "path", "Prefix path to create.")],
         vec![text_field("path", "Path", "Prefix path to create.")],
@@ -376,7 +376,7 @@ pub fn mkdir_definition() -> NodeDefinition {
     );
     def.examples = vec![example(
         "Create an upload folder",
-        "fs.mkdir --path uploads/2026",
+        "fs.folder.create --path uploads/2026",
         json!({ "fs": { "operation": "mkdir", "path": "uploads/2026", "object": { "path": "uploads/2026", "kind": "prefix" } } }),
     )];
     def
@@ -615,7 +615,7 @@ impl NodeHandler for Node {
                 if self.config.path.trim().is_empty() && filename.is_empty() {
                     return Err(PipelineError::new(
                         "FW_NODE_FS_PUT",
-                        "fs.put needs --filename (in --folder, default files) or an exact --path",
+                        "fs.file.put needs --filename (in --folder, default files) or an exact --path",
                     ));
                 }
                 let folder = if self.config.folder.trim().is_empty() { "files" } else { self.config.folder.trim() };
@@ -626,10 +626,10 @@ impl NodeHandler for Node {
                         .put(&path, &bytes)
                         .map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
                     let leaf = path.rsplit('/').next().unwrap_or(&path).to_string();
-                    store.file_ref(&path, &leaf, content_type_for_path(&path), &bytes, "fs.put", "generated")
+                    store.file_ref(&path, &leaf, content_type_for_path(&path), &bytes, "fs.file.put", "generated")
                 } else {
                     // Skipped: the answer is the file already there, as it is.
-                    store.stored_ref(&path, "fs.put", "generated", "FW_NODE_FS_PUT")?
+                    store.stored_ref(&path, "fs.file.put", "generated", "FW_NODE_FS_PUT")?
                 };
                 let stat = zebfs.head(&path).map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
                 json!({
@@ -689,9 +689,9 @@ impl NodeHandler for Node {
                 if same_store && to == from_norm {
                     return Err(PipelineError::new(code, "the destination is the source; set --folder, --filename or --path"));
                 }
-                let origin = if matches!(op, Operation::Move) { "fs.move" } else { "fs.copy" };
+                let origin = if matches!(op, Operation::Move) { "fs.file.move" } else { "fs.file.copy" };
                 if !self.on_conflict(code)?.allows(zebfs, &to, code)? {
-                    let object = object_ref(&store, &to, "fs.copy", code)?;
+                    let object = object_ref(&store, &to, "fs.file.copy", code)?;
                     return Ok(merged_output(op, &input.payload, json!({
                         "operation": op.label(), "path": to, "source_path": from_norm, "object": object, "skipped": true
                     })));

@@ -18,7 +18,7 @@
 //! Keep trigger-specific details in each trigger module, and keep shared file byte
 //! rules in `src/pipeline/nodes/shared/file_ref.rs`.
 //!
-//! `trigger.ws` lives with the WebSocket family (`basic/ws/trigger.rs`).
+//! `trigger.room` lives with the WebSocket family (`basic/ws/trigger.rs`).
 
 use crate::pipeline::NodeDefinition;
 

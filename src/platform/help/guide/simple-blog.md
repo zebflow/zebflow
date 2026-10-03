@@ -20,7 +20,7 @@ A project's source root is the repository root (unless `zebflow.yaml` sets
 api/
 └── posts.zf.json          register api/posts -- | trigger.webhook …
 pages/
-├── home.zf.json           register pages/home -- | trigger.webhook … | web.response --template pages/home.tsx
+├── home.zf.json           register pages/home -- | trigger.webhook … | web.response.send --template pages/home.tsx
 ├── post-detail.zf.json
 ├── admin.zf.json
 ├── home.tsx
@@ -31,7 +31,7 @@ docs/
 ```
 
 A page is two things wired together: a pipeline (`pages/home.zf.json`) whose
-`web.response` node points `--template` at the matching `.tsx` file
+`web.response.send` node points `--template` at the matching `.tsx` file
 (`pages/home.tsx`). Data pipelines under `api/` answer JSON instead.
 
 ## Why this example matters

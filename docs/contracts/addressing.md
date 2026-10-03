@@ -36,7 +36,7 @@ A host that carries any custom route serves only its routes.
 | Surface | Default | Default path on a project host | Platform form (valid on every host) |
 |---|---|---|---|
 | `pages` — active `trigger.webhook` routes | on | `/` (**root**; the only surface that can be) | `/wh/{o}/{p}/…` |
-| `ws` — `trigger.ws` rooms | on | `/_ws/rooms/{room}` | `/ws/{o}/{p}/rooms/{room}` |
+| `ws` — `trigger.room` rooms | on | `/_ws/rooms/{room}` | `/ws/{o}/{p}/rooms/{room}` |
 | `files` — objects [`ZebFsAcl`](./kinds/zebfs-acl/README.md) exposes, through the ZebFS gateway | **off** | `/_files/…` when switched on; always on the project's file hosts (§2b) | — (no platform form) |
 | `static` — project assets, `_rwe/lib`, `_rwe/scripts` | on | `/_static/…` | `/static/{o}/{p}/…` |
 | `ms` — published map layers | **off** | `/_ms/…` | `/ms/{o}/{p}/…` |
@@ -70,7 +70,7 @@ Beside `hosts`, `routes` and `disabled`, the project's addressing record
 |---|---|---|
 | `api_on_hosts` | `false` | the platform API `/api/projects/{o}/{p}/…` answers on the project's hosts (dev host included). The platform address always serves it — that is where the Studio lives. Authentication applies either way |
 | `mcp` (in `disabled`) | off | `/_mcp` on the project's hosts; the platform form is always served on the platform address |
-| `errors` | `hidden` | what a **5xx** shows on the project's hosts: `hidden` — the project's 500 page (or the platform's neutral one) with the first eight characters of the run id, and `{ "error": { "code": "internal", "request_id": … } }` for a JSON request; `shown` — the same page plus the error code, message, node id and a link to the run. A webhook overrides its own routes with `--errors show` or `--errors hide` (`kinds/pipeline`). Status codes never change with this switch, and an authored 4xx (`web.response --status 400 --message …`) always shows its message |
+| `errors` | `hidden` | what a **5xx** shows on the project's hosts: `hidden` — the project's 500 page (or the platform's neutral one) with the first eight characters of the run id, and `{ "error": { "code": "internal", "request_id": … } }` for a JSON request; `shown` — the same page plus the error code, message, node id and a link to the run. A webhook overrides its own routes with `--errors show` or `--errors hide` (`kinds/pipeline`). Status codes never change with this switch, and an authored 4xx (`web.response.send --status 400 --message …`) always shows its message |
 
 The full detail of every failure is in the invocation record and its error
 group (`kinds/invocation-record`) whatever `errors` says; `hidden` hides, it

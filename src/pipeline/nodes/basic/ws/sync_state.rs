@@ -41,7 +41,7 @@
 //! # Room resolution
 //!
 //! 1. If `--room` is set, use `{owner}/{project}/{room}` as the room key.
-//! 2. Otherwise read `room_id` from `input.payload.room_id` (injected by `n.trigger.ws`).
+//! 2. Otherwise read `room_id` from `input.payload.room_id` (injected by `trigger.room`).
 //!
 //! Returns an error only if no room id can be resolved; a missing room (no
 //! clients have ever joined) is silently skipped.
@@ -55,20 +55,20 @@
 //!
 //! **Multiplayer position (batched at 30 fps):**
 //! ```text
-//! | n.trigger.ws --event move
+//! | trigger.room --event move
 //! | n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! ```
 //!
 //! **Chat message (immediate):**
 //! ```text
-//! | n.trigger.ws --event chat
+//! | trigger.room --event chat
 //! | n.ws.sync_state --op set --state-key /last_message
 //! ```
 //!
 //! **AI agent updating global state from a scheduled job:**
 //! ```text
-//! | n.trigger.schedule --cron "*/5 * * * *"
-//! | n.script -- "return { weather: 'rainy', temp: 18 }"
+//! | trigger.schedule --cron "*/5 * * * *"
+//! | script.result.run -- "return { weather: 'rainy', temp: 18 }"
 //! | n.ws.sync_state --op merge --state-key /world --room lobby
 //! ```
 
@@ -305,7 +305,7 @@ impl NodeHandler for Node {
         if room_id.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_WS_SYNC_STATE_NO_ROOM",
-                "n.ws.sync_state: room_id missing — set --room or ensure n.trigger.ws is upstream",
+                "n.ws.sync_state: room_id missing — set --room or ensure trigger.room is upstream",
             ));
         }
 

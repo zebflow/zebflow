@@ -1,4 +1,4 @@
-//! Pipeline cron scheduler — background job runner for `n.trigger.schedule` pipelines.
+//! Pipeline cron scheduler — background job runner for `trigger.schedule` pipelines.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use crate::platform::services::pipeline_hits::PipelineHitsService;
 use crate::platform::services::pipeline_runtime::PipelineRuntimeService;
 use crate::platform::services::project_config::ProjectConfigurationService;
 
-/// Background cron scheduler for activated pipelines with `n.trigger.schedule` triggers.
+/// Background cron scheduler for activated pipelines with `trigger.schedule` triggers.
 pub struct PipelineScheduler {
     sched: Arc<JobScheduler>,
     runtime: Arc<PipelineRuntimeService>,

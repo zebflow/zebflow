@@ -108,7 +108,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 |---|---|
 | `connection_list` | database connections: slug, label, kind. Every project has `default` (SQLite) and `default-multimodel` (Sekejap) |
 | `connection_describe` | tables and columns of a connection; `scope`, `schema`, `table` narrow it |
-| `credential_list` | credential ids, titles and kinds — values are never returned. `--credential`, `--auth-credential` and `mail.send --credential` take an **id from here**, not a connection slug |
+| `credential_list` | credential ids, titles and kinds — values are never returned. `--credential`, `--auth-credential` and `mail.message.send --credential` take an **id from here**, not a connection slug |
 | `list_ui_catalog` / `install_ui_components` | the clone-to-own component catalog (`shared/ui/`); pages import `zeb/ui/*` without installing anything |
 | `theme_generate` | a complete contrast-checked theme from a seed colour and a mood: tokens, `globals.css` blocks, fonts, geometry, contrast table (skill `brand-system`) |
 | `route_fetch` | fetch one of the project's routes through the real ingress — status, `location`, `set_cookie`, `rwe_component_errors`, body; `method`, `form`, `body`, `cookie`, `headers`; the verification step |
@@ -117,7 +117,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 | `skill_list` / `skill_read` | the skills: the list, one body, one reference file |
 | `help`, `help_search`, `version` | knowledge and the platform version |
 
-Any active pipeline whose entry is `n.trigger.mcp` also appears here as a
+Any active pipeline whose entry is `trigger.mcp` also appears here as a
 tool of its own, named by the pipeline.
 
 ---
@@ -140,11 +140,11 @@ tool of its own, named by the pipeline.
 
 ```
 connection_describe  slug=default-multimodel                       ← what tables exist
-pipeline_run  body="| trigger.function | sekejap.query --read-only false -- \"CREATE TABLE posts (id TEXT, title TEXT, slug TEXT, body_json JSON, created_at TEXT)\""
+pipeline_run  body="| trigger.function | sekejap.query.run --read-only false -- \"CREATE TABLE posts (id TEXT, title TEXT, slug TEXT, body_json JSON, created_at TEXT)\""
 file_create   kind=page  name=blog-home  parent_rel_path=pages
 file_write    rel_path=pages/blog-home.tsx  content="…"           ← help(topic="web")
 pipeline_register  file_rel_path="pages/blog-home"  title="Blog home"
-                   body="| trigger.webhook --path /blog --method GET | sekejap.query -- \"SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20\" | web.response --template pages/blog-home.tsx"
+                   body="| trigger.webhook --path /blog --method GET | sekejap.query.run -- \"SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20\" | web.response.send --template pages/blog-home.tsx"
 pipeline_activate  file_rel_path="pages/blog-home"
 ```
 

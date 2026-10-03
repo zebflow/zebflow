@@ -1,4 +1,4 @@
-//! `n.ai.tts` — synthesize speech from text using pluggable TTS providers.
+//! `ai.audio.generate` — synthesize speech from text using pluggable TTS providers.
 //!
 //! First stable provider:
 //! - `piper` via local Python runtime
@@ -29,7 +29,7 @@ use crate::pipeline::model::{
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::platform::services::{CredentialService, PlatformService};
 
-pub const NODE_KIND: &str = "n.ai.tts";
+pub const NODE_KIND: &str = "ai.audio.generate";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -499,8 +499,8 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("text".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.tts --provider piper --credential piper_en --text "{{ input.rows[0].body }}" --filename "{{ $trigger.params.slug }}" --return file"#)
-                .output(serde_json::json!({ "audio": { "provider": "piper", "format": "wav", "mime_type": "audio/wav", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "audio/hello.wav", "filename": "hello.wav", "mime": "audio/wav", "kind": "audio", "size": 88244, "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.tts", "trust": "generated" } } })),
+            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.audio.generate --provider piper --credential piper_en --text "{{ input.rows[0].body }}" --filename "{{ $trigger.params.slug }}" --return file"#)
+                .output(serde_json::json!({ "audio": { "provider": "piper", "format": "wav", "mime_type": "audio/wav", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "audio/hello.wav", "filename": "hello.wav", "mime": "audio/wav", "kind": "audio", "size": 88244, "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.audio.generate", "trust": "generated" } } })),
         ],
         ..Default::default()
     }
@@ -705,10 +705,10 @@ impl NodeHandler for Node {
                     PipelineError::new("FW_NODE_AI_TTS_FILE", format!("failed to write wav file: {err}"))
                 })?;
                 let leaf = final_rel.rsplit('/').next().unwrap_or(&final_rel).to_string();
-                store.file_ref(&final_rel, &leaf, "audio/wav", &wav_bytes, "ai.tts", "generated")
+                store.file_ref(&final_rel, &leaf, "audio/wav", &wav_bytes, "ai.audio.generate", "generated")
             } else {
                 // Skipped: the answer is the file already there, as it is.
-                store.stored_ref(&final_rel, "ai.tts", "generated", "FW_NODE_AI_TTS_FILE")?
+                store.stored_ref(&final_rel, "ai.audio.generate", "generated", "FW_NODE_AI_TTS_FILE")?
             }
         } else {
             Value::Null
@@ -1771,7 +1771,7 @@ mod tests {
             Config {
                 provider: "piper".to_string(),
                 credential_id: "narrator-tts".to_string(),
-                text: "Halo, ini Narrator dari node n.ai.tts Zebflow.".to_string(),
+                text: "Halo, ini Narrator dari node ai.audio.generate Zebflow.".to_string(),
                 path: Some("audio/narrator-node-smoke.wav".to_string()),
                 folder: String::new(),
                 filename: None,

@@ -1,5 +1,5 @@
-//! `kv.*` — the project key-value store: `kv.get`, `kv.set`, `kv.del`,
-//! `kv.exists`, `kv.expire`, `kv.incr`, `kv.publish`.
+//! `kv.*` — the project key-value store: `kv.entry.get`, `kv.entry.put`, `kv.entry.delete`,
+//! `kv.entry.head`, `kv.entry.expire`, `kv.entry.increment`, `kv.message.publish`.
 
 use crate::pipeline::NodeDefinition;
 

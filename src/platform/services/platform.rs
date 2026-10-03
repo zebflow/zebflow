@@ -91,7 +91,7 @@ pub struct PlatformService {
     pub mcp_sessions: Arc<McpSessionService>,
     /// WebSocket hub — real-time room management for WS pipelines.
     pub ws_hub: Arc<WsHub>,
-    /// In-memory KV + pub/sub hub for n.kv.* pipeline nodes.
+    /// In-memory KV + pub/sub hub for kv.* pipeline nodes.
     pub mem_hub: Arc<MemHub>,
     /// Shared state-bus seam currently backed by the same in-process mem hub.
     pub state_bus: DynStateBus,
@@ -475,8 +475,8 @@ impl PlatformService {
 
     /// Execute an active function pipeline by slug and return its output value.
     ///
-    /// Called from `n.function.call` nodes during pipeline execution.
-    /// The slug is matched against active pipelines that have an `n.trigger.function` entry node.
+    /// Called from `function.result.call` nodes during pipeline execution.
+    /// The slug is matched against active pipelines that have an `trigger.function` entry node.
     pub async fn execute_function_pipeline(
         &self,
         owner: &str,
@@ -487,7 +487,7 @@ impl PlatformService {
         use crate::pipeline::PipelineEngine;
         use crate::platform::services::project::name_from_file_rel_path;
 
-        const FUNCTION_TRIGGER_KIND: &str = "n.trigger.function";
+        const FUNCTION_TRIGGER_KIND: &str = "trigger.function";
 
         // Find the active function pipeline by slug.
         let compiled = self
@@ -606,7 +606,7 @@ impl PlatformService {
                         at,
                         duration_ms,
                         status: "ok".to_string(),
-                        trigger: "function.call".to_string(),
+                        trigger: "function.result.call".to_string(),
                         error: None,
                         trace: output.node_trace,
                     },
@@ -621,7 +621,7 @@ impl PlatformService {
                     owner,
                     project,
                     &file_rel_path,
-                    "function.call",
+                    "function.result.call",
                     &e.code,
                     &e.message,
                 );
@@ -634,7 +634,7 @@ impl PlatformService {
                         at,
                         duration_ms,
                         status: "error".to_string(),
-                        trigger: "function.call".to_string(),
+                        trigger: "function.result.call".to_string(),
                         error: Some(e.message.clone()),
                         trace: e.node_trace.clone(),
                     },

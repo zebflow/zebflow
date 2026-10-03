@@ -11,7 +11,7 @@
 //! | [`io`] | Swappable stores, buses, and cache contracts |
 //! | [`execution`] | Whole-pipeline execution backends, placement, and runner metadata |
 //! | [`cluster`] | Future master/worker topology, secure control transport, and K8s hooks |
-//! | [`mem`] | Current in-process KV/pubsub implementation used as the first `StateBus` backend (`n.kv.*` nodes) |
+//! | [`mem`] | Current in-process KV/pubsub implementation used as the first `StateBus` backend (`kv.*` nodes) |
 //! | [`transport`] | Real-time transport primitives, currently WebSocket rooms |
 //! | [`scheduler`] | Background cron scheduling for active pipelines |
 //! | [`secrets`] | Encryption of stored secrets: the AEAD envelopes and the instance keyring |

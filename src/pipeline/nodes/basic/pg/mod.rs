@@ -1,4 +1,4 @@
-//! `pg.*` — Postgres: `pg.query`.
+//! `pg.*` — Postgres: `pg.query.run`.
 
 use crate::pipeline::NodeDefinition;
 

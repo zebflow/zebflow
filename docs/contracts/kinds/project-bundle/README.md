@@ -125,7 +125,7 @@ different destination; none is a mechanism of its own.
 
 ### The repo class is whole
 
-There is no partial repo selection: `n.function.call` targets always travel.
+There is no partial repo selection: `function.result.call` targets always travel.
 Dangling intra-project references are the business of partial carriers
 (`folder_bundle`, `template_bundle` — HubPackage). Import verifies function
 targets resolve in the carried repo and reports misses through the dependency
@@ -138,8 +138,8 @@ report as its fifth family — report, not refuse.
 Found while reviewing `NodeBundle`, recorded here because it is this contract's
 concern rather than that one's.
 
-`n.function.call` invokes another pipeline in the same project by slug, and
-`n.trigger.function` is the entry point it targets. Nothing verifies that the
+`function.result.call` invokes another pipeline in the same project by slug, and
+`trigger.function` is the entry point it targets. Nothing verifies that the
 target resolves. A project copied without the called pipeline therefore carries
 a reference to something that does not exist, and the failure appears only at
 run time.

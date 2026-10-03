@@ -35,16 +35,16 @@ that section in the pinned copy.
 
 ## Running a query
 
-From a pipeline the node is `sekejap.query` (SQL in the body, values in
+From a pipeline the node is `sekejap.query.run` (SQL in the body, values in
 `--params` as `$1, $2, …`); to try one without saving anything,
-`pipeline_run body="| trigger.function | sekejap.query -- \"SELECT …\""`;
+`pipeline_run body="| trigger.function | sekejap.query.run -- \"SELECT …\""`;
 over HTTP, `POST /api/projects/{o}/{p}/db/connections/{connection_id}/query` —
 the id from `GET …/db/connections`, not the slug.
 
 ```
-| sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
-| sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title FROM posts WHERE slug = $1"
-| sekejap.query --params "{{ [input.body.title] }}" --read-only false -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key"
+| sekejap.query.run -- "SELECT _key, title FROM posts LIMIT 20"
+| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title FROM posts WHERE slug = $1"
+| sekejap.query.run --params "{{ [input.body.title] }}" --read-only false -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key"
 ```
 
 Flags: `--params` (bind values; a whole `{{ }}` keeps its type, so
@@ -259,15 +259,15 @@ DELETE FROM contacts WHERE _key = $1
 A plain `INSERT` never overwrites: a key that exists is `23505`, and
 `ON CONFLICT` is the upsert. `UNIQUE` keeps any other column unique. Each
 statement is its own transaction; `BEGIN` / `COMMIT` are refused. A batch
-that must land together goes through `sekejap.insert`.
+that must land together goes through `sekejap.record.create`.
 
-## The `sekejap.insert` node
+## The `sekejap.record.create` node
 
 Bulk records and graph edges, typed against the table's columns, as one
 commit:
 
 ```
-| sekejap.insert --target contacts --records-key items --edges-key links
+| sekejap.record.create --target contacts --records-key items --edges-key links
 ```
 
 with a payload shaped

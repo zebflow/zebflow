@@ -31,7 +31,7 @@ use super::convert::{
 };
 use crate::pipeline::nodes::shared::util::{eval_deno_expr, metadata_scope};
 
-pub const NODE_KIND: &str = "n.table.query";
+pub const NODE_KIND: &str = "table.query.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 const MAX_INLINE_ROWS: usize = 10_000;
@@ -45,7 +45,7 @@ pub fn definition() -> NodeDefinition {
             Each `--from \"<path> as <alias>\"` binds one file; the SQL in the body queries the aliases; `--params` binds `$1, $2`. \
             Adds `table: { engine, rows, columns, preview, data?, to?, file? }` to the payload — rows are in `input.table.data` only with \
             `--to-json`, otherwise they are written to the store (`--folder`/`--filename` or `--path`, `--store`) and only `preview` rows travel in the payload. For database \
-            tables use `sekejap.query` / `pg.query`; this node is for files and analytics over them."
+            tables use `sekejap.query.run` / `pg.query.run`; this node is for files and analytics over them."
             .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -240,9 +240,9 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Aggregate a CSV", r#"table.query --from "uploads/sales.csv as sales" --to-json -- "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC""#)
+            crate::pipeline::model::NodeExample::dsl("Aggregate a CSV", r#"table.query.run --from "uploads/sales.csv as sales" --to-json -- "SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC""#)
                 .output(serde_json::json!({ "table": { "engine": "geodatafusion", "rows": 2, "columns": ["region", "total"], "preview": [{ "region": "AU", "total": 1200 }], "data": [{ "region": "AU", "total": 1200 }, { "region": "NZ", "total": 300 }], "to": null, "file": null } })),
-            crate::pipeline::model::NodeExample::dsl("Join two files into Parquet", r#"table.query --from "datasets/orders.ndjson as o" --from "datasets/customers.csv as c" --path datasets/report.parquet --preview-rows 5 -- "SELECT c.name, COUNT(*) AS orders FROM o JOIN c ON o.customer_id = c.id GROUP BY c.name""#)
+            crate::pipeline::model::NodeExample::dsl("Join two files into Parquet", r#"table.query.run --from "datasets/orders.ndjson as o" --from "datasets/customers.csv as c" --path datasets/report.parquet --preview-rows 5 -- "SELECT c.name, COUNT(*) AS orders FROM o JOIN c ON o.customer_id = c.id GROUP BY c.name""#)
                 .note("The full result is the file at `datasets/report.parquet`; the payload carries `table.preview` (5 sample rows, from `--preview-rows`) and `table.file` (a FileRef)."),
         ],
         ..Default::default()
@@ -458,7 +458,7 @@ impl NodeHandler for Node {
                 &rel_path,
                 bytes,
                 super::table_mime(format.as_str()),
-                "table.query",
+                "table.query.run",
                 "FW_NODE_TABLE_QUERY",
             )?;
             to_path = Some(rel_path);
@@ -692,12 +692,12 @@ async fn register_table_path(
     source: &str,
 ) -> Result<(), PipelineError> {
     // A table is a file in a project store. A URL is refused: a bucket is
-    // read through its registered store, the web through http.request — never
+    // read through its registered store, the web through http.response.fetch — never
     // past the egress guard and the store's own credentials.
     if is_external_table_uri(source) {
         return Err(PipelineError::new(
             "FW_NODE_TABLE_QUERY_SOURCE",
-            format!("'{source}' is a URL; register the bucket as a store and pass a key or FileRef, or fetch it with http.request first"),
+            format!("'{source}' is a URL; register the bucket as a store and pass a key or FileRef, or fetch it with http.response.fetch first"),
         ));
     }
     let (format_label, table_path) = {
@@ -801,7 +801,7 @@ fn normalize_select_sql(sql: &str) -> Result<String, PipelineError> {
     if !(lower.starts_with("select") || lower.starts_with("with")) {
         return Err(PipelineError::new(
             "FW_NODE_TABLE_QUERY_SQL",
-            "table.query only accepts SELECT or WITH queries",
+            "table.query.run only accepts SELECT or WITH queries",
         ));
     }
     Ok(sql)
@@ -890,7 +890,7 @@ mod tests {
     fn preview_rows_flag_parses_and_a_canvas_preview_is_not_a_row_count() {
         let graph = crate::platform::shell::parser::build_pipeline_graph(
             "t",
-            "[a] trigger.manual\n[b] table.query --from \"datasets/orders.csv as o\" --preview-rows 5 --to-json -- \"SELECT * FROM o\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] table.query.run --from \"datasets/orders.csv as o\" --preview-rows 5 --to-json -- \"SELECT * FROM o\"\n[a] -> [b]\n",
         )
         .expect("graph");
         let config: Config = serde_json::from_value(graph.nodes[1].config.clone()).expect("config");

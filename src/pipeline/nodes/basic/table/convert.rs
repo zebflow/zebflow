@@ -1,4 +1,4 @@
-//! n.table.convert — convert table-like data between ZebFS objects and JSON payloads.
+//! table.data.convert — convert table-like data between ZebFS objects and JSON payloads.
 
 use std::collections::HashSet;
 use std::fs;
@@ -38,7 +38,7 @@ use crate::pipeline::{
 use crate::platform::services::PlatformService;
 use crate::zebfs::{ZebFs, normalize_object_path};
 
-pub const NODE_KIND: &str = "n.table.convert";
+pub const NODE_KIND: &str = "table.data.convert";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 const MAX_MATERIALIZED_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
@@ -284,9 +284,9 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Query result to CSV download", r#"table.convert --from "{{ input.rows }}" --folder exports --filename orders.csv"#)
-                .output(serde_json::json!({ "table": { "from": "$expr", "to": "exports/orders.csv", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/orders.csv", "filename": "orders.csv", "mime": "text/csv", "kind": "csv", "size": 4120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "table.convert", "trust": "generated" }, "from_format": "json", "to_format": "csv", "rows": 120, "columns": ["id", "total"], "preview": [] } })),
-            crate::pipeline::model::NodeExample::dsl("Uploaded CSV to rows", r#"table.convert --from "{{ input.files.sheet }}" --from-format csv --to-json --limit 500"#)
+            crate::pipeline::model::NodeExample::dsl("Query result to CSV download", r#"table.data.convert --from "{{ input.rows }}" --folder exports --filename orders.csv"#)
+                .output(serde_json::json!({ "table": { "from": "$expr", "to": "exports/orders.csv", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "exports/orders.csv", "filename": "orders.csv", "mime": "text/csv", "kind": "csv", "size": 4120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "table.data.convert", "trust": "generated" }, "from_format": "json", "to_format": "csv", "rows": 120, "columns": ["id", "total"], "preview": [] } })),
+            crate::pipeline::model::NodeExample::dsl("Uploaded CSV to rows", r#"table.data.convert --from "{{ input.files.sheet }}" --from-format csv --to-json --limit 500"#)
                 .note("After `trigger.webhook` with a multipart field `sheet`; the next node reads `input.table.data`."),
         ],
         ..Default::default()
@@ -411,7 +411,7 @@ impl NodeHandler for Node {
                 &rel_path,
                 bytes,
                 super::table_mime(to_format.as_str()),
-                "table.convert",
+                "table.data.convert",
                 "FW_NODE_TABLE_CONVERT",
             )?;
             to_path = Some(rel_path);
@@ -619,7 +619,7 @@ impl Node {
             &leaf,
             super::table_mime("parquet"),
             &abs_to,
-            "table.convert",
+            "table.data.convert",
             "generated",
             "FW_NODE_TABLE_CONVERT",
         )?;
@@ -679,7 +679,7 @@ fn ensure_materialization_safe(zebfs: &ZebFs, rel_path: &str) -> Result<(), Pipe
         return Err(PipelineError::new(
             "FW_NODE_TABLE_CONVERT_LIMIT",
             format!(
-                "source object is {}; table.convert would materialize it in node JSON. Use the streamed CSV-to-Parquet path or reduce the input before converting",
+                "source object is {}; table.data.convert would materialize it in node JSON. Use the streamed CSV-to-Parquet path or reduce the input before converting",
                 format_bytes(stat.size)
             ),
         ));
@@ -1423,7 +1423,7 @@ mod tests {
     fn preview_rows_flag_parses_and_a_canvas_preview_is_not_a_row_count() {
         let graph = crate::platform::shell::parser::build_pipeline_graph(
             "t",
-            "[a] trigger.manual\n[b] table.convert --from uploads/data.csv --to-json --preview-rows 5\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] table.data.convert --from uploads/data.csv --to-json --preview-rows 5\n[a] -> [b]\n",
         )
         .expect("graph");
         let config: Config = serde_json::from_value(graph.nodes[1].config.clone()).expect("config");

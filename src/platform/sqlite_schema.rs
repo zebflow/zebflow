@@ -39,7 +39,7 @@ pub fn local_db_path(data_root: &Path, owner: &str, project: &str) -> PathBuf {
 /// (`project-directory.md` §5), once.
 ///
 /// Every caller that opens `local.db` — the SQLite node engine and the
-/// `n.sqlite.query`/`n.sqlite.mutate` nodes — builds its path independently of
+/// `sqlite.query.run`/`n.sqlite.mutate` nodes — builds its path independently of
 /// `ProjectFileLayout`, so this must run at each of those call sites rather
 /// than behind one shared accessor. See
 /// [`crate::infra::io::durable::migrate_tier_entry`] for the atomicity and

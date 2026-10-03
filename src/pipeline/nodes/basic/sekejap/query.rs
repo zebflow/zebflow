@@ -15,7 +15,7 @@ use crate::pipeline::{
 };
 use crate::platform::sekejap;
 
-pub const NODE_KIND: &str = "n.sekejap.query";
+pub const NODE_KIND: &str = "sekejap.query.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
@@ -155,25 +155,25 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title, body FROM posts WHERE slug = $1""#)
+            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT _key, title, body FROM posts WHERE slug = $1""#)
                 .output(serde_json::json!({ "columns": ["_key", "title", "body"], "rows": [{ "_key": "hello-world", "title": "Hello", "body": "…" }], "row_count": 1, "truncated": false })),
-            crate::pipeline::model::NodeExample::dsl("Insert from a form, learning the new key", r#"sekejap.query --read-only false --params "{{ [input.body.title] }}" -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key""#)
+            crate::pipeline::model::NodeExample::dsl("Insert from a form, learning the new key", r#"sekejap.query.run --read-only false --params "{{ [input.body.title] }}" -- "INSERT INTO posts (title) VALUES ($1) RETURNING _key""#)
                 .output(serde_json::json!({ "columns": ["_key"], "rows": [{ "_key": "01M3JSKZFJ4AZGVR0PG6ZXMDH5" }], "row_count": 1, "truncated": false, "affected_rows": 1 }))
                 .note("The table declares `_key TEXT PRIMARY KEY DEFAULT ulid()`, so the INSERT leaves the key out and `RETURNING` hands it back — `input.rows[0]._key` for a redirect."),
-            crate::pipeline::model::NodeExample::dsl("Upsert", r#"sekejap.query --read-only false --params "{{ [input.body.slug, input.body.title] }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title""#)
+            crate::pipeline::model::NodeExample::dsl("Upsert", r#"sekejap.query.run --read-only false --params "{{ [input.body.slug, input.body.title] }}" -- "INSERT INTO posts (_key, title) VALUES ($1, $2) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title""#)
                 .output(serde_json::json!({ "affected_rows": 1 }))
                 .note("A plain INSERT of a key that exists is refused with 23505; ON CONFLICT is the upsert."),
-            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY DEFAULT ulid(), title TEXT NOT NULL, slug TEXT UNIQUE, status TEXT DEFAULT 'draft', created_at TIMESTAMPTZ DEFAULT now()) WITH (fulltext: [title])""#)
+            crate::pipeline::model::NodeExample::dsl("Create a table", r#"sekejap.query.run --read-only false -- "CREATE TABLE posts (_key TEXT PRIMARY KEY DEFAULT ulid(), title TEXT NOT NULL, slug TEXT UNIQUE, status TEXT DEFAULT 'draft', created_at TIMESTAMPTZ DEFAULT now()) WITH (fulltext: [title])""#)
                 .note("Run once from `pipeline_run` or a `jobs/migrate` function pipeline; keep the SQL in `db/001_posts.sql`. Scalar columns are indexed automatically; `WITH` declares full-text, spatial and vector indexes."),
-            crate::pipeline::model::NodeExample::dsl("Search by part of a name", r#"sekejap.query --params "{{ ['%' + input.query.q + '%'] }}" -- "SELECT _key, name FROM members WHERE name ILIKE $1 ORDER BY name LIMIT 20""#)
+            crate::pipeline::model::NodeExample::dsl("Search by part of a name", r#"sekejap.query.run --params "{{ ['%' + input.query.q + '%'] }}" -- "SELECT _key, name FROM members WHERE name ILIKE $1 ORDER BY name LIMIT 20""#)
                 .output(serde_json::json!({ "columns": ["_key", "name"], "rows": [{ "_key": "m1", "name": "Alex Doe" }], "row_count": 1, "truncated": false })),
-            crate::pipeline::model::NodeExample::dsl("Newest first, one page at a time", r#"sekejap.query --params "{{ [input.query.after || '~'] }}" -- "SELECT _key, title FROM posts WHERE _key < $1 ORDER BY _key DESC LIMIT 20""#)
+            crate::pipeline::model::NodeExample::dsl("Newest first, one page at a time", r#"sekejap.query.run --params "{{ [input.query.after || '~'] }}" -- "SELECT _key, title FROM posts WHERE _key < $1 ORDER BY _key DESC LIMIT 20""#)
                 .output(serde_json::json!({ "columns": ["_key", "title"], "rows": [{ "_key": "01M3JSKZFM6MM3GJFF0WKN71DD", "title": "Latest" }], "row_count": 1, "truncated": false }))
                 .note("ULID keys sort by time, so `ORDER BY _key DESC` is newest first. The next page passes the last `_key` shown as `after`; there is no OFFSET."),
-            crate::pipeline::model::NodeExample::dsl("Add an edge", r#"sekejap.query --read-only false --params "{{ [input.body.member, input.body.institution, input.body.position] }}" -- "INSERT INTO affiliated_with (member_id, institution_id, position) VALUES ($1, $2, $3)""#)
+            crate::pipeline::model::NodeExample::dsl("Add an edge", r#"sekejap.query.run --read-only false --params "{{ [input.body.member, input.body.institution, input.body.position] }}" -- "INSERT INTO affiliated_with (member_id, institution_id, position) VALUES ($1, $2, $3)""#)
                 .output(serde_json::json!({ "affected_rows": 1 }))
                 .note("`affiliated_with` is an edge table: a table with two REFERENCES columns declared in `CREATE PROPERTY GRAPH … EDGE TABLES`. UPDATE and DELETE name an end: `DELETE FROM affiliated_with WHERE member_id = $1 AND institution_id = $2`."),
-            crate::pipeline::model::NodeExample::dsl("Walk the graph", r#"sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT name, position FROM GRAPH_TABLE (network MATCH (m WHERE m._key = $1)-[a:affiliated_with]->(i) RETURN i.name AS name, a.position AS position)""#)
+            crate::pipeline::model::NodeExample::dsl("Walk the graph", r#"sekejap.query.run --params "{{ [$trigger.params.id] }}" -- "SELECT name, position FROM GRAPH_TABLE (network MATCH (m WHERE m._key = $1)-[a:affiliated_with]->(i) RETURN i.name AS name, a.position AS position)""#)
                 .output(serde_json::json!({ "columns": ["name", "position"], "rows": [{ "name": "University One", "position": "Lecturer" }], "row_count": 1, "truncated": false }))
                 .note("Name the edge (`[a:affiliated_with]`) to read its properties. Each matching path is one row; `RETURN DISTINCT` returns a node once."),
         ],
@@ -285,7 +285,7 @@ impl NodeHandler for Node {
 
         // The store answers positionally (columns + value arrays — the shape
         // the DB pages render). A pipeline reads `input.rows[0].title`, as it
-        // does after pg.query and sqlite.query, so each row is keyed by its
+        // does after pg.query.run and sqlite.query.run, so each row is keyed by its
         // column name here; the positional `columns` list stays beside it.
         let rows = rows_as_objects(&result.columns, &result.rows);
         Ok(NodeExecutionOutput {
@@ -321,7 +321,7 @@ fn with_ddl_hint(query: &str, message: String) -> String {
 }
 
 /// One object per row, keyed by column name. A duplicate column name (a join
-/// selecting `id` twice) keeps the last value, as pg.query does; alias in SQL
+/// selecting `id` twice) keeps the last value, as pg.query.run does; alias in SQL
 /// when both are wanted.
 fn rows_as_objects(
     columns: &[crate::platform::model::DbQueryColumn],
@@ -348,7 +348,7 @@ mod row_shape_tests {
     use serde_json::json;
 
     /// The store's positional rows become `input.rows[0].name`, which is what
-    /// every pipeline, page and doc reads — and what pg.query and sqlite.query
+    /// every pipeline, page and doc reads — and what pg.query.run and sqlite.query.run
     /// already deliver.
     #[test]
     fn a_failed_create_table_points_at_the_grammar() {

@@ -15,11 +15,11 @@ use crate::pipeline::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-pub const NODE_KIND: &str = "n.script";
+pub const NODE_KIND: &str = "script.result.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
-/// Unified node-definition metadata for `n.script`.
+/// Unified node-definition metadata for `script.result.run`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -29,8 +29,8 @@ pub fn definition() -> NodeDefinition {
             "Runs JavaScript in a sandbox: the body after `--` is the function body of `async function(input, n, ctx)`, and whatever it \
              `return`s is the next node's entire payload. `input` is the current payload (after a webhook, `input.body.x`); \
              `ctx.trigger.params/query/auth` is the request and `ctx.nodes.<id>` an earlier node's output. It cannot set a status or header \
-             (`web.response` does), `return null` does not stop the run (`logic.if` does), and `fetch`, `setTimeout`, `require` and \
-             `import` are blocked (`http.request` calls out). Keep it to shaping data: compose, rename, compute — a run has 1 s and \
+             (`web.response.send` does), `return null` does not stop the run (`logic.if` does), and `fetch`, `setTimeout`, `require` and \
+             `import` are blocked (`http.response.fetch` calls out). Keep it to shaping data: compose, rename, compute — a run has 1 s and \
              its return 256 KB (`DenoSandboxError: timeout exceeded` means do less here or split the work). A `__signal` key in \
              the return is stripped and shown as live progress in the Studio."
                 .to_string(),
@@ -158,10 +158,10 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Shape rows for a page", r#"script -- "return { posts: input.rows.map(r => ({ ...r, when: r.created_at.slice(0, 10) })), total: input.row_count }""#)
+            crate::pipeline::model::NodeExample::dsl("Shape rows for a page", r#"script.result.run -- "return { posts: input.rows.map(r => ({ ...r, when: r.created_at.slice(0, 10) })), total: input.row_count }""#)
                 .input(serde_json::json!({ "columns": ["title", "created_at"], "rows": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z" }], "row_count": 1 }))
                 .output(serde_json::json!({ "posts": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z", "when": "2026-09-13" }], "total": 1 })),
-            crate::pipeline::model::NodeExample::dsl("Combine two earlier nodes", r#"script -- "return { user: ctx.nodes.b.rows[0], orders: ctx.nodes.c.rows }""#)
+            crate::pipeline::model::NodeExample::dsl("Combine two earlier nodes", r#"script.result.run -- "return { user: ctx.nodes.b.rows[0], orders: ctx.nodes.c.rows }""#)
                 .note("After `logic.collect`, or anywhere in graph mode where `b` and `c` already ran."),
         ],
         ..Default::default()

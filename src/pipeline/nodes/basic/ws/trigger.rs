@@ -1,4 +1,4 @@
-//! `n.trigger.ws` — trigger a pipeline when a WebSocket event arrives.
+//! `trigger.room` — trigger a pipeline when a WebSocket event arrives.
 //!
 //! This node is a **routing declaration**, not an active processor.  At
 //! runtime the WS route handler scans all active pipelines for their
@@ -41,26 +41,26 @@
 //!
 //! **Match all events in any room:**
 //! ```text
-//! | n.trigger.ws
+//! | trigger.room
 //! | n.ws.emit --event echo --to session
 //! ```
 //!
 //! **Multiplayer 3D position update (batched at 30 fps):**
 //! ```text
-//! | n.trigger.ws --event move
+//! | trigger.room --event move
 //! | n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! ```
 //!
 //! **Chat message in a specific room:**
 //! ```text
-//! | n.trigger.ws --room lobby --event chat
+//! | trigger.room --room lobby --event chat
 //! | n.ws.emit --event message --to all
 //! ```
 //!
 //! **Classroom action (any room, specific event):**
 //! ```text
-//! | n.trigger.ws --event classroom_action
-//! | n.script -- "/* validate role, build response */"
+//! | trigger.room --event classroom_action
+//! | script.result.run -- "/* validate role, build response */"
 //! | n.ws.sync_state --op merge --state-key /classroom
 //! | n.ws.emit --event classroom_updated --to all
 //! ```
@@ -78,11 +78,11 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.trigger.ws";
+pub const NODE_KIND: &str = "trigger.room";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
-/// Return the [`NodeDefinition`] for `n.trigger.ws`.
+/// Return the [`NodeDefinition`] for `trigger.room`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -91,7 +91,7 @@ pub fn definition() -> NodeDefinition {
             board, a multiplayer scene. `--room` scopes it to one room (empty = any), `--event` to one event name (empty = any); the \
             same `--auth-*` flags as `trigger.webhook` guard the connection. The payload is `{ room_id, session_id, event, payload }` \
             — what the client sent is `input.payload`, not `input`. Answer with `ws.emit` (to the room or one session) or \
-            `ws.sync_state` (shared state every client mirrors); a `web.response` here answers nobody. The server raises \
+            `ws.sync_state` (shared state every client mirrors); a `web.response.send` here answers nobody. The server raises \
             `$connect` and `$disconnect` (payload `{ reason }`) on each connection's ordered queue — only `--event $connect` / \
             `--event $disconnect` receive them, and clients cannot send `$` events. The client is a plain `WebSocket` to \
             `/ws/{owner}/{project}/rooms/{room}` receiving `joined`, `state_patch`, `event` and `resync` \
@@ -255,7 +255,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Chat message in", r#"trigger.ws --room lobby --event chat.send"#)
+            crate::pipeline::model::NodeExample::dsl("Chat message in", r#"trigger.room --room lobby --event chat.send"#)
                 .output(serde_json::json!({ "room_id": "lobby", "session_id": "s_8f2", "event": "chat.send", "payload": { "text": "hello" } }))
                 .note("Then `| ws.emit --room lobby --event chat.message --payload \"{{ { from: input.session_id, text: input.payload.text } }}\"`."),
         ],
@@ -263,7 +263,7 @@ pub fn definition() -> NodeDefinition {
     }
 }
 
-/// Configuration for `n.trigger.ws`.
+/// Configuration for `trigger.room`.
 ///
 /// Both fields are used only for **route matching** at pipeline dispatch time;
 /// they have no effect during node execution.
@@ -295,7 +295,7 @@ pub struct Config {
     pub auth_required_role: Vec<String>,
 }
 
-/// `n.trigger.ws` node instance.
+/// `trigger.room` node instance.
 pub struct Node {
     #[allow(dead_code)]
     config: Config,
@@ -329,7 +329,7 @@ impl NodeHandler for Node {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
-            trace: vec!["n.trigger.ws: passthrough".to_string()],
+            trace: vec!["trigger.room: passthrough".to_string()],
         })
     }
 }

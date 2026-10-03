@@ -20,14 +20,22 @@ use serde_json::Value;
 use crate::pipeline::model::NodeCapability;
 use crate::platform::model::MultiNodePackageDefinition;
 
-/// The prefix every runnable node kind carries.
+/// Whether a `kind` value names a node.
 ///
 /// A pipeline document nests node kinds under a `kind` key, and so does the
-/// contract envelope around it -- whose own `kind` is `Pipeline`. The prefix is
-/// what separates the two without this module having to know which nesting a
-/// given document uses, and the engine agrees: dispatch treats anything under
-/// `n.` as a node and everything else as unsupported.
-const NODE_KIND_PREFIX: &str = "n.";
+/// contract envelope around it -- whose own `kind` is `Pipeline`. A node kind
+/// is lowercase dotted segments (`fs.image.thumbnail`) and an envelope kind is
+/// one PascalCase word, which is what separates the two without this module
+/// having to know which nesting a given document uses.
+fn is_node_kind(kind: &str) -> bool {
+    kind.contains('.')
+        && kind.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+}
 
 /// Every node kind a pipeline document names, at any nesting.
 pub fn node_kinds_in_pipeline(value: &Value) -> BTreeSet<String> {
@@ -42,7 +50,7 @@ fn collect_node_kinds(value: &Value, out: &mut BTreeSet<String>) {
             if let Some(kind) = map
                 .get("kind")
                 .and_then(Value::as_str)
-                .filter(|kind| kind.starts_with(NODE_KIND_PREFIX))
+                .filter(|kind| is_node_kind(kind))
             {
                 out.insert(kind.to_string());
             }
@@ -207,12 +215,12 @@ mod tests {
     /// The envelope's own `kind` is `Pipeline`, and a node kind is not.
     #[test]
     fn only_node_kinds_are_read_out_of_a_pipeline_document() {
-        let kinds = node_kinds_in_pipeline(&graph(&["n.trigger.function", "n.http.request"]));
+        let kinds = node_kinds_in_pipeline(&graph(&["trigger.function", "http.response.fetch"]));
         assert_eq!(
             kinds,
             BTreeSet::from([
-                "n.http.request".to_string(),
-                "n.trigger.function".to_string()
+                "http.response.fetch".to_string(),
+                "trigger.function".to_string()
             ])
         );
     }
@@ -227,7 +235,7 @@ mod tests {
             "title": "Acme",
             "functions": {"main": "functions/main.zf.json"},
             "nodes": [{
-                "kind": "n.x.acme.sync",
+                "kind": "x.acme.sync",
                 "title": "Sync",
                 "run": {"function": "main"},
                 "definition": {}
@@ -235,27 +243,27 @@ mod tests {
         }));
         let known = BTreeMap::from([
             (
-                "n.http.request".to_string(),
+                "http.response.fetch".to_string(),
                 BTreeSet::from([NodeCapability::Network]),
             ),
             (
-                "n.fs.put".to_string(),
+                "fs.file.put".to_string(),
                 BTreeSet::from([NodeCapability::Filesystem]),
             ),
-            ("n.trigger.function".to_string(), BTreeSet::new()),
+            ("trigger.function".to_string(), BTreeSet::new()),
         ]);
 
         let derived = derive_bundle_capabilities(
             &spec,
             |rel| {
                 (rel == "functions/main.zf.json")
-                    .then(|| graph(&["n.trigger.function", "n.http.request", "n.fs.put"]))
+                    .then(|| graph(&["trigger.function", "http.response.fetch", "fs.file.put"]))
             },
             &known,
         );
 
         assert_eq!(
-            derived.nodes["n.x.acme.sync"],
+            derived.nodes["x.acme.sync"],
             BTreeSet::from([NodeCapability::Network, NodeCapability::Filesystem])
         );
         assert!(derived.unresolved.is_empty());
@@ -272,7 +280,7 @@ mod tests {
             "title": "Acme",
             "modules": {"core": {"path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1"}},
             "nodes": [{
-                "kind": "n.x.acme.crunch",
+                "kind": "x.acme.crunch",
                 "title": "Crunch",
                 "run": {"module": "core", "export": "run"},
                 "definition": {}
@@ -281,7 +289,7 @@ mod tests {
 
         let derived = derive_bundle_capabilities(&spec, |_| None, &BTreeMap::new());
 
-        assert!(derived.nodes["n.x.acme.crunch"].is_empty());
+        assert!(derived.nodes["x.acme.crunch"].is_empty());
         assert!(derived.unresolved.is_empty());
     }
 
@@ -298,14 +306,14 @@ mod tests {
                 "inner": "functions/inner.zf.json"
             },
             "nodes": [
-                {"kind": "n.x.acme.outer", "title": "Outer",
+                {"kind": "x.acme.outer", "title": "Outer",
                  "run": {"function": "outer"}, "definition": {}},
-                {"kind": "n.x.acme.inner", "title": "Inner",
+                {"kind": "x.acme.inner", "title": "Inner",
                  "run": {"function": "inner"}, "definition": {}}
             ]
         }));
         let known = BTreeMap::from([(
-            "n.pg.query".to_string(),
+            "pg.query.run".to_string(),
             BTreeSet::from([NodeCapability::Database, NodeCapability::Credential]),
         )]);
 
@@ -314,16 +322,16 @@ mod tests {
             |rel| match rel {
                 // The cycle is deliberate: outer names inner and inner names
                 // outer back.
-                "functions/outer.zf.json" => Some(graph(&["n.x.acme.inner"])),
-                "functions/inner.zf.json" => Some(graph(&["n.pg.query", "n.x.acme.outer"])),
+                "functions/outer.zf.json" => Some(graph(&["x.acme.inner"])),
+                "functions/inner.zf.json" => Some(graph(&["pg.query.run", "x.acme.outer"])),
                 _ => None,
             },
             &known,
         );
 
         let expected = BTreeSet::from([NodeCapability::Database, NodeCapability::Credential]);
-        assert_eq!(derived.nodes["n.x.acme.outer"], expected);
-        assert_eq!(derived.nodes["n.x.acme.inner"], expected);
+        assert_eq!(derived.nodes["x.acme.outer"], expected);
+        assert_eq!(derived.nodes["x.acme.inner"], expected);
     }
 
     /// A kind neither this build nor the bundle provides is reported, not
@@ -336,7 +344,7 @@ mod tests {
             "title": "Acme",
             "functions": {"main": "functions/main.zf.json"},
             "nodes": [{
-                "kind": "n.x.acme.sync",
+                "kind": "x.acme.sync",
                 "title": "Sync",
                 "run": {"function": "main"},
                 "definition": {}
@@ -345,15 +353,15 @@ mod tests {
 
         let derived = derive_bundle_capabilities(
             &spec,
-            |_| Some(graph(&["n.x.elsewhere.thing"])),
+            |_| Some(graph(&["x.elsewhere.thing"])),
             &BTreeMap::new(),
         );
 
         assert_eq!(
             derived.unresolved,
-            BTreeSet::from(["n.x.elsewhere.thing".to_string()])
+            BTreeSet::from(["x.elsewhere.thing".to_string()])
         );
-        assert!(derived.nodes["n.x.acme.sync"].is_empty());
+        assert!(derived.nodes["x.acme.sync"].is_empty());
     }
 
     /// The bundles this binary ships are the derivation's real input, and the
@@ -362,7 +370,7 @@ mod tests {
     #[test]
     fn an_embedded_composite_reports_what_its_function_pipeline_reaches() {
         let embedding = known_node_capabilities()
-            .get("n.ai.embedding")
+            .get("ai.embedding.generate")
             .expect("the openai-embedding bundle is embedded in this binary");
 
         assert!(

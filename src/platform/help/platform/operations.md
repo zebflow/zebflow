@@ -67,8 +67,8 @@ Then start every later session with `file_read rel_path=docs/schema.md`.
 To look at real values, run a query — `pipeline_run` with the right node:
 
 ```
-pipeline_run  body="| trigger.function | sekejap.query --limit 3 -- \"SELECT * FROM orders\""
-pipeline_run  body="| trigger.function | pg.query --credential pg_main -- \"SELECT DISTINCT status FROM orders\""
+pipeline_run  body="| trigger.function | sekejap.query.run --limit 3 -- \"SELECT * FROM orders\""
+pipeline_run  body="| trigger.function | pg.query.run --credential pg_main -- \"SELECT DISTINCT status FROM orders\""
 ```
 
 Sample rows before writing queries; check counts before joining; in PostgreSQL

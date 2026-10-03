@@ -1,4 +1,4 @@
-//! `n.kv.exists` — check whether a key exists in the per-project KV store.
+//! `kv.entry.head` — check whether a key exists in the per-project KV store.
 //!
 //! Merges `{ [out_key]: boolean }` into the flowing payload (default out_key: "exists").
 //! Useful for cache-check patterns before expensive lookups.
@@ -14,9 +14,9 @@
 //! # Example
 //!
 //! ```text
-//! | n.trigger.webhook --path /profile --method GET
-//! | n.kv.exists --key "profile:{{ input.user_id }}" --out-key cached
-//! | n.logic.if --cond "input.cached" --then cached-branch --else fetch-branch
+//! | trigger.webhook --path /profile --method GET
+//! | kv.entry.head --key "profile:{{ input.user_id }}" --out-key cached
+//! | logic.if --cond "input.cached" --then cached-branch --else fetch-branch
 //! ```
 
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.kv.exists";
+pub const NODE_KIND: &str = "kv.entry.head";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -97,9 +97,9 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Cache hit before a slow call", r#"kv.exists --key "rates:{{ $trigger.params.currency }}" --out-key cached"#)
+            crate::pipeline::model::NodeExample::dsl("Cache hit before a slow call", r#"kv.entry.head --key "rates:{{ $trigger.params.currency }}" --out-key cached"#)
                 .output(serde_json::json!({ "cached": true }))
-                .note("Then `logic.if --expr \"input.cached\"` → `kv.get` on true, `http.request` + `kv.set` on false."),
+                .note("Then `logic.if --expr \"input.cached\"` → `kv.entry.get` on true, `http.response.fetch` + `kv.entry.put` on false."),
         ],
         ..Default::default()
     }
@@ -129,7 +129,7 @@ impl Node {
 
 /// The read result joins the flowing payload instead of erasing it.
 ///
-/// `n.kv.set` keeps the payload it was handed; a `get` that threw everything
+/// `kv.entry.put` keeps the payload it was handed; a `get` that threw everything
 /// away made the pair asymmetric, and the Google-login callback had to reach
 /// backwards with `ctx.nodes` to recover a value one read had destroyed. A
 /// reader now behaves like a reader: everything that arrived is still there,
@@ -184,7 +184,7 @@ impl NodeHandler for Node {
         if key.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_KV_EXISTS_KEY",
-                "n.kv.exists: --key is required",
+                "kv.entry.head: --key is required",
             ));
         }
 
@@ -205,7 +205,7 @@ impl NodeHandler for Node {
         };
 
         let trace = format!(
-            "n.kv.exists: key={} exists={} out_key={} durable={}",
+            "kv.entry.head: key={} exists={} out_key={} durable={}",
             key, exists, out_key, self.config.durable
         );
         Ok(NodeExecutionOutput {

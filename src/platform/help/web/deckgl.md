@@ -403,10 +403,10 @@ export default function FleetPlayback(input) {
 Combine DeckMap with Zebflow's WebSocket pipelines for live fleet tracking.
 `owner`/`project` are not part of `input` — have the page's serving pipeline
 attach the socket path to the payload before it renders, e.g. a `script` node
-right before `web.response --template pages/live-fleet.tsx`:
+right before `web.response.send --template pages/live-fleet.tsx`:
 
 ```
-script -- "return { ...input, ws: '/ws/acme/blog/rooms/fleet' }"
+script.result.run -- "return { ...input, ws: '/ws/acme/blog/rooms/fleet' }"
 ```
 
 Then read `input.ws` in the page:
@@ -618,22 +618,22 @@ inst.setViewState({
 
 ```
 | trigger.webhook --path /fleet --method GET
-| pg.query --credential main-db -- "SELECT id, name, ST_AsGeoJSON(geom)::json as geometry FROM vehicles"
-| n.web.response --template pages/fleet-map.tsx
+| pg.query.run --credential main-db -- "SELECT id, name, ST_AsGeoJSON(geom)::json as geometry FROM vehicles"
+| web.response.send --template pages/fleet-map.tsx
 ```
 
 ### API Endpoint for Map Data
 
 ```
 | trigger.webhook --path /api/locations --method GET
-| pg.query --credential main-db -- "SELECT id, name, longitude, latitude, value FROM locations"
-| web.response
+| pg.query.run --credential main-db -- "SELECT id, name, longitude, latitude, value FROM locations"
+| web.response.send
 ```
 
 ### Real-Time Tracking via WebSocket
 
 ```
-| n.trigger.ws --room fleet --event telemetry
+| trigger.room --room fleet --event telemetry
 | n.ws.sync_state --op merge --state-key /vehicles/{session_id} --value "{{ input.payload }}"
 ```
 
@@ -641,8 +641,8 @@ inst.setViewState({
 
 ```
 | trigger.webhook --path /api/incidents --method GET
-| pg.query --credential main-db -- "SELECT longitude as lon, latitude as lat, severity FROM incidents WHERE created_at > NOW() - INTERVAL '7 days'"
-| web.response
+| pg.query.run --credential main-db -- "SELECT longitude as lon, latitude as lat, severity FROM incidents WHERE created_at > NOW() - INTERVAL '7 days'"
+| web.response.send
 ```
 
 ---

@@ -9,7 +9,7 @@
     "nodes": [
       {
         "id": "trigger",
-        "kind": "n.trigger.function",
+        "kind": "trigger.function",
         "config": {},
         "input_pins": [],
         "output_pins": [
@@ -18,7 +18,7 @@
       },
       {
         "id": "delete",
-        "kind": "n.http.request",
+        "kind": "http.response.fetch",
         "config": {
           "method": "POST",
           "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/deleteWebhook",
@@ -37,7 +37,7 @@
       },
       {
         "id": "clear",
-        "kind": "n.kv.del",
+        "kind": "kv.entry.delete",
         "config": {
           "key": "webhook_registered"
         },

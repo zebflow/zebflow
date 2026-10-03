@@ -5,11 +5,11 @@ hydrated in the browser. A pipeline serves it:
 
 ```
 | trigger.webhook --path /posts/:slug --method GET
-| sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
-| web.response --template pages/post.tsx
+| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| web.response.send --template pages/post.tsx
 ```
 
-The payload that reaches `web.response` is the page's `input`. Save the file
+The payload that reaches `web.response.send` is the page's `input`. Save the file
 with `file_write`; the next request renders the new file — there is no build
 step. Paths are relative to the project's source root, which is the repository
 root unless `zebflow.yaml` sets `spec.layout.source`.
@@ -116,7 +116,7 @@ context merged in at the top level (never overwriting a key the pipeline set):
 | `headers` | request headers |
 | `auth` | the verified token's public claims, when the trigger had `--auth-*` |
 
-So after `sekejap.query`, `input.rows` is the result; after `script -- "return { base: '/x' }"`,
+So after `sekejap.query.run`, `input.rows` is the result; after `script -- "return { base: '/x' }"`,
 `input.base` is `/x`. There is no `input.state` or `input.request` wrapper.
 
 Server data comes from `input`. Client state is `useState` (local) or
@@ -160,7 +160,7 @@ writing a page or a component it imports:
 ```
 file_create   kind=page  name=post  parent_rel_path=pages    → pages/post.tsx scaffold
 file_write    rel_path=pages/post.tsx  content="..."
-pipeline_register  … | web.response --template pages/post.tsx
+pipeline_register  … | web.response.send --template pages/post.tsx
 pipeline_activate
 ```
 

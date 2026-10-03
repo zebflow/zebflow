@@ -1,4 +1,4 @@
-//! `function.*` — call a function pipeline: `function.call`.
+//! `function.*` — call a function pipeline: `function.result.call`.
 
 use crate::pipeline::NodeDefinition;
 

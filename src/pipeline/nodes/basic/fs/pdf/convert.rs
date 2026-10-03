@@ -1,4 +1,4 @@
-//! n.fs.pdf.convert — break a project PDF into page-level artifacts.
+//! fs.pdf.convert — break a project PDF into page-level artifacts.
 //!
 //! This node is the Zebflow wrapper around the standalone `pdfwrangler` library.
 //! It resolves a project-scoped source PDF path from the payload, writes exported
@@ -24,7 +24,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.fs.pdf.convert";
+pub const NODE_KIND: &str = "fs.pdf.convert";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -274,7 +274,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("Text and page images from an uploaded PDF", "fs.pdf.convert --folder pdf/brief --dpi 110")
                 .input(serde_json::json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/brief.pdf", "filename": "brief.pdf", "mime": "application/pdf", "kind": "pdf", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
                 .output(serde_json::json!({ "pdf_convert": { "source": "uploads/brief.pdf", "folder": "pdf/brief", "store": "local", "manifest_path": "pdf/brief/manifest.json", "page_count": 4, "files": ["…a FileRef per file"] } }))
-                .note("Each page's text is `pdf/brief/page-N/text.md`; read one back with `fs.get`."),
+                .note("Each page's text is `pdf/brief/page-N/text.md`; read one back with `fs.file.get`."),
         ],
         ..Default::default()
     }

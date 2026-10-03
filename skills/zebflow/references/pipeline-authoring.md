@@ -46,41 +46,41 @@ Required mental model:
 
 Common trigger families:
 
-- `n.trigger.webhook`
-- `n.trigger.function`
-- `n.trigger.schedule`
-- `n.trigger.manual`
-- `n.trigger.ws`
-- `n.trigger.ws.client`
-- `n.trigger.kv.subscribe`
-- `n.trigger.mcp`
-- `n.trigger.weberror`
+- `trigger.webhook`
+- `trigger.function`
+- `trigger.schedule`
+- `trigger.manual`
+- `trigger.room`
+- `trigger.socket`
+- `trigger.topic`
+- `trigger.mcp`
+- `trigger.error`
 
 Common work nodes:
 
-- `n.script`
-- `n.pg.query`
-- `n.sqlite.query`
+- `script.result.run`
+- `pg.query.run`
+- `sqlite.query.run`
 - `n.sqlite.mutate`
-- `n.sekejap.query`
-- `n.sekejap.insert`
-- `n.http.request`
-- `n.function.call`
-- `n.logic.*`
-- `n.kv.*`
-- `n.fs.*`
-- `n.table.*`
-- `n.geo.*`
-- `n.ms.*`
-- `n.web.*`
-- `n.ws.*`
-- `n.ai.*`
+- `sekejap.query.run`
+- `sekejap.record.create`
+- `http.response.fetch`
+- `function.result.call`
+- `logic.*`
+- `kv.*`
+- `fs.*`
+- `table.*`
+- `geo.*`
+- `ms.*`
+- `web.*`
+- `ws.*`
+- `ai.*`
 
 Safety rules:
 
 - Do not guess node flags. Read `help(topic="pipeline/nodes/{kind}")`.
-- Do not use malformed case pins. `n.logic.match` output edges must use declared case pins.
-- Do not carry huge arrays through `n.logic.foreach` unless the node is configured for item-only flow or the input is intentionally small.
+- Do not use malformed case pins. `logic.match` output edges must use declared case pins.
+- Do not carry huge arrays through `logic.foreach` unless the node is configured for item-only flow or the input is intentionally small.
 - Use FileRef/files for upload and artifact movement.
-- Use `n.fs.put` for content writes and `n.fs.save` when validating/promoting uploads.
-- Use `n.table.convert` or `n.table.query` for structured file data instead of hand-parsing large CSV/JSON in scripts.
+- Use `fs.file.put` for content writes and `n.fs.save` when validating/promoting uploads.
+- Use `table.data.convert` or `table.query.run` for structured file data instead of hand-parsing large CSV/JSON in scripts.

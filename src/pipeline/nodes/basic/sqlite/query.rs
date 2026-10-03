@@ -15,11 +15,11 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.sqlite.query";
+pub const NODE_KIND: &str = "sqlite.query.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
-/// Unified node-definition metadata for `n.sqlite.query`.
+/// Unified node-definition metadata for `sqlite.query.run`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -107,7 +107,7 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sqlite.query --params "{{ [input.body.email] }}" -- "SELECT id, name FROM users WHERE email = ?1""#)
+            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"sqlite.query.run --params "{{ [input.body.email] }}" -- "SELECT id, name FROM users WHERE email = ?1""#)
                 .output(serde_json::json!({ "rows": [{ "id": 1, "name": "Ana" }] })),
         ],
         ..Default::default()

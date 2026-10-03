@@ -1,10 +1,10 @@
-//! `n.trigger.function` — marks a pipeline as a callable function unit.
+//! `trigger.function` — marks a pipeline as a callable function unit.
 //!
 //! # Pipeline position
 //!
 //! Always the first (and only trigger) node in a function pipeline.
 //! Function pipelines are reusable callable units invoked from other pipelines
-//! via `n.function.call` or exposed as Project Operator tools.
+//! via `function.result.call` or exposed as Project Operator tools.
 //!
 //! # User-facing config
 //! | Field | Type | Required | Description |
@@ -18,7 +18,7 @@
 //! ```text
 //! | trigger.function --title "Lookup user" --description "Looks up one user." \
 //!     --input user_id:string! "User id." --output ok:boolean! "Whether lookup succeeded."
-//! | script -- return { greeting: "hello " + input.user_id }
+//! | script.result.run -- return { greeting: "hello " + input.user_id }
 //! ```
 
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.trigger.function";
+pub const NODE_KIND: &str = "trigger.function";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -67,7 +67,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Function Trigger".to_string(),
-        description: "Makes this pipeline a function other pipelines call with `function.call --function <slug>` — the slug is the file's \
+        description: "Makes this pipeline a function other pipelines call with `function.result.call --function <slug>` — the slug is the file's \
             stem (`jobs/send-welcome` → `send-welcome`). The payload is exactly what the caller passed; the function's answer is its \
             last node's payload. Declare the contract with `--input name:type! \"doc\"` / `--output name:type!` (or full \
             `--input-schema` / `--output-schema` JSON) so callers and the assistant see typed fields. Also the trigger for one-off runs \
@@ -229,7 +229,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("A reusable lookup", r#"trigger.function --description "Find one user by email." --input email:string! "Address to look up." --output user:object "The row, or null.""#)
                 .input(serde_json::json!({ "email": "a@x.io" }))
                 .output(serde_json::json!({ "email": "a@x.io" }))
-                .note("Registered as `jobs/find-user`; called with `function.call --function find-user --input \"{{ { email: input.body.email } }}\"`."),
+                .note("Registered as `jobs/find-user`; called with `function.result.call --function find-user --input \"{{ { email: input.body.email } }}\"`."),
         ],
         ..Default::default()
     }

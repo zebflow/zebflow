@@ -100,7 +100,7 @@ A pipeline's `file_rel_path` is its location in this tree
    never decides which database to ask (`zebflow-data`).
 7. **A page is done with its states.** The empty state ("no invoices yet",
    with the action that creates one), the error branch (`logic.if` → a
-   `web.response --status 4xx` with a rendered message, not a bare JSON
+   `web.response.send --status 4xx` with a rendered message, not a bare JSON
    error), and for every form the route it lands on afterwards.
 8. **Migrations are files, numbered, never edited after they ran.**
    `db/003_invoices_add_due.sql`, applied by `jobs/migrate` or a one-off

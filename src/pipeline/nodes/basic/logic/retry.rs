@@ -1,7 +1,7 @@
-//! `n.logic.retry` — bounded retry control, fed two ways.
+//! `logic.retry` — bounded retry control, fed two ways.
 //!
 //! **The error road.** The engine routes a node failure into `:error` edges
-//! when they exist. `n.logic.retry` consumes that failure envelope
+//! when they exist. `logic.retry` consumes that failure envelope
 //! (`{ input, error, __zf_retry }`) and either emits `retry` with the original
 //! upstream input plus updated retry metadata, or `failed` when the attempt
 //! budget is exhausted. A `refused`-class error goes straight to `failed`:
@@ -19,7 +19,7 @@
 //! author (or the engine's envelope) carried it, and from this node's own last
 //! output through `$nodes.<self>` — the engine keeps a retry node in its own
 //! scope for exactly this — so a loop whose payload is replaced on the way
-//! round (`http.request` answers with a fresh body) still counts 1, 2, 3.
+//! round (`http.response.fetch` answers with a fresh body) still counts 1, 2, 3.
 //!
 //! **Two budgets, whichever runs out first.** `--max-attempts` is the count;
 //! `--max-elapsed-ms` is wall time from the first attempt this node saw
@@ -45,7 +45,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.logic.retry";
+pub const NODE_KIND: &str = "logic.retry";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_RETRY: &str = "retry";
 pub const OUTPUT_PIN_FAILED: &str = "failed";
@@ -205,12 +205,12 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Three attempts at a flaky API", "logic.retry --max-attempts 3 --delay-ms 500")
-                .note("Graph: `[b] http.request …`, `[b]:error -> [r]`, `[r]:retry -> [b]`, `[r]:failed -> [e] web.response --status 502`."),
+                .note("Graph: `[b] http.response.fetch …`, `[b]:error -> [r]`, `[r]:retry -> [b]`, `[r]:failed -> [e] web.response.send --status 502`."),
             crate::pipeline::model::NodeExample::dsl("A rate-limited API", "logic.retry --max-attempts 6 --delay-ms 500 --backoff 2 --max-delay-ms 8000")
                 .note("The waits grow 500, 1000, 2000, 4000, 8000 ms — the cap holds the last one. Add `--max-elapsed-ms 30000` to give up on wall time instead of on the count; `__zf_retry.reason` on the `failed` payload says which budget ran out."),
             crate::pipeline::model::NodeExample::dsl("Poll until a job is ready", "logic.retry --max-attempts 40 --delay-ms 5000")
                 .input(serde_json::json!({ "retry": true, "state": "processing" }))
-                .note("Graph: `[poll] http.request …`, `[check] script -- return { ...input, retry: d.status !== 'success', url: d.videoURL }`, `[poll] -> [check]`, `[check] -> [wait]`, `[wait]:retry -> [poll]`, `[wait]:done -> [download]`, `[wait]:failed -> [gaveup]`. The check never throws; `retry: true` is the wait, `retry: false` goes on through `done`."),
+                .note("Graph: `[poll] http.response.fetch …`, `[check] script.result.run -- return { ...input, retry: d.status !== 'success', url: d.videoURL }`, `[poll] -> [check]`, `[check] -> [wait]`, `[wait]:retry -> [poll]`, `[wait]:done -> [download]`, `[wait]:failed -> [gaveup]`. The check never throws; `retry: true` is the wait, `retry: false` goes on through `done`."),
         ],
         ..Default::default()
     }
@@ -958,7 +958,7 @@ mod tests {
         let out = run(&node, json!({
             "input": { "email": "x@example.test", "__zf_retry": { "attempt": 1, "first_at": 1000 } },
             "error": { "code": "FW_NODE_MAIL_SEND", "message": "relay unreachable" },
-            "__zf_retry": { "attempt": 2, "failing_node_id": "m", "failing_node_kind": "n.mail.send" }
+            "__zf_retry": { "attempt": 2, "failing_node_id": "m", "failing_node_kind": "mail.message.send" }
         }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_RETRY.to_string()]);
         assert_eq!(out.payload["__zf_retry"]["attempt"], 2);

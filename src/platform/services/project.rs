@@ -137,7 +137,7 @@ pub fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
         .find_map(|n| {
             let canonical = canonical_pipeline_node_kind(&n.kind);
             canonical
-                .strip_prefix("n.trigger.")
+                .strip_prefix("trigger.")
                 .map(|suffix| suffix.to_string())
         })
 }
@@ -153,7 +153,7 @@ pub fn webhook_triggers_from_graph(graph: &PipelineGraph) -> Vec<ProjectWebhookT
     graph
         .nodes
         .iter()
-        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "n.trigger.webhook")
+        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "trigger.webhook")
         .map(|node| ProjectWebhookTrigger {
             node_id: node.id.clone(),
             path: canonical_webhook_path(
@@ -236,7 +236,7 @@ fn parse_and_validate_pipeline_source_for_save(
 ///     host watchdog's job.
 fn validate_script_bodies(graph: &PipelineGraph) -> Result<(), PlatformError> {
     for node in &graph.nodes {
-        if node.kind != "n.script" {
+        if node.kind != "script.result.run" {
             continue;
         }
         let language = node
@@ -290,9 +290,9 @@ fn parse_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
 fn canonical_pipeline_node_kind(kind: &str) -> &str {
     if let Some(stripped) = kind.strip_prefix("x.n.") {
         return match stripped {
-            "trigger.webhook" => "n.trigger.webhook",
-            "trigger.schedule" => "n.trigger.schedule",
-            "trigger.manual" => "n.trigger.manual",
+            "trigger.webhook" => "trigger.webhook",
+            "trigger.schedule" => "trigger.schedule",
+            "trigger.manual" => "trigger.manual",
             _ => kind,
         };
     }
@@ -1102,7 +1102,7 @@ impl ProjectService {
         if graph
             .nodes
             .iter()
-            .any(|node| node.kind.starts_with("n.web."))
+            .any(|node| node.kind.starts_with("web."))
         {
             let requested = self.zebflow_cfg.get_rwe_libraries(&owner, &project)?;
             self.dependency_lock
@@ -1562,14 +1562,14 @@ impl ProjectService {
                 "nodes": [
                     {
                         "id": "trigger",
-                        "kind": "n.trigger.webhook",
+                        "kind": "trigger.webhook",
                         "input_pins": [],
                         "output_pins": ["out"],
                         "config": { "path": "/sample", "method": "GET" }
                     },
                     {
                         "id": "reply",
-                        "kind": "n.web.response",
+                        "kind": "web.response.send",
                         "input_pins": ["in"],
                         "output_pins": ["out"],
                         "config": { "status": 200 }
@@ -1592,14 +1592,14 @@ impl ProjectService {
                 "nodes": [
                     {
                         "id": "trigger",
-                        "kind": "n.trigger.webhook",
+                        "kind": "trigger.webhook",
                         "input_pins": [],
                         "output_pins": ["out"],
                         "config": { "path": "/p/sample", "method": "GET" }
                     },
                     {
                         "id": "page",
-                        "kind": "n.web.response",
+                        "kind": "web.response.send",
                         "input_pins": ["in"],
                         "output_pins": ["out"],
                         "config": { "template": "sample_web_page.tsx", "status": 200 }
@@ -3762,9 +3762,9 @@ mod tests {
   "id":"invalid-router",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
-    {"id":"kind_route","kind":"n.logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
-    {"id":"csv_branch","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
+    {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
+    {"id":"csv_branch","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{}}
   ],
   "edges":[
     {"from_node":"trigger_webhook","from_pin":"out","to_node":"kind_route","to_pin":"in"},
@@ -3782,9 +3782,9 @@ mod tests {
   "id":"valid-router",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
-    {"id":"kind_route","kind":"n.logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
-    {"id":"csv_branch","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
+    {"id":"kind_route","kind":"logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
+    {"id":"csv_branch","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{}}
   ],
   "edges":[
     {"from_node":"trigger_webhook","from_pin":"out","to_node":"kind_route","to_pin":"in"},
@@ -3870,8 +3870,8 @@ mod tests {
   "id":"tick",
   "entry_nodes":["s"],
   "nodes":[
-    {{"id":"s","kind":"n.trigger.schedule","input_pins":[],"output_pins":["out"],"config":{{"cron":"0 * * * *"}}}},
-    {{"id":"b","kind":"n.input.text","input_pins":["in"],"output_pins":["out"],"config":{input_config}}}
+    {{"id":"s","kind":"trigger.schedule","input_pins":[],"output_pins":["out"],"config":{{"cron":"0 * * * *"}}}},
+    {{"id":"b","kind":"input.text","input_pins":["in"],"output_pins":["out"],"config":{input_config}}}
   ],
   "edges":[{{"from_node":"s","from_pin":"out","to_node":"b","to_pin":"in"}}]}}
 }}"#
@@ -3936,8 +3936,8 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
-    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
+    {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
@@ -4126,7 +4126,7 @@ mod tests {
             "id":"invalid-query",
             "entry_nodes":["function"],
             "nodes":[
-              {"id":"function","kind":"n.trigger.function","input_pins":[],"output_pins":["out"],"config":{}}
+              {"id":"function","kind":"trigger.function","input_pins":[],"output_pins":["out"],"config":{}}
             ],
             "edges":[]
           }
@@ -4183,8 +4183,8 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
-    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
+    {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
@@ -4246,8 +4246,8 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"GET"}},
-    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"GET"}},
+    {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
@@ -4304,8 +4304,8 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
-    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
+    {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
@@ -4358,8 +4358,8 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
-    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
+    {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
@@ -4440,8 +4440,8 @@ mod tests {
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
-    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/locked"}},
-    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+    {"id":"trigger_webhook","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/locked"}},
+    {"id":"web-response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
@@ -4577,7 +4577,7 @@ mod tests {
   "spec":{{
   "id":"{id}",
   "entry_nodes":["wh"],
-  "nodes":[{{"id":"wh","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{{"path":"{path}","method":"POST"}}}}],
+  "nodes":[{{"id":"wh","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{{"path":"{path}","method":"POST"}}}}],
   "edges":[]}}
 }}"#
         )
@@ -4805,7 +4805,7 @@ mod script_save_validation_tests {
     fn graph_with_config(config: serde_json::Value) -> PipelineGraph {
         serde_json::from_value(serde_json::json!({
             "id": "test",
-            "nodes": [{ "id": "s1", "kind": "n.script", "config": config }],
+            "nodes": [{ "id": "s1", "kind": "script.result.run", "config": config }],
             "edges": []
         }))
         .expect("test graph must deserialize")

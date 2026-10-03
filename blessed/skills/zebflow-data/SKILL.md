@@ -16,21 +16,21 @@ query nodes in `pipeline/nodes`.
 ## Discover before you write
 
 1. `connection_list` — slugs and kinds. Slugs are for `connection_describe`;
-   `--credential` on `pg.query` takes a **credential id** from `credential_list`.
+   `--credential` on `pg.query.run` takes a **credential id** from `credential_list`.
 2. `connection_describe slug=default-multimodel` (`scope=tables`, then
    `table=<name>` for columns). Never invent a table or a column: an unknown
    name in Sekejap fails the node at request time, not at register time.
 3. If `docs/schema.md` exists, `file_read` it first; if it does not, write it
    after step 2 so the next session starts here.
 4. Look at three real rows before querying in earnest —
-   `pipeline_run body="| trigger.function | sekejap.query --limit 3 -- \"SELECT * FROM posts\""`.
+   `pipeline_run body="| trigger.function | sekejap.query.run --limit 3 -- \"SELECT * FROM posts\""`.
    Value formats, enums and nulls are only visible in data.
 
 ## Write the schema down, then apply it
 
 - Tables and migrations are files: `db/001_posts.sql` (or under
   `schemas/sekejap/` for a declared schema, `schemas/sqlite/schema.sql` for
-  SQLite), applied through the node — `sekejap.query --read-only false -- "CREATE TABLE …"`
+  SQLite), applied through the node — `sekejap.query.run --read-only false -- "CREATE TABLE …"`
   — from a one-off `pipeline_run` or a `jobs/migrate` function pipeline. Keep
   the file; the database is not the record.
 - Conventions that pay for themselves: an `id` (or Sekejap's `_key`), `created_at`
@@ -41,7 +41,7 @@ query nodes in `pipeline/nodes`.
 - Sekejap is PostgreSQL's SQL with graph walks instead of `JOIN`; its DDL,
   what this engine version refuses, and the pinned grammar link are in
   `skill_read name="zebflow-sekejap"` — read it before the first
-  `sekejap.query`. Timestamps come from the pipeline:
+  `sekejap.query.run`. Timestamps come from the pipeline:
   `--params "{{ [input.body.name, new Date().toISOString()] }}"`.
 - Seeds go in `initial-data/` so a fresh install of the project (or of a
   bundle made from it) gets them.
@@ -49,10 +49,10 @@ query nodes in `pipeline/nodes`.
 ## Querying
 
 ```
-| sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT id, title, body_json FROM posts WHERE slug = $1"
-| sekejap.query --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-| sqlite.query --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = ?1"
-| pg.query --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT * FROM accounts WHERE id = $1"
+| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT id, title, body_json FROM posts WHERE slug = $1"
+| sekejap.query.run --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+| sqlite.query.run --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = ?1"
+| pg.query.run --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 
 - SQL in the body, values in `--params`; a whole `{{ }}` keeps its type, so
@@ -80,6 +80,6 @@ query nodes in `pipeline/nodes`.
 ## Large data
 
 Rows do not travel through MCP tool windows well. Aggregate
-(`string_agg(...)`), paginate, or write a file with `table.convert` /
-`table.query` and pass its FileRef; never paste thousands of rows into a
+(`string_agg(...)`), paginate, or write a file with `table.data.convert` /
+`table.query.run` and pass its FileRef; never paste thousands of rows into a
 script node or a page payload.

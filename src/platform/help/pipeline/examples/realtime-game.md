@@ -37,9 +37,9 @@ which rooms exist and whether they're joinable.
 
 ```
 | trigger.webhook --path /game --method GET
-| sekejap.query -- "SELECT * FROM game_rooms WHERE status = 'waiting'"
-| script -- "return { rooms: input.rows }"
-| web.response --template pages/game-lobby.tsx
+| sekejap.query.run -- "SELECT * FROM game_rooms WHERE status = 'waiting'"
+| script.result.run -- "return { rooms: input.rows }"
+| web.response.send --template pages/game-lobby.tsx
 ```
 
 ### game-room — room with initial state
@@ -47,11 +47,11 @@ which rooms exist and whether they're joinable.
 ```zf
 register game/room --
 [a] trigger.webhook --path /game/:room --method GET
-[b] sekejap.query --params "{{ [input.params.room] }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
+[b] sekejap.query.run --params "{{ [input.params.room] }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
 [c] logic.if --expr "input.rows.length > 0"
-[d] script -- "return { room: input.rows[0] };"
-[e] web.response --template pages/game-room.tsx
-[f] web.response --location /game
+[d] script.result.run -- "return { room: input.rows[0] };"
+[e] web.response.send --template pages/game-room.tsx
+[f] web.response.send --location /game
 
 [a] -> [b]
 [b] -> [c]
@@ -65,9 +65,9 @@ register game/room --
 ```zf
 register game/api-room-create --
 [trig] trigger.webhook --path /api/game/rooms --method POST
-[draft] script -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.body && input.body.name) || id };"
-[ins] sekejap.query --read-only false --params "{{ [$nodes.draft.id, $nodes.draft.name, Date.now()] }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
-[ok] script -- "return { ok: true, room_id: $nodes.draft.id };"
+[draft] script.result.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.body && input.body.name) || id };"
+[ins] sekejap.query.run --read-only false --params "{{ [$nodes.draft.id, $nodes.draft.name, Date.now()] }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
+[ok] script.result.run -- "return { ok: true, room_id: $nodes.draft.id };"
 
 [trig] -> [draft]
 [draft] -> [ins]
@@ -81,8 +81,8 @@ payload, so `player_id` is lifted to the top level first:
 
 ```zf
 register game/ws-player-join --
-[a] trigger.ws --event player.join
-[lift] script -- "return { player_id: input.payload.player_id, name: input.payload.name };"
+[a] trigger.room --event player.join
+[lift] script.result.run -- "return { player_id: input.payload.player_id, name: input.payload.name };"
 [merge] ws.sync_state --op merge --state-key "/players/{player_id}" --value "{{ { id: input.player_id, name: input.name, score: 0, joined_at: Date.now() } }}"
 [emit] ws.emit --to all --event state.updated
 
@@ -95,9 +95,9 @@ register game/ws-player-join --
 
 ```zf
 register game/ws-player-move --
-[a] trigger.ws --event player.move
+[a] trigger.room --event player.move
 [guard] logic.if --expr "!!(input.payload && input.payload.player_id && input.payload.move)"
-[lift] script -- "return { player_id: input.payload.player_id, move: input.payload.move, ts: Date.now() };"
+[lift] script.result.run -- "return { player_id: input.payload.player_id, move: input.payload.move, ts: Date.now() };"
 [set] ws.sync_state --op set --state-key "/last_move" --value "{{ input }}"
 [emit] ws.emit --to all --event player.moved --payload "{{ input }}"
 
@@ -114,7 +114,7 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 ### ws-player-leave — player disconnects
 
 ```
-| trigger.ws --event player.leave
+| trigger.room --event player.leave
 | ws.emit --to all --event player.left --payload "{{ { player_id: input.payload.player_id } }}"
 ```
 
@@ -123,8 +123,8 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 ## Nodes Used
 
 - `trigger.webhook` — HTTP lobby and room pages
-- `trigger.ws --event <name>` — WebSocket event handlers (join, move, leave); `--room` omitted, it is a literal filter, not per-connection routing
-- `sekejap.query` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
+- `trigger.room --event <name>` — WebSocket event handlers (join, move, leave); `--room` omitted, it is a literal filter, not per-connection routing
+- `sekejap.query.run` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `script` — lift nested payload fields, move validation
 - `ws.sync_state --state-key "/…/{key}" --value "{{ expr }}"` — merge/set patches into the server-side room state
 - `ws.emit --payload "{{ expr }}"` — broadcast events to all players in the room
@@ -158,17 +158,17 @@ The server raises two reserved events on every connection's own ordered queue:
   It runs even if the client never said goodbye, and after every event that
   socket sent, so a late `move` can never resurrect a player who left.
 
-Only a trigger that names them receives them (`trigger.ws --event $disconnect`);
-a catch-all `trigger.ws` does not, and clients cannot send `$` events. Presence
+Only a trigger that names them receives them (`trigger.room --event $disconnect`);
+a catch-all `trigger.room` does not, and clients cannot send `$` events. Presence
 is two small pipelines:
 
 ```
 register pipelines/presence-in --
-| trigger.ws --event $connect
+| trigger.room --event $connect
 | ws.sync_state --op merge --state-key "/players/{session_id}" --value "{{ { since: Date.now() } }}"
 
 register pipelines/presence-out --
-| trigger.ws --event $disconnect
+| trigger.room --event $disconnect
 | ws.sync_state --op delete --state-key "/players/{session_id}"
 ```
 
@@ -177,7 +177,7 @@ error `FW_NODE_WS_PATH_SEGMENT_EMPTY`, never a write to `/players` itself. Numbe
 written as text. When the last connection leaves, the room and its state are
 disposed; the next visitor starts from `{}`.
 
-A connection is admitted to a room when the room has no `trigger.ws`, or one of
+A connection is admitted to a room when the room has no `trigger.room`, or one of
 them is open, or it passes the auth of at least one of them; otherwise the socket
 is closed with code 4401 before any state is sent.
 
@@ -189,6 +189,6 @@ is closed with code 4401 before any state is sent.
 - `pages/game-room.tsx` — game board + player list + WebSocket connection
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

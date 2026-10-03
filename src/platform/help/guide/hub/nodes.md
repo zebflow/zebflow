@@ -29,7 +29,7 @@ package with `nodes.length == 1`.
 
 Node kinds split by who curates them. Zebflow owns `n.*` and guarantees the
 names there are unique, so official nodes look like `n.telegram.send`. Everything
-installed from the Hub is `n.x.{package}.{rest}`, so a kind names the package
+installed from the Hub is `x.{package}.{rest}`, so a kind names the package
 that provides it and two bundles can never claim the same kind.
 
 The kind says nothing about how a node is built, and nothing about whether it is

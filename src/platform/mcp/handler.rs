@@ -51,7 +51,7 @@ struct PipelineListParams {
     /// Optional status filter: "active", "stale" (active, but changed since activation), "draft", or "all".
     #[schemars(with = "String")]
     status: Option<String>,
-    /// Optional trigger kind filter: "webhook", "schedule", "function", or full "n.trigger.webhook".
+    /// Optional trigger kind filter: "webhook", "schedule", "function", or full "trigger.webhook".
     #[schemars(with = "String")]
     trigger_kind: Option<String>,
     /// Optional cap on returned rows. Compact defaults to a small cap.
@@ -234,7 +234,7 @@ struct PipelineRegisterParams {
     #[schemars(with = "String")]
     description: Option<String>,
     /// Pipeline body: pipe-chained nodes starting with |.
-    /// Example: "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\""
+    /// Example: "| trigger.webhook --path /blog --method GET | pg.query.run --credential main-db -- \"SELECT * FROM posts\""
     /// Use help("pipeline/dsl") for the full node catalog and syntax.
     body: String,
 }
@@ -268,7 +268,7 @@ struct PipelinePatchParams {
     /// Example: "--credential new-db --path /updated"
     #[schemars(with = "String")]
     flags: Option<String>,
-    /// Body content for the node (SQL for pg.query, JS source for script nodes).
+    /// Body content for the node (SQL for pg.query.run, JS source for script nodes).
     #[schemars(with = "String")]
     body: Option<String>,
 }
@@ -310,7 +310,7 @@ struct PipelineExecuteParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineRunParams {
     /// Pipe-chained node body to execute inline — NOT saved, NOT logged.
-    /// Starts with | followed by nodes: "| pg.query --credential main-db -- \"SELECT count(*) FROM users\""
+    /// Starts with | followed by nodes: "| pg.query.run --credential main-db -- \"SELECT count(*) FROM users\""
     /// Auto-prepends trigger.manual if no trigger node is specified.
     /// Use this for testing queries, one-off scripts, or data exploration.
     body: String,
@@ -538,7 +538,7 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Search Zebflow docs. Returns matching chunks from pipeline docs, \
         web template docs, node catalog, and all help files. Use for any concept, node name, DSL flag, \
-        or syntax question. Example: query='jwt', query='sqlite query', query='web.response'."
+        or syntax question. Example: query='jwt', query='sqlite query', query='web.response.send'."
     )]
     async fn help_search(
         &self,
@@ -660,7 +660,7 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Register (create or update) a pipeline at file_rel_path from a DSL body. \
-                       The body is the nodes only — pipe mode '| trigger.webhook --path /x | sekejap.query -- \"SQL\" | web.response --template pages/x.tsx' \
+                       The body is the nodes only — pipe mode '| trigger.webhook --path /x | sekejap.query.run -- \"SQL\" | web.response.send --template pages/x.tsx' \
                        or graph mode '[a] trigger.webhook … [b] … [a] -> [b]' — with no leading 'register …' line (that is the console form). \
                        It is saved as a draft; call pipeline_activate to make it live. Re-registering a live pipeline makes it stale until activated. \
                        help(\"pipeline/dsl\") for the syntax, help(\"pipeline/nodes/<kind>\") for a node's flags."
@@ -729,8 +729,8 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Patch one node in a saved pipeline without rewriting the full graph. \
-                       node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query'), \
-                       or kind+index (e.g. 'pg.query[1]') when multiple nodes share the same kind. \
+                       node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query.run'), \
+                       or kind+index (e.g. 'pg.query.run[1]') when multiple nodes share the same kind. \
                        Pipeline status becomes stale after patching — call pipeline_activate to make it live again."
     )]
     async fn pipeline_patch(
@@ -819,7 +819,7 @@ impl ZebflowMcpHandler {
         description = "Execute a registered active pipeline by name. Records execution hits. \
                        Pipeline must be activated first — use pipeline_activate if status is draft or stale. \
                        Use pipeline_list to see pipeline names and activation status. \
-                       For function pipelines (n.trigger.function) always pass `input` to test with real data; \
+                       For function pipelines (trigger.function) always pass `input` to test with real data; \
                        without it the pipeline receives an empty payload {}. \
                        A pipeline with input.* nodes expects the trigger envelope: \
                        input={\"body\": {\"prompt\": \"x\"}, \"files\": {\"photo\": \"uploads/cat.png\"}} — \
@@ -848,7 +848,7 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Run a pipe-chained node body EPHEMERALLY — not saved, not logged, no hit recording. \
                        Use this to test queries, explore data, or prototype before registering. \
-                       Example body: '| pg.query --credential main-db -- \"SELECT count(*) FROM users\"'. \
+                       Example body: '| pg.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
                        Auto-prepends trigger.manual if no trigger node specified."
     )]
     async fn pipeline_run(

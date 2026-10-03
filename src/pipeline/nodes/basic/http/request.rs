@@ -33,7 +33,7 @@ use crate::platform::services::PlatformService;
 use crate::pipeline::nodes::shared::util::{eval_deno_expr, metadata_scope};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
-pub const NODE_KIND: &str = "n.http.request";
+pub const NODE_KIND: &str = "http.response.fetch";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
@@ -44,7 +44,7 @@ fn default_body_type() -> String {
     "json".to_string()
 }
 
-/// Unified node-definition metadata for `n.http.request`.
+/// Unified node-definition metadata for `http.response.fetch`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -149,9 +149,9 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Fetch JSON", r#"http.request --url "https://api.example.com/rates?base={{ $trigger.params.currency }}" --method GET"#)
+            crate::pipeline::model::NodeExample::dsl("Fetch JSON", r#"http.response.fetch --url "https://api.example.com/rates?base={{ $trigger.params.currency }}" --method GET"#)
                 .output(serde_json::json!({ "request": { "url": "https://api.example.com/rates?base=AUD", "method": "GET" }, "response": { "status": 200, "ok": true, "headers": { "content-type": "application/json" }, "body": { "AUD": 1, "USD": 0.65 } } })),
-            crate::pipeline::model::NodeExample::dsl("POST with a credential", r#"http.request --url https://hooks.example.com/notify --method POST --credential notify_key --body "{{ { text: 'New order ' + input.rows[0]._key } }}""#),
+            crate::pipeline::model::NodeExample::dsl("POST with a credential", r#"http.response.fetch --url https://hooks.example.com/notify --method POST --credential notify_key --body "{{ { text: 'New order ' + input.rows[0]._key } }}""#),
         ],
         ..Default::default()
     }
@@ -1101,7 +1101,7 @@ mod tests {
                                 None,
                                 None,
                             )
-                            .expect("build http.request node");
+                            .expect("build http.response.fetch node");
 
                             let err = node
                                 .execute_async(NodeExecutionInput {

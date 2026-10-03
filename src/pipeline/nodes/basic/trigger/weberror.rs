@@ -1,4 +1,4 @@
-//! `n.trigger.weberror` — trigger a pipeline when an HTTP error occurs.
+//! `trigger.error` — trigger a pipeline when an HTTP error occurs.
 //!
 //! This is a **routing declaration**, not an active processor.  The platform
 //! checks for matching weberror pipelines when:
@@ -40,26 +40,26 @@
 //!
 //! **Custom 404 page:**
 //! ```text
-//! | n.trigger.weberror --code 404
-//! | n.web.response --template pages/error-404.tsx
+//! | trigger.error --code 404
+//! | web.response.send --template pages/error-404.tsx
 //! ```
 //!
 //! **Custom unauthorized page:**
 //! ```text
-//! | n.trigger.weberror --code 401
-//! | n.web.response --template pages/error-unauthorized.tsx
+//! | trigger.error --code 401
+//! | web.response.send --template pages/error-unauthorized.tsx
 //! ```
 //!
 //! **Catch-all error page (5xx):**
 //! ```text
-//! | n.trigger.weberror --code 5xx
-//! | n.web.response --template pages/error-server.tsx
+//! | trigger.error --code 5xx
+//! | web.response.send --template pages/error-server.tsx
 //! ```
 //!
 //! **Catch-all fallback:**
 //! ```text
-//! | n.trigger.weberror
-//! | n.web.response --template pages/error-generic.tsx
+//! | trigger.error
+//! | web.response.send --template pages/error-generic.tsx
 //! ```
 
 use async_trait::async_trait;
@@ -74,11 +74,11 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.trigger.weberror";
+pub const NODE_KIND: &str = "trigger.error";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
-/// Return the [`NodeDefinition`] for `n.trigger.weberror`.
+/// Return the [`NodeDefinition`] for `trigger.error`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -86,7 +86,7 @@ pub fn definition() -> NodeDefinition {
         description: "Runs when a request to this project ends in an HTTP error that no pipeline answered — a `/wh/…` path nobody \
             registered (404), a refused auth (401/403), a failed node (500). `--code` picks which: `404`, `4xx`, `5xx`, or empty for \
             all. The payload is `{ error_code, error_message, original_path, method }` — there is no `body`. End in \
-            `web.response --template pages/not-found.tsx --status 404` to serve a designed error page; without `--status` the page \
+            `web.response.send --template pages/not-found.tsx --status 404` to serve a designed error page; without `--status` the page \
             answers 200 and browsers and crawlers treat the error as a success. One pipeline per code range; the most specific wins."
             .to_string(),
         input_schema: json!({
@@ -150,15 +150,15 @@ pub fn definition() -> NodeDefinition {
         layout: vec![LayoutItem::Field("code".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("A designed 404", "trigger.weberror --code 404")
+            crate::pipeline::model::NodeExample::dsl("A designed 404", "trigger.error --code 404")
                 .output(serde_json::json!({ "error_code": 404, "error_message": "no pipeline for GET /blog/old-post", "original_path": "/blog/old-post", "method": "GET" }))
-                .note("Then `| web.response --template pages/not-found.tsx --status 404`."),
+                .note("Then `| web.response.send --template pages/not-found.tsx --status 404`."),
         ],
         ..Default::default()
     }
 }
 
-/// Configuration for `n.trigger.weberror`.
+/// Configuration for `trigger.error`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Error code pattern to match.
@@ -205,7 +205,7 @@ pub fn match_specificity(code_pattern: &str, error_code: u16) -> Option<u8> {
     None // no match
 }
 
-/// `n.trigger.weberror` node instance.
+/// `trigger.error` node instance.
 pub struct Node {
     #[allow(dead_code)]
     config: Config,
@@ -237,7 +237,7 @@ impl NodeHandler for Node {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
-            trace: vec!["n.trigger.weberror: passthrough".to_string()],
+            trace: vec!["trigger.error: passthrough".to_string()],
         })
     }
 }

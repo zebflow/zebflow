@@ -6,7 +6,7 @@
 //! 2. [`pipeline`] for pipeline orchestration (graph traversal, node dispatch)
 //! 3. [`language`] for sandboxed script execution (Deno)
 //! 4. [`rwe`] for reactive web template compile/render (TSX → SSR → hydrate)
-//! 5. [`automaton`] for the LLM call interface, the OpenAI-compatible client and the model loop `n.ai.agent` runs
+//! 5. [`automaton`] for the LLM call interface, the OpenAI-compatible client and the model loop `ai.text.generate` runs
 //! 6. [`platform`] for service composition and web shell (Axum, MCP, DSL)
 //! 7. [`infra`] for shared runtime infrastructure (WebSocket, storage, scheduler)
 //!

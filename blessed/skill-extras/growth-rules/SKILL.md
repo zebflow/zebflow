@@ -58,7 +58,7 @@ article `<Title> — <Brand>`; pricing `Plans and pricing — <Brand>`; auth `Si
 
 ## 3. Every form: follow through
 
-1. `POST` validates, writes, then **redirects** (`web.response --location
+1. `POST` validates, writes, then **redirects** (`web.response.send --location
    /thank-you --status 303`) — never renders the success on the POST URL
    (refresh would resubmit).
 2. The thank-you page says what happens next and when ("We reply within one
@@ -85,19 +85,19 @@ article `<Title> — <Brand>`; pricing `Plans and pricing — <Brand>`; auth `Si
 
 ```
 | trigger.webhook --path /sitemap.xml --method GET
-| sekejap.query -- "SELECT slug, updated_at FROM posts WHERE status = 'published'"
-| script -- "const h = ctx.trigger.headers; const base = (h['x-forwarded-proto'] || 'http') + '://' + (h['x-forwarded-host'] || h.host); const urls = ['/', '/services', '/about', '/contact'].concat(input.rows.map(r => '/blog/' + r.slug)); return { xml: '<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">' + urls.map(u => '<url><loc>' + base + u + '</loc></url>').join('') + '</urlset>' }"
-| web.response --body "{{ input.xml }}" --header Content-Type=application/xml
+| sekejap.query.run -- "SELECT slug, updated_at FROM posts WHERE status = 'published'"
+| script.result.run -- "const h = ctx.trigger.headers; const base = (h['x-forwarded-proto'] || 'http') + '://' + (h['x-forwarded-host'] || h.host); const urls = ['/', '/services', '/about', '/contact'].concat(input.rows.map(r => '/blog/' + r.slug)); return { xml: '<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">' + urls.map(u => '<url><loc>' + base + u + '</loc></url>').join('') + '</urlset>' }"
+| web.response.send --body "{{ input.xml }}" --header Content-Type=application/xml
 ```
 
 ```
 | trigger.webhook --path /robots.txt --method GET
-| web.response --message "User-agent: *\nDisallow: /admin\nDisallow: /login\nSitemap: /sitemap.xml" --header Content-Type=text/plain
+| web.response.send --message "User-agent: *\nDisallow: /admin\nDisallow: /login\nSitemap: /sitemap.xml" --header Content-Type=text/plain
 ```
 
 ```
-| trigger.weberror --code 404
-| web.response --status 404 --template pages/not-found.tsx
+| trigger.error --code 404
+| web.response.send --status 404 --template pages/not-found.tsx
 ```
 
 The 404 page is the **empty** archetype with a search or the main links;

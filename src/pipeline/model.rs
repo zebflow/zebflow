@@ -8,7 +8,7 @@
 //! BFS queue traversal, executing nodes in arrival order and forwarding the output
 //! **payload** (a `serde_json::Value`) downstream through the edges.
 //! Cycles are permitted — a node can be revisited when an edge points back to an earlier node
-//! (e.g. a conditional loop via `n.logic.if`'s `false` pin).
+//! (e.g. a conditional loop via `logic.if`'s `false` pin).
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
@@ -19,14 +19,14 @@
 //! │  │  kind: n.trigger  │                                         │
 //! │  │  config: { path } │    ┌─────────────────────┐             │
 //! │  └───────────────────┘    │ PipelineNode (n1)   │             │
-//! │                           │  kind: n.pg.query   │             │
+//! │                           │  kind: pg.query.run   │             │
 //! │                           │  config: { query }  │             │
 //! │                           └──────────┬──────────┘             │
 //! │                                      │ edge: n1/out → n2/in   │
 //! │                                      ▼                        │
 //! │                           ┌─────────────────────┐             │
 //! │                           │ PipelineNode (n2)   │             │
-//! │                           │  kind: n.web.response│             │
+//! │                           │  kind: web.response.send│             │
 //! │                           │  config: { tmpl }   │             │
 //! │                           └─────────────────────┘             │
 //! └─────────────────────────────────────────────────────────────────┘
@@ -45,7 +45,7 @@
 //! # Node Definition vs Node Instance
 //!
 //! **[`NodeDefinition`]** is the *kind-level* contract — it is the same for every instance of
-//! `n.pg.query` across all pipelines. It is declared once per node kind via a `definition()`
+//! `pg.query.run` across all pipelines. It is declared once per node kind via a `definition()`
 //! function in each node module (e.g. `pg_query::definition()`), registered into a catalog,
 //! and served at `/docs/node` via [`NodeContractDocument`].
 //!
@@ -54,7 +54,7 @@
 //! `PipelineNode` instances can share the same `kind` string but have different configs.
 //!
 //! ```text
-//!                  NodeDefinition (kind = "n.pg.query")
+//!                  NodeDefinition (kind = "pg.query.run")
 //!                  ├── config_schema: { credential_id: required, query: required, ... }
 //!                  ├── input_schema:  { type: object }
 //!                  ├── output_schema: { rows: array } | { affected_rows: integer }
@@ -63,8 +63,8 @@
 //!
 //!                           ↑ validates config against config_schema at register time
 //!
-//!   PipelineNode { id: "n1", kind: "n.pg.query", config: { credential_id: "pg-main", query: "SELECT ..." } }
-//!   PipelineNode { id: "n4", kind: "n.pg.query", config: { credential_id: "pg-replica", query: "SELECT ..." } }
+//!   PipelineNode { id: "n1", kind: "pg.query.run", config: { credential_id: "pg-main", query: "SELECT ..." } }
+//!   PipelineNode { id: "n4", kind: "pg.query.run", config: { credential_id: "pg-replica", query: "SELECT ..." } }
 //! ```
 //!
 //! # Config Schema
@@ -166,7 +166,7 @@
 //!
 //! The trigger node is special: it receives the raw request payload and passes it through
 //! unchanged (or enriched).  Downstream nodes transform the payload until a terminal node
-//! (e.g. `n.web.response`) produces the final HTTP response.
+//! (e.g. `web.response.send`) produces the final HTTP response.
 
 use std::fmt::{Display, Formatter};
 
@@ -280,7 +280,7 @@ pub enum DslFlagKind {
 ///
 /// - **Parsing**: `config_key` is the authoritative destination key. Undeclared flags are a parse error.
 /// - **Value coercion**: `kind` controls how the value is interpreted (scalar, list, bool).
-/// - **Help text**: `pipeline --help n.web.response` lists all flags with descriptions.
+/// - **Help text**: `pipeline --help web.response.send` lists all flags with descriptions.
 /// - **Required validation**: flags with `required: true` must be present when registering.
 /// - **LLM context**: surfaced in `/docs/node` so agents know exactly what flags to emit.
 ///
@@ -429,7 +429,7 @@ pub enum NodeFieldType {
     /// Claims marked public are exposed in the browser via `ctx.auth`;
     /// unmarked claims stay server-only.
     ClaimsPairs,
-    /// Function parameter definition builder for `n.trigger.function`.
+    /// Function parameter definition builder for `trigger.function`.
     /// Each row has: param name | type dropdown | description text | remove button.
     /// Config value stored as JSON object: `{"name": {"type": "string", "description": "..."}}`
     ParamsBuilder,
@@ -441,7 +441,7 @@ pub enum NodeFieldType {
     /// Shows the required variable slots declared by the selected credential and stores
     /// a JSON object mapping variable name → JS expression string.
     SecureRequestBindings,
-    /// Specialized route editor for `n.logic.match`.
+    /// Specialized route editor for `logic.match`.
     /// Config value is normalized into `cases` plus `default` route metadata.
     MatchCases,
     /// Reusable source binding table.
@@ -478,16 +478,16 @@ pub enum NodeFieldDataSource {
     /// Returns `{ tool_name, tool_description }` pairs for checklist rendering.
     AiTools,
     /// Active function pipelines (trigger_kind = "function") in the current project.
-    /// Returns pipeline slugs for datalist rendering in `n.function.call`.
+    /// Returns pipeline slugs for datalist rendering in `function.result.call`.
     FunctionPipelines,
     /// Roles registered in the JWT credential selected in the sibling `auth_credential` field.
-    /// Reads `auth_roles` from that credential's list item. Used by `n.trigger.webhook`.
+    /// Reads `auth_roles` from that credential's list item. Used by `trigger.webhook`.
     CredentialJwtRoles,
     /// Credentials usable as HTTP auth: `secure_request` and `oauth2` kinds.
-    /// Used by `n.http.request` credential_id field.
+    /// Used by `http.response.fetch` credential_id field.
     CredentialsHttpAuth,
     /// Credentials usable as webhook auth: `jwt_signing_key`, `hmac`, and `api_key` kinds.
-    /// Used by `n.trigger.webhook` auth_credential field.
+    /// Used by `trigger.webhook` auth_credential field.
     CredentialsWebhookAuth,
     /// Credentials filtered by a specific kind string (e.g. `"credentials:telegram_bot"`).
     /// Used by composite node packages that define custom credential types.
@@ -803,7 +803,7 @@ pub struct PipelineInvocationRetention {
 pub struct PipelineNode {
     /// Unique node id within this graph (e.g. `"n0"`, `"trigger"`, `"render_blog"`).
     pub id: String,
-    /// Kind identifier — must match a registered node kind (e.g. `"n.web.response"`).
+    /// Kind identifier — must match a registered node kind (e.g. `"web.response.send"`).
     pub kind: String,
     /// Input pin names for this instance.
     #[serde(default)]
@@ -887,7 +887,7 @@ pub struct PipelineEdge {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct NodeScriptBridge {
-    /// Function name a bridge would expose, were one built (e.g. `"n.pg.query"`).
+    /// Function name a bridge would expose, were one built (e.g. `"pg.query.run"`).
     pub name: String,
     /// Reserved. No runtime reads this, because no bridge dispatches.
     #[serde(default)]
@@ -897,7 +897,7 @@ pub struct NodeScriptBridge {
 /// Registers this node kind as a callable AI tool for LLM-based agents.
 ///
 /// When `registered = true`, the assistant can invoke this node's capability by name
-/// during an agentic pipeline run (e.g. Zebtune calling `n.pg.query` to answer a question).
+/// during an agentic pipeline run (e.g. Zebtune calling `pg.query.run` to answer a question).
 /// `tool_input_schema` is a JSON Schema object the LLM uses to form valid tool arguments.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
@@ -944,7 +944,7 @@ pub struct NodeAiToolDefinition {
 /// # Pin Declarations
 ///
 /// `input_pins` and `output_pins` list the pin names this kind exposes.  Trigger nodes have
-/// empty `input_pins`.  Logic nodes like `n.logic.match` have dynamic `output_pins` (empty
+/// empty `input_pins`.  Logic nodes like `logic.match` have dynamic `output_pins` (empty
 /// here, populated per instance in the graph).
 ///
 /// # Usage Dimensions
@@ -961,7 +961,7 @@ pub struct NodeAiToolDefinition {
 #[serde(deny_unknown_fields)]
 pub struct NodeDefinition {
     /// Stable kind id — must be unique across all registered nodes.
-    /// Convention: `n.<category>.<action>` (e.g. `n.pg.query`, `n.web.response`).
+    /// Convention: `n.<category>.<action>` (e.g. `pg.query.run`, `web.response.send`).
     pub kind: String,
     /// Short display title for UI catalogs and tooltips (e.g. `"Postgres Query"`).
     pub title: String,
@@ -1013,7 +1013,7 @@ pub struct NodeDefinition {
     #[serde(default)]
     pub input_pins: Vec<String>,
     /// Output pin names declared by this kind.  Common values: `["out"]`, `["out", "error"]`,
-    /// `["true", "false"]`.  Empty for dynamic-pin nodes like `n.logic.match` — pins are
+    /// `["true", "false"]`.  Empty for dynamic-pin nodes like `logic.match` — pins are
     /// defined per instance in the graph.
     #[serde(default)]
     pub output_pins: Vec<String>,
@@ -1433,7 +1433,7 @@ impl From<NodeDefinition> for NodeContractItem {
 ///
 /// Nodes emit signals in two ways:
 /// - **Mid-execution**: call [`ExecutionBus::emit`] directly via `input.bus` (e.g.
-///   `n.ai.agent` emitting thinking/tool_call steps in real-time).
+///   `ai.text.generate` emitting thinking/tool_call steps in real-time).
 /// - **Post-execution**: include a `__signal` key in the output payload. The engine
 ///   strips it before forwarding the payload downstream and routes it through the bus.
 ///   Supports string, object `{kind, message, data}`, or array of either.
@@ -1448,7 +1448,7 @@ pub struct Signal {
     /// from output; set by the node itself when calling `bus.emit()` directly).
     #[serde(default)]
     pub node_id: String,
-    /// Node kind (e.g. `"n.pg.query"`).
+    /// Node kind (e.g. `"pg.query.run"`).
     #[serde(default)]
     pub node_kind: String,
     /// Optional structured data attached to the signal.
@@ -1559,7 +1559,7 @@ pub struct PipelineContext {
 pub struct NodeTraceEntry {
     /// Node's `zfPipelineNodeId` (slug), e.g. `"fetch-user"`.
     pub node_id: String,
-    /// Node kind, e.g. `"n.pg.query"`.
+    /// Node kind, e.g. `"pg.query.run"`.
     pub node_kind: String,
     /// Effective node config snapshot after expression resolution.
     ///
@@ -1607,7 +1607,7 @@ fn default_trace_status() -> String {
 
 /// Final output of a completed pipeline execution.
 ///
-/// `value` is the payload produced by the last (terminal) node.  For `n.web.response` with
+/// `value` is the payload produced by the last (terminal) node.  For `web.response.send` with
 /// `--template` this contains `{ html, compiled_scripts, hydration_payload }`.  For all other terminal nodes
 /// it is whatever the node returned.
 ///
@@ -1652,7 +1652,7 @@ pub struct PipelineError {
     /// Populated by the engine at the BFS execution boundary; `None` for config errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
-    /// Node kind that produced this error (e.g. `"n.pg.query"`).
+    /// Node kind that produced this error (e.g. `"pg.query.run"`).
     /// Populated by the engine at the BFS execution boundary; `None` for config errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_kind: Option<String>,

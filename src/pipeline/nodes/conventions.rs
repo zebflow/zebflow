@@ -92,8 +92,8 @@ mod tests {
             // owner's exposure decision, so no file, map or site node answers
             // one. (A feed address a trigger listens to is not that.)
             let file_node = crate::pipeline::nodes::shared::project_store::store_node_kinds().contains(&def.kind)
-                || def.kind.starts_with("n.ms.")
-                || def.kind.starts_with("n.web.");
+                || def.kind.starts_with("ms.")
+                || def.kind.starts_with("web.");
             let mut names = Vec::new();
             property_names(&def.output_schema, &mut names);
             for name in names.iter().filter(|n| file_node && matches!(n.as_str(), "url" | "urls" | "public_url")) {
@@ -139,7 +139,7 @@ mod tests {
     fn the_signature_is_generated_from_the_definition() {
         use crate::pipeline::model::{DslFlag, DslFlagKind, NodeDefinition};
         let def = NodeDefinition {
-            kind: "n.fs.image.thumbnail".to_string(),
+            kind: "fs.image.thumbnail".to_string(),
             dsl_flags: vec![
                 DslFlag { flag: "--from".into(), kind: DslFlagKind::Scalar, required: true, value: "file:image".into(), ..Default::default() },
                 DslFlag { flag: "--width".into(), value: "number".into(), ..Default::default() },
@@ -184,7 +184,7 @@ mod tests {
     }
 
     /// §5: a node's answer is added through `with_answer`; routers and the
-    /// terminal `web.response` are the named exceptions.
+    /// terminal `web.response.send` are the named exceptions.
     #[test]
     fn answers_go_through_with_answer() {
         const OUTSIDE_THE_RULE: &[&str] = &["basic/logic/", "basic/web/response/"];
@@ -209,7 +209,7 @@ mod tests {
     fn store_nodes_declare_their_store() {
         // These share a file with a store node but take their store from the
         // layer record the registry holds, never from a flag.
-        const STORE_FROM_RECORD: &[&str] = &["n.ms.get", "n.ms.list", "n.ms.unpublish"];
+        const STORE_FROM_RECORD: &[&str] = &["ms.layer.get", "ms.layer.list", "ms.layer.unpublish"];
         let pinned = crate::pipeline::nodes::shared::project_store::store_node_kinds();
         let mut problems = Vec::new();
         for (file, text) in node_sources() {

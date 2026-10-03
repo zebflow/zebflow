@@ -7,9 +7,9 @@
 //! downstream nodes via `PipelineContext.route`.
 //!
 //! ```text
-//! | n.trigger.webhook --path /blog --method GET
-//! | pg.query --credential main-db -- "SELECT ..."
-//! | n.web.response --template pages/blog-home.tsx
+//! | trigger.webhook --path /blog --method GET
+//! | pg.query.run --credential main-db -- "SELECT ..."
+//! | web.response.send --template pages/blog-home.tsx
 //! ```
 //!
 //! # SSE streaming
@@ -49,10 +49,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const NODE_KIND: &str = "n.trigger.webhook";
+pub const NODE_KIND: &str = "trigger.webhook";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
-/// Unified node-definition metadata for `n.trigger.webhook`.
+/// Unified node-definition metadata for `trigger.webhook`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -213,7 +213,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("A public page", "trigger.webhook --path /blog --method GET")
                 .output(serde_json::json!({ "body": null, "params": {}, "query": { "page": "2" }, "path": "/blog", "method": "GET" }))
-                .note("Served at `/wh/{owner}/{project}/blog`. Then a query, then `web.response --template pages/blog.tsx`."),
+                .note("Served at `/wh/{owner}/{project}/blog`. Then a query, then `web.response.send --template pages/blog.tsx`."),
             crate::pipeline::model::NodeExample::dsl("A form POST", "trigger.webhook --path /contact --method POST")
                 .output(serde_json::json!({ "body": { "email": "a@x.io", "message": "Hi" }, "params": {}, "query": {}, "path": "/contact", "method": "POST" }))
                 .note("`<input name=\"email\">` arrives as `input.body.email`; a file field is `input.files.<name>`."),

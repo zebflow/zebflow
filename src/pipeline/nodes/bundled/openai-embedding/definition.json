@@ -49,7 +49,7 @@
     "modules": {},
     "nodes": [
       {
-        "kind": "n.ai.embedding",
+        "kind": "ai.embedding.generate",
         "title": "AI Embedding",
         "description": "Generate text embeddings via OpenAI-compatible /v1/embeddings endpoint.",
         "icon": "icons/embedding.svg",

@@ -88,7 +88,7 @@ fn pipeline_source(id: &str, path: &str) -> String {
             "entry_nodes": ["wh"],
             "nodes": [{
                 "id": "wh",
-                "kind": "n.trigger.webhook",
+                "kind": "trigger.webhook",
                 "input_pins": [],
                 "output_pins": ["out"],
                 "config": { "path": path, "method": "POST" }

@@ -102,7 +102,7 @@ fn optional_chaining_still_yields_a_value() {
 }
 
 /// `input` is the payload in a logic node's expression, as it is in every
-/// `{{ }}` block and in `n.script`.
+/// `{{ }}` block and in `script.result.run`.
 ///
 /// Binding only `$input` left `input` pointing at the scope object, so
 /// `input.rows` evaluated to undefined and a guard silently took the wrong
@@ -119,8 +119,8 @@ async fn a_logic_expression_reads_input_as_the_payload() {
         "input-binding",
         "[a] trigger.manual\n\
          [b] logic.if --expr \"input.rows && input.rows.length > 0\"\n\
-         [yes] script -- \"return { took: 'true' };\"\n\
-         [no] script -- \"return { took: 'false' };\"\n\
+         [yes] script.result.run -- \"return { took: 'true' };\"\n\
+         [no] script.result.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
     )
     .expect("graph");
@@ -150,8 +150,8 @@ async fn a_logic_expression_reads_input_as_the_payload() {
         "input-binding-dollar",
         "[a] trigger.manual\n\
          [b] logic.if --expr \"$input.rows.length > 0\"\n\
-         [yes] script -- \"return { took: 'true' };\"\n\
-         [no] script -- \"return { took: 'false' };\"\n\
+         [yes] script.result.run -- \"return { took: 'true' };\"\n\
+         [no] script.result.run -- \"return { took: 'false' };\"\n\
          [a] -> [b]\n[b]:true -> [yes]\n[b]:false -> [no]\n",
     )
     .expect("graph");
@@ -175,9 +175,9 @@ fn the_dsl_takes_a_nodes_pins_from_its_definition() {
     use zebflow::platform::shell::parser::default_pins;
 
     for def in zebflow::pipeline::nodes::builtin_node_definitions() {
-        // `n.logic.match` sets its pins per instance from `cases`, so its
+        // `logic.match` sets its pins per instance from `cases`, so its
         // definition cannot answer for one node.
-        if def.kind == "n.logic.match" || def.output_pins.is_empty() {
+        if def.kind == "logic.match" || def.output_pins.is_empty() {
             continue;
         }
         let (inputs, outputs) = default_pins(&def.kind);

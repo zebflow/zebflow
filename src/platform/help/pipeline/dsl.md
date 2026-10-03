@@ -20,8 +20,8 @@ receives the previous node's output as `input`. Node ids are `n0, n1, …`.
 
 ```
 | trigger.webhook --path /posts/:slug --method GET
-| sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
-| web.response --template pages/post.tsx
+| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| web.response.send --template pages/post.tsx
 ```
 
 **Graph mode** — label each node `[id]`, then wire edges. Needed for
@@ -29,10 +29,10 @@ branching, fan-out, fan-in and loops.
 
 ```
 [a] trigger.webhook --path /status --method GET
-[b] http.request --url https://example.com/health --method GET
+[b] http.response.fetch --url https://example.com/health --method GET
 [c] logic.if --expr "input.response.status >= 400"
-[d] http.request --url https://hooks.example.com/alert --method POST --body "{{ input }}"
-[e] web.response --body "{{ { ok: true } }}"
+[d] http.response.fetch --url https://hooks.example.com/alert --method POST --body "{{ input }}"
+[e] web.response.send --body "{{ { ok: true } }}"
 [a] -> [b]
 [b] -> [c]
 [c]:true -> [d]
@@ -63,7 +63,7 @@ the pin `:error`.
   and refused with a message that says so.
 - **Multiline** — end a line with `\` to continue; in a console, `&&` chains
   commands and stops at the first failure.
-- **Kinds** — `sekejap.query` and `n.sekejap.query` are the same node. Installed
+- **Kinds** — `sekejap.query.run` and `sekejap.query.run` are the same node. Installed
   third-party nodes are `n.x.<bundle>.<node>`.
 
 Flag value kinds, as each node declares them:
@@ -80,7 +80,7 @@ node, clamped 5–3600, default the project's `pipeline_node_timeout_secs`) and
 `--title "…"` (the label shown in the editor).
 
 ```
-| pg.query --credential pg_main --timeout 120 -- "SELECT * FROM big_report_view"
+| pg.query.run --credential pg_main --timeout 120 -- "SELECT * FROM big_report_view"
 ```
 
 ---
@@ -110,19 +110,19 @@ the ceiling for a local `fetch('/path')` read inside a script. Bytes still
 do not belong in a payload: whatever a node returns is carried in `$nodes`,
 the run record and every downstream payload. Pass files as FileRefs, shrink
 an image with `fs.image.thumbnail` before anything reads it, and read bytes inline
-only for a provider that needs them: `fs.get --path <p> --encoding base64`
+only for a provider that needs them: `fs.file.get --path <p> --encoding base64`
 answers the bytes at `input.fs.object.base64`, which a `{{ }}` body can prefix with
 `data:image/jpeg;base64,` — the story pipeline sends its reference photo as
 a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
 
 ```
-| sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT * FROM users WHERE id = $1"
-| http.request --url "https://api.example.com/{{ $nodes.n1.rows[0].slug }}"
-| http.request --url https://notify.example.com/send --method POST --body "{{ { userId: $trigger.auth.sub, data: input } }}"
-| web.response --location "{{ $trigger.query.next || '/dashboard' }}"
+| sekejap.query.run --params "{{ [$trigger.params.id] }}" -- "SELECT * FROM users WHERE id = $1"
+| http.response.fetch --url "https://api.example.com/{{ $nodes.n1.rows[0].slug }}"
+| http.response.fetch --url https://notify.example.com/send --method POST --body "{{ { userId: $trigger.auth.sub, data: input } }}"
+| web.response.send --location "{{ $trigger.query.next || '/dashboard' }}"
 ```
 
-(`http.request` answers `{ request, response: { status, headers, body } }`.)
+(`http.response.fetch` answers `{ request, response: { status, headers, body } }`.)
 
 ---
 
@@ -134,7 +134,7 @@ a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
 | `activate pipeline <path>` | promote the file to live traffic (validates node config, node availability, libraries) |
 | `deactivate pipeline <path>` | stop serving; the file stays |
 | `execute pipeline <path> --input '{"k":"v"}'` | run the live version once with that payload |
-| `run | trigger.function | script -- "return 1"` | run a body once, unsaved and unlogged; `run --dry-run` only parses |
+| `run | trigger.function | script.result.run -- "return 1"` | run a body once, unsaved and unlogged; `run --dry-run` only parses |
 | `patch pipeline <path> node <id> [--flag v]… [-- body]` | change one node's config; the pipeline becomes `stale` until activated |
 | `patch pipeline <path> note <id> [--text t] [--at x,y] [--size WxH] [--color c] [-- text]` | create or change one canvas note; `--remove` deletes it (see Notes) |
 | `get pipelines | nodes | connections | credentials | templates | docs` | list |
@@ -171,10 +171,10 @@ string.
 
 ```
 [a] trigger.manual
-[b] http.request --url https://source-a.example.com/data --method GET
-[c] http.request --url https://source-b.example.com/data --method GET
+[b] http.response.fetch --url https://source-a.example.com/data --method GET
+[c] http.response.fetch --url https://source-b.example.com/data --method GET
 [d] logic.collect
-[e] script -- "return { a: input.b.response.body, b: input.c.response.body }"
+[e] script.result.run -- "return { a: input.b.response.body, b: input.c.response.body }"
 [a] -> [b]
 [a] -> [c]
 [b] -> [d]
@@ -200,10 +200,10 @@ branch — after a query or a script — and still waits for every run, and
 
 ```
 [a] trigger.manual
-[b] http.request --url https://api.example.com/work --method POST
+[b] http.response.fetch --url https://api.example.com/work --method POST
 [r] logic.retry --max-attempts 3 --delay-ms 250
-[c] script -- "return input"
-[d] script -- "return { failed: true }"
+[c] script.result.run -- "return input"
+[d] script.result.run -- "return { failed: true }"
 [a] -> [b]
 [b] -> [c]
 [b]:error -> [r]
@@ -235,11 +235,11 @@ round still counts 1, 2, 3; each round is a `retry` entry on the retry node
 
 ```
 [t] trigger.manual
-[poll] http.request --url https://api.example.com/jobs/42 --method GET
-[check] script -- "const d = (input.response.body.data || [])[0] || {}; return { ...input, retry: d.status !== 'success', url: d.videoURL }"
+[poll] http.response.fetch --url https://api.example.com/jobs/42 --method GET
+[check] script.result.run -- "const d = (input.response.body.data || [])[0] || {}; return { ...input, retry: d.status !== 'success', url: d.videoURL }"
 [wait] logic.retry --max-attempts 40 --delay-ms 5000
-[download] http.request --url "{{ input.url }}" --response-type bytes
-[gaveup] script -- "return { gaveup: true, attempts: input.__zf_retry.attempt }"
+[download] http.response.fetch --url "{{ input.url }}" --response-type bytes
+[gaveup] script.result.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt }"
 [t] -> [poll]
 [poll] -> [check]
 [check] -> [wait]
@@ -252,11 +252,11 @@ round still counts 1, 2, 3; each round is a `retry` entry on the retry node
 
 ```
 [a] trigger.manual
-[b] script -- "const n = (input.attempts || 0) + 1; return { ...input, attempts: n, status: n < 3 ? 'retry' : 'done' }"
+[b] script.result.run -- "const n = (input.attempts || 0) + 1; return { ...input, attempts: n, status: n < 3 ? 'retry' : 'done' }"
 [c] logic.match --expr "input.status" --cases done --default retry
-[d] script -- "return { result: input }"
+[d] script.result.run -- "return { result: input }"
 [e] logic.if --expr "input.attempts < 5"
-[f] script -- "return { gave_up: true }"
+[f] script.result.run -- "return { gave_up: true }"
 [a] -> [b]
 [b] -> [c]
 [c]:done -> [d]
@@ -276,11 +276,11 @@ is a reserved word in both modes:
 
 ```
 [t] trigger.webhook --path /signup
-[m] mail.send --credential smtp-main --to "{{ input.body.email }}"
+[m] mail.message.send --credential smtp-main --to "{{ input.body.email }}"
 [t] -> [m]
 [why] note --text "Create the `smtp-main` credential before activating." --at 120,-80 --size 320x90 --color amber
 
-| trigger.webhook --path /signup | mail.send --credential smtp-main | note --id why --text "Create the smtp-main credential first."
+| trigger.webhook --path /signup | mail.message.send --credential smtp-main | note --id why --text "Create the smtp-main credential first."
 ```
 
 Flags: `--text` (markdown: headings, bullets, **bold**, `code`), `--at x,y`
@@ -304,7 +304,7 @@ lives in `config.preview` beside `config.ui`, and removing it changes nothing
 about what the pipeline does.
 
 ```
-| trigger.manual | script --preview table:rows -- return { rows: await db.all() } | web.response --preview-in json:body
+| trigger.manual | script.result.run --preview table:rows -- return { rows: await db.all() } | web.response.send --preview-in json:body
 ```
 
 `--preview <as>[:<path>]` previews the node's **output**; `--preview-in
@@ -334,7 +334,7 @@ Every node kind takes both flags. The table nodes sample rows into the
 payload with `--preview-rows <n>` and can preview that sample:
 
 ```
-| table.query --from "datasets/orders.csv as o" --preview-rows 5 --preview table:table.preview -- "SELECT * FROM o"
+| table.query.run --from "datasets/orders.csv as o" --preview-rows 5 --preview table:table.preview -- "SELECT * FROM o"
 ```
 
 ## Inputs
@@ -390,7 +390,7 @@ drop zone under the two nodes, and Run posts them as multipart:
 | input.text prompt --label "Caption" --max 200
 | input.image photo
 | fs.image.thumbnail --source-key files.photo --width 200 --height 200 --preview image
-| script --preview json -- return { caption: $trigger.body.prompt, thumb: input.thumbnail }
+| script.result.run --preview json -- return { caption: $trigger.body.prompt, thumb: input.thumbnail }
 ```
 
 A webhook form that takes a CV — a browser posts the same multipart, and the
@@ -401,7 +401,7 @@ same Run button tries the route from the canvas:
 | input.text name --label "Full name"
 | input.file cv --accept pdf
 | fs.save --source-key files.cv --folder applications --allowed-kinds documents
-| web.response --status 200 --body "{{ { received: input.saved.ref } }}"
+| web.response.send --status 200 --body "{{ { received: input.saved.ref } }}"
 ```
 
 Over MCP: `pipeline_execute` with
@@ -426,7 +426,7 @@ Any webhook pipeline streams when the client asks: a request with
 `Accept: text/event-stream` receives `event: signal` messages while nodes
 run, then `event: done` with the result or `event: error`. The pipeline
 definition is the same either way. A signal is anything a node emits on the
-execution bus (`n.ai.agent` thinking and tool calls, a script's `emit`) —
+execution bus (`ai.text.generate` thinking and tool calls, a script's `emit`) —
 and, since 2026-09-20, the engine's own lifecycle: `run_start`, then per
 node `node_start` and exactly one of `node_ok` / `node_skip` / `node_fail`
 (`data: { duration_ms, error_code?, error_class? }`, the node in `node_id`),
@@ -454,7 +454,7 @@ before.
 
 Bytes never travel inline. A file is a **FileRef** —
 `{ "__zf_type": "file_ref", "ref": "…", "filename", "mime", "kind", "size", "sha256", "lifecycle", "origin", "trust" }` —
-produced by an upload (`input.files.<field>`), by `http.request --response-type bytes`,
+produced by an upload (`input.files.<field>`), by `http.response.fetch --response-type bytes`,
 or by any `fs.*` node. `fs.save` keeps an uploaded file:
 
 ```
@@ -469,8 +469,8 @@ or by any `fs.*` node. `fs.save` keeps an uploaded file:
 `saved.ref`, and there is no `path`, `url` or `content_type` beside it —
 and `fs.image.thumbnail` (whose `--source-key` defaults to `saved`, the FileRef
 itself) adds `thumbnail` (a FileRef); the form's other fields
-(`input.body.caption`) stay beside them. `fs.put`, `fs.copy`, `fs.move`
-(their `object` under `fs`) and `fs.compress` (`compressed`) answer a stored
+(`input.body.caption`) stay beside them. `fs.file.put`, `fs.file.copy`, `fs.file.move`
+(their `object` under `fs`) and `fs.archive.create` (`compressed`) answer a stored
 file the same way: a bare FileRef. Store `ref` in a row; a URL is not a
 node's business.
 
@@ -484,7 +484,7 @@ site — a generated static site, say — with scripts running, only on the
 addresses listed in its `serve`. The Studio (a preview cell, an input widget,
 the Files page) and an MCP session read any object, private or exposed, at
 `GET /api/projects/{owner}/{project}/files/object?ref=<path>` with the
-session. Table files (`table.convert`, `table.query`) and map layers (`ms.*`)
+session. Table files (`table.data.convert`, `table.query.run`) and map layers (`ms.*`)
 follow the same rules.
 
 **Provider APIs.** An image, video or speech provider (Runware, fal,
@@ -507,10 +507,10 @@ is the one that shows the picture, from the durable file it wrote.
 ```
 | trigger.manual
 | input.text prompt --label "Describe the image"
-| script -- "return { body: input.body, taskUUID: crypto.randomUUID() }"
-| http.request --credential runware --body "{{ [ { taskType: 'imageInference', taskUUID: input.taskUUID, positivePrompt: input.body.prompt, model: 'runware:101@1', width: 1024, height: 1024, numberResults: 1, outputType: 'URL', outputFormat: 'JPG' } ] }}" --preview json:response.body
-| script -- "return { url: input.response.body.data[0].imageURL }"
-| http.request --url "{{ input.url }}" --response-type bytes --preview image
+| script.result.run -- "return { body: input.body, taskUUID: crypto.randomUUID() }"
+| http.response.fetch --credential runware --body "{{ [ { taskType: 'imageInference', taskUUID: input.taskUUID, positivePrompt: input.body.prompt, model: 'runware:101@1', width: 1024, height: 1024, numberResults: 1, outputType: 'URL', outputFormat: 'JPG' } ] }}" --preview json:response.body
+| script.result.run -- "return { url: input.response.body.data[0].imageURL }"
+| http.response.fetch --url "{{ input.url }}" --response-type bytes --preview image
 | fs.save --folder generated/runware --preview image
 ```
 
@@ -521,7 +521,7 @@ variables. Each run spends the provider's credits.
 ## Posters and SVG pictures
 
 A poster is an SVG. Whoever writes it — a model, a script, a stored file —
-`fs.svg.convert` draws it as a PNG, JPG or WebP with resvg, no browser.
+`fs.image.render` draws it as a PNG, JPG or WebP with resvg, no browser.
 Text is shaped with a family the project has: the bundled Inter
 (400/500/600/800) or any `.ttf`/`.otf` under the repository's
 `static/fonts/`, named by family, never by file; a family nobody has is
@@ -529,14 +529,14 @@ refused with the list. `<text inline-size="918">` (SVG 2) wraps a headline
 into lines measured by the shaper — one `<tspan>` per line. Pictures come
 from the project only: `<image href="sandbox/posters/photos/venue.jpg">`
 is a store path, `repo://static/brand/logo.svg` a repository file; a URL or
-a `data:` URI is refused — fetch with `http.request --response-type bytes`,
+a `data:` URI is refused — fetch with `http.response.fetch --response-type bytes`,
 `fs.save` it, then name the path.
 
 ```
 | trigger.manual
 | input.text brief --label "What the poster is for"
-| ai.agent --credential openrouter --output-mode final_only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.body.brief }}
-| fs.svg.convert --source-key data.svg --folder sandbox/posters/out --preview image
+| ai.text.generate --credential openrouter --output-mode final_only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.body.brief }}
+| fs.image.render --source-key data.svg --folder sandbox/posters/out --preview image
 ```
 
 The flags are `fs.image.thumbnail`'s. With no `--width`/`--height` the
@@ -544,7 +544,7 @@ canvas is the SVG's own size; one side scales the other in proportion; both
 go through `--fit cover|contain|fill`. `--format png|jpg|webp` (default
 png), `--quality` for jpg, `--folder` (default `images/`), `--filename`,
 `--delete-source`. The answer adds `image` — a durable FileRef
-(`origin: fs.svg.convert`) with `width`, `height`, `format` and `layout` —
+(`origin: fs.image.render`) with `width`, `height`, `format` and `layout` —
 and keeps the rest of the payload, so `data.svg` is still there for the next
 node. `image.layout` holds every text and picture with its box, the pairs
 that overlap, what leaves the canvas, and `ok`. A `script` turns that into a
@@ -557,8 +557,8 @@ loop and are not paid for twice.
 vector and text stays text with the font subset embedded, so a name is
 selectable. `data-fit="shrink"` beside `inline-size` shrinks a `<text>` until
 it fits `data-max-lines` (default 1) — a certificate is a stored template
-`.svg`, a `fs.get`, a `script` that fills the placeholders, then
-`fs.svg.convert --format pdf --folder certificates --filename cert-<number>`.
+`.svg`, a `fs.file.get`, a `script` that fills the placeholders, then
+`fs.image.render --format pdf --folder certificates --filename cert-<number>`.
 Effects — shadow, blur, glow, grain, colour grading — are SVG filters
 (`feDropShadow`, `feGaussianBlur`, `feColorMatrix`, `feTurbulence`); resvg
 draws them and the PDF keeps them.
@@ -570,10 +570,10 @@ transparent (plain pixel maths, no model; the default key is broadcast
 green `#00b140`, which is what the models paint) and answers
 `image`, a PNG with alpha. The agent places it with
 `<image href="{{ input.image.ref }}" x="…" y="…" width="…" height="…"/>`
-and `fs.svg.convert` composites it over the background.
+and `fs.image.render` composites it over the background.
 
 **Temporary previews.** The bytes of a temporary FileRef (an
-`http.request --response-type bytes` answer, a Run-form upload) are deleted
+`http.response.fetch --response-type bytes` answer, a Run-form upload) are deleted
 with the run, so a preview of one used to say only "temporary file — gone".
 Since 2026-09-21 a node whose `--preview image` (or `--preview-in image`)
 points at a temporary image gets a small JPEG snapshot (longest side 540 px,

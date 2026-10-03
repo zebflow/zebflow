@@ -1,4 +1,4 @@
-//! `n.kv.get` — retrieve a value from the project-scoped KV store.
+//! `kv.entry.get` — retrieve a value from the project-scoped KV store.
 //!
 //! Merges `{ [out_key]: value }` into the flowing payload.
 //! Use `$trigger` or `$nodes` references for upstream data.
@@ -15,8 +15,8 @@
 //! # Example
 //!
 //! ```text
-//! | n.kv.get --key "user:{{ input.user_id }}" --out-key profile
-//! | n.script -- "return { name: input.profile?.name ?? 'Guest' };"
+//! | kv.entry.get --key "user:{{ input.user_id }}" --out-key profile
+//! | script.result.run -- "return { name: input.profile?.name ?? 'Guest' };"
 //! ```
 
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.kv.get";
+pub const NODE_KIND: &str = "kv.entry.get";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -137,7 +137,7 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read a cached value with a fallback", r#"kv.get --key "settings:{{ $trigger.params.site }}" --out-key settings --default "{{ { theme: 'light' } }}""#)
+            crate::pipeline::model::NodeExample::dsl("Read a cached value with a fallback", r#"kv.entry.get --key "settings:{{ $trigger.params.site }}" --out-key settings --default "{{ { theme: 'light' } }}""#)
                 .input(serde_json::json!({ "rows": [] }))
                 .output(serde_json::json!({ "rows": [], "settings": { "theme": "dark" } }))
                 .note("Merged in under `--out-key`; the rest of the payload stays."),
@@ -172,7 +172,7 @@ impl Node {
 
 /// The read result joins the flowing payload instead of erasing it.
 ///
-/// `n.kv.set` keeps the payload it was handed; a `get` that threw everything
+/// `kv.entry.put` keeps the payload it was handed; a `get` that threw everything
 /// away made the pair asymmetric, and the Google-login callback had to reach
 /// backwards with `ctx.nodes` to recover a value one read had destroyed. A
 /// reader now behaves like a reader: everything that arrived is still there,
@@ -227,7 +227,7 @@ impl NodeHandler for Node {
         if key.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_KV_GET_KEY",
-                "n.kv.get: --key is required",
+                "kv.entry.get: --key is required",
             ));
         }
 
@@ -252,7 +252,7 @@ impl NodeHandler for Node {
         };
 
         let trace = format!(
-            "n.kv.get: key={} out_key={} durable={}",
+            "kv.entry.get: key={} out_key={} durable={}",
             key, out_key, self.config.durable
         );
         Ok(NodeExecutionOutput {
@@ -271,7 +271,7 @@ mod tests {
     /// The read joins the payload; it does not erase what was flowing.
     ///
     /// This is the manner fix the Google-login callback demanded: before it,
-    /// `kv.get` destroyed the authorization code that arrived two nodes
+    /// `kv.entry.get` destroyed the authorization code that arrived two nodes
     /// earlier, and the pipeline had to reach backwards with `ctx.nodes` to
     /// recover its own data.
     #[test]

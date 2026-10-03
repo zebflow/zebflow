@@ -57,7 +57,7 @@ secret belongs in the credential; the pipeline only supplies the visitor's code.
 | Part | What it is |
 |---|---|
 | `request.*` | URL, method, headers and body templates. `<NAME>` placeholders are filled from `secrets` and `variables`. |
-| `variables` | Values the **pipeline** supplies at run time. Each becomes a `--bind NAME=<expr>` on `http.request`; `required: true` fails the node if the binding is missing. |
+| `variables` | Values the **pipeline** supplies at run time. Each becomes a `--bind NAME=<expr>` on `http.response.fetch`; `required: true` fails the node if the binding is missing. |
 | `secrets` | Values the **credential** supplies. Never in a pipeline, never in a trace — every secret value is redacted wherever it would appear. |
 | `egress` | Leave blank for a public provider. Outbound HTTP already refuses private and loopback addresses; `egress.allow_private` plus `egress.allowed_hosts` is the exception list for a provider on your own network. `allowed_paths` / `allowed_methods` pin the resolved path and method when the template lets a variable vary them. |
 
@@ -104,13 +104,13 @@ proves *who* the visitor is; this table decides *whether they may enter*.
 register auth/google-start --
 | trigger.webhook --path /auth/google/start --method GET
 | crypto --op random_hex --length 16
-| kv.set --key "oauth:state:{{ input.result }}" --ttl 600
-| script -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.result, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
-| web.response --location "{{ input.auth_url }}"
+| kv.entry.put --key "oauth:state:{{ input.result }}" --ttl 600
+| script.result.run -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.result, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
+| web.response.send --location "{{ input.auth_url }}"
 ```
 
 - `crypto --op random_hex` yields `{ result }`; that value is the OAuth `state`.
-- `kv.set` remembers the state for ten minutes. A callback whose state is not in
+- `kv.entry.put` remembers the state for ten minutes. A callback whose state is not in
   KV was not started by this server — that is the CSRF check.
 - The client id is public by design; it may live in the pipeline. The client
   secret may not.
@@ -124,17 +124,17 @@ Graph form, because "is this e-mail a member" is a real branch.
 ```zf
 register auth/google-callback --
 [in] trigger.webhook --path /auth/google/callback --method GET
-[state] kv.get --key "oauth:state:{{ input.query.state }}" --out-key state_record
-[check] script -- "if (!input.query || !input.query.code) throw new Error('no authorization code in the callback'); if (input.state_record === null || input.state_record === undefined) throw new Error('unknown or expired state: this callback did not come from a sign-in this server started'); return { code: input.query.code, state: input.query.state };"
-[burn] kv.del --key "oauth:state:{{ input.state }}"
-[exchange] http.request --credential google-token-exchange --bind CODE=input.code
-[identity] script -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
-[member] sqlite.query --query "SELECT email, name, roles FROM members WHERE email = ?1" --params "{{ [input.email] }}"
+[state] kv.entry.get --key "oauth:state:{{ input.query.state }}" --out-key state_record
+[check] script.result.run -- "if (!input.query || !input.query.code) throw new Error('no authorization code in the callback'); if (input.state_record === null || input.state_record === undefined) throw new Error('unknown or expired state: this callback did not come from a sign-in this server started'); return { code: input.query.code, state: input.query.state };"
+[burn] kv.entry.delete --key "oauth:state:{{ input.state }}"
+[exchange] http.response.fetch --credential google-token-exchange --bind CODE=input.code
+[identity] script.result.run -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
+[member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --params "{{ [input.email] }}"
 [known] logic.if --expr "input.rows && input.rows.length > 0"
-[claim] script -- "const m = input.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
+[claim] script.result.run -- "const m = input.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
 [token] auth.token.create --credential session-signing-key --claim "sub={{ input.sub }}" --claim "name:public={{ input.name }}" --claim "roles={{ input.roles }}" --expires-in 86400
-[welcome] web.response --location /wh/OWNER/PROJECT/me --set-cookie "name=session,value={{ input.access_token }},http-only,same-site=Lax,max-age=86400,path=/"
-[stranger] web.response --status 403 --message "This Google account is not a member yet."
+[welcome] web.response.send --location /wh/OWNER/PROJECT/me --set-cookie "name=session,value={{ input.access_token }},http-only,same-site=Lax,max-age=86400,path=/"
+[stranger] web.response.send --status 403 --message "This Google account is not a member yet."
 [in] -> [state]
 [state] -> [check]
 [check] -> [burn]
@@ -150,7 +150,7 @@ register auth/google-callback --
 
 Node by node:
 
-- `[state]` — `kv.get` merges `{ state_record }` into the payload; `input.query`
+- `[state]` — `kv.entry.get` merges `{ state_record }` into the payload; `input.query`
   is still there for the next node.
 - `[check]` — a script that throws stops the pipeline with that message in the
   trace. It is the right tool for "this request is malformed, refuse it".
@@ -166,7 +166,7 @@ Node by node:
   with its own client secret. Verify signatures on tokens that arrive from the
   *browser*; this one did not.
 - `[member]` → `[known]` — a `logic.if` with `true`/`false` pins. The 403 is a
-  `web.response` on the `false` pin, not a status returned from a script.
+  `web.response.send` on the `false` pin, not a status returned from a script.
 - `[token]` → `[welcome]` — from here on it is `cookie-jwt-auth`: `sub` is the
   member's e-mail, `roles` is the array `--auth-required-role` checks, and only
   `name` is `:public`.
@@ -176,15 +176,15 @@ Node by node:
 ```zf
 register auth/me --
 | trigger.webhook --path /me --method GET --auth-type jwt --auth-credential session-signing-key
-| sqlite.query --query "SELECT email, name, accepted_at FROM members WHERE email = ?1" --params "{{ [input.auth.sub] }}"
-| web.response --template pages/me.tsx
+| sqlite.query.run --query "SELECT email, name, accepted_at FROM members WHERE email = ?1" --params "{{ [input.auth.sub] }}"
+| web.response.send --template pages/me.tsx
 ```
 
 ```zf
 register auth/admin --
 | trigger.webhook --path /auth/admin --method GET --auth-type jwt --auth-credential session-signing-key --auth-required-role admin
-| sqlite.query --query "SELECT email, name, roles, accepted_at FROM members ORDER BY accepted_at DESC"
-| web.response --template pages/auth-admin.tsx
+| sqlite.query.run --query "SELECT email, name, roles, accepted_at FROM members ORDER BY accepted_at DESC"
+| web.response.send --template pages/auth-admin.tsx
 ```
 
 A member without `admin` in `roles` gets 403 (or `auth_forbidden_redirect`,
@@ -198,9 +198,9 @@ password form and every protected route stays as it is.
 ## Nodes Used
 
 - `crypto --op random_hex --length <bytes>` — output `{ result }`
-- `kv.set --key <k> --ttl <secs>` / `kv.get --key <k> --out-key <k>` / `kv.del --key <k>` — state store; `kv.get` merges, `kv.del` passes the payload through
-- `http.request --credential <secure_request id> --bind NAME=<expr>` — the credential owns URL, method, headers and body; one `--bind` per declared variable; output `{ request, response }`
-- `sqlite.query --params "{{ [expr] }}"` — `?1` placeholders
+- `kv.entry.put --key <k> --ttl <secs>` / `kv.entry.get --key <k> --out-key <k>` / `kv.entry.delete --key <k>` — state store; `kv.entry.get` merges, `kv.entry.delete` passes the payload through
+- `http.response.fetch --credential <secure_request id> --bind NAME=<expr>` — the credential owns URL, method, headers and body; one `--bind` per declared variable; output `{ request, response }`
+- `sqlite.query.run --params "{{ [expr] }}"` — `?1` placeholders
 - `logic.if --expr <js>` — `true` / `false` pins
 - `auth.token.create --credential <jwt_signing_key id> --claim "k={{ v }}" [--claim "k:public={{ v }}"]` — output `{ access_token }`; quote each claim, an unquoted `{{ }}` is cut at its first space
-- `web.response --location <url> --set-cookie <spec>` / `--status 403 --message <text>`
+- `web.response.send --location <url> --set-cookie <spec>` / `--status 403 --message <text>`

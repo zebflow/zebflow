@@ -175,7 +175,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_HTTP_REQUEST_READ_BODY", ErrorClass::Failed),
     ("FW_NODE_HTTP_REQUEST_SECURE_REQUEST", ErrorClass::Failed),
     ("FW_NODE_HTTP_REQUEST_TRANSPORT", ErrorClass::Failed),
-    // `fs.svg.convert`: the flags, the SVG, its pictures and its fonts are
+    // `fs.image.render`: the flags, the SVG, its pictures and its fonts are
     // the author's; only the rasteriser and the store write can fail on their own.
     ("FW_NODE_FS_SVG_CONVERT_CONFIG", ErrorClass::Refused),
     ("FW_NODE_FS_SVG_CONVERT_SOURCE", ErrorClass::Refused),

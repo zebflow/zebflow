@@ -16,13 +16,13 @@ export const DEFAULT_LINK_OPTIONS = {
 };
 
 export const DEFAULT_NODE_KIND_COLORS = {
-  "n.trigger.webhook": "#065f46",
-  "n.trigger.schedule": "#14532d",
-  "n.script": "#1e3a8a",
-  "n.http.request": "#7c2d12",
-  "n.sekejap.query": "#0f766e",
+  "trigger.webhook": "#065f46",
+  "trigger.schedule": "#14532d",
+  "script.result.run": "#1e3a8a",
+  "http.response.fetch": "#7c2d12",
+  "sekejap.query.run": "#0f766e",
   "n.sekejap.mutate": "#0f766e",
-  "n.pg.query": "#7c3aed",
+  "pg.query.run": "#7c3aed",
   "n.web.render": "#be185d",
 };
 
@@ -990,7 +990,7 @@ function autoLayoutRankNodes(nodes, incoming, outgoing) {
   const indegree = new Map(nodes.map((node) => [node.id, incoming.get(node.id)?.length || 0]));
   const original = autoLayoutNodeOriginalOrder(nodes);
   const roots = nodes
-    .filter((node) => String(node.zfKind || "").startsWith("n.trigger.") || (incoming.get(node.id)?.length || 0) === 0)
+    .filter((node) => String(node.zfKind || "").startsWith("trigger.") || (incoming.get(node.id)?.length || 0) === 0)
     .sort((a, b) => (original.get(a.id) || 0) - (original.get(b.id) || 0));
   const queue = [];
   for (const node of roots) {
@@ -1229,7 +1229,7 @@ export class GraphNode {
     // Preview panel drawn under the box — presentation only, see
     // `positionNodePreviewEl`. Owned by the canvas, not by the graph.
     this.previewEl = null;
-    // Input widget for an `n.input.*` node — the Run form's field, drawn in
+    // Input widget for an `input.*` node — the Run form's field, drawn in
     // the same slot above the preview. Owned by the canvas as well.
     this.inputEl = null;
     // Run badge at the box's top-right — see `setNodeStatus`. It lives
@@ -1307,7 +1307,7 @@ export class GraphNode {
     node.draggable = false;
     node.addEventListener("dragstart", (event) => event.preventDefault());
     const kind = String(this.zfKind || "");
-    if (kind.startsWith("n.trigger.")) {
+    if (kind.startsWith("trigger.")) {
       node.classList.add("trigger");
     }
 
@@ -1322,7 +1322,7 @@ export class GraphNode {
     const core = document.createElement("div");
     core.className = "zgu-node-core";
     core.style.minHeight = `${nodeHeight - 2}px`;
-    if (kind.startsWith("n.trigger.")) {
+    if (kind.startsWith("trigger.")) {
       const svgNS = "http://www.w3.org/2000/svg";
       const shape = document.createElementNS(svgNS, "svg");
       shape.classList.add("zgu-trigger-shape");
@@ -1375,7 +1375,7 @@ export class GraphNode {
         const wrap = document.createElement("div");
         wrap.className = "zgu-port-wrap out";
         const displayLabel = String(this.zfOutputLabels?.[output.name] || output.label || output.name || "").trim();
-        if (displayLabel && (this.outputs.length > 1 || String(this.zfKind || "") === "n.logic.match")) {
+        if (displayLabel && (this.outputs.length > 1 || String(this.zfKind || "") === "logic.match")) {
           const pinLabel = document.createElement("div");
           pinLabel.className = "zgu-port-pin-label out";
           pinLabel.textContent = displayLabel;
@@ -1871,7 +1871,7 @@ function formatNodeStatusDuration(ms) {
 
 // ── Node input widgets ──────────────────────────────────────────────────────
 //
-// An `n.input.*` node draws a form field in the same under-node slot the
+// An `input.*` node draws a form field in the same under-node slot the
 // previews use: the Run form, built from the graph. What to draw arrives from
 // the host as an `inputWidgets` prop keyed by pipeline node id:
 //
@@ -3884,7 +3884,7 @@ function resolveNodeTitle(kind, config, catalogTitle) {
     return String(cfg.title);
   }
   // 2. Special formatting for certain kinds
-  if (kind === "n.trigger.webhook") {
+  if (kind === "trigger.webhook") {
     const method = String(cfg.method || "GET").toUpperCase();
     const path = String(cfg.path || "/").trim() || "/";
     return `${method} ${path}`;
@@ -3943,7 +3943,7 @@ function normalizeMatchDefault(rawDefault) {
 }
 
 function deriveOutputPins(kind, config, rawPins, fallback) {
-  if (String(kind || "") !== "n.logic.match") {
+  if (String(kind || "") !== "logic.match") {
     return sanitizePins(rawPins, fallback);
   }
   const pins = [];
@@ -3957,7 +3957,7 @@ function deriveOutputPins(kind, config, rawPins, fallback) {
 
 function deriveOutputLabels(kind, config, outputPins = []) {
   const labels = {};
-  if (String(kind || "") !== "n.logic.match") {
+  if (String(kind || "") !== "logic.match") {
     outputPins.forEach((pin) => {
       labels[pin] = pin;
     });
@@ -3975,7 +3975,7 @@ function deriveOutputLabels(kind, config, outputPins = []) {
 }
 
 function defaultConfigForKind(kind) {
-  if (String(kind || "") === "n.logic.match") {
+  if (String(kind || "") === "logic.match") {
     return { cases: [], default: { pin: "default", label: "Default" } };
   }
   return {};
@@ -4548,7 +4548,7 @@ export const PipelineGraph = (() => {
   }
 
   /**
-   * Push `inputWidgets` onto the canvas: one Run-form field per `n.input.*`
+   * Push `inputWidgets` onto the canvas: one Run-form field per `input.*`
    * node that has an entry, keyed by pipeline node id like the previews.
    * Drawn before the previews so the widget takes the top of the slot.
    */
@@ -4599,7 +4599,7 @@ export const PipelineGraph = (() => {
   function _pgCollect(app) {
     const used = new Set();
     const nodes = app.graph.nodes.map((node) => {
-      const kind = node.zfKind || "n.script";
+      const kind = node.zfKind || "script.result.run";
       let id = _pgSanitizeSlug(
         node.zfPipelineNodeId || kind.split(".").pop() || "node"
       );
@@ -4645,7 +4645,7 @@ export const PipelineGraph = (() => {
       })
       .filter(Boolean);
     const entry = nodes
-      .filter((n) => String(n.kind).startsWith("n.trigger."))
+      .filter((n) => String(n.kind).startsWith("trigger."))
       .map((n) => n.id);
     const usedNoteIds = new Set();
     const notes = (app.graph.notes || []).map((note, index) => {

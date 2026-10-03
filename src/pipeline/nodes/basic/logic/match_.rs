@@ -1,4 +1,4 @@
-//! `n.logic.match` — multi-case routing node.
+//! `logic.match` — multi-case routing node.
 //!
 //! Evaluates a DSL expression to get a string value.
 //! Routes to the matching case pin, or the default pin if no case matches.
@@ -18,7 +18,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.logic.match";
+pub const NODE_KIND: &str = "logic.match";
 pub const INPUT_PIN_IN: &str = "in";
 
 pub fn definition() -> NodeDefinition {
@@ -269,7 +269,7 @@ impl Node {
     ) -> Result<Self, PipelineError> {
         let source = format!(
             // `input` is the payload here, as it is in every `{{ }}` block, in
-            // n.script, and in every document that teaches either. Binding only
+            // script.result.run, and in every document that teaches either. Binding only
             // `$input` left `input` pointing at the scope object, so
             // `input.rows` silently evaluated to undefined and a guard took the
             // wrong branch with no error anywhere. Same defect, same fix as

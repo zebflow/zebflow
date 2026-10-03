@@ -1,4 +1,4 @@
-//! `n.logic.foreach` — explicit ordered multi-emission node.
+//! `logic.foreach` — explicit ordered multi-emission node.
 //!
 //! Evaluates `items_expr` to an array and emits one downstream
 //! run per item on the `item` pin. Emitted payloads are item-only by default:
@@ -27,7 +27,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.logic.foreach";
+pub const NODE_KIND: &str = "logic.foreach";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_ITEM: &str = "item";
 
@@ -196,7 +196,7 @@ fn compile_items_expr(
     }
     let source = format!(
         // `input` is the payload here, as it is in every `{{ }}` block, in
-            // n.script, and in every document that teaches either. Binding only
+            // script.result.run, and in every document that teaches either. Binding only
             // `$input` left `input` pointing at the scope object, so
             // `input.rows` silently evaluated to undefined and a guard took the
             // wrong branch with no error anywhere. Same defect, same fix as

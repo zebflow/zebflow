@@ -1,7 +1,7 @@
 //! Trait definitions for Zebflow's shared state bus.
 //!
 //! The state bus is the seam between Zebflow runtime features and the concrete mechanism used to
-//! coordinate project state. It intentionally covers the full current `n.kv.*` feature
+//! coordinate project state. It intentionally covers the full current `kv.*` feature
 //! set so the existing in-memory behavior can move behind one contract before Redis or another
 //! shared backend is introduced.
 //!

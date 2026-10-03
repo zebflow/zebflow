@@ -115,7 +115,7 @@ impl AssistantPlatformTools {
                         "query": { "type": "string", "description": "Optional semantic filter across path, title, description, trigger kind, and trigger summary." },
                         "glob": { "type": "string", "description": "Optional glob to filter pipeline files (e.g. 'pipelines/api/*.zf.json')." },
                         "status": { "type": "string", "description": "Optional status filter: active, draft, or all." },
-                        "trigger_kind": { "type": "string", "description": "Optional trigger filter: webhook, schedule, function, or full n.trigger.* kind." },
+                        "trigger_kind": { "type": "string", "description": "Optional trigger filter: webhook, schedule, function, or full trigger.* kind." },
                         "limit": { "type": "integer", "description": "Optional cap on returned rows." },
                         "format": { "type": "string", "description": "compact (default), json, or tree." }
                     }
@@ -153,7 +153,7 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_register".to_string(),
                 description: "Register (create or update) a pipeline by pipe-chained node body. \
-                    Body format: '| trigger.webhook --path /x | pg.query --credential db -- \"SQL\"'. \
+                    Body format: '| trigger.webhook --path /x | pg.query.run --credential db -- \"SQL\"'. \
                     After registering, call pipeline_activate to make it live.".to_string(),
                 parameters: json!({
                     "type": "object",
@@ -182,17 +182,17 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_patch".to_string(),
                 description: "Patch one node in a saved pipeline without rewriting the full graph. \
-                    node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query'), \
-                    or kind+index (e.g. 'pg.query[1]') when multiple nodes share the same kind. \
+                    node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query.run'), \
+                    or kind+index (e.g. 'pg.query.run[1]') when multiple nodes share the same kind. \
                     Pipeline status becomes stale after patching — call pipeline_activate to make it live again.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["file_rel_path", "node_id"],
                     "properties": {
                         "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline." },
-                        "node_id": { "type": "string", "description": "Node ID, kind, or kind+index (e.g. 'n0', 'trigger.webhook', 'pg.query[1]')." },
+                        "node_id": { "type": "string", "description": "Node ID, kind, or kind+index (e.g. 'n0', 'trigger.webhook', 'pg.query.run[1]')." },
                         "flags": { "type": "string", "description": "Space-separated --flag value pairs (e.g. '--credential new-db --path /updated')." },
-                        "body": { "type": "string", "description": "Body content for the node (SQL for pg.query, JS for script nodes)." }
+                        "body": { "type": "string", "description": "Body content for the node (SQL for pg.query.run, JS for script nodes)." }
                     }
                 }),
             },
@@ -225,7 +225,7 @@ impl AssistantPlatformTools {
                 name: "pipeline_execute".to_string(),
                 description: "Execute a registered active pipeline. Records execution hits. \
                     Pipeline must be activated first. \
-                    For function pipelines (n.trigger.function) pass `input` to test with real data; \
+                    For function pipelines (trigger.function) pass `input` to test with real data; \
                     without it the pipeline receives an empty payload.".to_string(),
                 parameters: json!({
                     "type": "object",
@@ -240,7 +240,7 @@ impl AssistantPlatformTools {
                 name: "pipeline_run".to_string(),
                 description: "Run a pipe-chained node body EPHEMERALLY — not saved, not logged, no hit recording. \
                     Use this to test queries, explore data, or prototype before registering. \
-                    Example body: '| pg.query --credential main-db -- \"SELECT count(*) FROM users\"'. \
+                    Example body: '| pg.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
                     Auto-prepends trigger.manual if no trigger node specified.".to_string(),
                 parameters: json!({
                     "type": "object",

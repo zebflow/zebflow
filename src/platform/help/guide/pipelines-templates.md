@@ -27,7 +27,7 @@ The usual pattern is:
 
 1. a webhook trigger receives the request
 2. data nodes fetch or shape data
-3. a `n.web.response` node renders a TSX page
+3. a `web.response.send` node renders a TSX page
 
 That means Zebflow does not treat “frontend” and “backend” as separate products.
 They are two parts of one project graph.

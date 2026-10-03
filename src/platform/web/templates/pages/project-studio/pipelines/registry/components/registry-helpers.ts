@@ -76,16 +76,16 @@ export function peEmptyPipelineDocument(name, triggerKind) {
   let graph;
   if (triggerKind === "schedule") {
     graph = { id, entry_nodes: ["trigger_schedule"],
-      nodes: [{ id: "trigger_schedule", kind: "n.trigger.schedule", input_pins: [], output_pins: ["out"], config: { cron: "*/5 * * * *", timezone: "UTC" } }], edges: [] };
+      nodes: [{ id: "trigger_schedule", kind: "trigger.schedule", input_pins: [], output_pins: ["out"], config: { cron: "*/5 * * * *", timezone: "UTC" } }], edges: [] };
   } else if (triggerKind === "function") {
     graph = { id, entry_nodes: ["script_entry"],
-      nodes: [{ id: "script_entry", kind: "n.script", input_pins: ["in"], output_pins: ["out"], config: { source: "return input;" } }], edges: [] };
+      nodes: [{ id: "script_entry", kind: "script.result.run", input_pins: ["in"], output_pins: ["out"], config: { source: "return input;" } }], edges: [] };
   } else if (triggerKind === "manual") {
     graph = { id, entry_nodes: ["trigger_manual"],
-      nodes: [{ id: "trigger_manual", kind: "n.trigger.manual", input_pins: [], output_pins: ["out"], config: {} }], edges: [] };
+      nodes: [{ id: "trigger_manual", kind: "trigger.manual", input_pins: [], output_pins: ["out"], config: {} }], edges: [] };
   } else {
     graph = { id, entry_nodes: ["trigger_webhook"],
-      nodes: [{ id: "trigger_webhook", kind: "n.trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: `/${id}`, method: "GET" } }], edges: [] };
+      nodes: [{ id: "trigger_webhook", kind: "trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: `/${id}`, method: "GET" } }], edges: [] };
   }
   return pePipelineDocument(graph);
 }

@@ -1,4 +1,4 @@
-//! `n.web.static.generate` — render a TSX page once and persist it to Zebflow FS.
+//! `web.site.generate` — render a TSX page once and persist it to Zebflow FS.
 //!
 //! This node is the file-producing counterpart to [`super::response`]:
 //! it uses the same RWE compile/render path, but instead of returning the HTML
@@ -26,7 +26,7 @@ use crate::pipeline::model::{
 use super::static_site;
 use crate::rwe::{CompiledScript, TemplateSource};
 
-pub const NODE_KIND: &str = "n.web.static.generate";
+pub const NODE_KIND: &str = "web.site.generate";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
@@ -34,7 +34,7 @@ fn default_on_conflict() -> String {
     "overwrite".to_string()
 }
 
-/// Typed configuration for `n.web.static.generate`.
+/// Typed configuration for `web.site.generate`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Relative TSX template path under `repo/pipelines`.
@@ -414,8 +414,8 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Render one post to a static file", r#"web.static.generate --template pages/post.tsx --path "posts/{{ input.rows[0].slug }}.html" --route "/posts/{{ input.rows[0].slug }}""#)
-                .output(serde_json::json!({ "generated": { "status": "written", "path": "site/posts/hello.html", "route": "/posts/hello", "template": "pages/post.tsx", "site_root": "site", "store": "local", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "site/posts/hello.html", "filename": "hello.html", "mime": "text/html", "kind": "binary", "size": 5120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "web.static.generate", "trust": "generated" } } })),
+            crate::pipeline::model::NodeExample::dsl("Render one post to a static file", r#"web.site.generate --template pages/post.tsx --path "posts/{{ input.rows[0].slug }}.html" --route "/posts/{{ input.rows[0].slug }}""#)
+                .output(serde_json::json!({ "generated": { "status": "written", "path": "site/posts/hello.html", "route": "/posts/hello", "template": "pages/post.tsx", "site_root": "site", "store": "local", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "site/posts/hello.html", "filename": "hello.html", "mime": "text/html", "kind": "binary", "size": 5120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "web.site.generate", "trust": "generated" } } })),
         ],
         ..Default::default()
     }

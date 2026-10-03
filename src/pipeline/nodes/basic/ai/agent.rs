@@ -1,10 +1,10 @@
-//! `n.ai.agent` — one model loop: prompt in, answer out, tools when named.
+//! `ai.text.generate` — one model loop: prompt in, answer out, tools when named.
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | One call, text back | `\| ai.agent --credential openai_main --prompt "Summarise: {{ input.body.text }}"` |
-//! | One call, JSON back | `\| ai.agent --credential openai_main --schema '{"type":"object","required":["sentiment"]}' -- Classify: {{ input.body.review }}` |
-//! | Tools, until it answers | `\| ai.agent --credential openai_main --tools lookup-order,list-slots --budget 8 --prompt "{{ input.body.message }}"` |
+//! | One call, text back | `\| ai.text.generate --credential openai_main --prompt "Summarise: {{ input.body.text }}"` |
+//! | One call, JSON back | `\| ai.text.generate --credential openai_main --schema '{"type":"object","required":["sentiment"]}' -- Classify: {{ input.body.review }}` |
+//! | Tools, until it answers | `\| ai.text.generate --credential openai_main --tools lookup-order,list-slots --budget 8 --prompt "{{ input.body.message }}"` |
 //!
 //! The loop is the one every coding agent runs: send the messages with the
 //! tool definitions, run each tool call the model returns, append the results,
@@ -49,7 +49,7 @@ use crate::pipeline::{
 use crate::platform::services::CredentialService;
 use crate::platform::services::platform::PlatformService;
 
-pub const NODE_KIND: &str = "n.ai.agent";
+pub const NODE_KIND: &str = "ai.text.generate";
 const INPUT_PIN: &str = "in";
 const OUTPUT_PIN: &str = "out";
 const DEFAULT_BUDGET: u32 = 10;
@@ -224,15 +224,15 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_AGENT_CALL".into(), description: "The provider refused or the request failed; the message carries the provider's text.".into(), retryable: true, retry_hint: "429 and 5xx recover on retry; a 401 needs a new key.".into() },
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("One call: summarise a submission", r#"ai.agent --credential openai_main --system-prompt "You write one plain sentence." --prompt "Summarise: {{ input.body.text }}""#)
+            crate::pipeline::model::NodeExample::dsl("One call: summarise a submission", r#"ai.text.generate --credential openai_main --system-prompt "You write one plain sentence." --prompt "Summarise: {{ input.body.text }}""#)
                 .input(json!({ "body": { "text": "Our clinic moved to 12 High St and now opens Saturdays 9–1." } }))
                 .output(json!({ "response": "The clinic has moved to 12 High St and now opens on Saturday mornings.", "verified": true, "tools_called": [], "iterations": 1, "budget_exhausted": false }))
                 .note("No --tools, so one round trip. The answer is added to the payload and the rest is kept. The credential is created by the owner in Studio → Credentials."),
-            crate::pipeline::model::NodeExample::dsl("One call: classify to JSON", r#"ai.agent --credential openai_main --output-mode final_only --schema '{"type":"object","required":["sentiment"],"properties":{"sentiment":{"enum":["positive","neutral","negative"]}}}' -- Classify this review: {{ input.body.review }}"#)
+            crate::pipeline::model::NodeExample::dsl("One call: classify to JSON", r#"ai.text.generate --credential openai_main --output-mode final_only --schema '{"type":"object","required":["sentiment"],"properties":{"sentiment":{"enum":["positive","neutral","negative"]}}}' -- Classify this review: {{ input.body.review }}"#)
                 .input(json!({ "body": { "review": "Booking was easy but the wait was long." } }))
                 .output(json!({ "response": "{\"sentiment\":\"neutral\"}", "data": { "sentiment": "neutral" }, "verified": true }))
                 .note("`data` is the parsed, checked answer; branch on it with `logic.if --expr \"$nodes.a.data.sentiment == 'negative'\"`. A failed check is fed back once (--max-repairs)."),
-            crate::pipeline::model::NodeExample::dsl("Tools: answer from the project's data", r#"ai.agent --credential openai_main --tools lookup-order --budget 6 --system-prompt "You answer questions about orders. Use the tools; never guess." --prompt "{{ input.body.message }}""#)
+            crate::pipeline::model::NodeExample::dsl("Tools: answer from the project's data", r#"ai.text.generate --credential openai_main --tools lookup-order --budget 6 --system-prompt "You answer questions about orders. Use the tools; never guess." --prompt "{{ input.body.message }}""#)
                 .input(json!({ "body": { "message": "Where is order o_91?" } }))
                 .output(json!({ "response": "Order o_91 shipped yesterday and arrives Friday.", "verified": true, "tools_called": ["lookup-order"], "iterations": 2, "budget_exhausted": false }))
                 .note("`lookup-order` is a function pipeline (trigger.function) in this project; the model calls it with the arguments its input schema declares."),
@@ -336,7 +336,7 @@ impl Node {
                 PipelineError::new(
                     "FW_NODE_AI_AGENT_CREDENTIAL",
                     format!(
-                        "ai.agent needs --credential naming a credential of kind {}",
+                        "ai.text.generate needs --credential naming a credential of kind {}",
                         LLM_CREDENTIAL_KINDS.join(" or ")
                     ),
                 )
@@ -360,7 +360,7 @@ impl Node {
             return Err(PipelineError::new(
                 "FW_NODE_AI_AGENT_CREDENTIAL",
                 format!(
-                    "credential '{cred_id}' is kind '{}'; ai.agent needs {}",
+                    "credential '{cred_id}' is kind '{}'; ai.text.generate needs {}",
                     cred.kind,
                     LLM_CREDENTIAL_KINDS.join(" or ")
                 ),
@@ -391,7 +391,7 @@ impl Node {
             return Vec::new();
         };
         use crate::platform::services::project::name_from_file_rel_path;
-        const FN_TRIGGER: &str = "n.trigger.function";
+        const FN_TRIGGER: &str = "trigger.function";
 
         let mut defs = Vec::new();
         for compiled in platform.pipeline_runtime.list_project(owner, project) {
@@ -423,7 +423,7 @@ impl Node {
         owner: &str,
         project: &str,
     ) -> Vec<String> {
-        const FN_TRIGGER: &str = "n.trigger.function";
+        const FN_TRIGGER: &str = "trigger.function";
         use crate::platform::services::project::name_from_file_rel_path;
         platform
             .pipeline_runtime

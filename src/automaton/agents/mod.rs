@@ -1,6 +1,6 @@
 //! The model loop and its contract check.
 //!
-//! - [`zebtune::ZebtuneAgent`] — the one loop `n.ai.agent` runs: send the
+//! - [`zebtune::ZebtuneAgent`] — the one loop `ai.text.generate` runs: send the
 //!   messages with the tool definitions, run each tool call the model
 //!   returns, append the results, call again, stop when the model answers
 //!   with text or the budget is spent. An optional contract — a JSON schema

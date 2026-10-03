@@ -5,13 +5,13 @@ transforms it, the last node answers.
 
 ```
 | trigger.webhook --path /posts/:slug --method GET
-| sekejap.query --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
-| web.response --template pages/post.tsx
+| sekejap.query.run --params "{{ [$trigger.params.slug] }}" -- "SELECT * FROM posts WHERE slug = $1"
+| web.response.send --template pages/post.tsx
 ```
 
 Every node receives the previous node's output as **`input`** and returns the
-next payload. `sekejap.query` replaces it with `{ columns, rows, … }`; a
-`script` shapes it; `web.response` turns it into an HTTP response or a page.
+next payload. `sekejap.query.run` replaces it with `{ columns, rows, … }`; a
+`script` shapes it; `web.response.send` turns it into an HTTP response or a page.
 Nothing flows unless a node passes it on.
 
 ## The two envelopes
@@ -21,7 +21,7 @@ Nothing flows unless a node passes it on.
 | **`input`** | The business payload flowing along the edges. Each node transforms it. | `input` in scripts; `input`/`$input` in `{{ }}` |
 | **request context** | The triggering event, frozen at entry: path params, query, headers, verified identity. Never changed by any node. | `ctx.trigger.*` in scripts; `$trigger.*` in `{{ }}` |
 
-So when `sekejap.query` has replaced the payload, the caller's identity is
+So when `sekejap.query.run` has replaced the payload, the caller's identity is
 still `ctx.trigger.auth.sub` in a script and `$trigger.auth.sub` in a flag.
 `ctx.request_id` and `ctx.pipeline` are there too.
 
@@ -67,8 +67,8 @@ Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
 
 ```
 | trigger.webhook --path /api/notes --method GET
-| sekejap.query -- "SELECT id, title FROM notes ORDER BY created_at DESC LIMIT 50"
-| script -- "return { notes: input.rows }"
+| sekejap.query.run -- "SELECT id, title FROM notes ORDER BY created_at DESC LIMIT 50"
+| script.result.run -- "return { notes: input.rows }"
 ```
 
 **Graph mode** — label nodes `[id]`, wire edges with `->`, name pins with `:pin`.
@@ -77,9 +77,9 @@ For branching, fan-out and loops.
 ```
 [a] trigger.webhook --path /ingest --method POST
 [b] logic.match --expr "input.body.type" --cases normal,urgent --default other
-[c] sekejap.query --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
-[d] http.request --url https://alert.example.com/send --method POST --body "{{ input.body }}"
-[e] sekejap.query --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
+[c] sekejap.query.run --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
+[d] http.response.fetch --url https://alert.example.com/send --method POST --body "{{ input.body }}"
+[e] sekejap.query.run --params "{{ [input.body.id, input.body] }}" --read-only false -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
 [a] -> [b]
 [b]:normal -> [c]
 [b]:urgent -> [d]
@@ -93,9 +93,9 @@ edge is a second entry and runs on every request.
 
 ## Nodes
 
-- **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.ws`, `trigger.ws.client`, `trigger.kv.subscribe`, `trigger.mcp`, `trigger.weberror`.
-- **Middle nodes** read, transform or decide: `sekejap.query`, `sekejap.insert`, `pg.query`, `sqlite.query`, `sqlite.mutate`, `script`, `http.request`, `kv.get`, `kv.set`, `kv.incr`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto`, `auth.token.create`, `auth.token.verify`, `fs.save`, `fs.image.thumbnail`, `fs.*`, `table.query`, `table.convert`, `geo.*`, `mail.send`, `ai.agent`, `ai.embedding`, `ai.tts`, `browser.run`, …
-- **Last nodes** answer: `web.response` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.emit`, `ws.sync_state`, `kv.publish`, `telegram.send`, `ms.publish`.
+- **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.room`, `trigger.socket`, `trigger.topic`, `trigger.mcp`, `trigger.error`.
+- **Middle nodes** read, transform or decide: `sekejap.query.run`, `sekejap.record.create`, `pg.query.run`, `sqlite.query.run`, `sqlite.mutate`, `script`, `http.response.fetch`, `kv.entry.get`, `kv.entry.put`, `kv.entry.increment`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto`, `auth.token.create`, `auth.token.verify`, `fs.save`, `fs.image.thumbnail`, `fs.*`, `table.query.run`, `table.data.convert`, `geo.*`, `mail.message.send`, `ai.text.generate`, `ai.embedding.generate`, `ai.audio.generate`, `browser.page.run`, …
+- **Last nodes** answer: `web.response.send` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.emit`, `ws.sync_state`, `kv.message.publish`, `telegram.send`, `ms.layer.publish`.
 
 Flags are declared per node and an undeclared flag is a parse error, so read
 the node before guessing:
@@ -107,8 +107,8 @@ the node before guessing:
 | `help(topic="pipeline/nodes/n.fs.save")` | one node: description, pins, every flag with its config key, required or not |
 | `help_search query="thumbnail"` | search across the help files **and** every node's description and flags |
 
-The DSL accepts the short form (`trigger.webhook`, `sekejap.query`) or the full
-kind (`n.trigger.webhook`). Installed third-party nodes are `n.x.<bundle>.<node>`.
+The DSL accepts the short form (`trigger.webhook`, `sekejap.query.run`) or the full
+kind (`trigger.webhook`). Installed third-party nodes are `n.x.<bundle>.<node>`.
 
 ---
 
@@ -127,7 +127,7 @@ pages/blog-home  →  pages/blog-home.zf.json
 **Register** saves a draft; **activate** promotes it to live traffic.
 
 ```
-pipeline_register  file_rel_path="api/posts"  title="Posts"  body="| trigger.webhook --path /api/posts --method GET | sekejap.query -- \"SELECT * FROM posts\""
+pipeline_register  file_rel_path="api/posts"  title="Posts"  body="| trigger.webhook --path /api/posts --method GET | sekejap.query.run -- \"SELECT * FROM posts\""
 pipeline_activate  file_rel_path="api/posts"
 ```
 
@@ -147,7 +147,7 @@ pipeline_patch     file_rel_path="api/posts"  node_id="n1"  flags="--limit 100"
 pipeline_activate  file_rel_path="api/posts"
 ```
 
-To try a body without saving anything: `pipeline_run body="| trigger.function | script -- \"return 1\""`
+To try a body without saving anything: `pipeline_run body="| trigger.function | script.result.run -- \"return 1\""`
 (`input` gives it a payload).
 
 ---
@@ -158,8 +158,8 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 
 ```
 | trigger.webhook --path /blog --method GET
-| sekejap.query -- "SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
-| web.response --template pages/blog-home.tsx
+| sekejap.query.run -- "SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
+| web.response.send --template pages/blog-home.tsx
 ```
 
 **POST JSON API — validate, insert, answer**
@@ -167,9 +167,9 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 ```
 [a] trigger.webhook --path /api/posts --method POST
 [b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
-[c] sekejap.query --params "{{ [input.body.title, input.body.title.toLowerCase().replace(/\s+/g, '-')] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-[d] script -- "return { ok: true }"
-[e] web.response --status 400 --body "{{ { error: 'title is required' } }}"
+[c] sekejap.query.run --params "{{ [input.body.title, input.body.title.toLowerCase().replace(/\s+/g, '-')] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+[d] script.result.run -- "return { ok: true }"
+[e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
 [b]:true -> [c]
 [c] -> [d]
@@ -180,28 +180,28 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential jwt_main
-| sekejap.query --params "{{ [$trigger.auth.sub] }}" -- "SELECT id, name FROM users WHERE id = $1"
-| web.response --template pages/dashboard.tsx
+| sekejap.query.run --params "{{ [$trigger.auth.sub] }}" -- "SELECT id, name FROM users WHERE id = $1"
+| web.response.send --template pages/dashboard.tsx
 ```
 
 **Redirect**
 
 ```
 | trigger.webhook --path /go/signup --method GET
-| web.response --location "/auth/register?source=landing"
+| web.response.send --location "/auth/register?source=landing"
 ```
 
 **Scheduled job**
 
 ```
 | trigger.schedule --cron "0 * * * *" --timezone UTC
-| http.request --url https://api.example.com/feed --method GET
-| script -- "return { items: (input.response.body?.items || []).slice(0, 10) }"
-| kv.set --key feed:latest --ttl 3600
+| http.response.fetch --url https://api.example.com/feed --method GET
+| script.result.run -- "return { items: (input.response.body?.items || []).slice(0, 10) }"
+| kv.entry.put --key feed:latest --ttl 3600
 ```
 
 A script cannot set the HTTP status or headers; it returns the next payload.
-Branch with `logic.if` and let `web.response` answer with `--status`,
+Branch with `logic.if` and let `web.response.send` answer with `--status`,
 `--location` or `--set-cookie`. Returning `null` from a script does not stop
 the pipeline either — `null` simply becomes the next `input`.
 

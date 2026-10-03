@@ -1,4 +1,4 @@
-//! `http.*` — outbound HTTP: `http.request`.
+//! `http.*` — outbound HTTP: `http.response.fetch`.
 
 use crate::pipeline::NodeDefinition;
 

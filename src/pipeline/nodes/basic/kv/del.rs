@@ -1,4 +1,4 @@
-//! `n.kv.del` — delete a key from the project-scoped KV store.
+//! `kv.entry.delete` — delete a key from the project-scoped KV store.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.kv.del";
+pub const NODE_KIND: &str = "kv.entry.delete";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -23,7 +23,7 @@ pub fn definition() -> NodeDefinition {
         title: "KV Del".to_string(),
         description: "Delete one key from the project's KV store (`--durable` for the disk-backed store, otherwise the in-memory one). \
             Passes the payload through unchanged; deleting a key that is not there succeeds. Use it to consume a one-time value — \
-            an OAuth state, a reset token — right after `kv.get` read it, so it cannot be used twice."
+            an OAuth state, a reset token — right after `kv.entry.get` read it, so it cannot be used twice."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
@@ -73,7 +73,7 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Consume a one-time state", r#"kv.del --key "oauth:state:{{ $trigger.query.state }}""#),
+            crate::pipeline::model::NodeExample::dsl("Consume a one-time state", r#"kv.entry.delete --key "oauth:state:{{ $trigger.query.state }}""#),
         ],
         ..Default::default()
     }
@@ -129,7 +129,7 @@ impl NodeHandler for Node {
         if key.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_KV_DEL_KEY",
-                "n.kv.del: --key is required",
+                "kv.entry.delete: --key is required",
             ));
         }
 
@@ -147,7 +147,7 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
             trace: vec![format!(
-                "n.kv.del: key={} existed={} durable={}",
+                "kv.entry.delete: key={} existed={} durable={}",
                 key, existed, self.config.durable
             )],
         })

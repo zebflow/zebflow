@@ -150,10 +150,10 @@ curl -s -b /tmp/zf.txt -X POST \
     "media": [
       { "name": "cover.webp", "role": "cover", "content_type": "image/webp", "size_bytes": 41220 }
     ],
-    "nodes_used": ["n.trigger.webhook", "n.pg.query", "n.web.response"],
+    "nodes_used": ["trigger.webhook", "pg.query.run", "web.response.send"],
     "credentials_required": ["billing_pg"],
     "external_urls": ["https://fonts.example/inter.css"],
-    "database_effects": ["n.pg.query"],
+    "database_effects": ["pg.query.run"],
     "filesystem_effects": [],
     "public_endpoints": ["/invoice", "webhook trigger"],
     "schedules": [],
@@ -307,7 +307,7 @@ then something you can check yourself:
         "size_bytes": 30,
         "reason": "package",
         "encoding": "text",
-        "content": "{\n  \"kind\": \"n.x.demo.load\"\n}\n"
+        "content": "{\n  \"kind\": \"x.demo.load\"\n}\n"
       },
       {
         "rel_path": "icon.svg",
@@ -388,10 +388,10 @@ that declares no layout, and `src/hub/{package_id}` for one declaring
     ],
     "files_overwritten": [],
     "pipelines_registered": ["hub/acme.invoice-tools/api/invoice.zf.json"],
-    "nodes_used": ["n.pg.query", "n.trigger.webhook", "n.web.response"],
+    "nodes_used": ["pg.query.run", "trigger.webhook", "web.response.send"],
     "credentials_required": ["billing_pg"],
     "external_urls": ["https://fonts.example/inter.css"],
-    "database_effects": ["n.pg.query"],
+    "database_effects": ["pg.query.run"],
     "filesystem_effects": [],
     "public_endpoints": ["/invoice", "webhook trigger"],
     "schedules": [],
@@ -443,10 +443,10 @@ curl -s -b /tmp/zf.txt -X POST -H "Content-Type: application/json" \
       "pipelines/billing/pages/invoice.tsx"
     ],
     "pipelines_registered": ["billing/api/invoice.zf.json"],
-    "nodes_used": ["n.pg.query", "n.trigger.webhook", "n.web.response"],
+    "nodes_used": ["pg.query.run", "trigger.webhook", "web.response.send"],
     "credentials_required": ["billing_pg"],
     "external_urls": ["https://fonts.example/inter.css"],
-    "database_effects": ["n.pg.query"],
+    "database_effects": ["pg.query.run"],
     "public_endpoints": ["/invoice", "webhook trigger"],
     "warnings": [],
     "violations": [],
@@ -653,7 +653,7 @@ and `repo/zeb.lock` gained a declaration. The lock shown is the 2026-08-27
           "source_id": "acme.pdfkit@2.0.0",
           "entry": "nodes/acme.pdfkit/definition.json",
           "integrity": "sha256:…64 hex, illustrative…",
-          "definitions": ["n.x.acme.pdf.render"]
+          "definitions": ["x.acme.pdf.render"]
         }
       }
     }
@@ -1097,7 +1097,7 @@ the real bytes:
 
 ```json
 { "ok": true, "review": {
-    "nodes_used": ["n.trigger.webhook", "n.web.response"],
+    "nodes_used": ["trigger.webhook", "web.response.send"],
     "external_urls": ["https://art.example.com/feed.json"],
     "public_endpoints": ["/big-hello", "webhook trigger"],
     "violations": [], "installable": true, "risk_level": "high" } }

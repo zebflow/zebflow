@@ -17,7 +17,7 @@ use crate::platform::services::CredentialService;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::LayoutItem;
 
-pub const NODE_KIND: &str = "n.auth.token.create";
+pub const NODE_KIND: &str = "auth.token.create";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -121,7 +121,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Mint a session token after login", r#"auth.token.create --credential jwt_main --expires-in 86400 --claim "sub={{ input.rows[0]._key }}" --claim "name:public={{ input.rows[0].name }}" --claim "roles:public={{ input.rows[0].roles }}""#)
                 .output(serde_json::json!({ "access_token": "eyJhbGciOiJIUzI1NiJ9…", "token_type": "bearer", "expires_in": 86400, "profile": { "name": "Ana", "roles": ["editor"] } }))
-                .note("Then `web.response --location /home --set-cookie \"name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax\"`. `roles` must be an array for `--auth-required-role`."),
+                .note("Then `web.response.send --location /home --set-cookie \"name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax\"`. `roles` must be an array for `--auth-required-role`."),
         ],
         ..Default::default()
     }
@@ -331,7 +331,7 @@ impl NodeHandler for Node {
             }
             claims_map.insert(name, value);
         }
-        // Embed public claim list into the JWT so web.response can filter at render time.
+        // Embed public claim list into the JWT so web.response.send can filter at render time.
         if !public_keys.is_empty() {
             claims_map.insert(
                 "_zf_public".to_string(),
@@ -418,7 +418,7 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, output),
             trace: vec![format!(
-                "n.auth.token.create: signed {} token, exp +{}s",
+                "auth.token.create: signed {} token, exp +{}s",
                 algorithm_str, expires_in
             )],
         })

@@ -1,4 +1,4 @@
-//! `sekejap.*` — the Sekejap database: `sekejap.insert`, `sekejap.query`.
+//! `sekejap.*` — the Sekejap database: `sekejap.record.create`, `sekejap.query.run`.
 
 use crate::pipeline::NodeDefinition;
 

@@ -1,4 +1,4 @@
-//! `n.input.*` — declare and check one field of the trigger envelope.
+//! `input.*` — declare and check one field of the trigger envelope.
 //!
 //! A trigger delivers one envelope: `body` (fields) and `files` (FileRefs).
 //! An input node names one field of it, checks it, and passes the envelope
@@ -72,7 +72,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const KIND_PREFIX: &str = "n.input.";
+pub const KIND_PREFIX: &str = "input.";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -667,10 +667,10 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
 
 /// The trigger kinds whose tick delivers an empty envelope: no `body`, no
 /// `files`. A required input after one of these would refuse every tick.
-const EMPTY_ENVELOPE_TRIGGERS: [&str; 1] = ["n.trigger.schedule"];
+const EMPTY_ENVELOPE_TRIGGERS: [&str; 1] = ["trigger.schedule"];
 
 /// A node kind as the catalogue spells it: `x.n.trigger.schedule` is the same
-/// kind as `n.trigger.schedule` for the purpose of what it delivers.
+/// kind as `trigger.schedule` for the purpose of what it delivers.
 fn canonical_kind(kind: &str) -> &str {
     kind.strip_prefix("x.").unwrap_or(kind)
 }
@@ -909,7 +909,7 @@ mod tests {
             .unwrap();
         assert_eq!(out.payload, payload);
         assert_eq!(scope_value(text::NODE_KIND, &json!({ "name": "prompt" }), &payload), Some(json!("hi")));
-        assert_eq!(scope_value("n.script", &json!({}), &payload), None);
+        assert_eq!(scope_value("script.result.run", &json!({}), &payload), None);
     }
 
     /// A default for a field nobody sent is written into the envelope, so the
@@ -1041,7 +1041,7 @@ mod tests {
         assert_eq!(err.code, "FW_NODE_INPUT_UNREACHABLE");
         // An input only the manual trigger reaches is that trigger's business.
         ensure_inputs_reachable_from_empty_triggers(&graph(
-            "[a] trigger.schedule --cron \"0 * * * *\"\n[m] trigger.manual\n[b] input.text prompt\n[s] script -- \"return input;\"\n[a] -> [s]\n[m] -> [b]\n",
+            "[a] trigger.schedule --cron \"0 * * * *\"\n[m] trigger.manual\n[b] input.text prompt\n[s] script.result.run -- \"return input;\"\n[a] -> [s]\n[m] -> [b]\n",
         ))
         .expect("the schedule reaches no input");
         // Webhook, function and manual triggers deliver a caller's envelope.

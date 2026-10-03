@@ -37,8 +37,8 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verifies JWT from `Authorization: Bearer` header or session cookie. On success: claims in `input.auth`. On failure: 303 redirect (page nav, to the credential's `auth_redirect`) or 401 JSON (fetch/API).
 - `trigger.webhook --auth-required-role admin,lecturer` — additionally checks the JWT `roles` array claim against the listed roles. Failure: 303 redirect (to `auth_forbidden_redirect`) or 403 JSON. **Empty (no roles specified) = any valid JWT is accepted — roles are not checked.**
 - `auth.token.create --credential <id> --claim "sub={{ input.field }}" --claim "name:public={{ input.name }}"` — signs a JWT; output is `{{ input.access_token }}`. Claims whose name ends in `:public` are the only ones exposed in the browser via `ctx.auth` — all others remain server-only.
-- `web.response --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400"` — sets the session cookie. Quote the whole spec — an unquoted `{{ }}` is cut at its first space.
-- `web.response --location /path` — issues a 302 redirect.
+- `web.response.send --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400"` — sets the session cookie. Quote the whole spec — an unquoted `{{ }}` is cut at its first space.
+- `web.response.send --location /path` — issues a 302 redirect.
 
 ---
 
@@ -48,23 +48,23 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query --credential my-pg --params "{{ [input.body.identifier] }}" \
+| pg.query.run --credential my-pg --params "{{ [input.body.identifier] }}" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
 | logic.if --expr "input.rows && input.rows.length > 0"
-(false pin → `web.response --status 401 --message "invalid credentials"`)
-| script -- "const user = input.rows[0]; return { player_id: user.player_id, name: user.fullname, roles: [user.role] };"
+(false pin → `web.response.send --status 401 --message "invalid credentials"`)
+| script.result.run -- "const user = input.rows[0]; return { player_id: user.player_id, name: user.fullname, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim "sub={{ input.player_id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}" --expires-in 86400
-| web.response --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
+| web.response.send --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
 ```
 
 ### GET /dashboard — protected page (auto-verify + redirect)
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query --credential my-pg --params "{{ input.auth.sub }}" \
+| pg.query.run --credential my-pg --params "{{ input.auth.sub }}" \
     -- "SELECT player_id::text, fullname, email FROM app.player WHERE player_id = $1::uuid"
-| script -- "const user = input.rows?.[0]; return { user }"
-| web.response --template pages/dashboard.tsx
+| script.result.run -- "const user = input.rows?.[0]; return { user }"
+| web.response.send --template pages/dashboard.tsx
 ```
 
 When JWT is missing/invalid → credential `auth_redirect` fires as a 303 redirect (browser) or 401 JSON (fetch).
@@ -73,15 +73,15 @@ When JWT is missing/invalid → credential `auth_redirect` fires as a 303 redire
 
 ```
 | trigger.webhook --path /api/me --method GET --auth-type jwt --auth-credential my-jwt
-| script -- "return { ok: true, user: input.auth }"
+| script.result.run -- "return { ok: true, user: input.auth }"
 ```
 
 ### GET /admin/users — role-gated route
 
 ```
 | trigger.webhook --path /admin/users --method GET --auth-type jwt --auth-credential my-jwt --auth-required-role admin
-| pg.query --credential my-pg -- "SELECT player_id::text, fullname, identifier FROM app.player ORDER BY created_at DESC"
-| web.response --template pages/admin-users.tsx
+| pg.query.run --credential my-pg -- "SELECT player_id::text, fullname, identifier FROM app.player ORDER BY created_at DESC"
+| web.response.send --template pages/admin-users.tsx
 ```
 
 Role mismatch → credential `auth_forbidden_redirect` fires as a 303 redirect (browser) or 403 JSON (fetch).
@@ -90,7 +90,7 @@ Role mismatch → credential `auth_forbidden_redirect` fires as a 303 redirect (
 
 ```
 | trigger.webhook --path /auth/logout --method POST
-| web.response --location /auth/login --set-cookie "name=session,value=,http-only,max-age=0,path=/"
+| web.response.send --location /auth/login --set-cookie "name=session,value=,http-only,max-age=0,path=/"
 ```
 
 An empty `value` is allowed and clears the cookie.
@@ -101,13 +101,13 @@ An empty `value` is allowed and clears the cookie.
 
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — role check; comma-separated list from credential `auth_roles`
-- `pg.query --credential <id> --params` — look up user by identifier or sub claim, e.g. `--params "{{ [input.body.identifier] }}"` or `--params "{{ input.auth.sub }}"`
+- `pg.query.run --credential <id> --params` — look up user by identifier or sub claim, e.g. `--params "{{ [input.body.identifier] }}"` or `--params "{{ input.auth.sub }}"`
 - `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` (e.g. `--claim "name:public={{ input.name }}"`) to expose that claim in the browser via `ctx.auth`. `sub` and other private claims stay server-only.
-- `web.response --set-cookie` — set HttpOnly cookie in response
-- `web.response --location` — redirect
-- `web.response --template` — protected page template; `input.user` carries auth context
+- `web.response.send --set-cookie` — set HttpOnly cookie in response
+- `web.response.send --location` — redirect
+- `web.response.send --template` — protected page template; `input.user` carries auth context
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

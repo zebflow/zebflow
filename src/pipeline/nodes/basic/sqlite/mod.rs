@@ -1,4 +1,4 @@
-//! `sqlite.*` — SQLite files in the project: `sqlite.query`, `sqlite.mutate`.
+//! `sqlite.*` — SQLite files in the project: `sqlite.query.run`, `sqlite.mutate`.
 
 use crate::pipeline::NodeDefinition;
 

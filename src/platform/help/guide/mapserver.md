@@ -18,8 +18,8 @@ Its job is not only storing geodata. Its job is:
 
 ## Publishing and serving
 
-Layers are managed with the `n.ms.publish` / `n.ms.unpublish` / `n.ms.get` /
-`n.ms.list` pipeline nodes (see `help("pipeline/dsl")` for flags) and through
+Layers are managed with the `ms.layer.publish` / `ms.layer.unpublish` / `ms.layer.get` /
+`ms.layer.list` pipeline nodes (see `help("pipeline/dsl")` for flags) and through
 `/api/projects/{owner}/{project}/mapserver/{instance}/sources` and
 `.../layers`. A published layer is immediately queryable at
 `/ms/{owner}/{project}/{path}`.
@@ -30,7 +30,7 @@ It turns geospatial data into project-native application behavior.
 
 Typical flow:
 
-1. publish a layer with `n.ms.publish` (or the mapserver API)
+1. publish a layer with `ms.layer.publish` (or the mapserver API)
 2. query it by viewport / filters at `/ms/{owner}/{project}/{path}`
 3. render it in a page or map experience with `zeb/deckgl`
 

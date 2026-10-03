@@ -17,7 +17,7 @@
 //! # Quick start for pipeline authors
 //!
 //! ```text
-//! n.trigger.ws   --event move
+//! trigger.room   --event move
 //! n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! ```
 //!

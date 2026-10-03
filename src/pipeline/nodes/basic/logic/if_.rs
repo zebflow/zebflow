@@ -1,4 +1,4 @@
-//! `n.logic.if` — binary branch node.
+//! `logic.if` — binary branch node.
 //!
 //! Evaluates a DSL expression against the current execution scope.
 //! Emits to the `true` pin when truthy, `false` pin otherwise.
@@ -18,7 +18,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.logic.if";
+pub const NODE_KIND: &str = "logic.if";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_TRUE: &str = "true";
 pub const OUTPUT_PIN_FALSE: &str = "false";
@@ -72,7 +72,7 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Guard a form field", r#"logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0""#)
-                .note("`true` carries the same payload on; wire `false` to a `web.response --status 400`."),
+                .note("`true` carries the same payload on; wire `false` to a `web.response.send --status 400`."),
             crate::pipeline::model::NodeExample::dsl("Found or not found", r#"logic.if --expr "input.rows.length > 0""#)
                 .input(serde_json::json!({ "rows": [] }))
                 .note("Fires the `false` pin; the payload is unchanged."),
@@ -100,7 +100,7 @@ impl Node {
     ) -> Result<Self, PipelineError> {
         let source = format!(
             // `input` is the payload here, as it is in every `{{ }}` block, in
-            // n.script, and in every document that teaches either. Binding only
+            // script.result.run, and in every document that teaches either. Binding only
             // `$input` left `input` pointing at the scope object, so
             // `input.rows` silently evaluated to undefined and a guard took the
             // wrong branch with no error anywhere. Same defect, same fix as

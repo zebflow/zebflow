@@ -1,4 +1,4 @@
-//! `browser.*` — a headless browser: `browser.run`.
+//! `browser.*` — a headless browser: `browser.page.run`.
 
 use crate::pipeline::NodeDefinition;
 

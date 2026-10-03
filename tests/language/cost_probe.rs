@@ -1,7 +1,7 @@
 //! Latency guard for the sandbox pool.
 //!
 //! `{{ }}` expression resolution runs through this pool on every pipeline
-//! node, so per-run cost is paid platform-wide, not just by `n.script`. The
+//! node, so per-run cost is paid platform-wide, not just by `script.result.run`. The
 //! per-run realm rewind that closes cross-tenant contamination costs roughly
 //! 60µs of the figure below; that trade was made deliberately.
 //!

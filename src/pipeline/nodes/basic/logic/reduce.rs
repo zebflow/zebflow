@@ -1,4 +1,4 @@
-//! `n.logic.reduce` — ordered accumulation over a foreach-emitted series.
+//! `logic.reduce` — ordered accumulation over a foreach-emitted series.
 //!
 //! The node evaluates:
 //!
@@ -25,7 +25,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.logic.reduce";
+pub const NODE_KIND: &str = "logic.reduce";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 

@@ -3,7 +3,7 @@
 //!
 //! One file (`data/store/mapserver/{instance}.layers.json`, store tier — never
 //! a user object) carries one `MapPublishManifest` contract document. Both publishers — the project web UI
-//! and `n.ms.publish` — go through here, so neither can drift from the other.
+//! and `ms.layer.publish` — go through here, so neither can drift from the other.
 
 use std::path::{Path, PathBuf};
 

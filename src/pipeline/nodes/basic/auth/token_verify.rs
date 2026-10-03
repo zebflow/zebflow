@@ -3,7 +3,7 @@
 //! # Why this is a node and not three lines of script
 //!
 //! The platform could sign a token and not check one, which left every auth
-//! pipeline to verify in `n.script`: split the JWT, HMAC the halves, compare
+//! pipeline to verify in `script.result.run`: split the JWT, HMAC the halves, compare
 //! the result. That is where `alg: none` acceptance, algorithm confusion, and
 //! non-constant-time comparison come from — each an ordinary mistake to make
 //! and an invisible one to review. The sandbox has no constant-time compare to
@@ -33,7 +33,7 @@ use crate::platform::services::CredentialService;
 
 use crate::pipeline::nodes::shared::util::metadata_scope;
 
-pub const NODE_KIND: &str = "n.auth.token.verify";
+pub const NODE_KIND: &str = "auth.token.verify";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_VALID: &str = "valid";
 const OUTPUT_PIN_INVALID: &str = "invalid";

@@ -66,7 +66,7 @@ pub fn official_nodes_index_markdown() -> String {
         "# Node index — {} kinds\n\n\
          One line per node: `short name` — title — what it does. One node in full (flags, pins, schemas, examples): \
          `help topic=\"pipeline/nodes/<short name>\"`. The whole catalogue at once: `help topic=\"pipeline/nodes/all\"` (large). \
-         In the DSL a node is written by its short name: `| web.response --template pages/x.tsx`.\n",
+         In the DSL a node is written by its short name: `| web.response.send --template pages/x.tsx`.\n",
         defs.len()
     );
     for (family, kinds) in families {
@@ -98,7 +98,7 @@ fn official_nodes_markdown_reference_for_help() -> String {
         "## Node kinds (live — native + embedded official composites)\n\n\
          This block matches the pipeline editor / project node API for platform-bundled nodes: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
          - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
-         - **One kind:** `help_nodes` with `kind=\"n.script\"` (or `script`, `trigger.webhook`, composite kinds, etc.).\n\n\
+         - **One kind:** `help_nodes` with `kind=\"script.result.run\"` (or `script`, `trigger.webhook`, composite kinds, etc.).\n\n\
          ---\n\n",
     );
     for def in official_node_definitions_for_help() {
@@ -306,7 +306,7 @@ pub fn expand_sekejap_markers(content: &str) -> String {
 }
 
 /// A prose page never copies a node's flags by hand: it writes
-/// `<!-- node-flags:web.response -->` and the table is rendered here from the
+/// `<!-- node-flags:web.response.send -->` and the table is rendered here from the
 /// node's `definition()`, so the help cannot drift from the code. Likewise
 /// `<!-- node-families -->` renders the kinds grouped by family. An unknown
 /// kind in a marker is a build-time failure (`help_lint` tests), never a blank.
@@ -549,7 +549,7 @@ mod help_lint {
         let defs = official_node_definitions_for_help();
         let families: std::collections::BTreeSet<String> = defs
             .iter()
-            .filter_map(|d| d.kind.strip_prefix("n.").and_then(|k| k.split('.').next()).map(str::to_string))
+            .filter_map(|d| d.kind.strip_prefix("n.").unwrap_or(&d.kind).split('.').next().map(str::to_string))
             .collect();
         let exists = |name: &str| {
             expand_kind(name).is_some_and(|k| defs.iter().any(|d| d.kind == k))
@@ -582,7 +582,7 @@ mod help_lint {
         assert!(checked >= 100, "the lint checked only {checked} node names — the extractor is broken, not the help");
     }
 
-    /// What a reader of `pipeline/web` gets: the flag rows of `web.response`
+    /// What a reader of `pipeline/web` gets: the flag rows of `web.response.send`
     /// as the definition declares them today, `--file` included, and the
     /// family list on `pipeline/dsl` carrying every kind in the catalogue.
     #[test]
@@ -593,7 +593,7 @@ mod help_lint {
         assert!(web.contains("| `--template`"));
         let dsl = get_help("pipeline/dsl").expect("pipeline/dsl");
         assert!(!dsl.contains("<!-- node-families -->"));
-        assert!(dsl.contains("- **web** `web.docs.generate · web.response · web.static.generate`"), "{dsl}");
+        assert!(dsl.contains("- **web** `web.docs.generate · web.response.send · web.site.generate`"), "{dsl}");
         assert!(dsl.contains("- **trigger** `"));
     }
 
@@ -614,7 +614,7 @@ mod help_lint {
         for d in &defs {
             assert!(all.contains(&format!("### `{}`", d.kind)), "{} missing from the full catalogue", d.kind);
         }
-        let one = get_help("pipeline/nodes/web.response").expect("one node");
+        let one = get_help("pipeline/nodes/web.response.send").expect("one node");
         assert!(one.contains("| `--file` |"));
     }
 

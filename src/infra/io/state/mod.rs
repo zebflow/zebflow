@@ -11,7 +11,7 @@
 //!
 //! Long-term uses:
 //!
-//! - `n.mem.*` nodes
+//! - `mem.*` nodes
 //! - mem-subscribe triggers
 //! - cache eviction fanout
 //! - coordination leases / leader election

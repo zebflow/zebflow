@@ -1,4 +1,4 @@
-//! `mail.*` — outbound mail: `mail.send`.
+//! `mail.*` — outbound mail: `mail.message.send`.
 //!
 //! The message and the SMTP conversation belong to
 //! [`mailbourne`](https://crates.io/crates/mailbourne). What stays here is

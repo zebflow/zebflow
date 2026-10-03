@@ -1,4 +1,4 @@
-//! `geo.*` — geospatial files: `geo.convert`, `geo.inspect`.
+//! `geo.*` — geospatial files: `geo.dataset.convert`, `geo.dataset.inspect`.
 
 use crate::pipeline::NodeDefinition;
 

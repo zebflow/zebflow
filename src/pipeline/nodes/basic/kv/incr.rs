@@ -1,4 +1,4 @@
-//! `n.kv.incr` — atomically increment (or decrement) an integer counter.
+//! `kv.entry.increment` — atomically increment (or decrement) an integer counter.
 //!
 //! The counter starts at 0 if the key doesn't exist.
 //! Non-integer values are reset to 0 before applying the increment.
@@ -16,9 +16,9 @@
 //! # Example
 //!
 //! ```text
-//! | n.trigger.webhook --path /click --method POST
-//! | n.kv.incr --key "clicks:{{ input.button }}" --out-key total
-//! | n.script -- "return { total: input.total };"
+//! | trigger.webhook --path /click --method POST
+//! | kv.entry.increment --key "clicks:{{ input.button }}" --out-key total
+//! | script.result.run -- "return { total: input.total };"
 //! ```
 
 use async_trait::async_trait;
@@ -33,7 +33,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.kv.incr";
+pub const NODE_KIND: &str = "kv.entry.increment";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -136,11 +136,11 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Count views", r#"kv.incr --key "views:{{ $trigger.params.slug }}" --out-key views --durable"#)
+            crate::pipeline::model::NodeExample::dsl("Count views", r#"kv.entry.increment --key "views:{{ $trigger.params.slug }}" --out-key views --durable"#)
                 .output(serde_json::json!({ "views": 42 }))
                 .note("Merged into the payload; the counter starts at 0 when the key is new."),
-            crate::pipeline::model::NodeExample::dsl("Rate-limit a form", r#"kv.incr --key "contact:{{ $trigger.headers['x-forwarded-for'] }}" --out-key hits --amount 1"#)
-                .note("Pair with `kv.expire --ttl 60` and `logic.if --expr \"input.hits <= 5\"`."),
+            crate::pipeline::model::NodeExample::dsl("Rate-limit a form", r#"kv.entry.increment --key "contact:{{ $trigger.headers['x-forwarded-for'] }}" --out-key hits --amount 1"#)
+                .note("Pair with `kv.entry.expire --ttl 60` and `logic.if --expr \"input.hits <= 5\"`."),
         ],
         ..Default::default()
     }
@@ -172,7 +172,7 @@ impl Node {
 
 /// The read result joins the flowing payload instead of erasing it.
 ///
-/// `n.kv.set` keeps the payload it was handed; a `get` that threw everything
+/// `kv.entry.put` keeps the payload it was handed; a `get` that threw everything
 /// away made the pair asymmetric, and the Google-login callback had to reach
 /// backwards with `ctx.nodes` to recover a value one read had destroyed. A
 /// reader now behaves like a reader: everything that arrived is still there,
@@ -227,13 +227,13 @@ impl NodeHandler for Node {
         if key.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_KV_INCR_KEY",
-                "n.kv.incr: --key is required",
+                "kv.entry.increment: --key is required",
             ));
         }
 
         // Absent is the default step of 1; anything else must be a whole
         // number — a value that is not one is refused, never read as 1.
-        let refuse = |raw: &str| PipelineError::new("FW_NODE_KV_INCR_AMOUNT", format!("n.kv.incr: --amount '{raw}' is not a whole number"));
+        let refuse = |raw: &str| PipelineError::new("FW_NODE_KV_INCR_AMOUNT", format!("kv.entry.increment: --amount '{raw}' is not a whole number"));
         let amount: i64 = match &self.config.amount {
             None | Some(Value::Null) => 1,
             Some(Value::Number(n)) => n.as_i64().ok_or_else(|| refuse(&n.to_string()))?,
@@ -259,7 +259,7 @@ impl NodeHandler for Node {
         };
 
         let trace = format!(
-            "n.kv.incr: key={} amount={} new_val={} out_key={} durable={}",
+            "kv.entry.increment: key={} amount={} new_val={} out_key={} durable={}",
             key, amount, new_val, out_key, self.config.durable
         );
         Ok(NodeExecutionOutput {

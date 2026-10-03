@@ -114,7 +114,7 @@ records what is on disk today.
                 │                      a project may legitimately own `files/tmp/`
                 └── mapserver/
                     ├── *.geojson      OBJECT — uploaded sources
-                    └── .optimized/    OBJECT — n.ms.publish's GeoParquet copies
+                    └── .optimized/    OBJECT — ms.layer.publish's GeoParquet copies
 ```
 
 ### Rules
@@ -233,8 +233,8 @@ them.
             ├── data/
             │   ├── store/             STORE — irreplaceable
             │   │   ├── sekejap/       project database (sekejap 0.17): data file and its WAL
-            │   │   ├── local.db       project SQLite (n.sqlite.*)
-            │   │   ├── kv.db          durable n.kv.* state
+            │   │   ├── local.db       project SQLite (sqlite.*)
+            │   │   ├── kv.db          durable kv.* state
             │   │   ├── mapserver/     {instance}.layers.json — layer registry
             │   │   └── chat_history.json  assistant conversation
             │   │
@@ -266,7 +266,7 @@ them.
                 │   └── {request_id}/files/    writer removes them today
                 ├── mapserver/         map feature area
                 │   ├── {source}.geojson            uploaded sources
-                │   ├── .optimized/                 n.ms.publish GeoParquet copies
+                │   ├── .optimized/                 ms.layer.publish GeoParquet copies
                 │   └── .artifacts/                 generated chunks — moved to
                 │       └── {instance}/{layer}/     data/cache/mapserver-artifacts/
                 │           └── {chunk}.ndjson      on first touch

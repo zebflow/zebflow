@@ -1,4 +1,4 @@
-//! n.fs.image.thumbnail — resize + compress an uploaded image into a small thumbnail.
+//! fs.image.thumbnail — resize + compress an uploaded image into a small thumbnail.
 //!
 //! Reads `input.saved` by default (the FileRef `fs.save` answers, or a store path string), or a custom `--source-key` dot-path into
 //! the payload. The source may be a string path or FileRef. Produces a resized,
@@ -38,7 +38,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.fs.image.thumbnail";
+pub const NODE_KIND: &str = "fs.image.thumbnail";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 

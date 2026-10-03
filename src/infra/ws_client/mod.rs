@@ -1,6 +1,6 @@
-//! Background service driving `n.trigger.ws.client` pipelines.
+//! Background service driving `trigger.socket` pipelines.
 //!
-//! When a pipeline with `n.trigger.ws.client` is activated, a dedicated
+//! When a pipeline with `trigger.socket` is activated, a dedicated
 //! tokio task is spawned that connects to the external WS server and fires
 //! the pipeline for every received message.  On deactivate the task is aborted.
 //! Auto-reconnects with capped exponential backoff.

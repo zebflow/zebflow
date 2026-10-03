@@ -1,4 +1,4 @@
-//! n.geo.inspect — report schema, CRS, extent, and fields of a spatial dataset.
+//! geo.dataset.inspect — report schema, CRS, extent, and fields of a spatial dataset.
 //!
 //! Delegates to `geonative_convert::inspect()`. Supports `.gdb`, `.shp`,
 //! `.parquet`, and `.geojson` inputs.
@@ -20,7 +20,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.geo.inspect";
+pub const NODE_KIND: &str = "geo.dataset.inspect";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -115,9 +115,9 @@ pub fn definition() -> NodeDefinition {
         }],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("What is in this file?", "geo.inspect --from uploads/suburbs.zip")
+            crate::pipeline::model::NodeExample::dsl("What is in this file?", "geo.dataset.inspect --from uploads/suburbs.zip")
                 .output(serde_json::json!({ "inspect": { "report": { "driver": "ESRI Shapefile", "layers": [{ "name": "suburbs", "geometry": "Polygon", "crs": "EPSG:7844", "features": 312, "fields": ["name", "postcode"] }] }, "source": "uploads/suburbs.zip", "store": "local" } }))
-                .note("Read `input.inspect.layers[0].crs` before deciding on `geo.convert --to-crs`."),
+                .note("Read `input.inspect.layers[0].crs` before deciding on `geo.dataset.convert --to-crs`."),
         ],
         ..Default::default()
     }

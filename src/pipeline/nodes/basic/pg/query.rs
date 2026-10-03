@@ -16,11 +16,11 @@ use crate::platform::services::CredentialService;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
-pub const NODE_KIND: &str = "n.pg.query";
+pub const NODE_KIND: &str = "pg.query.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
-/// Unified node-definition metadata for `n.pg.query`.
+/// Unified node-definition metadata for `pg.query.run`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
@@ -100,9 +100,9 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"pg.query --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT id, email FROM accounts WHERE id = $1""#)
+            crate::pipeline::model::NodeExample::dsl("Read with a bound value", r#"pg.query.run --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT id, email FROM accounts WHERE id = $1""#)
                 .output(serde_json::json!({ "rows": [{ "id": 7, "email": "a@x.io" }] })),
-            crate::pipeline::model::NodeExample::dsl("Insert and get the id back", r#"pg.query --credential pg_main --params "{{ [input.body.email] }}" -- "INSERT INTO accounts (email) VALUES ($1) RETURNING id""#)
+            crate::pipeline::model::NodeExample::dsl("Insert and get the id back", r#"pg.query.run --credential pg_main --params "{{ [input.body.email] }}" -- "INSERT INTO accounts (email) VALUES ($1) RETURNING id""#)
                 .output(serde_json::json!({ "rows": [{ "id": 8 }] })),
         ],
         ..Default::default()
@@ -397,7 +397,7 @@ fn row_cell_to_json(row: &PgRow, idx: usize) -> Value {
     // A type none of the above decode: say so once in the log rather than
     // hand the page a Null that looks like data.
     eprintln!(
-        "[pg.query] column {} has a type this node does not decode ({}); cast it in SQL (::text, to_json)",
+        "[pg.query.run] column {} has a type this node does not decode ({}); cast it in SQL (::text, to_json)",
         row.columns()[idx].name(),
         row.columns()[idx].type_info()
     );

@@ -36,9 +36,9 @@ context sits at the root. Nothing is merged to the root — a JSON body field
 
 ```
 | trigger.webhook --path /api/programmes --method GET
-| pg.query --credential my-pg --params "{{ [input.query.faculty_id ?? null] }}" \
+| pg.query.run --credential my-pg --params "{{ [input.query.faculty_id ?? null] }}" \
     -- "SELECT unit_id::text, code, title->>'id' as title, slug FROM academic.academic_unit WHERE unit_type = 'programme' AND is_active = true AND ($1::uuid IS NULL OR parent_unit_id = $1::uuid) ORDER BY code"
-| script -- "return { ok: true, data: input.rows }"
+| script.result.run -- "return { ok: true, data: input.rows }"
 ```
 
 ### GET /api/items/:id — detail by path param
@@ -47,25 +47,25 @@ context sits at the root. Nothing is merged to the root — a JSON body field
 
 ```
 | trigger.webhook --path /api/programmes/:unit_id --method GET
-| pg.query --credential my-pg --params "{{ input.params.unit_id }}" \
+| pg.query.run --credential my-pg --params "{{ input.params.unit_id }}" \
     -- "SELECT au.unit_id::text, au.code, au.title, COUNT(DISTINCT s.student_id) as total_students FROM academic.academic_unit au LEFT JOIN academic.student s ON s.unit_id = au.unit_id AND s.is_active = true WHERE au.unit_id = $1::uuid AND au.unit_type = 'programme' GROUP BY au.unit_id, au.code, au.title"
-| script -- "return { ok: true, data: input.rows[0] };"
+| script.result.run -- "return { ok: true, data: input.rows[0] };"
 (see **Answering with a status** below for the 404 branch)
 ```
 
-### GET /api/items/:id — detail with related records (two pg.query nodes)
+### GET /api/items/:id — detail with related records (two pg.query.run nodes)
 
 ```
 | trigger.webhook --path /api/programmes/:unit_id --method GET
-| pg.query --credential my-pg --params "{{ input.params.unit_id }}" \
+| pg.query.run --credential my-pg --params "{{ input.params.unit_id }}" \
     -- "SELECT unit_id::text, code, title FROM academic.academic_unit WHERE unit_id = $1::uuid"
-| script -- "const prog = input.rows[0]; return { ...prog, unit_id: prog.unit_id };"
-| pg.query --credential my-pg --params "{{ input.unit_id }}" \
+| script.result.run -- "const prog = input.rows[0]; return { ...prog, unit_id: prog.unit_id };"
+| pg.query.run --credential my-pg --params "{{ input.unit_id }}" \
     -- "SELECT p.fullname, l.academic_rank, st.position FROM academic.lecturer l JOIN academic.staff st ON st.staff_id = l.staff_id JOIN app.player p ON p.player_id = st.player_id WHERE st.unit_id = $1::uuid AND l.is_active = true ORDER BY p.fullname"
-| script -- "return { ok: true, data: { ...ctx.nodes['n2'], lecturers: input.rows } }"
+| script.result.run -- "return { ok: true, data: { ...ctx.nodes['n2'], lecturers: input.rows } }"
 ```
 
-Note: each `pg.query` REPLACES `input` with `{ rows: [...] }` — there is no
+Note: each `pg.query.run` REPLACES `input` with `{ rows: [...] }` — there is no
 `input._prev`. To reach an earlier node's output after later nodes have
 replaced the payload, use `ctx.nodes['<node id>']` in a script (pipe-mode node
 ids are `n0`, `n1`, … in source order — the first `script` above is `n2`) or
@@ -78,10 +78,10 @@ JSON body fields sit under `input.body`. Access as `input.body.title`, `input.bo
 ```
 | trigger.webhook --path /api/posts --method POST
 | logic.if --expr "input.body.title && input.body.body"
-(false pin → `web.response --status 400`; see **Answering with a status**)
-| pg.query --credential my-pg --params "{{ [input.body.title, input.body.body, input.body.author_id] }}" \
+(false pin → `web.response.send --status 400`; see **Answering with a status**)
+| pg.query.run --credential my-pg --params "{{ [input.body.title, input.body.body, input.body.author_id] }}" \
     -- "INSERT INTO posts (title, body, author_id, created_at) VALUES ($1, $2, $3, now()) RETURNING id, title"
-| script -- "return { ok: true, data: input.rows?.[0] }"
+| script.result.run -- "return { ok: true, data: input.rows?.[0] }"
 ```
 
 ### PUT /api/items/:id — update by path param + body
@@ -90,9 +90,9 @@ Combine path param and body fields with `--params`:
 
 ```
 | trigger.webhook --path /api/posts/:id --method PUT
-| pg.query --credential my-pg --params "{{ [input.body.title, input.body.body, input.params.id] }}" \
+| pg.query.run --credential my-pg --params "{{ [input.body.title, input.body.body, input.params.id] }}" \
     -- "UPDATE posts SET title = $1, body = $2, updated_at = now() WHERE id = $3 RETURNING id, title"
-| script -- "return { ok: true, data: input.rows[0] };"
+| script.result.run -- "return { ok: true, data: input.rows[0] };"
 (see **Answering with a status** below for the 404 branch)
 ```
 
@@ -100,9 +100,9 @@ Combine path param and body fields with `--params`:
 
 ```
 | trigger.webhook --path /api/posts/:id --method DELETE
-| pg.query --credential my-pg --params "{{ input.params.id }}" \
+| pg.query.run --credential my-pg --params "{{ input.params.id }}" \
     -- "DELETE FROM posts WHERE id = $1 RETURNING id"
-| script -- "return { ok: true, deleted: input.rows?.[0]?.id ?? null }"
+| script.result.run -- "return { ok: true, deleted: input.rows?.[0]?.id ?? null }"
 ```
 
 ---
@@ -121,19 +121,19 @@ Combine path param and body fields with `--params`:
 ## Answering with a status
 
 A script cannot set the response. It returns a value; the graph decides what
-happens next. To answer 404, branch and let `web.response` answer:
+happens next. To answer 404, branch and let `web.response.send` answer:
 
 ```
-[find]  pg.query --credential my-pg --params "{{ input.params.id }}" -- "SELECT …"
+[find]  pg.query.run --credential my-pg --params "{{ input.params.id }}" -- "SELECT …"
 [found] logic.if --expr "input.rows && input.rows.length > 0"
-[ok]    web.response --body "{{ { ok: true, data: input.rows[0] } }}"
-[gone]  web.response --status 404 --body "{{ { ok: false, error: 'not found' } }}"
+[ok]    web.response.send --body "{{ { ok: true, data: input.rows[0] } }}"
+[gone]  web.response.send --status 404 --body "{{ { ok: false, error: 'not found' } }}"
 [find] -> [found]
 [found]:true -> [ok]
 [found]:false -> [gone]
 ```
 
-`web.response` owns the response: `--status`, `--location`, `--set-cookie`,
+`web.response.send` owns the response: `--status`, `--location`, `--set-cookie`,
 `--body`, `--template`. The branch is visible in the editor, which a key hidden
 in a payload would not be.
 
@@ -142,10 +142,10 @@ in a payload would not be.
 ## Nodes Used
 
 - `trigger.webhook` — HTTP endpoints; path params in `input.params.<name>`, user-submitted data (JSON, form-urlencoded, multipart text fields) under `input.body.<name>`
-- `pg.query --credential <id>` — parameterized SQL; `--params "{{ input.path }}"` (single value) or `--params "{{ [a, b] }}"` (multiple/conditional)
+- `pg.query.run --credential <id>` — parameterized SQL; `--params "{{ input.path }}"` (single value) or `--params "{{ [a, b] }}"` (multiple/conditional)
 - `script` — validation, 404 guard, response shaping, chaining multiple queries
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

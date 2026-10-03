@@ -9,14 +9,14 @@ import {
 /**
  * The Run form, built from the graph.
  *
- * Every `n.input.*` node declares one field of the trigger envelope: `body`
+ * Every `input.*` node declares one field of the trigger envelope: `body`
  * (fields) and `files` (FileRefs). This module turns those nodes into the
  * widget specs the canvas draws, checks the values the operator typed, and
  * builds the request — multipart when a file is present, JSON otherwise.
  * Values live in editor state only; nothing here writes the pipeline.
  */
 
-export const INPUT_KIND_PREFIX = "n.input.";
+export const INPUT_KIND_PREFIX = "input.";
 export const FILE_INPUT_KINDS = ["file", "files", "image", "audio", "video"];
 
 export type InputNodeSpec = {
@@ -60,7 +60,7 @@ export type InputWidgetSpec = InputNodeSpec & {
   result?: InputRunResult | null;
 };
 
-/** `text` for `n.input.text`; `""` for any other kind. */
+/** `text` for `input.text`; `""` for any other kind. */
 export function inputKindOf(kind: string): string {
   const raw = String(kind || "");
   return raw.startsWith(INPUT_KIND_PREFIX) ? raw.slice(INPUT_KIND_PREFIX.length) : "";
@@ -258,7 +258,7 @@ export function buildRunRequest(
 /** The webhook trigger's route, when the graph starts with one. */
 export function webhookRouteOf(graph: any): { trigger: "webhook"; path: string; method: string } | null {
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
-  const trigger = nodes.find((n: any) => String(n?.kind || "") === "n.trigger.webhook");
+  const trigger = nodes.find((n: any) => String(n?.kind || "") === "trigger.webhook");
   if (!trigger) return null;
   const config = trigger.config || {};
   return {

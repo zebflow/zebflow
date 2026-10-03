@@ -7117,13 +7117,13 @@ fn settings_policy_cards() -> Vec<Value> {
 }
 
 fn node_group_rank(kind: &str) -> u8 {
-    if kind.starts_with("n.trigger.") {
+    if kind.starts_with("trigger.") {
         0
-    } else if kind == "n.script" || kind.starts_with("n.script.") {
+    } else if kind.starts_with("script.") {
         1
-    } else if kind.starts_with("n.logic.") {
+    } else if kind.starts_with("logic.") {
         2
-    } else if kind.starts_with("n.ai.") {
+    } else if kind.starts_with("ai.") {
         3
     } else {
         4
@@ -7131,14 +7131,14 @@ fn node_group_rank(kind: &str) -> u8 {
 }
 
 fn node_group_prefix(kind: &str) -> &'static str {
-    if kind.starts_with("n.trigger.") {
-        "n.trigger"
-    } else if kind == "n.script" || kind.starts_with("n.script.") {
-        "n.script"
-    } else if kind.starts_with("n.logic.") {
-        "n.logic"
-    } else if kind.starts_with("n.ai.") {
-        "n.ai"
+    if kind.starts_with("trigger.") {
+        "trigger"
+    } else if kind.starts_with("script.") {
+        "script"
+    } else if kind.starts_with("logic.") {
+        "logic"
+    } else if kind.starts_with("ai.") {
+        "ai"
     } else {
         ""
     }
@@ -16316,7 +16316,7 @@ async fn api_mapserver_layers_publish(
     let record = MapserverLayerRecord {
         layer_id: layer_id.to_string(),
         // Contract `MapPublishManifest`: stored without a leading slash, the
-        // same shape `n.ms.publish` writes.
+        // same shape `ms.layer.publish` writes.
         path: crate::mapserver::publish::registry::normalize_layer_path(path).to_string(),
         store: store_id,
         source_path,
@@ -18414,7 +18414,7 @@ fn rwe_library_git_commit(
     cmd.output().map(|_| ()).map_err(|_| ())
 }
 
-/// Merges project-level RWE settings (`zebflow.yaml -> rwe`) into each `n.web.response`
+/// Merges project-level RWE settings (`zebflow.yaml -> rwe`) into each `web.response.send`
 /// node's `config.options` before pipeline execution.
 ///
 /// Also parses the node-level `--load-scripts` comma-separated string and injects it
@@ -18438,7 +18438,7 @@ fn apply_rwe_project_options(
         .map(|p| p.display().to_string());
 
     for node in &mut graph.nodes {
-        if node.kind != "n.web.response" {
+        if node.kind != "web.response.send" {
             continue;
         }
 
@@ -18695,7 +18695,7 @@ async fn api_project_assistant_chat(
              - **Pipelines**: `pipeline_list`, `pipeline_get`, `pipeline_register`, `pipeline_describe`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `pipeline_execute`, `pipeline_run`\n\
              - **Files**: `file_list`, `file_read`, `file_write`, `file_edit`, `file_search` — every file in the repository, whatever its extension or folder\n\
              - **Agent docs**: `docs_agent_list`, `docs_agent_read`, `docs_agent_write`\n\
-             - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `pg.query` or `n.sqlite.query` nodes to execute queries\n\
+             - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `pg.query.run` or `sqlite.query.run` nodes to execute queries\n\
              - **Credentials**: `credential_list`\n\
              - **Git**: `git_command` — subcommands: status, log, diff, add, commit\n\
              - **UI Components**: `list_ui_catalog`, `install_ui_components`\n\
@@ -23415,7 +23415,7 @@ async fn dispatch_weberror(
     }
     let (_, compiled) = best?;
 
-    // A designed error page is `web.response --template …`, and a template
+    // A designed error page is `web.response.send --template …`, and a template
     // renders only once its markup is on the graph — the same step the
     // webhook and manual-execute paths take. Without it the run failed with
     // "--template set but markup not loaded", the error was swallowed, and
@@ -23440,7 +23440,7 @@ async fn dispatch_weberror(
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
 
-    // The page gets what `trigger.weberror` documents — `error_code`,
+    // The page gets what `trigger.error` documents — `error_code`,
     // `error_message`, `original_path`, `method`, `request_id` — on top of
     // whatever the caller passed (`discoverability.md` §6a). Before this the
     // documented names were promised and never set.
@@ -23475,7 +23475,7 @@ async fn dispatch_weberror(
 
     let status = StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
-    // `web.response` wraps what it built under `__zf_response`, the way the
+    // `web.response.send` wraps what it built under `__zf_response`, the way the
     // webhook ingress reads it; a bare value is an older graph's shape.
     let value = output
         .value
@@ -24082,8 +24082,8 @@ async fn public_webhook_ingress_run(
         retention.max_age_secs,
     );
 
-    // ── n.web.response — explicit response envelope ───────────────────────────
-    // When the pipeline ends with n.web.response, its output carries a __zf_response
+    // ── web.response.send — explicit response envelope ───────────────────────────
+    // When the pipeline ends with web.response.send, its output carries a __zf_response
     // envelope that fully controls the HTTP response. Handle it before legacy magic keys.
     if let Some(resp_cfg) = output.value.get("__zf_response").cloned() {
         let status = resp_cfg
@@ -24147,7 +24147,7 @@ async fn public_webhook_ingress_run(
             return resp;
         }
 
-        // Bytes (`web.response --file` on an image, font, pdf): base64 in the
+        // Bytes (`web.response.send --file` on an image, font, pdf): base64 in the
         // envelope because it travels as JSON; the declared header sets the type.
         if let Some(b64) = resp_cfg.get("body_base64").and_then(Value::as_str) {
             use base64::Engine as _;
@@ -26758,9 +26758,9 @@ fn require_project_api_capability(
 fn canonical_pipeline_node_kind(kind: &str) -> &str {
     if let Some(stripped) = kind.strip_prefix("x.n.") {
         return match stripped {
-            "trigger.webhook" => "n.trigger.webhook",
-            "trigger.schedule" => "n.trigger.schedule",
-            "trigger.manual" => "n.trigger.manual",
+            "trigger.webhook" => "trigger.webhook",
+            "trigger.schedule" => "trigger.schedule",
+            "trigger.manual" => "trigger.manual",
             _ => kind,
         };
     }
@@ -26794,9 +26794,9 @@ fn resolve_execute_trigger(
         .entry_node_ids()
         .into_iter()
         .filter_map(|id| graph.nodes.iter().find(|node| node.id == id))
-        .find(|node| canonical_pipeline_node_kind(&node.kind).starts_with("n.trigger."));
+        .find(|node| canonical_pipeline_node_kind(&node.kind).starts_with("trigger."));
     let webhook = first_trigger
-        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "n.trigger.webhook")
+        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "trigger.webhook")
         .and_then(|node| {
             crate::platform::services::project::webhook_triggers_from_graph(graph)
                 .into_iter()
@@ -26845,7 +26845,7 @@ fn validate_execute_trigger(
         PipelineExecuteTrigger::Schedule => {
             let wanted_cron = req.schedule_cron.as_deref().map(str::trim);
             let matched = graph.nodes.iter().any(|node| {
-                if canonical_pipeline_node_kind(&node.kind) != "n.trigger.schedule" {
+                if canonical_pipeline_node_kind(&node.kind) != "trigger.schedule" {
                     return false;
                 }
                 match wanted_cron {
@@ -26871,7 +26871,7 @@ fn validate_execute_trigger(
             let matched = graph
                 .nodes
                 .iter()
-                .any(|node| canonical_pipeline_node_kind(&node.kind) == "n.trigger.manual");
+                .any(|node| canonical_pipeline_node_kind(&node.kind) == "trigger.manual");
             if matched {
                 Ok(())
             } else {
@@ -26888,7 +26888,7 @@ fn hydrate_template_markup(
     graph: &mut PipelineGraph,
 ) -> Result<(), PlatformError> {
     for node in &mut graph.nodes {
-        if node.kind != "n.web.response" {
+        if node.kind != "web.response.send" {
             continue;
         }
 
@@ -29007,7 +29007,7 @@ mod webhook_sse_tests {
             kind: "thinking".to_string(),
             message: "LLM reasoning about query".to_string(),
             node_id: "n0".to_string(),
-            node_kind: "n.ai.agent".to_string(),
+            node_kind: "ai.text.generate".to_string(),
             data: None,
             at: "00:00:03".to_string(),
         };
@@ -29151,7 +29151,7 @@ mod webhook_sse_tests {
             "id": "t",
             "nodes": [
                 { "id": "n0", "kind": first_kind, "config": config },
-                { "id": "n1", "kind": "n.script", "config": { "source": "return input" } }
+                { "id": "n1", "kind": "script.result.run", "config": { "source": "return input" } }
             ],
             "edges": [ { "from_node": "n0", "from_pin": "out", "to_node": "n1", "to_pin": "in" } ]
         }))
@@ -29171,13 +29171,13 @@ mod webhook_sse_tests {
 
     #[test]
     fn a_missing_trigger_is_manual_unless_the_first_trigger_is_a_webhook() {
-        let manual = execute_graph("n.trigger.manual", serde_json::json!({}));
+        let manual = execute_graph("trigger.manual", serde_json::json!({}));
         let resolved = resolve_execute_trigger(&manual, &execute_request(None));
         assert_eq!(resolved.trigger, PipelineExecuteTrigger::Manual);
         assert!(validate_execute_trigger(&manual, &execute_request(None)).is_ok());
 
         let webhook = execute_graph(
-            "n.trigger.webhook",
+            "trigger.webhook",
             serde_json::json!({ "path": "/hook", "method": "post" }),
         );
         let resolved = resolve_execute_trigger(&webhook, &execute_request(None));
@@ -29188,7 +29188,7 @@ mod webhook_sse_tests {
 
         // A schedule first: nothing to infer a webhook from, so manual — and
         // the graph has no manual trigger, which is the refusal it always was.
-        let schedule = execute_graph("n.trigger.schedule", serde_json::json!({ "cron": "0 * * * *" }));
+        let schedule = execute_graph("trigger.schedule", serde_json::json!({ "cron": "0 * * * *" }));
         let resolved = resolve_execute_trigger(&schedule, &execute_request(None));
         assert_eq!(resolved.trigger, PipelineExecuteTrigger::Manual);
         assert_eq!(
@@ -29200,7 +29200,7 @@ mod webhook_sse_tests {
     #[test]
     fn an_explicit_trigger_and_route_still_win() {
         let webhook = execute_graph(
-            "n.trigger.webhook",
+            "trigger.webhook",
             serde_json::json!({ "path": "/hook", "method": "POST" }),
         );
         // Explicit manual on a webhook graph is validated as manual, as today.

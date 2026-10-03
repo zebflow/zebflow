@@ -12,7 +12,7 @@ served, what it was built from, and what the public may see of it.
 | API version / kind | `zebflow.com/v1` `MapPublishManifest` |
 | Spec | a list of layer records, one per published layer |
 | Adapter | `src/contracts/kinds/map_publish_manifest.rs` |
-| Written by | the project MapServer service and `n.ms.publish` |
+| Written by | the project MapServer service and `ms.layer.publish` |
 | Lives at | `data/store/mapserver/{instance}.layers.json` — store tier, never a user object |
 
 ## Shape

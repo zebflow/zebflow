@@ -26,7 +26,7 @@ pub fn definition() -> NodeDefinition {
         title: "SQLite Mutate".to_string(),
         description: "Write to the project's built-in SQLite database (connection `default`): INSERT, UPDATE, DELETE, CREATE TABLE, ALTER. \
             SQL in the body after `--`, values in `--params` bound as `?1, ?2, …`. Answers `{ ok: true, affected_rows: N }` and nothing \
-            else — the inserted row is not returned; SELECT it afterwards with `sqlite.query`, or keep the values you inserted from \
+            else — the inserted row is not returned; SELECT it afterwards with `sqlite.query.run`, or keep the values you inserted from \
             the previous node with `$nodes.<id>`."
             .to_string(),
         input_schema: json!({

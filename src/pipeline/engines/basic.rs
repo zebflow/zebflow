@@ -35,7 +35,7 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::shared::file_ref::{FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
-    ai, auth, browser, concept, crypto, fs, function, geo, http, input, kv, logic, mail, ms, pg,
+    ai, auth, browser, crypto, fs, function, geo, http, input, kv, logic, mail, ms, pg,
     script, sekejap, sqlite, table,
     trigger::{
         function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
@@ -133,7 +133,7 @@ fn build_nodes_retention_plan(graph: &PipelineGraph) -> Result<NodesRetentionPla
         // A retry node counts its own attempts from its last output
         // (`$nodes.<self>.__zf_retry`), so it is always retained and always
         // in its own scope. Without this, a loop whose payload is replaced
-        // on the way round (`http.request` answers with a fresh body) would
+        // on the way round (`http.response.fetch` answers with a fresh body) would
         // sit at attempt 1 for ever — the poll loops needed a script whose
         // only job was to copy the count back.
         if node.kind == logic::retry::NODE_KIND {
@@ -534,7 +534,7 @@ pub(crate) fn is_sensitive_trace_config_key(key: &str) -> bool {
             | "idtoken"
             | "authorization"
             | "apikey"
-            // `--header X-API-Key=…` typed on an http.request is a key in the
+            // `--header X-API-Key=…` typed on an http.response.fetch is a key in the
             // node's config, and the recorded config is the snapshot the
             // record keeps of it.
             | "xapikey"
@@ -779,7 +779,7 @@ fn blanked_like(value: &Value) -> Value {
 /// returns the literal values they name.
 ///
 /// The markers used to be read at the top level only. That is where a node
-/// puts one, but not where it stays: `n.web.response` nests the whole upstream
+/// puts one, but not where it stays: `web.response.send` nests the whole upstream
 /// payload under `__zf_response.body`, so by the time that node's *output* was
 /// traced the marker was one level down -- unread, unremoved, and printed
 /// verbatim into the run history with the secrets inside it.
@@ -1185,7 +1185,7 @@ impl BasicPipelineEngine {
         self
     }
 
-    /// Attach the state bus so `n.kv.*` nodes can access the shared project-scoped KV/pubsub layer.
+    /// Attach the state bus so `kv.*` nodes can access the shared project-scoped KV/pubsub layer.
     pub fn with_state_bus(mut self, bus: DynStateBus) -> Self {
         self.state_bus = Some(bus);
         self
@@ -1200,7 +1200,7 @@ impl BasicPipelineEngine {
         self
     }
 
-    /// Attach the platform service so n.function.call nodes can invoke sub-pipelines.
+    /// Attach the platform service so function.result.call nodes can invoke sub-pipelines.
     pub fn with_platform(mut self, platform: Arc<PlatformService>) -> Self {
         self.platform = Some(platform);
         self
@@ -1487,7 +1487,7 @@ impl BasicPipelineEngine {
                     credentials.clone(),
                 )?))
             }
-            concept::NODE_KIND => Ok(NodeDispatch::Concept(concept::Node::new(
+            logic::concept::NODE_KIND => Ok(NodeDispatch::Concept(logic::concept::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
                     PipelineError::new("FW_NODE_CONCEPT_CONFIG", err.to_string())
                 })?,
@@ -1909,18 +1909,15 @@ impl BasicPipelineEngine {
                 )?))
             }
             // Anything the arms above did not claim is not a native node, so it
-            // is provided by a bundle. Curated bundles live in `n.*` and
-            // third-party ones in `n.x.*`, so the namespace cannot be used to
-            // tell them apart; the manifest decides role and implementation at
-            // execution time, and reports a missing package if there is none.
-            other if other.starts_with("n.") => {
+            // is provided by a bundle, curated or third-party (`x.*`); the
+            // namespace cannot tell them apart. The manifest decides role and
+            // implementation at execution time, and reports a missing package
+            // if there is none. Without a platform there is no bundle to ask.
+            other => {
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_INSTALLED_NO_PLATFORM",
-                        format!(
-                            "installed node '{}': platform service not injected into engine",
-                            other
-                        ),
+                        "FW_NODE_KIND_UNSUPPORTED",
+                        format!("unsupported node kind '{}'", other),
                     ));
                 };
                 Ok(NodeDispatch::InstalledNode {
@@ -1933,10 +1930,6 @@ impl BasicPipelineEngine {
                     egress: self.bundle_egress.clone(),
                 })
             }
-            other => Err(PipelineError::new(
-                "FW_NODE_KIND_UNSUPPORTED",
-                format!("unsupported node kind '{}'", other),
-            )),
         }
     }
 }
@@ -2056,7 +2049,7 @@ fn emit_node_fail(
     );
 }
 
-/// `http.request` for `n.http.request` — the message is for a human.
+/// `http.response.fetch` for `http.response.fetch` — the message is for a human.
 fn short_kind_word(kind: &str) -> &str {
     kind.strip_prefix("n.").unwrap_or(kind)
 }
@@ -2892,7 +2885,7 @@ impl BasicPipelineEngine {
                                         PipelineError::new("FW_NODE_WEB_STATIC_GENERATE_READ", err.to_string())
                                     })?;
                                     let leaf = rel_path.rsplit('/').next().unwrap_or(&rel_path).to_string();
-                                    store.file_ref(&rel_path, &leaf, "text/html", &written.bytes, "web.static.generate", "generated")
+                                    store.file_ref(&rel_path, &leaf, "text/html", &written.bytes, "web.site.generate", "generated")
                                 }
                                 None => Value::Null,
                             };
@@ -3577,7 +3570,7 @@ impl BasicPipelineEngine {
 /// so none of them may ride out to a caller in the response body.
 ///
 /// The walk is recursive because a marker does not stay at the top: an
-/// `n.web.response` in the chain nests the whole upstream payload under
+/// `web.response.send` in the chain nests the whole upstream payload under
 /// `__zf_response.body`, and a top-level-only sweep would leave it there.
 fn strip_private_markers(value: Value) -> Value {
     match value {
@@ -3650,7 +3643,7 @@ mod tests {
             r#"
 [a] trigger.manual
 [b] logic.if --expr "1 == 1"
-[c] script -- "return { count: input.rows.length, last: input.rows[input.rows.length - 1] };"
+[c] script.result.run -- "return { count: input.rows.length, last: input.rows[input.rows.length - 1] };"
 [a] -> [b]
 [b]:true -> [c]
 "#,
@@ -3722,7 +3715,7 @@ mod tests {
         async fn run_at(level: CaptureLevel, body: &str) -> crate::pipeline::model::PipelineOutput {
             let mut graph = build_pipeline_graph(
                 "levels",
-                &format!("[a] trigger.manual\n[b] script -- \"{body}\"\n[a] -> [b]\n"),
+                &format!("[a] trigger.manual\n[b] script.result.run -- \"{body}\"\n[a] -> [b]\n"),
             )
             .expect("graph");
             graph.metadata = Some(PipelineGraphMetadata {
@@ -3790,7 +3783,7 @@ mod tests {
 
         let mut graph = build_pipeline_graph(
             "levels-fail",
-            "[a] trigger.manual\n[b] script -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
         )
         .expect("graph");
         graph.metadata = Some(PipelineGraphMetadata {
@@ -3836,7 +3829,7 @@ mod tests {
         async fn run_at(level: CaptureLevel) -> crate::pipeline::model::PipelineOutput {
             let mut graph = build_pipeline_graph(
                 "preview-levels",
-                "[a] trigger.manual\n[b] script --preview json -- \"return { seen: input.canary };\"\n[a] -> [b]\n",
+                "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { seen: input.canary };\"\n[a] -> [b]\n",
             )
             .expect("graph");
             assert_eq!(graph.nodes[1].config["preview"]["out"], json!({ "as": "json" }));
@@ -3921,7 +3914,7 @@ mod tests {
         }
 
         let (result, signals) = signals_of(
-            "[a] trigger.manual\n[b] script -- \"return { n: input.n + 1 };\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run -- \"return { n: input.n + 1 };\"\n[a] -> [b]\n",
         )
         .await;
         result.expect("the run succeeds");
@@ -3942,9 +3935,9 @@ mod tests {
             .map(|(k, n)| (k.to_string(), n.to_string()))
         );
         let node_ok = &signals[4];
-        assert_eq!(node_ok.node_kind, "n.script");
+        assert_eq!(node_ok.node_kind, "script.result.run");
         assert!(node_ok.data.as_ref().unwrap()["duration_ms"].is_u64());
-        assert!(node_ok.message.starts_with("b script "), "{}", node_ok.message);
+        assert!(node_ok.message.starts_with("b script.result.run "), "{}", node_ok.message);
         let run_done = signals.last().unwrap();
         let data = run_done.data.as_ref().unwrap();
         assert_eq!(data["run_id"], "lifecycle-run-1");
@@ -3952,7 +3945,7 @@ mod tests {
         assert!(data["duration_ms"].is_u64());
 
         let (result, signals) = signals_of(
-            "[a] trigger.manual\n[b] script -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
         )
         .await;
         assert!(result.is_err());
@@ -3987,7 +3980,7 @@ mod tests {
         );
         let mut graph = build_pipeline_graph(
             "preview-rule3",
-            "[a] trigger.manual\n[b] script --preview json -- \"return { token: input.secret, note: 'ok' };\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run --preview json -- \"return { token: input.secret, note: 'ok' };\"\n[a] -> [b]\n",
         )
         .expect("graph");
         graph.metadata = Some(PipelineGraphMetadata {
@@ -4152,7 +4145,7 @@ mod tests {
 
     /// The incentive this guard exists to remove: if refusing an unreadable
     /// destination only happened inside a bundle that declared hosts, an author
-    /// who wanted `n.pg.query` would be better off declaring nothing, and only
+    /// who wanted `pg.query.run` would be better off declaring nothing, and only
     /// the honest author would be constrained.
     #[test]
     fn a_bundle_that_declares_no_hosts_still_cannot_use_an_uncheckable_node() {
@@ -4162,11 +4155,11 @@ mod tests {
         assert!(!silent.is_active(), "the bundle declared nothing");
 
         for kind in [
-            "n.ai.agent",
-            "n.pg.query",
-            "n.table.query",
+            "ai.text.generate",
+            "pg.query.run",
+            "table.query.run",
             "n.ws.client.send",
-            "n.trigger.ws.client",
+            "trigger.socket",
         ] {
             let error = super::refuse_uncheckable_egress_node(&silent, kind, false)
                 .expect_err("an unreadable destination is refused whatever was declared");
@@ -4184,7 +4177,7 @@ mod tests {
             .expect("a host-checked node is not an unreadable destination");
     }
 
-    /// `n.script` is a network node only when an operator has made it one, so
+    /// `script.result.run` is a network node only when an operator has made it one, so
     /// the guard reads the sandbox in force rather than the sandbox as shipped.
     #[test]
     fn a_script_is_refused_inside_a_bundle_only_when_its_sandbox_reaches_the_network() {
@@ -4202,7 +4195,7 @@ mod tests {
             .expect_err("a sandbox that may fetch is an egress path the guard cannot read");
         assert_eq!(error.code, "FW_EGRESS_UNCHECKED_NODE");
         assert!(
-            error.message.contains("n.script") && error.message.contains("'telegram'"),
+            error.message.contains("script.result.run") && error.message.contains("'telegram'"),
             "{}",
             error.message
         );
@@ -4455,7 +4448,7 @@ mod tests {
         }));
         assert_eq!(result, json!({ "body": { "username": "wawan" } }));
 
-        // `n.web.response` nests the whole upstream payload, so the sweep has
+        // `web.response.send` nests the whole upstream payload, so the sweep has
         // to reach down into it.
         let nested = super::strip_private_markers(json!({
             "__zf_response": {
@@ -4474,7 +4467,7 @@ mod tests {
     }
 
     /// A marker that has been nested by a downstream node is still read, still
-    /// removed, and its contents still redacted -- the shape `n.web.response`
+    /// removed, and its contents still redacted -- the shape `web.response.send`
     /// produces, where the whole upstream payload becomes `__zf_response.body`.
     #[test]
     fn a_nested_redaction_marker_is_not_printed_into_the_run_history() {
@@ -4590,9 +4583,9 @@ mod tests {
     async fn nodes_scope_only_carries_referenced_upstream_outputs() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { big: 'huge-marker-that-should-not-leak' };"
-[c] script -- "return { small: 7 };"
-[d] script -- "return { small: ctx.nodes.c.small, leaked: JSON.stringify(ctx).includes('huge-marker-that-should-not-leak') };"
+[b] script.result.run -- "return { big: 'huge-marker-that-should-not-leak' };"
+[c] script.result.run -- "return { small: 7 };"
+[d] script.result.run -- "return { small: ctx.nodes.c.small, leaked: JSON.stringify(ctx).includes('huge-marker-that-should-not-leak') };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4626,9 +4619,9 @@ mod tests {
     async fn nodes_scope_rejects_dynamic_script_access() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { big: 'dynamic-access-should-not-work' };"
-[c] script -- "return { small: 7 };"
-[d] script -- "const key = 'b'; return { big: ctx.nodes[key].big, small: ctx.nodes.c.small };"
+[b] script.result.run -- "return { big: 'dynamic-access-should-not-work' };"
+[c] script.result.run -- "return { small: 7 };"
+[d] script.result.run -- "const key = 'b'; return { big: ctx.nodes[key].big, small: ctx.nodes.c.small };"
 
 [a] -> [b]
 [b] -> [c]
@@ -4666,9 +4659,9 @@ mod tests {
     async fn every_root_of_a_multi_root_graph_runs() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { left: true };"
+[b] script.result.run -- "return { left: true };"
 [c] trigger.manual
-[d] script -- "return { right: true };"
+[d] script.result.run -- "return { right: true };"
 
 [a] -> [b]
 [c] -> [d]
@@ -4718,8 +4711,8 @@ mod tests {
     #[test]
     fn a_fully_cyclic_graph_still_has_a_starting_node() {
         let dsl = r#"
-[a] script -- "return input;"
-[b] script -- "return input;"
+[a] script.result.run -- "return input;"
+[b] script.result.run -- "return input;"
 
 [a] -> [b]
 [b] -> [a]
@@ -4732,10 +4725,10 @@ mod tests {
     async fn logic_collect_groups_multiple_upstreams_before_continuing() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { user: { id: 'u_42' } };"
-[c] script -- "return { orders: [{ id: 'o_1' }] };"
+[b] script.result.run -- "return { user: { id: 'u_42' } };"
+[c] script.result.run -- "return { orders: [{ id: 'o_1' }] };"
 [d] logic.collect
-[e] script -- "return input;"
+[e] script.result.run -- "return input;"
 
 [a] -> [b]
 [a] -> [c]
@@ -4784,13 +4777,13 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] fs.put --path qa/fs/hello.txt --text "hello fs"
-[c] fs.get --path qa/fs/hello.txt
-[d] fs.copy --from qa/fs/hello.txt --filename copy.txt
-[e] fs.move --from qa/fs/copy.txt --filename moved.txt
-[f] fs.list --path qa/fs
-[g] fs.delete --path qa/fs/hello.txt
-[h] fs.mkdir --path qa/fs/prefix
+[b] fs.file.put --path qa/fs/hello.txt --text "hello fs"
+[c] fs.file.get --path qa/fs/hello.txt
+[d] fs.file.copy --from qa/fs/hello.txt --filename copy.txt
+[e] fs.file.move --from qa/fs/copy.txt --filename moved.txt
+[f] fs.folder.list --path qa/fs
+[g] fs.file.delete --path qa/fs/hello.txt
+[h] fs.folder.create --path qa/fs/prefix
 
 [a] -> [b]
 [b] -> [c]
@@ -4852,8 +4845,8 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { ok: true, state_sequence: '{{file:state-sequence.json}}', __zf_files: [{ name: 'state-sequence.json', content_type: 'application/json', encoding: 'json', data: { frames: [1, 2, 3] } }] };"
-[c] script -- "return input;"
+[b] script.result.run -- "return { ok: true, state_sequence: '{{file:state-sequence.json}}', __zf_files: [{ name: 'state-sequence.json', content_type: 'application/json', encoding: 'json', data: { frames: [1, 2, 3] } }] };"
+[c] script.result.run -- "return input;"
 
 [a] -> [b]
 [b] -> [c]
@@ -4926,8 +4919,8 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.convert --from "{{ input.rows }}" --path datasets/posts.parquet
-[c] table.convert --from datasets/posts.parquet --to-json --preview-rows 2
+[b] table.data.convert --from "{{ input.rows }}" --path datasets/posts.parquet
+[c] table.data.convert --from datasets/posts.parquet --to-json --preview-rows 2
 
 [a] -> [b]
 [b] -> [c]
@@ -5006,7 +4999,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.post_id] }}" --to-json --preview-rows 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
+[b] table.query.run --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params "{{ [input.post_id] }}" --to-json --preview-rows 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
 
 [a] -> [b]
 "#;
@@ -5082,7 +5075,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview-rows 2 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
+[b] table.query.run --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview-rows 2 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
 
 [a] -> [b]
 "#;
@@ -5148,14 +5141,14 @@ mod tests {
             nodes: vec![
                 PipelineNode {
                     id: "a".to_string(),
-                    kind: "n.trigger.manual".to_string(),
+                    kind: "trigger.manual".to_string(),
                     input_pins: vec![],
                     output_pins: vec!["out".to_string()],
                     config: json!({}),
                 },
                 PipelineNode {
                     id: "b".to_string(),
-                    kind: "n.table.query".to_string(),
+                    kind: "table.query.run".to_string(),
                     input_pins: vec!["in".to_string()],
                     output_pins: vec!["out".to_string()],
                     config: json!({
@@ -5223,7 +5216,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --engine geodatafusion --from "$input.rows as points" --to-json --preview-rows 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
+[b] table.query.run --engine geodatafusion --from "$input.rows as points" --to-json --preview-rows 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
 
 [a] -> [b]
 "#;
@@ -5262,10 +5255,10 @@ mod tests {
     async fn logic_if_supports_dsl_input_scope() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { type: 'billing' };"
+[b] script.result.run -- "return { type: 'billing' };"
 [c] logic.if --expr "$input.type == 'billing'"
-[d] script -- "return { branch: 'true' };"
-[e] script -- "return { branch: 'false' };"
+[d] script.result.run -- "return { branch: 'true' };"
+[e] script.result.run -- "return { branch: 'false' };"
 
 [a] -> [b]
 [b] -> [c]
@@ -5299,11 +5292,11 @@ mod tests {
     async fn logic_match_supports_dsl_nodes_scope() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { kind: 'billing' };"
+[b] script.result.run -- "return { kind: 'billing' };"
 [c] logic.match --expr "$nodes.b.kind" --cases billing,technical --default default
-[d] script -- "return { lane: 'billing' };"
-[e] script -- "return { lane: 'technical' };"
-[f] script -- "return { lane: 'default' };"
+[d] script.result.run -- "return { lane: 'billing' };"
+[e] script.result.run -- "return { lane: 'technical' };"
+[f] script.result.run -- "return { lane: 'default' };"
 
 [a] -> [b]
 [b] -> [c]
@@ -5343,7 +5336,7 @@ mod tests {
 [a] trigger.manual
 [b] input.text prompt --label "Caption"
 [c] input.number count --default 3
-[d] script -- "return { echoed: input.body.prompt, prompt: $nodes.b, count: $nodes.c, keys: Object.keys(input).sort() };"
+[d] script.result.run -- "return { echoed: input.body.prompt, prompt: $nodes.b, count: $nodes.c, keys: Object.keys(input).sort() };"
 
 [a] -> [b]
 [b] -> [c]
@@ -5427,7 +5420,7 @@ mod tests {
         let foreach_trace = out
             .node_trace
             .iter()
-            .find(|entry| entry.node_kind == "n.logic.foreach")
+            .find(|entry| entry.node_kind == "logic.foreach")
             .expect("foreach trace");
         assert_eq!(foreach_trace.output["count"], 2);
         assert_eq!(foreach_trace.output["emissions"][0]["item"]["id"], "r1");
@@ -5484,8 +5477,8 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] logic.foreach --items-expr "$input.rows"
-[c] script -- "return { unrelated: true };"
-[d] script --source-expr "'return { key: ' + JSON.stringify($item.key) + ' };'"
+[c] script.result.run -- "return { unrelated: true };"
+[d] script.result.run --source-expr "'return { key: ' + JSON.stringify($item.key) + ' };'"
 [e] logic.reduce --init-expr "{ keys: [] }" --step-expr "{ keys: $acc.keys.concat([$input.key]) }"
 
 [a] -> [b]
@@ -5521,7 +5514,7 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] logic.foreach --items-expr "$input.rows"
-[c] script -- "return { v: input.item.amount * 10 };"
+[c] script.result.run -- "return { v: input.item.amount * 10 };"
 [d] logic.reduce --init-expr "{ vs: [] }" --step-expr "{ vs: $acc.vs.concat([$input.v]) }"
 
 [a] -> [b]
@@ -5595,8 +5588,8 @@ mod tests {
     async fn a_web_response_config_is_resolved_like_any_other_node() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "return { u: 'hello-from-expr' };"
-[c] web.response --message "{{ input.u }}"
+[b] script.result.run -- "return { u: 'hello-from-expr' };"
+[c] web.response.send --message "{{ input.u }}"
 
 [a] -> [b]
 [b] -> [c]
@@ -5630,10 +5623,10 @@ mod tests {
     async fn logic_retry_retries_until_success() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('retry me'); } return { ok: true, attempt };"
+[b] script.result.run -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('retry me'); } return { ok: true, attempt };"
 [r] logic.retry --max-attempts 3
-[c] script -- "return input;"
-[d] script -- "return input;"
+[c] script.result.run -- "return input;"
+[d] script.result.run -- "return input;"
 
 [a] -> [b]
 [b]:error -> [r]
@@ -5673,7 +5666,7 @@ mod tests {
         let dsl = r#"
 [t] trigger.manual
 [who] input.text who --optional --default world
-[s] script -- "return { hi: input.body.who, own: ctx.nodes.who };"
+[s] script.result.run -- "return { hi: input.body.who, own: ctx.nodes.who };"
 [t] -> [who]
 [who] -> [s]
 "#;
@@ -5715,9 +5708,9 @@ mod tests {
     async fn logic_retry_routes_to_failed_after_budget() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "throw new Error('always fail');"
+[b] script.result.run -- "throw new Error('always fail');"
 [r] logic.retry --max-attempts 2
-[c] script -- "return input;"
+[c] script.result.run -- "return input;"
 
 [a] -> [b]
 [b]:error -> [r]
@@ -5793,10 +5786,10 @@ mod tests {
     async fn a_routed_failure_is_a_retry_in_the_record_and_on_the_bus() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('not yet'); } return { ok: true, attempt };"
+[b] script.result.run -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('not yet'); } return { ok: true, attempt };"
 [r] logic.retry --max-attempts 5
-[c] script -- "return input;"
-[d] script -- "return { gaveup: true };"
+[c] script.result.run -- "return input;"
+[d] script.result.run -- "return { gaveup: true };"
 [a] -> [b]
 [b]:error -> [r]
 [r]:retry -> [b]
@@ -5853,8 +5846,8 @@ mod tests {
     async fn a_failure_routed_elsewhere_is_error_routed_and_an_unrouted_one_still_fails() {
         let dsl = r#"
 [a] trigger.manual
-[b] script -- "throw new Error('handled here');"
-[h] script -- "return { handled: input.error.message };"
+[b] script.result.run -- "throw new Error('handled here');"
+[h] script.result.run -- "return { handled: input.error.message };"
 [a] -> [b]
 [b]:error -> [h]
 "#;
@@ -5870,7 +5863,7 @@ mod tests {
 
         let (result, signals) = run_with_bus(
             "unrouted",
-            "[a] trigger.manual\n[b] script -- \"throw new Error('boom');\"\n[a] -> [b]\n",
+            "[a] trigger.manual\n[b] script.result.run -- \"throw new Error('boom');\"\n[a] -> [b]\n",
         )
         .await;
         let err = result.expect_err("the run fails");
@@ -5890,11 +5883,11 @@ mod tests {
     async fn logic_retry_takes_a_verdict_and_counts_for_itself() {
         let dsl = r#"
 [a] trigger.manual
-[poll] script -- "return { polled: true };"
-[check] script -- "const seen = (ctx.nodes.wait && ctx.nodes.wait.__zf_retry && ctx.nodes.wait.__zf_retry.attempt) || 0; return { retry: seen < 2, seen };"
+[poll] script.result.run -- "return { polled: true };"
+[check] script.result.run -- "const seen = (ctx.nodes.wait && ctx.nodes.wait.__zf_retry && ctx.nodes.wait.__zf_retry.attempt) || 0; return { retry: seen < 2, seen };"
 [wait] logic.retry --max-attempts 5
-[done] script -- "return { done: true, attempts: input.__zf_retry.attempt, seen: input.seen };"
-[gaveup] script -- "return { gaveup: true };"
+[done] script.result.run -- "return { done: true, attempts: input.__zf_retry.attempt, seen: input.seen };"
+[gaveup] script.result.run -- "return { gaveup: true };"
 [a] -> [poll]
 [poll] -> [check]
 [check] -> [wait]
@@ -5934,11 +5927,11 @@ mod tests {
         // The budget spent on a verdict that never turns false is `failed`.
         let dsl = r#"
 [a] trigger.manual
-[poll] script -- "return { polled: true };"
-[check] script -- "return { retry: true };"
+[poll] script.result.run -- "return { polled: true };"
+[check] script.result.run -- "return { retry: true };"
 [wait] logic.retry --max-attempts 2
-[done] script -- "return { done: true };"
-[gaveup] script -- "return { gaveup: true, attempts: input.__zf_retry.attempt };"
+[done] script.result.run -- "return { done: true };"
+[gaveup] script.result.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt };"
 [a] -> [poll]
 [poll] -> [check]
 [check] -> [wait]
@@ -5989,7 +5982,7 @@ enum NodeDispatch {
     AuthTokenCreate(auth::token_create::Node),
     AuthTokenVerify(auth::token_verify::Node),
     MailSend(mail::send::Node),
-    Concept(concept::Node),
+    Concept(logic::concept::Node),
     WebError(weberror::Node),
     WsTrigger(ws::trigger::Node),
     WsSyncState(ws::sync_state::Node),
@@ -6012,7 +6005,7 @@ enum NodeDispatch {
     BarcodeCode128(fs::barcode::code128::Node),
     SvgConvert(fs::svg::convert::Node),
     ImgChromakey(fs::image::chromakey::Node),
-    /// Any `n.input.*` kind — a pass-through validator of one envelope field.
+    /// Any `input.*` kind — a pass-through validator of one envelope field.
     Input(input::Node),
     KvSet(kv::set::Node),
     KvGet(kv::get::Node),
@@ -6025,7 +6018,7 @@ enum NodeDispatch {
     WsClientTrigger(trigger_ws_client::Node),
     WsClientSend(ws::client_send::Node),
     McpTrigger(mcp_trigger::Node),
-    /// A node provided by an installed bundle (`n.x.*`).
+    /// A node provided by an installed bundle (`x.*`).
     ///
     /// Role and implementation come from the package manifest at execution
     /// time, not from the node kind, so a node may move between composite and
@@ -6056,7 +6049,7 @@ const HOST_CHECKED_NETWORK_NODES: &[&str] = &[http::request::NODE_KIND, browser:
 /// cheapest way to reach an unreadable destination, so an author who declared
 /// truthfully would be the only one constrained.
 ///
-/// `n.script` is not a network node in the capability table, and with the
+/// `script.result.run` is not a network node in the capability table, and with the
 /// sandbox denying `fetch` it is not one in fact either. When an operator has
 /// granted the sandbox network access, it becomes an egress path this guard
 /// cannot read, and is refused on the same grounds as the rest.

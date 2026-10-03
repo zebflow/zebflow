@@ -1,4 +1,4 @@
-//! `n.logic.collect` — explicit together-processing fan-in node.
+//! `logic.collect` — explicit together-processing fan-in node.
 //!
 //! The node itself is a passthrough. The engine buffers incoming payloads by input pin until all
 //! declared inputs have arrived, then fires this node once with a grouped payload object.
@@ -11,7 +11,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.logic.collect";
+pub const NODE_KIND: &str = "logic.collect";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 

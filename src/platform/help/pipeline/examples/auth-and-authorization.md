@@ -53,20 +53,20 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /auth/login --method GET
-| web.response --template pages/auth-login.tsx
+| web.response.send --template pages/auth-login.tsx
 ```
 
 ### auth-login-submit — authenticate and issue token
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query --credential main-db --params "{{ [input.body.username] }}" \
+| pg.query.run --credential main-db --params "{{ [input.body.username] }}" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | logic.if --expr "input.rows && input.rows.length > 0"
-(false pin → `web.response --status 401 --message "invalid credentials"`)
-| script -- "const user = input.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
+(false pin → `web.response.send --status 401 --message "invalid credentials"`)
+| script.result.run -- "const user = input.rows[0]; return { id: user.id, username: user.username, roles: [user.role] };"
 | auth.token.create --credential my-jwt --claim "sub={{ input.id }}" --claim "username:public={{ input.username }}" --claim "roles:public={{ input.roles }}" --expires-in 86400
-| web.response --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
+| web.response.send --location /dashboard --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,path=/"
 ```
 
 > **Note:** `roles` must be an array in the JWT claim — wrap a single DB `role` string with `[user.role]`. If your schema already returns an array (junction table, `text[]` column), use it directly.
@@ -75,7 +75,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```
 | trigger.webhook --path /auth/register --method GET
-| web.response --template pages/auth-register.tsx
+| web.response.send --template pages/auth-register.tsx
 ```
 
 ### auth-register-submit — create new user
@@ -83,13 +83,13 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 ```
 | trigger.webhook --path /auth/register --method POST
 | logic.if --expr "input.body.username && input.body.email && input.body.password && input.body.password.length >= 12"
-(false pin → `web.response --status 400 --message "username, email and a password of at least 12 characters are required"`)
+(false pin → `web.response.send --status 400 --message "username, email and a password of at least 12 characters are required"`)
 | crypto --op argon2_hash --value "{{ input.body.password }}"
 (`n.crypto` adds `result` — the hash — to the payload and keeps everything
 else, so `input.body.username` is still there for the insert.)
-| pg.query --credential main-db --params "{{ [input.body.username, input.body.email, input.result, 'user'] }}" \
+| pg.query.run --credential main-db --params "{{ [input.body.username, input.body.email, input.result, 'user'] }}" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
-| web.response --location /auth/login?registered=1
+| web.response.send --location /auth/login?registered=1
 ```
 
 **Never hash a password yourself.** An earlier version of this example wrote
@@ -101,17 +101,17 @@ answers on `true`/`false` pins, so the branch is the check.
 
 ```
 | trigger.webhook --path /auth/logout --method GET
-| web.response --location /auth/login --set-cookie "name=session,value=,http-only,max-age=0,path=/"
+| web.response.send --location /auth/login --set-cookie "name=session,value=,http-only,max-age=0,path=/"
 ```
 
 ### dashboard-protected — JWT-protected page
 
 ```
 | trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
-| pg.query --credential main-db --params "{{ input.auth.sub }}" \
+| pg.query.run --credential main-db --params "{{ input.auth.sub }}" \
     -- "SELECT id::text, username, email, role FROM users WHERE id = $1::uuid"
-| script -- "const u = input.rows?.[0]; return { user: u }"
-| web.response --template pages/dashboard.tsx
+| script.result.run -- "const u = input.rows?.[0]; return { user: u }"
+| web.response.send --template pages/dashboard.tsx
 ```
 
 JWT missing/invalid → `auth_redirect` fires as a 303 redirect (browser navigation) or 401 JSON (fetch/API).
@@ -120,8 +120,8 @@ JWT missing/invalid → `auth_redirect` fires as a 303 redirect (browser navigat
 
 ```
 | trigger.webhook --path /admin/:section --method GET --auth-type jwt --auth-credential my-jwt --auth-required-role admin
-| script -- "return { section: input.params.section, user: input.auth }"
-| web.response --template pages/admin-section.tsx
+| script.result.run -- "return { section: input.params.section, user: input.auth }"
+| web.response.send --template pages/admin-section.tsx
 ```
 
 Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser navigation) or 403 JSON (fetch/API).
@@ -132,11 +132,11 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — comma-separated roles; checks against JWT `roles` array claim. Empty = any authenticated user.
-- `pg.query` — user lookup and insert
+- `pg.query.run` — user lookup and insert
 - `auth.token.create --claim "key={{ input.field }}"` — sign JWT; output `{{ input.access_token }}`. End the claim name with `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim "role:public={{ input.role }}"`). Private claims like `sub` never reach the browser DOM.
-- `web.response --set-cookie` — set HttpOnly session cookie
-- `web.response --location` — redirect after login/logout/register
-- `web.response --template` — render protected pages
+- `web.response.send --set-cookie` — set HttpOnly session cookie
+- `web.response.send --location` — redirect after login/logout/register
+- `web.response.send --template` — render protected pages
 
 ---
 
@@ -148,6 +148,6 @@ Role mismatch → `auth_forbidden_redirect` fires as a 303 redirect (browser nav
 - `pages/admin-section.tsx` — admin panel; receives `input.section` + `input.user`
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

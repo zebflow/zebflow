@@ -9,7 +9,7 @@
     "nodes": [
       {
         "id": "trigger",
-        "kind": "n.trigger.function",
+        "kind": "trigger.function",
         "config": {},
         "input_pins": [],
         "output_pins": [
@@ -18,7 +18,7 @@
       },
       {
         "id": "prepare",
-        "kind": "n.script",
+        "kind": "script.result.run",
         "config": {
           "source": "var body = { chat_id: String(input.chat_id), document: String(input.document) }; if (input.caption) body.caption = String(input.caption); if (input.parse_mode) body.parse_mode = String(input.parse_mode); if (input.disable_notification) body.disable_notification = true; return body;"
         },
@@ -31,7 +31,7 @@
       },
       {
         "id": "send",
-        "kind": "n.http.request",
+        "kind": "http.response.fetch",
         "config": {
           "method": "POST",
           "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/sendDocument",

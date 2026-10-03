@@ -1,4 +1,4 @@
-//! `n.browser.run` — execute a Playwright/Puppeteer script via a Browserless-compatible HTTP endpoint.
+//! `browser.page.run` — execute a Playwright/Puppeteer script via a Browserless-compatible HTTP endpoint.
 //!
 //! # Pipeline position
 //! Middleware node. Requires an upstream trigger and produces a downstream payload.
@@ -17,8 +17,8 @@
 //!
 //! # DSL
 //! ```text
-//! | n.trigger.webhook --path /scrape
-//! | n.browser.run --credential browserless-local
+//! | trigger.webhook --path /scrape
+//! | browser.page.run --credential browserless-local
 //! ```
 
 use std::sync::Arc;
@@ -39,7 +39,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::CredentialService;
 
-pub const NODE_KIND: &str = "n.browser.run";
+pub const NODE_KIND: &str = "browser.page.run";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
@@ -102,7 +102,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.run --credential browserless_main --timeout-ms 20000 -- "export default async ({ page }) => { await page.goto('{{ input.body.url }}'); return { title: await page.title() }; }""#)
+            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.page.run --credential browserless_main --timeout-ms 20000 -- "export default async ({ page }) => { await page.goto('{{ input.body.url }}'); return { title: await page.title() }; }""#)
                 .input(serde_json::json!({ "body": { "url": "https://example.com" } }))
                 .output(serde_json::json!({ "title": "Example Domain" })),
         ],

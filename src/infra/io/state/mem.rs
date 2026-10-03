@@ -24,7 +24,7 @@ const KV_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS kv (
 
 /// Durable KV storage: one SQLite file per project namespace.
 ///
-/// Each project's durable `n.kv.*` state lives at
+/// Each project's durable `kv.*` state lives at
 /// `{data_root}/users/{owner}/{project}/data/store/kv.db` — the `store` tier
 /// of `docs/contracts/project-directory.md` — so a project backup, transfer,
 /// or removal carries its durable state with the project instead of leaving

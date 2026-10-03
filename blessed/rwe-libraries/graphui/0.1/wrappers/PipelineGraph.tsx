@@ -80,7 +80,7 @@ export interface PreviewCell {
   height?: number;
 }
 
-/** One `n.input.*` node's Run-form field, already resolved by the host. */
+/** One `input.*` node's Run-form field, already resolved by the host. */
 export interface InputWidgetSpec {
   /** The word after `input.`: text, number, boolean, json, file, files, image, audio, video. */
   kind: string;
@@ -172,7 +172,7 @@ export interface PipelineGraphProps {
     size: { width: number; height: number }
   ) => void;
   /**
-   * Run-form fields drawn under `n.input.*` node boxes, keyed by pipeline
+   * Run-form fields drawn under `input.*` node boxes, keyed by pipeline
    * node id. Widget first, preview beneath. Values live in the host's state:
    * the canvas stores nothing and never writes the pipeline.
    */

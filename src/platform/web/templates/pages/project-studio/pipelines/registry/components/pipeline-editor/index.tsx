@@ -352,7 +352,7 @@ export default function PipelineEditor({
   );
 
   // ── Run form ────────────────────────────────────────────────────────────────
-  // Every `n.input.*` node draws a field under its box; the values live here
+  // Every `input.*` node draws a field under its box; the values live here
   // and only here — never in the pipeline file. Run collects them.
   const inputSpecs = useMemo(() => collectInputNodes(currentGraph), [currentGraph]);
   const [inputValues, setInputValues] = useState<Record<string, unknown>>({});
@@ -450,7 +450,7 @@ export default function PipelineEditor({
           }));
         } catch {}
       }
-      // Load function pipelines for n.function.call datalist + n.ai.agent tool list
+      // Load function pipelines for function.result.call datalist + ai.text.generate tool list
       if (owner && project) {
         try {
           const data = await requestJson(
@@ -460,9 +460,9 @@ export default function PipelineEditor({
           const fnPipelines = items.filter(
             (i: any) => String(i?.meta?.trigger_kind || "").toLowerCase() === "function"
           );
-          // Merge function pipeline slugs into aiTools so n.ai.agent multi-checkbox shows them
+          // Merge function pipeline slugs into aiTools so ai.text.generate multi-checkbox shows them
           const fnPipelineTools = fnPipelines.map((i: any) => ({
-            kind: "n.trigger.function",
+            kind: "trigger.function",
             tool_name: String(i?.meta?.name || ""),
             tool_description: `Function pipeline: ${i?.meta?.title || i?.meta?.name || ""}`,
           })).filter((t: any) => t.tool_name);
@@ -470,7 +470,7 @@ export default function PipelineEditor({
             ...prev,
             functionPipelines: fnPipelines,
             aiTools: [
-              ...(prev.aiTools || []).filter((t: any) => t.kind !== "n.trigger.function"),
+              ...(prev.aiTools || []).filter((t: any) => t.kind !== "trigger.function"),
               ...fnPipelineTools,
             ],
           }));
@@ -849,7 +849,7 @@ export default function PipelineEditor({
         outputs: normalizeNodePins(kind, "output", entry?.output_pins || [], ["out"]),
       });
       node.zfKind = kind;
-      node.zfConfig = canonicalNodeKind(kind) === "n.trigger.webhook"
+      node.zfConfig = canonicalNodeKind(kind) === "trigger.webhook"
         ? { method: "GET" }
         : {};
       node.zfOutputLabels = deriveNodeOutputLabels(
@@ -891,10 +891,10 @@ export default function PipelineEditor({
 
   function defaultConfigForNode(kind: string) {
     const canonical = canonicalNodeKind(kind);
-    if (canonical === "n.trigger.webhook") {
+    if (canonical === "trigger.webhook") {
       return { method: "GET" };
     }
-    if (canonical === "n.logic.match") {
+    if (canonical === "logic.match") {
       return { cases: [], default: { pin: "default", label: "Default" } };
     }
     return {};

@@ -23,7 +23,7 @@ bundle per page. Facts: `help(topic="web")`, `web/hooks`, `web/tailwind`,
    on the next. Nothing is inherited.
 3. **`input` is the payload.** The page's parameter is what the pipeline's last
    node produced, plus `route`, `params`, `query`, `search`, `headers`,
-   `auth`. After `sekejap.query` that is `input.rows`. There is no
+   `auth`. After `sekejap.query.run` that is `input.rows`. There is no
    `input.state`, no `input.request`.
 4. **Server data from `input`; client state from hooks.** `useState` for local
    state, `usePageState("key", default)` for state shared across the page's

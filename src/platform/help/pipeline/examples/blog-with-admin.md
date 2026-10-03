@@ -33,9 +33,9 @@ and keeps the rest, so the next node still sees `username` and `roles`:
 
 ```zf
 run
-| script -- "return { username: 'admin', password: 'changeme', roles: ['admin'] }"
+| script.result.run -- "return { username: 'admin', password: 'changeme', roles: ['admin'] }"
 | crypto --op argon2_hash --value "{{ input.password }}"
-| sekejap.query --read-only false --params "{{ [input.username, input.result, input.roles] }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
+| sekejap.query.run --read-only false --params "{{ [input.username, input.result, input.roles] }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
 ```
 
 ---
@@ -46,9 +46,9 @@ run
 
 ```
 | trigger.webhook --path /blog --method GET
-| sekejap.query -- "SELECT * FROM posts WHERE published = true ORDER BY created_at DESC LIMIT 20"
-| script -- "return { posts: input.rows }"
-| web.response --template pages/blog-home.tsx
+| sekejap.query.run -- "SELECT * FROM posts WHERE published = true ORDER BY created_at DESC LIMIT 20"
+| script.result.run -- "return { posts: input.rows }"
+| web.response.send --template pages/blog-home.tsx
 ```
 
 ### blog-detail — single post
@@ -56,11 +56,11 @@ run
 ```zf
 register blog/detail --
 [a] trigger.webhook --path /blog/:slug --method GET
-[b] sekejap.query --params "{{ [input.params.slug] }}" -- "SELECT * FROM posts WHERE _key = $1 AND published = true"
+[b] sekejap.query.run --params "{{ [input.params.slug] }}" -- "SELECT * FROM posts WHERE _key = $1 AND published = true"
 [c] logic.if --expr "input.rows.length > 0"
-[d] script -- "return { post: input.rows[0] };"
-[e] web.response --template pages/blog-detail.tsx
-[f] web.response --location /blog
+[d] script.result.run -- "return { post: input.rows[0] };"
+[e] web.response.send --template pages/blog-detail.tsx
+[f] web.response.send --location /blog
 
 [a] -> [b]
 [b] -> [c]
@@ -76,9 +76,9 @@ the pipeline only ever runs for someone already verified.
 
 ```
 | trigger.webhook --path /admin/posts --method GET --auth-type jwt --auth-credential blog-jwt --auth-required-role admin
-| sekejap.query -- "SELECT * FROM posts ORDER BY created_at DESC"
-| script -- "return { posts: input.rows }"
-| web.response --template pages/admin-posts.tsx
+| sekejap.query.run -- "SELECT * FROM posts ORDER BY created_at DESC"
+| script.result.run -- "return { posts: input.rows }"
+| web.response.send --template pages/admin-posts.tsx
 ```
 
 ### api-post-upsert — create or update post
@@ -89,13 +89,13 @@ Sekejap has no `UPSERT`/`ON CONFLICT`. Look the slug up first, then branch:
 register blog/api-post-upsert --
 [trig] trigger.webhook --path /api/posts --method POST --auth-type jwt --auth-credential blog-jwt --auth-required-role admin
 [has_title] logic.if --expr "!!(input.body && input.body.title)"
-[bad] web.response --status 400 --body "{{ { ok: false, error: 'title required' } }}"
-[draft] script -- "const slug = input.body.slug || String(input.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: input.body.title, body: input.body.body || '', published: !!input.body.published };"
-[find] sekejap.query --params "{{ [$nodes.draft.slug] }}" -- "SELECT _key FROM posts WHERE _key = $1"
+[bad] web.response.send --status 400 --body "{{ { ok: false, error: 'title required' } }}"
+[draft] script.result.run -- "const slug = input.body.slug || String(input.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: input.body.title, body: input.body.body || '', published: !!input.body.published };"
+[find] sekejap.query.run --params "{{ [$nodes.draft.slug] }}" -- "SELECT _key FROM posts WHERE _key = $1"
 [exists] logic.if --expr "input.rows.length > 0"
-[update] sekejap.query --read-only false --params "{{ [$nodes.draft.title, $nodes.draft.body, $nodes.draft.published, Date.now(), $nodes.draft.slug] }}" -- "UPDATE posts SET title = $1, body = $2, published = $3, updated_at = $4 WHERE _key = $5"
-[insert] sekejap.query --read-only false --params "{{ [$nodes.draft.slug, $nodes.draft.title, $nodes.draft.body, $nodes.draft.published, Date.now(), Date.now()] }}" -- "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"
-[ok] web.response --body "{{ { ok: true, slug: $nodes.draft.slug } }}"
+[update] sekejap.query.run --read-only false --params "{{ [$nodes.draft.title, $nodes.draft.body, $nodes.draft.published, Date.now(), $nodes.draft.slug] }}" -- "UPDATE posts SET title = $1, body = $2, published = $3, updated_at = $4 WHERE _key = $5"
+[insert] sekejap.query.run --read-only false --params "{{ [$nodes.draft.slug, $nodes.draft.title, $nodes.draft.body, $nodes.draft.published, Date.now(), Date.now()] }}" -- "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+[ok] web.response.send --body "{{ { ok: true, slug: $nodes.draft.slug } }}"
 
 [trig] -> [has_title]
 [has_title]:false -> [bad]
@@ -109,15 +109,15 @@ register blog/api-post-upsert --
 ```
 
 `$nodes.draft.slug` reaches back to the `[draft]` script's output by its
-graph id — it still resolves after `[find]`'s `sekejap.query` has replaced
+graph id — it still resolves after `[find]`'s `sekejap.query.run` has replaced
 `input` with `{ columns, rows, … }`.
 
 ### api-post-delete — delete post
 
 ```
 | trigger.webhook --path /api/posts/:slug --method DELETE --auth-type jwt --auth-credential blog-jwt --auth-required-role admin
-| sekejap.query --read-only false --params "{{ [input.params.slug] }}" -- "DELETE FROM posts WHERE _key = $1"
-| script -- "return { ok: true }"
+| sekejap.query.run --read-only false --params "{{ [input.params.slug] }}" -- "DELETE FROM posts WHERE _key = $1"
+| script.result.run -- "return { ok: true }"
 ```
 
 ### auth-login — issue JWT
@@ -125,12 +125,12 @@ graph id — it still resolves after `[find]`'s `sekejap.query` has replaced
 ```zf
 register blog/auth-login --
 [trig] trigger.webhook --path /auth/login --method POST
-[lookup] sekejap.query --params "{{ [input.body.username] }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
+[lookup] sekejap.query.run --params "{{ [input.body.username] }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
 [found] logic.if --expr "input.rows.length > 0"
 [verify] crypto --op argon2_verify --value "{{ input.body.password }}" --hash "{{ input.rows[0].password_hash }}"
 [token] auth.token.create --credential blog-jwt --claim "sub={{ input.rows[0]._key }}" --claim "roles:public={{ input.rows[0].roles }}" --expires-in 86400
-[welcome] web.response --location /admin --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax,path=/"
-[denied] web.response --status 401 --message "invalid credentials"
+[welcome] web.response.send --location /admin --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax,path=/"
+[denied] web.response.send --status 401 --message "invalid credentials"
 
 [trig] -> [lookup]
 [lookup] -> [found]
@@ -151,12 +151,12 @@ the comparison is both the branch and constant-time.
 ## Nodes Used
 
 - `trigger.webhook` — HTTP endpoints (GET, POST, DELETE); `--auth-type jwt` gates admin routes
-- `sekejap.query` — SQL against Sekejap; no `--table`/`--op`, just `SELECT`/`INSERT`/`UPDATE`/`DELETE` with `--params`
+- `sekejap.query.run` — SQL against Sekejap; no `--table`/`--op`, just `SELECT`/`INSERT`/`UPDATE`/`DELETE` with `--params`
 - `logic.if` — branch on "does this slug/user already exist"
 - `script` — slugify, validate, shape rows
 - `crypto` — `argon2_hash` to seed the password, `argon2_verify` to check it
-- `auth.token.create` / `web.response --set-cookie` — issue the session
-- `web.response` — TSX templates for public and admin pages
+- `auth.token.create` / `web.response.send --set-cookie` — issue the session
+- `web.response.send` — TSX templates for public and admin pages
 
 ---
 
@@ -167,6 +167,6 @@ the comparison is both the branch and constant-time.
 - `pages/admin-posts.tsx` — admin CRUD interface
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

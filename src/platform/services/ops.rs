@@ -1822,7 +1822,7 @@ mod rename_tests {
                 "entry_nodes": ["n0"],
                 "nodes": [{
                     "id": "n0",
-                    "kind": "n.trigger.webhook",
+                    "kind": "trigger.webhook",
                     "input_pins": [],
                     "output_pins": ["out"],
                     "config": { "path": "/hook", "method": "POST" }
@@ -2805,7 +2805,7 @@ fn pipeline_purpose(meta: &PipelineMeta) -> &str {
 fn normalize_trigger_filter(value: &str) -> String {
     let lower = value.trim().to_lowercase();
     lower
-        .strip_prefix("n.trigger.")
+        .strip_prefix("trigger.")
         .or_else(|| lower.strip_prefix("trigger."))
         .unwrap_or(&lower)
         .to_string()
@@ -2814,7 +2814,7 @@ fn normalize_trigger_filter(value: &str) -> String {
 fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
     let fallback = if meta.trigger_kind.trim().is_empty() {
         "n.trigger.unknown".to_string()
-    } else if meta.trigger_kind.starts_with("n.trigger.") {
+    } else if meta.trigger_kind.starts_with("trigger.") {
         meta.trigger_kind.clone()
     } else {
         format!("n.trigger.{}", meta.trigger_kind)
@@ -2835,13 +2835,13 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
     let Some(node) = graph
         .nodes
         .iter()
-        .find(|node| node.kind.starts_with("n.trigger."))
+        .find(|node| node.kind.starts_with("trigger."))
     else {
         return fallback;
     };
 
     match node.kind.as_str() {
-        "n.trigger.webhook" => {
+        "trigger.webhook" => {
             let method = node
                 .config
                 .get("method")
@@ -2854,16 +2854,16 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or("/");
-            format!("n.trigger.webhook {} {}", method.to_uppercase(), path)
+            format!("trigger.webhook {} {}", method.to_uppercase(), path)
         }
-        "n.trigger.schedule" => {
+        "trigger.schedule" => {
             let cron = node
                 .config
                 .get("cron")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or("* * * * *");
-            format!("n.trigger.schedule {cron}")
+            format!("trigger.schedule {cron}")
         }
         "n.trigger.memsubscribe" => {
             let channel = node
@@ -2874,16 +2874,16 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
                 .unwrap_or("*");
             format!("n.trigger.memsubscribe {channel}")
         }
-        "n.trigger.mcp" => {
+        "trigger.mcp" => {
             let tool_name = node
                 .config
                 .get("tool_name")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or(&meta.name);
-            format!("n.trigger.mcp {tool_name}")
+            format!("trigger.mcp {tool_name}")
         }
-        "n.trigger.function" => format!("n.trigger.function {}", meta.name),
+        "trigger.function" => format!("trigger.function {}", meta.name),
         other => other.to_string(),
     }
 }
@@ -3021,7 +3021,7 @@ fn extract_pipeline_node(source: &str, node_id: &str, file_rel_path: &str) -> Op
         None => return OpsResult::err("Pipeline has no 'nodes' array"),
     };
 
-    // Parse node_id: could be "n0", "trigger.webhook", "pg.query[1]"
+    // Parse node_id: could be "n0", "trigger.webhook", "pg.query.run[1]"
     let (kind_filter, index_filter) = if node_id.contains('[') {
         // kind[index] form
         let parts: Vec<&str> = node_id.splitn(2, '[').collect();
@@ -3032,7 +3032,7 @@ fn extract_pipeline_node(source: &str, node_id: &str, file_rel_path: &str) -> Op
             .unwrap_or(0);
         (Some(kind.to_string()), Some(idx))
     } else if node_id.contains('.') || node_id.contains(':') {
-        // Looks like a kind (e.g. "trigger.webhook", "pg.query")
+        // Looks like a kind (e.g. "trigger.webhook", "pg.query.run")
         (Some(node_id.to_string()), None)
     } else {
         // Opaque ID

@@ -221,11 +221,11 @@ fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
         .nodes
         .iter()
         .find_map(|node| match node.kind.as_str() {
-            "n.trigger.webhook" => Some("webhook".to_string()),
-            "n.trigger.schedule" => Some("schedule".to_string()),
-            "n.trigger.ws" => Some("ws".to_string()),
+            "trigger.webhook" => Some("webhook".to_string()),
+            "trigger.schedule" => Some("schedule".to_string()),
+            "trigger.room" => Some("ws".to_string()),
             "n.trigger.memsubscribe" => Some("memsubscribe".to_string()),
-            "n.trigger.function" => Some("function".to_string()),
+            "trigger.function" => Some("function".to_string()),
             _ => None,
         })
 }

@@ -1,4 +1,4 @@
-//! n.geo.convert — convert a spatial dataset between formats.
+//! geo.dataset.convert — convert a spatial dataset between formats.
 //!
 //! Delegates to `geonative_convert::convert()`. Reads `.gdb`, `.shp`,
 //! `.parquet`, `.geojson`; writes `.parquet` or `.geojson`. Optionally
@@ -21,7 +21,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.geo.convert";
+pub const NODE_KIND: &str = "geo.dataset.convert";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -260,9 +260,9 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Shapefile to GeoParquet in WGS84", "geo.convert --from uploads/suburbs.zip --folder datasets --filename suburbs.parquet --to-crs EPSG:4326 --hilbert")
-                .output(serde_json::json!({ "converted": { "source": "uploads/suburbs.zip", "store": "local", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "datasets/suburbs.parquet", "filename": "suburbs.parquet", "mime": "application/vnd.apache.parquet", "kind": "parquet", "size": 918233, "sha256": "sha256:…", "lifecycle": "durable", "origin": "geo.convert", "trust": "generated" }, "files": ["…every file written, sidecars too"], "features": 312, "elapsed_secs": 0.8 } }))
-                .note("Then `ms.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --source-kind geoparquet`."),
+            crate::pipeline::model::NodeExample::dsl("Shapefile to GeoParquet in WGS84", "geo.dataset.convert --from uploads/suburbs.zip --folder datasets --filename suburbs.parquet --to-crs EPSG:4326 --hilbert")
+                .output(serde_json::json!({ "converted": { "source": "uploads/suburbs.zip", "store": "local", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "datasets/suburbs.parquet", "filename": "suburbs.parquet", "mime": "application/vnd.apache.parquet", "kind": "parquet", "size": 918233, "sha256": "sha256:…", "lifecycle": "durable", "origin": "geo.dataset.convert", "trust": "generated" }, "files": ["…every file written, sidecars too"], "features": 312, "elapsed_secs": 0.8 } }))
+                .note("Then `ms.layer.publish --name suburbs --route suburbs --from datasets/suburbs.parquet --source-kind geoparquet`."),
         ],
         ..Default::default()
     }
@@ -332,7 +332,7 @@ impl NodeHandler for Node {
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
         let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_GEO_CONVERT")?;
         if !on_conflict.allows(&store.fs, &output_rel, "FW_NODE_GEO_CONVERT")? {
-            let file = store.stored_ref(&output_rel, "geo.convert", "generated", "FW_NODE_GEO_CONVERT")?;
+            let file = store.stored_ref(&output_rel, "geo.dataset.convert", "generated", "FW_NODE_GEO_CONVERT")?;
             return Ok(answer(&input.payload, json!({
                 "source": input_rel, "store": store.id, "file": file, "files": [], "skipped": true
             }), format!("node_kind={NODE_KIND} input={input_rel} output={output_rel} skipped=true")));
@@ -409,7 +409,7 @@ impl NodeHandler for Node {
                 }
             }
         }
-        let files = scratch.push_tree_refs(&store, &output_dir_local, &output_parent_rel, "geo.convert", "generated")?;
+        let files = scratch.push_tree_refs(&store, &output_dir_local, &output_parent_rel, "geo.dataset.convert", "generated")?;
         let file = files
             .iter()
             .find(|file| file.get("ref").and_then(|value| value.as_str()) == Some(output_rel.as_str()))

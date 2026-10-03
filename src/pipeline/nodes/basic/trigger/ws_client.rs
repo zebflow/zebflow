@@ -1,4 +1,4 @@
-//! `n.trigger.ws.client` — connect to an external WebSocket server and fire the pipeline on each message.
+//! `trigger.socket` — connect to an external WebSocket server and fire the pipeline on each message.
 //!
 //! This is a **passthrough trigger node** — it does not do any work at execution time.
 //! The real connection happens in [`crate::infra::ws_client::WsClientManager`],
@@ -21,8 +21,8 @@
 //! # Example
 //!
 //! ```text
-//! | n.trigger.ws.client --url wss://stream.example.com/feed
-//! | n.script -- "return { event: input.message };"
+//! | trigger.socket --url wss://stream.example.com/feed
+//! | script.result.run -- "return { event: input.message };"
 //! | n.ws.emit --event feed --room dashboard --to all
 //! ```
 
@@ -37,7 +37,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.trigger.ws.client";
+pub const NODE_KIND: &str = "trigger.socket";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
@@ -49,7 +49,7 @@ pub fn definition() -> NodeDefinition {
             for every message it receives — price feeds, a broker, another Zebflow. `--url` is `ws://` or `wss://`; `--credential` \
             supplies auth if the server needs it; reconnects with backoff by default. The payload is `{ trigger: \"ws_client\", url, \
             node_id, message }` — the message is `input.message` (parsed JSON with `--message-format json`, a string with `text`). \
-            To send back on the same connection use `ws.client.send --connection <this node id>`. Not for browsers: that is `trigger.ws`."
+            To send back on the same connection use `ws.client.send --connection <this node id>`. Not for browsers: that is `trigger.room`."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
@@ -162,7 +162,7 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Follow a price feed", r#"trigger.ws.client --url wss://feed.example.com/ticks --message-format json"#)
+            crate::pipeline::model::NodeExample::dsl("Follow a price feed", r#"trigger.socket --url wss://feed.example.com/ticks --message-format json"#)
                 .output(serde_json::json!({ "trigger": "ws_client", "url": "wss://feed.example.com/ticks", "node_id": "n0", "message": { "symbol": "AUDUSD", "bid": 0.6512 } })),
         ],
         ..Default::default()
@@ -231,7 +231,7 @@ impl NodeHandler for Node {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
-            trace: vec![format!("n.trigger.ws.client: url={}", self.config.url)],
+            trace: vec![format!("trigger.socket: url={}", self.config.url)],
         })
     }
 }

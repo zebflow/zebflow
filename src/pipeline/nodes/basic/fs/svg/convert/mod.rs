@@ -1,9 +1,9 @@
-//! `n.fs.svg.convert` — an SVG, as a picture. No browser: resvg draws it.
+//! `fs.image.render` — an SVG, as a picture. No browser: resvg draws it.
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | The SVG a model wrote, kept as a PNG | `\| ai.agent --credential openrouter --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' --prompt "…" \| fs.svg.convert --source-key data.svg --folder posters --preview image` |
-//! | A stored SVG at a size | `\| fs.svg.convert --source-key saved --width 512 --height 512 --fit contain --format webp --folder logos` |
+//! | The SVG a model wrote, kept as a PNG | `\| ai.text.generate --credential openrouter --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' --prompt "…" \| fs.image.render --source-key data.svg --folder posters --preview image` |
+//! | A stored SVG at a size | `\| fs.image.render --source-key saved --width 512 --height 512 --fit contain --format webp --folder logos` |
 //!
 //! # The source
 //!
@@ -17,7 +17,7 @@
 //!   (`sandbox/posters/photos/venue.jpg`, or the same behind `zebfs://`) or
 //!   a repository file under `static/` (`repo://static/brand/logo.svg`). A
 //!   URL or a `data:` URI is refused, naming the href — fetch with
-//!   `http.request --response-type bytes`, `fs.save` it, then name the path.
+//!   `http.response.fetch --response-type bytes`, `fs.save` it, then name the path.
 //!   An `.svg` picture draws with the same fonts and may load no pictures of
 //!   its own. Caps: 10 MB a file, 40 MP a raster, 512 KB an SVG.
 //! - **Fonts the project has.** `font-family` resolves against the bundled
@@ -54,7 +54,7 @@
 //!
 //! # The answer
 //!
-//! The payload plus `image`: a durable FileRef (`origin: fs.svg.convert`,
+//! The payload plus `image`: a durable FileRef (`origin: fs.image.render`,
 //! `trust: generated`) with `width`, `height` and `format` beside the eleven
 //! contract fields, written under `--folder` (default `images/`) as
 //! `--filename` or a UUID, with `image.layout`. `--format png|jpg|webp|pdf`
@@ -102,10 +102,10 @@ pub use sources::{MAX_SVG_BYTES, MemoryStore, Resolver, Source, SourceStore, loo
 #[cfg(test)]
 pub(crate) use tests::test_support;
 
-pub const NODE_KIND: &str = "n.fs.svg.convert";
+pub const NODE_KIND: &str = "fs.image.render";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
-pub const ORIGIN: &str = "fs.svg.convert";
+pub const ORIGIN: &str = "fs.image.render";
 const DEFAULT_FOLDER: &str = "images";
 const DEFAULT_SOURCE_KEY: &str = "svg";
 const DEFAULT_QUALITY: u8 = 82;
@@ -186,7 +186,7 @@ pub fn definition() -> NodeDefinition {
             "properties": {
                 "image": {
                     "type": "object",
-                    "description": "A durable FileRef (kinds/file-ref/README.md) of the picture, `origin` fs.svg.convert, plus `width`, `height`, `format`, `layout` and `source_deleted`. The store path is `ref`.",
+                    "description": "A durable FileRef (kinds/file-ref/README.md) of the picture, `origin` fs.image.render, plus `width`, `height`, `format`, `layout` and `source_deleted`. The store path is `ref`.",
                     "properties": {
                         "ref":    { "type": "string" },
                         "width":  { "type": "integer" },
@@ -274,14 +274,14 @@ pub fn definition() -> NodeDefinition {
             NodeFailureSemantic { code: "FW_NODE_FS_SVG_CONVERT_RASTER".into(), description: "resvg, the encoder or the store write failed.".into(), retryable: true, ..Default::default() },
         ],
         examples: vec![
-            NodeExample::dsl("A poster the model wrote, kept as a PNG", "fs.svg.convert --source-key data.svg --folder sandbox/posters/out --preview image")
+            NodeExample::dsl("A poster the model wrote, kept as a PNG", "fs.image.render --source-key data.svg --folder sandbox/posters/out --preview image")
                 .input(json!({ "data": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1080\" height=\"1350\"><rect width=\"1080\" height=\"1350\" fill=\"#012169\"/><text x=\"540\" y=\"640\" font-family=\"Inter\" font-weight=\"800\" font-size=\"120\" fill=\"#fff\" text-anchor=\"middle\" inline-size=\"918\">RESEARCH SHOWCASE NIGHT</text></svg>" } }))
-                .output(json!({ "data": { "svg": "<svg …>" }, "image": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/out/9f2c….png", "filename": "9f2c….png", "mime": "image/png", "kind": "image", "size": 412300, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.svg.convert", "trust": "generated", "width": 1080, "height": 1350, "format": "png" } }))
-                .note("`ai.agent --schema '{\"type\":\"object\",\"required\":[\"svg\"],\"properties\":{\"svg\":{\"type\":\"string\"}}}'` before it answers the SVG as `data.svg`. `inline-size` wraps the headline; pictures are `<image href=\"sandbox/posters/photos/venue.jpg\">`."),
-            NodeExample::dsl("A certificate as a PDF, the name shrunk to its line", "fs.svg.convert --source-key svg --format pdf --folder certificates --filename cert-2026-0412")
+                .output(json!({ "data": { "svg": "<svg …>" }, "image": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/out/9f2c….png", "filename": "9f2c….png", "mime": "image/png", "kind": "image", "size": 412300, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.image.render", "trust": "generated", "width": 1080, "height": 1350, "format": "png" } }))
+                .note("`ai.text.generate --schema '{\"type\":\"object\",\"required\":[\"svg\"],\"properties\":{\"svg\":{\"type\":\"string\"}}}'` before it answers the SVG as `data.svg`. `inline-size` wraps the headline; pictures are `<image href=\"sandbox/posters/photos/venue.jpg\">`."),
+            NodeExample::dsl("A certificate as a PDF, the name shrunk to its line", "fs.image.render --source-key svg --format pdf --folder certificates --filename cert-2026-0412")
                 .input(json!({ "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1123\" height=\"794\">…<text x=\"561\" y=\"420\" font-family=\"Inter\" font-size=\"64\" text-anchor=\"middle\" inline-size=\"900\" data-fit=\"shrink\" data-min-size=\"28\">Alexandra Josephine Montgomery Whitfield</text>…</svg>" }))
-                .note("A `fs.get` of the template .svg and a `script` that fills the placeholders come before it. The name is real text in the PDF; a long one shrinks instead of wrapping. `--width/--height/--fit` are refused with pdf."),
-            NodeExample::dsl("A stored SVG at a size", "fs.svg.convert --source-key saved --width 512 --height 512 --fit contain --format webp --folder logos")
+                .note("A `fs.file.get` of the template .svg and a `script` that fills the placeholders come before it. The name is real text in the PDF; a long one shrinks instead of wrapping. `--width/--height/--fit` are refused with pdf."),
+            NodeExample::dsl("A stored SVG at a size", "fs.image.render --source-key saved --width 512 --height 512 --fit contain --format webp --folder logos")
                 .input(json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/logo.svg", "filename": "logo.svg", "mime": "image/svg+xml", "kind": "image", "size": 2210, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
                 .note("After `fs.save --allowed-kinds images`. `contain` keeps the proportions, so a wide logo answers 512×n."),
         ],

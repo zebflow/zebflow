@@ -1,4 +1,4 @@
-//! `n.fs.image.chromakey` — a green screen made transparent, so the picture
+//! `fs.image.chromakey` — a green screen made transparent, so the picture
 //! can sit on anything.
 //!
 //! | Use | DSL |
@@ -28,7 +28,7 @@
 //! `format` — to the payload, keeping the rest. With `--delete-source` the
 //! original is removed and its key dropped.
 //!
-//! Put it in a poster with `fs.svg.convert`: `<image href="<image.ref>"
+//! Put it in a poster with `fs.image.render`: `<image href="<image.ref>"
 //! …/>` composites the alpha over whatever is drawn under it.
 
 use std::sync::Arc;
@@ -50,7 +50,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.fs.image.chromakey";
+pub const NODE_KIND: &str = "fs.image.chromakey";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 pub const ORIGIN: &str = "fs.image.chromakey";
@@ -142,7 +142,7 @@ pub fn definition() -> NodeDefinition {
         description: "Make a green screen transparent. Reads the source at `--source-key` (default `saved`, right after `fs.save`), turns every pixel within \
             `--tolerance` of `--color` (default #00b140, broadcast chroma green — what image models produce for \"green screen\") transparent with a `--soften` ramp at the edge and despill, writes `--format png|webp` (both keep alpha) into \
             `--folder` (default `cutouts/`) and adds `image` — a durable FileRef with `width`, `height`, `format` — to the payload. No model: plain pixel maths. \
-            Generate the picture on a flat green background, then place the cutout in a poster with `fs.svg.convert` as `<image href=\"<image.ref>\">`."
+            Generate the picture on a flat green background, then place the cutout in a poster with `fs.image.render` as `<image href=\"<image.ref>\">`."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -228,7 +228,7 @@ pub fn definition() -> NodeDefinition {
                 .input(json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
                 .output(json!({ "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/photos/3f9c….png", "filename": "3f9c….png", "mime": "image/png", "kind": "image", "size": 1822310, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" },
                     "image": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "sandbox/posters/cutouts/9a1d….png", "filename": "9a1d….png", "mime": "image/png", "kind": "image", "size": 912400, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.image.chromakey", "trust": "sanitized", "width": 1024, "height": 1536, "format": "png" } }))
-                .note("The picture was generated \"standing on a solid flat bright green chroma key background\"; the default key #00b140 is what the model paints. Then `fs.svg.convert` draws it with `<image href=\"sandbox/posters/cutouts/9a1d….png\" x=… y=… width=… height=…/>`."),
+                .note("The picture was generated \"standing on a solid flat bright green chroma key background\"; the default key #00b140 is what the model paints. Then `fs.image.render` draws it with `<image href=\"sandbox/posters/cutouts/9a1d….png\" x=… y=… width=… height=…/>`."),
         ],
         ..Default::default()
     }

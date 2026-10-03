@@ -1,4 +1,4 @@
-//! `n.concept` — a step you have described but not built yet.
+//! `logic.concept` — a step you have described but not built yet.
 //!
 //! It passes its input through untouched. That is the whole behaviour, and it
 //! is the point: a pipeline can be wired end to end while some of its steps are
@@ -6,7 +6,7 @@
 //! shape of the flow can be tested before any of the hard parts exist.
 //!
 //! ```text
-//! trigger.webhook | n.concept --text "look the researcher up in ORCID" | web.response
+//! trigger.webhook | logic.concept --text "look the researcher up in ORCID" | web.response.send
 //! ```
 //!
 //! The editor renders `text` as markdown in the node's body instead of the
@@ -31,7 +31,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.concept";
+pub const NODE_KIND: &str = "logic.concept";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -86,7 +86,7 @@ pub fn definition() -> NodeDefinition {
         layout: vec![LayoutItem::Field("text".to_string())],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("A step to build later", r#"concept --text "Enrich the lead with company data from Clearbit, then score it 1–5.""#)
+            crate::pipeline::model::NodeExample::dsl("A step to build later", r#"logic.concept --text "Enrich the lead with company data from Clearbit, then score it 1–5.""#)
                 .note("Passes the payload through unchanged so the pipeline runs end to end today; replace it with real nodes when ready."),
         ],
         ..Default::default()
@@ -201,7 +201,3 @@ mod tests {
     }
 }
 
-/// The family list: this family is one node, and it lives in this file.
-pub fn definitions() -> Vec<NodeDefinition> {
-    vec![definition()]
-}

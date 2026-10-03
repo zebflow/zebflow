@@ -1,4 +1,4 @@
-//! `n.mail.send` — outgoing mail submission through a stored `smtp` credential.
+//! `mail.message.send` — outgoing mail submission through a stored `smtp` credential.
 //!
 //! Submission only: this node hands one message to a relay the credential
 //! names (port 587 STARTTLS by default). It is deliberately not a mail
@@ -12,8 +12,8 @@
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | Activation email | `\| n.mail.send --credential relay --to "{{ input.email }}" --subject "Activate your account" --text "{{ input.body }}"` |
-//! | Fixed recipient | `\| n.mail.send --credential relay --to ops@example.com --subject "Backup done" --text "ok"` |
+//! | Activation email | `\| mail.message.send --credential relay --to "{{ input.email }}" --subject "Activate your account" --text "{{ input.body }}"` |
+//! | Fixed recipient | `\| mail.message.send --credential relay --to ops@example.com --subject "Backup done" --text "ok"` |
 //!
 //! `--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each
 //! take a literal or `{{ expr }}` — the one resolution mechanism
@@ -42,7 +42,7 @@ use crate::platform::services::CredentialService;
 use crate::pipeline::nodes::shared::util::metadata_scope;
 use crate::pipeline::model::LayoutItem;
 
-pub const NODE_KIND: &str = "n.mail.send";
+pub const NODE_KIND: &str = "mail.message.send";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -196,7 +196,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("embed".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.send --credential smtp_main --to "{{ input.body.email }}" --subject "We got your message" --text "Thanks {{ input.body.name }}, we will reply within a day.""#)
+            crate::pipeline::model::NodeExample::dsl("Confirmation after a form", r#"mail.message.send --credential smtp_main --to "{{ input.body.email }}" --subject "We got your message" --text "Thanks {{ input.body.name }}, we will reply within a day.""#)
                 .output(serde_json::json!({ "mail": { "sent": true, "attached": [], "to": "a@x.io", "subject": "We got your message" } }))
                 .note("Adds `mail` to the payload and keeps the rest. The credential is created by the owner in Studio → Credentials (kind smtp)."),
         ],
@@ -547,7 +547,7 @@ impl NodeHandler for Node {
             payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
                 "mail": { "sent": true, "attached": attached, "to": to_raw, "subject": subject }
             })),
-            trace: vec![format!("n.mail.send: delivered to relay {host}:{port}")],
+            trace: vec![format!("mail.message.send: delivered to relay {host}:{port}")],
         })
     }
 }

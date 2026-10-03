@@ -1,6 +1,6 @@
-//! Background service driving `n.trigger.kv.subscribe` pipelines.
+//! Background service driving `trigger.topic` pipelines.
 //!
-//! When a pipeline with `n.trigger.kv.subscribe` is activated, a dedicated
+//! When a pipeline with `trigger.topic` is activated, a dedicated
 //! tokio task is spawned that listens on the named channel and fires the
 //! pipeline for every received message.  On deactivate the task is aborted.
 

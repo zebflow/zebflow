@@ -1,4 +1,4 @@
-//! `n.kv.expire` — update the TTL of an existing key without changing its value.
+//! `kv.entry.expire` — update the TTL of an existing key without changing its value.
 //!
 //! Pass `--ttl 0` to remove the expiry (persist the key forever).
 //! Payload passes through unchanged.
@@ -14,8 +14,8 @@
 //! # Example
 //!
 //! ```text
-//! | n.trigger.webhook --path /refresh --method POST
-//! | n.kv.expire --key "session:{{ input.token }}" --ttl 1800
+//! | trigger.webhook --path /refresh --method POST
+//! | kv.entry.expire --key "session:{{ input.token }}" --ttl 1800
 //! ```
 
 use async_trait::async_trait;
@@ -30,7 +30,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.kv.expire";
+pub const NODE_KIND: &str = "kv.entry.expire";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -114,7 +114,7 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Extend a session on activity", r#"kv.expire --key "session:{{ $trigger.auth.sub }}" --ttl 1800"#),
+            crate::pipeline::model::NodeExample::dsl("Extend a session on activity", r#"kv.entry.expire --key "session:{{ $trigger.auth.sub }}" --ttl 1800"#),
         ],
         ..Default::default()
     }
@@ -172,7 +172,7 @@ impl NodeHandler for Node {
         if key.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_KV_EXPIRE_KEY",
-                "n.kv.expire: --key is required",
+                "kv.entry.expire: --key is required",
             ));
         }
 
@@ -190,7 +190,7 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
             trace: vec![format!(
-                "n.kv.expire: key={} ttl={:?} updated={} durable={}",
+                "kv.entry.expire: key={} ttl={:?} updated={} durable={}",
                 key, self.config.ttl, updated, self.config.durable
             )],
         })

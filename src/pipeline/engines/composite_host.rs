@@ -277,7 +277,7 @@ async fn execute_installed_trigger(
                 }
             }
         } else {
-            // No on_message — pass through like n.trigger.webhook.
+            // No on_message — pass through like trigger.webhook.
             results.push(NodeExecutionOutput {
                 output_pins: vec!["out".to_string()],
                 payload: input.payload.clone(),
@@ -354,7 +354,7 @@ async fn execute_composite_node(
         }
 
         // Allow runtime input `__config` to override CONFIG_<KEY> placeholders,
-        // enabling dynamic per-run config (e.g. model selection like n.ai.agent).
+        // enabling dynamic per-run config (e.g. model selection like ai.text.generate).
         if let Some(runtime_cfg) = input.payload.get("__config").and_then(|v| v.as_object()) {
             for (key, val) in runtime_cfg {
                 if key.ends_with("_credential_id") || key == "credential_id" {
@@ -543,7 +543,7 @@ mod tests {
                 "hosts": hosts,
                 "functions": { "main": "functions/main.zf.json" },
                 "nodes": [{
-                    "kind": format!("n.x.{}.call", slug),
+                    "kind": format!("x.{}.call", slug),
                     "title": "Call",
                     "description": "Run the bundle's outbound request.",
                     "icon": "icon.svg",
@@ -575,7 +575,7 @@ mod tests {
             "nodes": [
                 {
                     "id": "trigger",
-                    "kind": "n.trigger.function",
+                    "kind": "trigger.function",
                     "input_pins": [],
                     "output_pins": ["out"],
                     "config": {}
@@ -603,7 +603,7 @@ mod tests {
 
     async fn run_bundle_node(platform: &Arc<PlatformService>, slug: &str) -> Value {
         let outputs = super::execute_installed_node(
-            format!("n.x.{slug}.call"),
+            format!("x.{slug}.call"),
             json!({}),
             platform.clone(),
             None,
@@ -634,7 +634,7 @@ mod tests {
             root.path(),
             "undeclared",
             json!(["declared.invalid"]),
-            "n.http.request",
+            "http.response.fetch",
             http_get("https://elsewhere.invalid/steal"),
         );
         platform
@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(
             payload["error"],
             json!(
-                "FW_EGRESS_UNDECLARED_HOST: n.http.request outbound host 'elsewhere.invalid' is \
+                "FW_EGRESS_UNDECLARED_HOST: http.response.fetch outbound host 'elsewhere.invalid' is \
                  not declared by node bundle 'undeclared' (spec.hosts: declared.invalid)"
             ),
             "the refusal names the host and the bundle whose list refused it"
@@ -664,7 +664,7 @@ mod tests {
             root.path(),
             "declaredhost",
             json!(["declared.invalid"]),
-            "n.http.request",
+            "http.response.fetch",
             http_get("https://declared.invalid/embed"),
         );
         platform
@@ -690,7 +690,7 @@ mod tests {
             root.path(),
             "nohosts",
             json!([]),
-            "n.http.request",
+            "http.response.fetch",
             http_get("https://anywhere.invalid/x"),
         );
         platform
@@ -716,14 +716,14 @@ mod tests {
             root.path(),
             "outer",
             json!(["api.outer.invalid"]),
-            "n.x.inner.call",
+            "x.inner.call",
             json!({}),
         );
         write_bundle(
             root.path(),
             "inner",
             json!(["api.inner.invalid"]),
-            "n.http.request",
+            "http.response.fetch",
             http_get("https://api.inner.invalid/x"),
         );
         platform
@@ -762,7 +762,7 @@ mod tests {
             root.path(),
             "agentpkg",
             json!(["api.openai.com"]),
-            "n.ai.agent",
+            "ai.text.generate",
             json!({}),
         );
         platform
@@ -774,7 +774,7 @@ mod tests {
         let error = payload["error"].as_str().unwrap_or_default();
         assert!(
             error.contains("FW_EGRESS_UNCHECKED_NODE")
-                && error.contains("'n.ai.agent'")
+                && error.contains("'ai.text.generate'")
                 && error.contains("node bundle 'agentpkg'"),
             "the refusal names the node and the bundle, got: {error}"
         );
@@ -792,7 +792,7 @@ mod tests {
             root.path(),
             "silentagent",
             json!([]),
-            "n.ai.agent",
+            "ai.text.generate",
             json!({}),
         );
         platform
@@ -804,13 +804,13 @@ mod tests {
         let error = payload["error"].as_str().unwrap_or_default();
         assert!(
             error.contains("FW_EGRESS_UNCHECKED_NODE")
-                && error.contains("'n.ai.agent'")
+                && error.contains("'ai.text.generate'")
                 && error.contains("node bundle 'silentagent'"),
             "silence buys nothing, got: {error}"
         );
     }
 
-    /// Both curated bundles compose `n.script`, so a guard that refused it
+    /// Both curated bundles compose `script.result.run`, so a guard that refused it
     /// under the shipped sandbox would break what ships. It does not: the
     /// sandbox denies `fetch`, so there is no egress to read.
     #[tokio::test]
@@ -821,7 +821,7 @@ mod tests {
             root.path(),
             "scriptpkg",
             json!(["api.telegram.org"]),
-            "n.script",
+            "script.result.run",
             json!({ "source": "return { ok: true };" }),
         );
         platform
@@ -855,7 +855,7 @@ mod tests {
             root.path(),
             "installed",
             json!(["declared.invalid"]),
-            "n.http.request",
+            "http.response.fetch",
             http_get("https://declared.invalid/x"),
         );
         platform
@@ -871,14 +871,14 @@ mod tests {
             "nodes": [
                 {
                     "id": "trigger",
-                    "kind": "n.trigger.function",
+                    "kind": "trigger.function",
                     "input_pins": [],
                     "output_pins": ["out"],
                     "config": {}
                 },
                 {
                     "id": "call",
-                    "kind": "n.http.request",
+                    "kind": "http.response.fetch",
                     "input_pins": ["in"],
                     "output_pins": ["out"],
                     "config": http_get("https://elsewhere.invalid/x")

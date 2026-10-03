@@ -57,7 +57,7 @@ impl Source {
                 "repo" => Err(refuse("names a repository file outside static/")),
                 "zebfs" if clean_path(rest) => Ok(Some(Source::Store(rest.to_string()))),
                 "zebfs" => Err(refuse("must stay inside the store: no `..`, no absolute path")),
-                _ => Err(refuse("is a URL; fetch it with http.request --response-type bytes, fs.save it, then name the store path")),
+                _ => Err(refuse("is a URL; fetch it with http.response.fetch --response-type bytes, fs.save it, then name the store path")),
             };
         }
         if href.starts_with("//") {

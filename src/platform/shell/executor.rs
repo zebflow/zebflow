@@ -504,7 +504,7 @@ impl DslExecutor {
         if body.is_empty() {
             return DslOutput::err(
                 "register: pipeline body is required. \
-                 Example: register api/my-pipe | trigger.webhook --path /api | pg.query --credential main-db",
+                 Example: register api/my-pipe | trigger.webhook --path /api | pg.query.run --credential main-db",
             );
         }
 
@@ -1275,7 +1275,7 @@ impl DslExecutor {
     ) -> DslOutput {
         if body.is_empty() {
             return DslOutput::err(
-                "run: pipeline body is required. Example: run | trigger.manual | script -- return { ok: true };",
+                "run: pipeline body is required. Example: run | trigger.manual | script.result.run -- return { ok: true };",
             );
         }
 
@@ -1603,8 +1603,8 @@ impl DslExecutor {
 }
 
 /// Parse a node kind reference with optional index suffix.
-/// "pg.query" → ("pg.query", None)
-/// "pg.query[1]" → ("pg.query", Some(1))
+/// "pg.query.run" → ("pg.query.run", None)
+/// "pg.query.run[1]" → ("pg.query.run", Some(1))
 fn parse_node_kind_ref(s: &str) -> (String, Option<usize>) {
     if let Some(bracket_pos) = s.rfind('[') {
         if s.ends_with(']') {
@@ -2021,7 +2021,7 @@ mod note_tests {
         let (_tmp, ex) = executor();
         let out = ex
             .execute_dsl(
-                r#"register pipelines/test/dsl-exec -- | trigger.manual | script -- "return { p: 'tmp/runs/' + ctx.request_id + '/files/x.txt' }" | fs.put --path "{{ $input.p }}" --text hi"#,
+                r#"register pipelines/test/dsl-exec -- | trigger.manual | script.result.run -- "return { p: 'tmp/runs/' + ctx.request_id + '/files/x.txt' }" | fs.file.put --path "{{ $input.p }}" --text hi"#,
             )
             .await;
         assert!(out.ok, "{:?}", texts(&out));
@@ -2044,7 +2044,7 @@ mod note_tests {
         assert_eq!(records[0].status, "ok");
         assert_eq!(records[0].trigger, "manual");
         assert!(records[0].run_id.starts_with("dsl-exec-"), "{}", records[0].run_id);
-        assert_eq!(records[0].trace.len(), 3, "trigger, script, fs.put");
+        assert_eq!(records[0].trace.len(), 3, "trigger, script, fs.file.put");
 
         let layout = ex
             .platform
@@ -2084,14 +2084,14 @@ mod note_tests {
     async fn register_keeps_the_notes_it_did_not_redeclare() {
         let (_tmp, ex) = executor();
         let out = ex
-            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response --template pages/x.tsx | note --id why --text \"first\" --color amber")
+            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response.send --template pages/x.tsx | note --id why --text \"first\" --color amber")
             .await;
         assert!(out.ok, "{}", text(&out));
         assert_eq!(notes_of(&ex, "api/notes-keep").await.len(), 1);
 
         // Re-register without any note: the note survives.
         let out = ex
-            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response --template pages/y.tsx")
+            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response.send --template pages/y.tsx")
             .await;
         assert!(out.ok, "{}", text(&out));
         let notes = notes_of(&ex, "api/notes-keep").await;
@@ -2100,7 +2100,7 @@ mod note_tests {
 
         // Re-register redeclaring the same id: the body wins for that id.
         let out = ex
-            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response --template pages/y.tsx | note --id why --text \"second\" | note --id more --text \"another\"")
+            .execute_dsl("register api/notes-keep | trigger.webhook --path /nk | web.response.send --template pages/y.tsx | note --id why --text \"second\" | note --id more --text \"another\"")
             .await;
         assert!(out.ok, "{}", text(&out));
         let mut ids: Vec<(String, String)> = notes_of(&ex, "api/notes-keep")
@@ -2116,7 +2116,7 @@ mod note_tests {
     async fn patch_note_creates_updates_and_removes() {
         let (_tmp, ex) = executor();
         let out = ex
-            .execute_dsl("register api/notes-patch | trigger.webhook --path /np | web.response --template pages/x.tsx")
+            .execute_dsl("register api/notes-patch | trigger.webhook --path /np | web.response.send --template pages/x.tsx")
             .await;
         assert!(out.ok, "{}", text(&out));
 
@@ -2356,7 +2356,7 @@ mod patch_body_tests {
 
     use crate::platform::{PlatformConfig, PlatformService};
 
-    /// Sonnet patched a `sekejap.query` node's SQL through `pipeline_patch`'s
+    /// Sonnet patched a `sekejap.query.run` node's SQL through `pipeline_patch`'s
     /// `body` twice and the old SQL won both times: the patch wrote `body`
     /// while the node reads `query`. The body key is the parser's table now,
     /// for every kind, and this is the repro.
@@ -2375,7 +2375,7 @@ mod patch_body_tests {
         let owner = platform.config.default_owner.clone();
         let executor = super::DslExecutor::new(platform.clone(), &owner, "patchbody");
         let out = executor
-            .execute_dsl(r#"register api/rows -- | trigger.webhook --path /rows --method GET | sekejap.query -- "SELECT 1 AS one""#)
+            .execute_dsl(r#"register api/rows -- | trigger.webhook --path /rows --method GET | sekejap.query.run -- "SELECT 1 AS one""#)
             .await;
         assert!(out.lines.iter().any(|l| l.text.contains("registered")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
         let out = executor
@@ -2407,12 +2407,12 @@ mod patch_body_tests {
         let owner = platform.config.default_owner.clone();
         let executor = super::DslExecutor::new(platform.clone(), &owner, "patchpreview");
         let out = executor
-            .execute_dsl(r#"register api/preview -- | trigger.manual | script -- return input"#)
+            .execute_dsl(r#"register api/preview -- | trigger.manual | script.result.run -- return input"#)
             .await;
         assert!(out.lines.iter().any(|l| l.text.contains("registered")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script --preview table:rows")
+            .execute_dsl("patch pipeline api/preview node script.result.run --preview table:rows")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 
@@ -2423,7 +2423,7 @@ mod patch_body_tests {
         // A size rides on the same value; the value is the whole cell, so
         // patching without the suffix puts the panel back at its default.
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script --preview image@420x300")
+            .execute_dsl("patch pipeline api/preview node script.result.run --preview image@420x300")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
         let described = ops.pipeline_describe("api/preview", false).await;
@@ -2431,12 +2431,12 @@ mod patch_body_tests {
         assert!(!described.text.contains("table:rows"), "the old cell is replaced whole:\n{}", described.text);
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script --preview image@huge")
+            .execute_dsl("patch pipeline api/preview node script.result.run --preview image@huge")
             .await;
         assert!(out.lines.iter().any(|l| l.text.contains("bad size")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script --preview image")
+            .execute_dsl("patch pipeline api/preview node script.result.run --preview image")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
         let described = ops.pipeline_describe("api/preview", false).await;
@@ -2444,7 +2444,7 @@ mod patch_body_tests {
         assert!(!described.text.contains('@'), "no size is stored any more:\n{}", described.text);
 
         let out = executor
-            .execute_dsl("patch pipeline api/preview node script --preview off")
+            .execute_dsl("patch pipeline api/preview node script.result.run --preview off")
             .await;
         assert!(!out.lines.iter().any(|l| l.text.starts_with("Error")), "{:?}", out.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
 

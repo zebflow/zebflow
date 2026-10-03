@@ -8,11 +8,11 @@ A minimal end-to-end text-to-speech demo:
 - one frontend page: `GET /tts-demo`
 - user types text
 - page calls the API
-- API runs `ai.tts`
+- API runs `ai.audio.generate`
 - page plays the returned `audio.blob_base64`
 - generated `.wav` is also persisted under Zebflow FS
 
-This is the fastest real shape to try `n.ai.tts` in a browser.
+This is the fastest real shape to try `ai.audio.generate` in a browser.
 
 ---
 
@@ -59,15 +59,15 @@ Graph DSL:
 register tts/api --
 [a] trigger.webhook --path /api/tts --method POST
 [guard] logic.if --expr "!!(input.body && input.body.text && String(input.body.text).trim())"
-[bad]   web.response --status 400 --body "{{ { ok: false, error: 'text is required' } }}"
-[b] script -- "
+[bad]   web.response.send --status 400 --body "{{ { ok: false, error: 'text is required' } }}"
+[b] script.result.run -- "
 return {
   text: String(input.body.text),
   slug: String(input.body.slug || Date.now())
 };
 "
-[c] ai.tts --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ 'tts-' + input.slug }}" --on-conflict overwrite --return both
-[d] web.response
+[c] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ 'tts-' + input.slug }}" --on-conflict overwrite --return both
+[d] web.response.send
 
 [a] -> [guard]
 [guard]:true -> [b]
@@ -88,7 +88,7 @@ Response shape:
       "__zf_type": "file_ref", "backend": "zebfs", "store": "local",
       "ref": "audio/tts-my-demo.wav", "filename": "tts-my-demo.wav",
       "mime": "audio/wav", "kind": "audio", "size": 186924,
-      "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.tts", "trust": "generated"
+      "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.audio.generate", "trust": "generated"
     },
     "sample_rate": 22050,
     "samples": 93440,
@@ -103,7 +103,7 @@ Response shape:
 ```
 
 `audio.word_timings` and `audio.lipsync` are only populated when `--lipsync` is passed to
-`ai.tts`; otherwise both stay `null`.
+`ai.audio.generate`; otherwise both stay `null`.
 
 ---
 
@@ -115,14 +115,14 @@ Graph DSL:
 
 ```zf
 [a] trigger.webhook --path /tts-demo --method GET
-[b] script -- "
+[b] script.result.run -- "
 return {
   title: 'Narrator TTS Demo',
   api_url: '/api/tts',
   default_text: 'Halo, ini Narrator dari Zebflow.'
 };
 "
-[c] web.response --template pages/tts-demo.tsx
+[c] web.response.send --template pages/tts-demo.tsx
 
 [a] -> [b]
 [b] -> [c]
@@ -147,7 +147,7 @@ export function getPage(input) {
   return {
     head: {
       title: input?.title ?? "TTS Demo",
-      description: "Generate speech with n.ai.tts and play it in the browser.",
+      description: "Generate speech with ai.audio.generate and play it in the browser.",
     },
   };
 }
@@ -327,6 +327,6 @@ Type text, click **Generate Voice**, and the page should:
 - `espeak_data_dir` remains supported as an override, but it is not required for the stable path.
 
 > A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response` answer —
+> happens next. Branch with `logic.if` and let `web.response.send` answer —
 > `--status`, `--location`, `--set-cookie`. See
 > `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.

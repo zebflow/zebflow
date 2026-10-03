@@ -20,8 +20,8 @@ Capabilities are now *derived* exactly — `Network`, `Filesystem`, `Database`,
 `Credential`, `Process`, computed from what a package composes rather than from
 what it claims. That derivation is **disclosure only**.
 
-The review states that `n.script` can execute processes and that
-`n.http.request` can reach the network and read a credential. Nothing prevents
+The review states that `script.result.run` can execute processes and that
+`http.response.fetch` can reach the network and read a credential. Nothing prevents
 either from doing more than was derived, because nothing enforces the ceiling.
 
 A capability is currently a claim *about* a package. Confinement is what would
@@ -57,7 +57,7 @@ paths. `fs.pdf.convert` sanitises its output path with `sanitize_rel_path`.
 `platform/shell/executor.rs` and `adapters/file/mod.rs:56` both
 `current_dir(&layout.repo_dir)`.
 
-**`n.ai.agent` has no shell.** The only tools the model can call are the
+**`ai.text.generate` has no shell.** The only tools the model can call are the
 project's function pipelines, named by slug in `--tools`; nothing is offered
 unless named. The shell tools (`ls`, `pwd`, `python`) that once ran inside the
 project's `repo/` were removed on 2026-09-19: a Python tool reachable from a
@@ -89,7 +89,7 @@ be read as a 404.
 - **The scheduler's engine has no single project.** `web/mod.rs` builds one
   `BasicPipelineEngine` for the scheduler, the KV subscriber, and the WS client
   manager, all of which serve every project. Its sandbox has no fetch root, so a
-  scheduled `n.script` cannot local-fetch at all. That is the safe answer, not
+  scheduled `script.result.run` cannot local-fetch at all. That is the safe answer, not
   the right one; the right one is a per-run engine.
 
 ## 3. Declarations, and what honours them
@@ -103,14 +103,14 @@ the engine that runs a bundle's function pipeline — in `composite_host.rs`,
 where the manifest is already resolved by kind, and in the lifecycle-hook runner
 in `web/mod.rs` — so it governs the whole inner subtree rather than the one node
 a project's graph names. That placement is the point: a bundle declaring
-`["api.openai.com"]` and composing `n.http.request` would otherwise reach
+`["api.openai.com"]` and composing `http.response.fetch` would otherwise reach
 anywhere, which was the entire hole.
 
 A violation fails the node, naming the host refused and the bundle that refused
 it:
 
 ```text
-n.http.request outbound host 'elsewhere.invalid' is not declared by node bundle
+http.response.fetch outbound host 'elsewhere.invalid' is not declared by node bundle
 'undeclared' (spec.hosts: declared.invalid)
 ```
 
@@ -125,8 +125,8 @@ than an omission:
   descends with the dispatch instead of being replaced by it, so a bundle cannot
   widen its own list by composing a more permissive one.
 - **A network node whose destination never reaches a guard as a URL is refused,
-  not allowed.** `n.ai.agent`, `n.pg.query`, `n.table.query`,
-  `n.ws.client.send` and `n.trigger.ws.client` reach hosts that come from a
+  not allowed.** `ai.text.generate`, `pg.query.run`, `table.query.run`,
+  `n.ws.client.send` and `trigger.socket` reach hosts that come from a
   credential or a project connection, which the egress guard never sees. Inside
   any bundle they fail with `FW_EGRESS_UNCHECKED_NODE`. The set is derived from
   `native_node_capabilities()` — the same table the package review reads — so a
@@ -138,9 +138,9 @@ than an omission:
   much is deliberate and temporary. What does *not* follow from it is a weaker
   bundle: the refusal above runs for every bundle-provided node whether its
   bundle declared a host or not, so declaring nothing is not a way to obtain
-  `n.pg.query`. Only the host allowlist is affected by an empty list, and an
+  `pg.query.run`. Only the host allowlist is affected by an empty list, and an
   empty allowlist is the one thing an author gains nothing by choosing.
-- **`n.script` answers to the sandbox actually in force.** The Deno sandbox
+- **`script.result.run` answers to the sandbox actually in force.** The Deno sandbox
   denies `fetch` as shipped, so a script reaches nothing a host guard would need
   to read, and both curated bundles compose one. Where an operator has granted
   the sandbox network access — `dangerZone.allowNet`, or any
@@ -154,12 +154,12 @@ than an omission:
   set one.
 
 Scope is bundle-provided nodes only. A project's own pipeline calling
-`n.http.request` carries no policy and is not restricted: the threat model is
+`http.response.fetch` carries no policy and is not restricted: the threat model is
 third-party code the user installed, not the user's own work.
 
 Still open in the same area, named rather than fixed:
 
-- `n.function.call` lets a bundle start a pipeline the project wrote, and that
+- `function.result.call` lets a bundle start a pipeline the project wrote, and that
   pipeline runs unrestricted. What it reaches is the user's own code, but the
   bundle chose the moment.
 - The check is on the host, not on which credential travels to it. The second
@@ -178,10 +178,10 @@ reached through. A script's return value becomes the node's output payload and
 is never read as a call.
 
 So the flag prevented nothing, and where it read `true` it asserted something
-false. `n.pg.query` and `n.http.request` — the two nodes with the longest reach
-— declared `true`, which rendered an "n.script access" badge in the node
-catalog and listed `n.pg.query({...})` and `n.http.request({...})` as built-ins
-in the `n.script` editor's own sidebar. Every declaration is now `false` with no
+false. `pg.query.run` and `http.response.fetch` — the two nodes with the longest reach
+— declared `true`, which rendered an "script.result.run access" badge in the node
+catalog and listed `pg.query.run({...})` and `http.response.fetch({...})` as built-ins
+in the `script.result.run` editor's own sidebar. Every declaration is now `false` with no
 bridge, both false surfaces are gone, and the field's documentation says it
 grants and restricts nothing.
 
@@ -194,7 +194,7 @@ next NodeDefinition version bump rather than mint one for a dead boolean.
 
 If the bridge is ever built, it is a second egress path and the `spec.hosts`
 check above has to cover it before the first call works — otherwise a bundle
-that composes `n.script` reaches whatever the bridge exposes, which is exactly
+that composes `script.result.run` reaches whatever the bridge exposes, which is exactly
 the hole `BundleEgress` was built to close.
 
 **Derived capabilities** — reported to a user, never checked against what a node

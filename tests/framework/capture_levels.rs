@@ -282,7 +282,7 @@ fn masking_a_subtree_hides_everything_under_it() {
 fn a_node_kind_can_declare_where_its_secret_sits() {
     let def = zebflow::pipeline::nodes::builtin_node_definitions()
         .into_iter()
-        .find(|d| d.kind == "n.auth.token.create")
+        .find(|d| d.kind == "auth.token.create")
         .expect("auth.token.create must exist");
     assert!(
         def.secret_paths.iter().any(|p| p == "/access_token"),

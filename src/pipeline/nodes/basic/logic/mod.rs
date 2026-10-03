@@ -1,9 +1,11 @@
 //! `logic.*` — control flow: `logic.if`, `logic.match`, `logic.collect`,
-//! `logic.foreach`, `logic.reduce`, `logic.retry`.
+//! `logic.foreach`, `logic.reduce`, `logic.retry`, and `logic.concept`, a
+//! step described but not built yet.
 
 use crate::pipeline::NodeDefinition;
 
 pub mod collect;
+pub mod concept;
 pub mod foreach_;
 pub mod if_;
 pub mod match_;
@@ -18,5 +20,6 @@ pub fn definitions() -> Vec<NodeDefinition> {
         foreach_::definition(),
         reduce::definition(),
         retry::definition(),
+        concept::definition(),
     ]
 }

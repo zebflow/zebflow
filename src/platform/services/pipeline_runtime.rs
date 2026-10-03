@@ -162,7 +162,7 @@ impl CompiledPipeline {
     /// Builds one compiled runtime entry from active metadata and snapshot source.
     /// Compiles one activated pipeline.
     ///
-    /// `registry` resolves trigger roles for installed (`n.x.*`) nodes. Pass
+    /// `registry` resolves trigger roles for installed (`x.*`) nodes. Pass
     /// `None` when only compile validity is needed; installed trigger routes are
     /// then skipped because their role cannot be resolved.
     pub fn from_active_meta(
@@ -230,7 +230,7 @@ impl CompiledPipeline {
         let mut mcp_triggers = Vec::new();
         for node in &graph.nodes {
             match node.kind.as_str() {
-                "n.trigger.webhook" => {
+                "trigger.webhook" => {
                     let path = node
                         .config
                         .get("path")
@@ -299,7 +299,7 @@ impl CompiledPipeline {
                         errors,
                     });
                 }
-                "n.trigger.weberror" => {
+                "trigger.error" => {
                     // `--code 404` arrives as a number from the DSL; as a string
                     // it would have silently become the catch-all.
                     let code = match node.config.get("code") {
@@ -312,7 +312,7 @@ impl CompiledPipeline {
                         code,
                     });
                 }
-                "n.trigger.schedule" => {
+                "trigger.schedule" => {
                     let cron = node
                         .config
                         .get("cron")
@@ -331,7 +331,7 @@ impl CompiledPipeline {
                         timezone,
                     });
                 }
-                "n.trigger.ws" => {
+                "trigger.room" => {
                     let room = node
                         .config
                         .get("room")
@@ -375,7 +375,7 @@ impl CompiledPipeline {
                         auth_required_role,
                     });
                 }
-                "n.trigger.kv.subscribe" => {
+                "trigger.topic" => {
                     let channel = node
                         .config
                         .get("channel")
@@ -387,7 +387,7 @@ impl CompiledPipeline {
                         channel,
                     });
                 }
-                "n.trigger.ws.client" => {
+                "trigger.socket" => {
                     let url = node
                         .config
                         .get("url")
@@ -439,7 +439,7 @@ impl CompiledPipeline {
                         });
                     }
                 }
-                "n.trigger.mcp" => {
+                "trigger.mcp" => {
                     let tool_name = node
                         .config
                         .get("tool_name")
@@ -471,9 +471,8 @@ impl CompiledPipeline {
                     }
                 }
                 // Bundle-provided nodes declare their trigger role in the
-                // package manifest. Curated and third-party bundles use
-                // different namespaces, so only the manifest can answer this.
-                other if other.starts_with("n.") => {
+                // package manifest; a kind no manifest names is not a trigger.
+                other => {
                     let Some(trigger) = registry
                         .and_then(|registry| {
                             registry.get_manifest(&meta.owner, &meta.project, other)
@@ -514,7 +513,6 @@ impl CompiledPipeline {
                         errors: String::new(),
                     });
                 }
-                _ => {}
             }
         }
 

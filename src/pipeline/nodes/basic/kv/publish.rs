@@ -1,6 +1,6 @@
-//! `n.kv.publish` — publish a message on a named channel in the project KV bus.
+//! `kv.message.publish` — publish a message on a named channel in the project KV bus.
 //!
-//! All active pipelines subscribed via `n.trigger.kv.subscribe` on the same
+//! All active pipelines subscribed via `trigger.topic` on the same
 //! channel will receive the message and fire.
 //!
 //! # Config flags
@@ -13,8 +13,8 @@
 //! # Example
 //!
 //! ```text
-//! | n.trigger.webhook --path /alert --method POST
-//! | n.kv.publish --channel notifications
+//! | trigger.webhook --path /alert --method POST
+//! | kv.message.publish --channel notifications
 //! ```
 
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.kv.publish";
+pub const NODE_KIND: &str = "kv.message.publish";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -39,7 +39,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Database],
         title: "KV Publish".to_string(),
         description: "Publish a message on a named channel in the project KV bus. \
-            All pipelines listening via n.trigger.kv.subscribe on the same channel receive the message. \
+            All pipelines listening via trigger.topic on the same channel receive the message. \
             Use --payload to send a literal or {{ expr }}; omit it to send the whole payload."
             .to_string(),
         input_schema: json!({ "type": "object" }),
@@ -81,8 +81,8 @@ pub fn definition() -> NodeDefinition {
         layout: vec![],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Hand off slow work after answering", r#"kv.publish --channel order.placed --payload "{{ { order_id: input.rows[0]._key, email: input.body.email } }}""#)
-                .note("A pipeline starting with `trigger.kv.subscribe --channel order.placed` receives it as `input.message`. Payload passes through unchanged."),
+            crate::pipeline::model::NodeExample::dsl("Hand off slow work after answering", r#"kv.message.publish --channel order.placed --payload "{{ { order_id: input.rows[0]._key, email: input.body.email } }}""#)
+                .note("A pipeline starting with `trigger.topic --channel order.placed` receives it as `input.message`. Payload passes through unchanged."),
         ],
         ..Default::default()
     }
@@ -138,7 +138,7 @@ impl NodeHandler for Node {
         if channel.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_KV_PUBLISH_CHANNEL",
-                "n.kv.publish: --channel is required",
+                "kv.message.publish: --channel is required",
             ));
         }
 
@@ -160,7 +160,7 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
             trace: vec![format!(
-                "n.kv.publish: channel={} receivers={}",
+                "kv.message.publish: channel={} receivers={}",
                 channel, receivers
             )],
         })

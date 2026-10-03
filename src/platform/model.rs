@@ -2604,7 +2604,7 @@ impl ProjectFileLayout {
         self.data_store_dir().join("local.db")
     }
 
-    /// `.../data/store/kv.db` — the project's durable `n.kv.*` state.
+    /// `.../data/store/kv.db` — the project's durable `kv.*` state.
     ///
     /// `MemStateBus` (`src/infra/io/state/mem.rs`) builds this path itself
     /// from the data root because infra cannot see this type; the two sites
@@ -2899,7 +2899,7 @@ pub struct PackageLifecycleConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiNodePackageDefinition {
-    /// Package identifier. Owns the `n.x.{package_token}.` kind namespace.
+    /// Package identifier. Owns the `x.{package_token}.` kind namespace.
     pub package: String,
     /// Release version, `major.minor.patch`.
     pub version: String,
@@ -2942,7 +2942,7 @@ pub struct MultiNodePackageDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiNodeEntry {
-    /// Node kind. Must be `n.x.{package_token}.{rest}`.
+    /// Node kind. Must be `x.{package_token}.{rest}`.
     pub kind: String,
     /// Node title.
     pub title: String,
@@ -3645,7 +3645,7 @@ pub struct ZebflowJsonGitRemote {
 
 /// RWE settings loaded from `zebflow.yaml`.
 ///
-/// Controls project-level compile/render behaviour for all `n.web.response` template nodes.
+/// Controls project-level compile/render behaviour for all `web.response.send` template nodes.
 /// Values are merged into [`crate::rwe::ReactiveWebOptions`] at execution time,
 /// before each pipeline run. Node-level `--load-scripts` is appended on top.
 #[derive(Debug, Clone, Serialize, Deserialize)]

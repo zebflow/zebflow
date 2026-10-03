@@ -1,7 +1,7 @@
 # Sending mail
 
 Zebflow sends mail through a relay you already have — Fastmail, Postmark, SES,
-your university's SMTP, or a local sink while you develop. `n.mail.send` hands
+your university's SMTP, or a local sink while you develop. `mail.message.send` hands
 one message over and stops there.
 
 **It is not a mail server.** No queue, no retries, no DKIM signing. Whether a
@@ -45,22 +45,22 @@ never appears in a pipeline definition, a trace, or the node's output.
 ```
 register account/activate --title "Activate account"
   | trigger.webhook --path /account/activate --method POST
-  | sekejap.query --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"
-  | mail.send --credential relay
+  | sekejap.query.run --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"
+  | mail.message.send --credential relay
               --to "{{ input.rows[0].email }}"
               --subject "Activate your Researchsite account"
               --text "Follow the link we sent to activate your account."
-  | web.response
+  | web.response.send
 ```
 
 The submitted address is under `input.body.email` — webhook bodies never merge
-onto the root (`guide/pipeline` payload conventions). `sekejap.query` answers
+onto the root (`guide/pipeline` payload conventions). `sekejap.query.run` answers
 `{ columns, rows, row_count, … }`, so the row is `input.rows[0]`, never a bare
 `input.email`.
 
 `--to`, `--subject`, `--text`, `--html`, `--from` and `--reply-to` each take
 either a literal or a whole `{{ expr }}` into the flowing payload — the same
-convention `n.auth.token.create` uses for claims. An undefined path throws
+convention `auth.token.create` uses for claims. An undefined path throws
 rather than silently posting empty text, so a typo fails loudly instead of
 mailing a blank field.
 
@@ -105,7 +105,7 @@ is a mail server that accepts submission on 587 with `AUTH` and delivers
 direct to the recipient's MX, so the whole path can be yours:
 
 ```
-n.mail.send ──AUTH over STARTTLS──▶ mailbourne ──direct to MX──▶ the inbox
+mail.message.send ──AUTH over STARTTLS──▶ mailbourne ──direct to MX──▶ the inbox
 ```
 
 On the server: `mailbourne domain add <domain>` mints the DKIM key and prints

@@ -1,4 +1,4 @@
-//! `table.*` — tabular files (CSV, Parquet, …): `table.convert`, `table.query`.
+//! `table.*` — tabular files (CSV, Parquet, …): `table.data.convert`, `table.query.run`.
 
 use crate::pipeline::NodeDefinition;
 

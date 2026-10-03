@@ -1,6 +1,6 @@
 # Tool.* Globals
 
-`Tool` is a pure-function utility library available in TSX templates and `n.script` nodes. No DOM, no state, no side effects. Five namespaces: `Tool.time`, `Tool.arr`, `Tool.stat`, `Tool.csv`, `Tool.geo`.
+`Tool` is a pure-function utility library available in TSX templates and `script.result.run` nodes. No DOM, no state, no side effects. Five namespaces: `Tool.time`, `Tool.arr`, `Tool.stat`, `Tool.csv`, `Tool.geo`.
 
 Available as `globalThis.Tool` — use it directly, no import needed.
 
@@ -196,7 +196,7 @@ export default function PostList(input) {
 }
 ```
 
-### In n.script nodes
+### In script.result.run nodes
 
 ```js
 // Node body

@@ -2478,9 +2478,9 @@ export default function SpatialBlogPage({ input }) {
   "id":"spatial-blog",
   "entry_nodes":["trigger"],
   "nodes":[
-    {"id":"trigger","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/blog","method":"GET"}},
-    {"id":"query","kind":"n.sekejap.query","input_pins":["in"],"output_pins":["out"],"config":{"query":"SELECT * FROM posts LIMIT 20","limit":20,"read_only":true}},
-    {"id":"response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/spatial-blog.tsx"}}
+    {"id":"trigger","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/blog","method":"GET"}},
+    {"id":"query","kind":"sekejap.query.run","input_pins":["in"],"output_pins":["out"],"config":{"query":"SELECT * FROM posts LIMIT 20","limit":20,"read_only":true}},
+    {"id":"response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/spatial-blog.tsx"}}
   ],
   "edges":[
     {"from_node":"trigger","from_pin":"out","to_node":"query","to_pin":"in"},
@@ -2837,10 +2837,10 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
   "id":"safety-demo",
   "entry_nodes":["wh"],
   "nodes":[
-    {"id":"wh","kind":"n.trigger.webhook","config":{"path":"/unsafe-public-hook"}},
-    {"id":"http","kind":"n.http.request","config":{"url":"https://api.example.com/v1/items","credential":"secure-egress"}},
-    {"id":"pg","kind":"n.pg.query","config":{"credential":"pg-main"}},
-    {"id":"fs","kind":"n.fs.put","config":{"path":"exports/out.json"}}
+    {"id":"wh","kind":"trigger.webhook","config":{"path":"/unsafe-public-hook"}},
+    {"id":"http","kind":"http.response.fetch","config":{"url":"https://api.example.com/v1/items","credential":"secure-egress"}},
+    {"id":"pg","kind":"pg.query.run","config":{"credential":"pg-main"}},
+    {"id":"fs","kind":"fs.file.put","config":{"path":"exports/out.json"}}
   ],
   "edges":[]}
 }"#,
@@ -2897,7 +2897,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
         review["review"]["nodes_used"]
             .as_array()
             .expect("nodes")
-            .contains(&json!("n.http.request"))
+            .contains(&json!("http.response.fetch"))
     );
     assert!(
         review["review"]["credentials_required"]
@@ -2921,13 +2921,13 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
         review["review"]["database_effects"]
             .as_array()
             .expect("database effects")
-            .contains(&json!("n.pg.query"))
+            .contains(&json!("pg.query.run"))
     );
     assert!(
         review["review"]["filesystem_effects"]
             .as_array()
             .expect("filesystem effects")
-            .contains(&json!("n.fs.put"))
+            .contains(&json!("fs.file.put"))
     );
 
     let nested_review = app
@@ -3603,7 +3603,7 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
 
     let dsl = r#"register pipelines/tests/tts-api
 [a] trigger.manual
-[b] ai.tts --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ input.slug }}" --return both
+[b] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.text }}" --filename "{{ input.slug }}" --return both
 [a] -> [b]
 && activate pipelines/tests/tts-api.zf.json"#;
     let dsl_response = app
@@ -3636,7 +3636,7 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
                         "file_rel_path": "pipelines/tests/tts-api.zf.json",
                         "trigger": "manual",
                         "input": {
-                            "text": "Halo, ini Narrator dari API smoke n.ai.tts.",
+                            "text": "Halo, ini Narrator dari API smoke ai.audio.generate.",
                             "slug": "narrator-api-smoke"
                         }
                     })
@@ -3953,7 +3953,7 @@ async fn a_declared_source_root_moves_templates_pipelines_and_assets() {
                         "title": "Feed",
                         "description": "",
                         "trigger_kind": "webhook",
-                        "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"feed"},"spec":{"id":"feed","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}],"edges":[]}}"#
+                        "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"feed"},"spec":{"id":"feed","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}],"edges":[]}}"#
                     })
                     .to_string(),
                 ))
@@ -4130,9 +4130,9 @@ async fn import_reports_unresolved_function_targets_without_refusing() {
                                 "id": "caller",
                                 "entry_nodes": ["t"],
                                 "nodes": [
-                                    {"id": "t", "kind": "n.trigger.webhook",
+                                    {"id": "t", "kind": "trigger.webhook",
                                      "output_pins": ["out"]},
-                                    {"id": "a", "kind": "n.function.call",
+                                    {"id": "a", "kind": "function.result.call",
                                      "input_pins": ["in"], "output_pins": ["out", "error"],
                                      "config": {"function": "absent-fn"}}
                                 ],
@@ -4400,9 +4400,9 @@ fn webhook_pipeline(name: &str) -> Value {
                 "id": name,
                 "entry_nodes": ["t"],
                 "nodes": [
-                    {"id": "t", "kind": "n.trigger.webhook", "output_pins": ["out"],
+                    {"id": "t", "kind": "trigger.webhook", "output_pins": ["out"],
                      "config": {"path": format!("/{name}"), "method": "GET"}},
-                    {"id": "s", "kind": "n.script", "input_pins": ["in"], "output_pins": ["out"],
+                    {"id": "s", "kind": "script.result.run", "input_pins": ["in"], "output_pins": ["out"],
                      "config": {"source": "return { ok: true };"}}
                 ],
                 "edges": [{"from_node": "t", "from_pin": "out", "to_node": "s", "to_pin": "in"}]
@@ -5141,8 +5141,8 @@ async fn a_static_repository_installs_through_the_same_review_and_pins_its_relea
   "id":"home",
   "entry_nodes":["trigger"],
   "nodes":[
-    {"id":"trigger","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/","method":"GET"}},
-    {"id":"response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home.tsx"}}
+    {"id":"trigger","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/","method":"GET"}},
+    {"id":"response","kind":"web.response.send","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home.tsx"}}
   ],
   "edges":[
     {"from_node":"trigger","from_pin":"out","to_node":"response","to_pin":"in"}
@@ -6257,7 +6257,7 @@ async fn registering_a_pipeline_always_requires_the_write_capability() {
             "title": "Backdoor",
             "description": "",
             "trigger_kind": "webhook",
-            "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"backdoor"},"spec":{"id":"backdoor","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"n.trigger.webhook","output_pins":["out"],"input_pins":[],"config":{"path":"/backdoor","method":"POST"}}],"edges":[]}}"#
+            "source": r#"{"apiVersion":"zebflow.com/v1","kind":"Pipeline","metadata":{"name":"backdoor"},"spec":{"id":"backdoor","entry_nodes":["wh"],"nodes":[{"id":"wh","kind":"trigger.webhook","output_pins":["out"],"input_pins":[],"config":{"path":"/backdoor","method":"POST"}}],"edges":[]}}"#
         })
         .to_string()
     };
@@ -7100,9 +7100,9 @@ async fn an_uncaught_failure_hides_by_default_and_is_one_error_group() {
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
 
     for dsl in [
-        r#"register pipelines/tests/boom -- | trigger.webhook --path /boom --method GET | script -- "throw new Error('column \"x\" does not exist at row ' + (input.query.n || 0))" | web.response"#,
+        r#"register pipelines/tests/boom -- | trigger.webhook --path /boom --method GET | script.result.run -- "throw new Error('column \"x\" does not exist at row ' + (input.query.n || 0))" | web.response.send"#,
         "activate pipeline pipelines/tests/boom.zf.json",
-        r#"register pipelines/tests/boom-shown -- | trigger.webhook --path /boom-shown --method GET --errors show | script -- "throw new Error('shown on purpose')" | web.response"#,
+        r#"register pipelines/tests/boom-shown -- | trigger.webhook --path /boom-shown --method GET --errors show | script.result.run -- "throw new Error('shown on purpose')" | web.response.send"#,
         "activate pipeline pipelines/tests/boom-shown.zf.json",
     ] {
         let r = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/pipelines/dsl").method("POST")
@@ -7563,7 +7563,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     assert_eq!(cred.status(), StatusCode::OK);
 
     for dsl in [
-        r#"register pipelines/tests/whoami -- | trigger.webhook --path /whoami --method GET --auth-type jwt --auth-credential auth_member --auth-optional | script -- "return { who: input.auth ? input.auth.sub : 'guest' }" | web.response"#,
+        r#"register pipelines/tests/whoami -- | trigger.webhook --path /whoami --method GET --auth-type jwt --auth-credential auth_member --auth-optional | script.result.run -- "return { who: input.auth ? input.auth.sub : 'guest' }" | web.response.send"#,
         "activate pipeline pipelines/tests/whoami.zf.json",
     ] {
         let dsl_response = app
@@ -7631,7 +7631,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     // browser navigation is sent to the credential's auth_redirect carrying
     // the page it wanted, so the sign-in can bring the visitor back.
     for dsl in [
-        r#"register pipelines/tests/mine -- | trigger.webhook --path /mine/:slug --method GET --auth-type jwt --auth-credential auth_member | web.response --message ok"#,
+        r#"register pipelines/tests/mine -- | trigger.webhook --path /mine/:slug --method GET --auth-type jwt --auth-credential auth_member | web.response.send --message ok"#,
         "activate pipeline pipelines/tests/mine.zf.json",
     ] {
         let response = app
@@ -7670,7 +7670,7 @@ async fn an_auth_optional_webhook_answers_guests_and_reads_a_valid_token() {
     );
 }
 
-/// A designed 404: `trigger.weberror --code 404 | web.response --template`
+/// A designed 404: `trigger.error --code 404 | web.response.send --template`
 /// answers an unknown route with the page, not the JSON fallback. The two
 /// halves this exercises: the DSL types `404` as a number and the node must
 /// take it; the weberror dispatcher must load the template's markup before
@@ -7700,7 +7700,7 @@ export function getPage() { return { head: { title: "Not found" } }; }"#;
         .expect("put");
     assert_eq!(put.status(), StatusCode::OK);
     for dsl in [
-        "register pipelines/not-found -- | trigger.weberror --code 404 | web.response --status 404 --template not-found.tsx",
+        "register pipelines/not-found -- | trigger.error --code 404 | web.response.send --status 404 --template not-found.tsx",
         "activate pipeline pipelines/not-found.zf.json",
     ] {
         let response = app

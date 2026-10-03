@@ -32,7 +32,7 @@
     },
     "nodes": [
       {
-        "kind": "n.x.mixed.load",
+        "kind": "x.mixed.load",
         "title": "Load Dataset",
         "description": "Fetch and parse a dataset.",
         "icon": "",
@@ -85,7 +85,7 @@
         }
       },
       {
-        "kind": "n.x.mixed.crunch",
+        "kind": "x.mixed.crunch",
         "title": "Crunch Numbers",
         "description": "Run a compute-heavy transform.",
         "icon": "",
@@ -116,7 +116,7 @@
         }
       },
       {
-        "kind": "n.x.mixed.inbox",
+        "kind": "x.mixed.inbox",
         "title": "On Inbound Event",
         "description": "Start a pipeline when an event arrives.",
         "icon": "",

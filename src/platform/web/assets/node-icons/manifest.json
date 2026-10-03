@@ -1,66 +1,66 @@
 {
   "icons": {
-    "n.ai.agent": {
+    "ai.text.generate": {
       "label": "AI",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ai.agent.svg",
+      "path": "/assets/node-icons/zebflow/ai.text.generate.svg",
       "source_url": "",
       "supports": [
-        "n.ai.agent"
+        "ai.text.generate"
       ]
     },
-    "n.ai.embedding": {
+    "ai.embedding.generate": {
       "label": "EMB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ai.embedding.svg",
+      "path": "/assets/node-icons/zebflow/ai.embedding.generate.svg",
       "source_url": "",
       "supports": [
-        "n.ai.embedding"
+        "ai.embedding.generate"
       ]
     },
-    "n.ai.tts": {
+    "ai.audio.generate": {
       "label": "TTS",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ai.tts.svg",
+      "path": "/assets/node-icons/zebflow/ai.audio.generate.svg",
       "source_url": "",
       "supports": [
-        "n.ai.tts"
+        "ai.audio.generate"
       ]
     },
-    "n.auth.token.create": {
+    "auth.token.create": {
       "label": "JWT",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.auth.token.create.svg",
+      "path": "/assets/node-icons/zebflow/auth.token.create.svg",
       "source_url": "",
       "supports": [
-        "n.auth.token.create"
+        "auth.token.create"
       ]
     },
-    "n.auth.token.verify": {
+    "auth.token.verify": {
       "label": "JWT?",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.auth.token.verify.svg",
+      "path": "/assets/node-icons/zebflow/auth.token.verify.svg",
       "source_url": "",
       "supports": [
-        "n.auth.token.verify"
+        "auth.token.verify"
       ]
     },
-    "n.browser.run": {
+    "browser.page.run": {
       "label": "RUN",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.browser.run.svg",
+      "path": "/assets/node-icons/zebflow/browser.page.run.svg",
       "source_url": "",
       "supports": [
-        "n.browser.run"
+        "browser.page.run"
       ]
     },
-    "n.concept": {
+    "logic.concept": {
       "label": "TBD",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.concept.svg",
+      "path": "/assets/node-icons/zebflow/logic.concept.svg",
       "source_url": "",
       "supports": [
-        "n.concept"
+        "logic.concept"
       ]
     },
     "n.crypto": {
@@ -72,103 +72,103 @@
         "n.crypto"
       ]
     },
-    "n.fs.compress": {
+    "fs.archive.create": {
       "label": "ZIP",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.compress.svg",
+      "path": "/assets/node-icons/zebflow/fs.archive.create.svg",
       "source_url": "",
       "supports": [
-        "n.fs.compress"
+        "fs.archive.create"
       ]
     },
-    "n.fs.copy": {
+    "fs.file.copy": {
       "label": "COPY",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.copy.svg",
+      "path": "/assets/node-icons/zebflow/fs.file.copy.svg",
       "source_url": "",
       "supports": [
-        "n.fs.copy"
+        "fs.file.copy"
       ]
     },
-    "n.fs.decompress": {
+    "fs.archive.extract": {
       "label": "UNZIP",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.decompress.svg",
+      "path": "/assets/node-icons/zebflow/fs.archive.extract.svg",
       "source_url": "",
       "supports": [
-        "n.fs.decompress"
+        "fs.archive.extract"
       ]
     },
-    "n.fs.delete": {
+    "fs.file.delete": {
       "label": "DEL",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.delete.svg",
+      "path": "/assets/node-icons/zebflow/fs.file.delete.svg",
       "source_url": "",
       "supports": [
-        "n.fs.delete"
+        "fs.file.delete"
       ]
     },
-    "n.fs.get": {
+    "fs.file.get": {
       "label": "GET",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.get.svg",
+      "path": "/assets/node-icons/zebflow/fs.file.get.svg",
       "source_url": "",
       "supports": [
-        "n.fs.get"
+        "fs.file.get"
       ]
     },
-    "n.fs.head": {
+    "fs.file.head": {
       "label": "HEAD",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.head.svg",
+      "path": "/assets/node-icons/zebflow/fs.file.head.svg",
       "source_url": "",
       "supports": [
-        "n.fs.head"
+        "fs.file.head"
       ]
     },
-    "n.fs.list": {
+    "fs.folder.list": {
       "label": "LIST",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.list.svg",
+      "path": "/assets/node-icons/zebflow/fs.folder.list.svg",
       "source_url": "",
       "supports": [
-        "n.fs.list"
+        "fs.folder.list"
       ]
     },
-    "n.fs.mkdir": {
+    "fs.folder.create": {
       "label": "MKDIR",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.mkdir.svg",
+      "path": "/assets/node-icons/zebflow/fs.folder.create.svg",
       "source_url": "",
       "supports": [
-        "n.fs.mkdir"
+        "fs.folder.create"
       ]
     },
-    "n.fs.move": {
+    "fs.file.move": {
       "label": "MOVE",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.move.svg",
+      "path": "/assets/node-icons/zebflow/fs.file.move.svg",
       "source_url": "",
       "supports": [
-        "n.fs.move"
+        "fs.file.move"
       ]
     },
-    "n.fs.pdf.convert": {
+    "fs.pdf.convert": {
       "label": "PDF",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.pdf.convert.svg",
+      "path": "/assets/node-icons/zebflow/fs.pdf.convert.svg",
       "source_url": "",
       "supports": [
-        "n.fs.pdf.convert"
+        "fs.pdf.convert"
       ]
     },
-    "n.fs.put": {
+    "fs.file.put": {
       "label": "PUT",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.put.svg",
+      "path": "/assets/node-icons/zebflow/fs.file.put.svg",
       "source_url": "",
       "supports": [
-        "n.fs.put"
+        "fs.file.put"
       ]
     },
     "n.fs.save": {
@@ -180,346 +180,346 @@
         "n.fs.save"
       ]
     },
-    "n.fs.image.chromakey": {
+    "fs.image.chromakey": {
       "label": "KEY",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.image.chromakey.svg",
+      "path": "/assets/node-icons/zebflow/fs.image.chromakey.svg",
       "source_url": "",
       "supports": [
-        "n.fs.image.chromakey"
+        "fs.image.chromakey"
       ]
     },
-    "n.fs.image.thumbnail": {
+    "fs.image.thumbnail": {
       "label": "IMG",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.image.thumbnail.svg",
+      "path": "/assets/node-icons/zebflow/fs.image.thumbnail.svg",
       "source_url": "",
       "supports": [
-        "n.fs.image.thumbnail"
+        "fs.image.thumbnail"
       ]
     },
-    "n.fs.svg.convert": {
+    "fs.image.render": {
       "label": "SVG",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.svg.convert.svg",
+      "path": "/assets/node-icons/zebflow/fs.image.render.svg",
       "source_url": "",
       "supports": [
-        "n.fs.svg.convert"
+        "fs.image.render"
       ]
     },
-    "n.function.call": {
+    "function.result.call": {
       "label": "CALL",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.function.call.svg",
+      "path": "/assets/node-icons/zebflow/function.result.call.svg",
       "source_url": "",
       "supports": [
-        "n.function.call"
+        "function.result.call"
       ]
     },
-    "n.geo.convert": {
+    "geo.dataset.convert": {
       "label": "GEOC",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.geo.convert.svg",
+      "path": "/assets/node-icons/zebflow/geo.dataset.convert.svg",
       "source_url": "",
       "supports": [
-        "n.geo.convert"
+        "geo.dataset.convert"
       ]
     },
-    "n.geo.inspect": {
+    "geo.dataset.inspect": {
       "label": "GEOI",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.geo.inspect.svg",
+      "path": "/assets/node-icons/zebflow/geo.dataset.inspect.svg",
       "source_url": "",
       "supports": [
-        "n.geo.inspect"
+        "geo.dataset.inspect"
       ]
     },
-    "n.http.request": {
+    "http.response.fetch": {
       "label": "HTTP",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.http.request.svg",
+      "path": "/assets/node-icons/zebflow/http.response.fetch.svg",
       "source_url": "",
       "supports": [
-        "n.http.request"
+        "http.response.fetch"
       ]
     },
-    "n.input.audio": {
+    "input.audio": {
       "label": "AUD",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.audio.svg",
+      "path": "/assets/node-icons/zebflow/input.audio.svg",
       "source_url": "",
       "supports": [
-        "n.input.audio"
+        "input.audio"
       ]
     },
-    "n.input.boolean": {
+    "input.boolean": {
       "label": "BOOL",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.boolean.svg",
+      "path": "/assets/node-icons/zebflow/input.boolean.svg",
       "source_url": "",
       "supports": [
-        "n.input.boolean"
+        "input.boolean"
       ]
     },
-    "n.input.file": {
+    "input.file": {
       "label": "FILE",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.file.svg",
+      "path": "/assets/node-icons/zebflow/input.file.svg",
       "source_url": "",
       "supports": [
-        "n.input.file"
+        "input.file"
       ]
     },
-    "n.input.files": {
+    "input.files": {
       "label": "FILES",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.files.svg",
+      "path": "/assets/node-icons/zebflow/input.files.svg",
       "source_url": "",
       "supports": [
-        "n.input.files"
+        "input.files"
       ]
     },
-    "n.input.image": {
+    "input.image": {
       "label": "IMG",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.image.svg",
+      "path": "/assets/node-icons/zebflow/input.image.svg",
       "source_url": "",
       "supports": [
-        "n.input.image"
+        "input.image"
       ]
     },
-    "n.input.json": {
+    "input.json": {
       "label": "JSON",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.json.svg",
+      "path": "/assets/node-icons/zebflow/input.json.svg",
       "source_url": "",
       "supports": [
-        "n.input.json"
+        "input.json"
       ]
     },
-    "n.input.number": {
+    "input.number": {
       "label": "NUM",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.number.svg",
+      "path": "/assets/node-icons/zebflow/input.number.svg",
       "source_url": "",
       "supports": [
-        "n.input.number"
+        "input.number"
       ]
     },
-    "n.input.text": {
+    "input.text": {
       "label": "TXT",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.text.svg",
+      "path": "/assets/node-icons/zebflow/input.text.svg",
       "source_url": "",
       "supports": [
-        "n.input.text"
+        "input.text"
       ]
     },
-    "n.input.video": {
+    "input.video": {
       "label": "VID",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.input.video.svg",
+      "path": "/assets/node-icons/zebflow/input.video.svg",
       "source_url": "",
       "supports": [
-        "n.input.video"
+        "input.video"
       ]
     },
-    "n.kv.del": {
+    "kv.entry.delete": {
       "label": "KVDEL",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.del.svg",
+      "path": "/assets/node-icons/zebflow/kv.entry.delete.svg",
       "source_url": "",
       "supports": [
-        "n.kv.del"
+        "kv.entry.delete"
       ]
     },
-    "n.kv.exists": {
+    "kv.entry.head": {
       "label": "KVEX",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.exists.svg",
+      "path": "/assets/node-icons/zebflow/kv.entry.head.svg",
       "source_url": "",
       "supports": [
-        "n.kv.exists"
+        "kv.entry.head"
       ]
     },
-    "n.kv.expire": {
+    "kv.entry.expire": {
       "label": "KVTTL",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.expire.svg",
+      "path": "/assets/node-icons/zebflow/kv.entry.expire.svg",
       "source_url": "",
       "supports": [
-        "n.kv.expire"
+        "kv.entry.expire"
       ]
     },
-    "n.kv.get": {
+    "kv.entry.get": {
       "label": "KVGET",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.get.svg",
+      "path": "/assets/node-icons/zebflow/kv.entry.get.svg",
       "source_url": "",
       "supports": [
-        "n.kv.get"
+        "kv.entry.get"
       ]
     },
-    "n.kv.incr": {
+    "kv.entry.increment": {
       "label": "KVINC",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.incr.svg",
+      "path": "/assets/node-icons/zebflow/kv.entry.increment.svg",
       "source_url": "",
       "supports": [
-        "n.kv.incr"
+        "kv.entry.increment"
       ]
     },
-    "n.kv.publish": {
+    "kv.message.publish": {
       "label": "KVPUB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.publish.svg",
+      "path": "/assets/node-icons/zebflow/kv.message.publish.svg",
       "source_url": "",
       "supports": [
-        "n.kv.publish"
+        "kv.message.publish"
       ]
     },
-    "n.kv.set": {
+    "kv.entry.put": {
       "label": "KVSET",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.set.svg",
+      "path": "/assets/node-icons/zebflow/kv.entry.put.svg",
       "source_url": "",
       "supports": [
-        "n.kv.set"
+        "kv.entry.put"
       ]
     },
-    "n.logic.collect": {
+    "logic.collect": {
       "label": "JOIN",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.logic.collect.svg",
+      "path": "/assets/node-icons/zebflow/logic.collect.svg",
       "source_url": "",
       "supports": [
-        "n.logic.collect"
+        "logic.collect"
       ]
     },
-    "n.logic.foreach": {
+    "logic.foreach": {
       "label": "EACH",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.logic.foreach.svg",
+      "path": "/assets/node-icons/zebflow/logic.foreach.svg",
       "source_url": "",
       "supports": [
-        "n.logic.foreach"
+        "logic.foreach"
       ]
     },
-    "n.logic.if": {
+    "logic.if": {
       "label": "IF",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.logic.if.svg",
+      "path": "/assets/node-icons/zebflow/logic.if.svg",
       "source_url": "",
       "supports": [
-        "n.logic.if"
+        "logic.if"
       ]
     },
-    "n.logic.match": {
+    "logic.match": {
       "label": "M",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.logic.match.svg",
+      "path": "/assets/node-icons/zebflow/logic.match.svg",
       "source_url": "",
       "supports": [
-        "n.logic.match"
+        "logic.match"
       ]
     },
-    "n.logic.reduce": {
+    "logic.reduce": {
       "label": "RED",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.logic.reduce.svg",
+      "path": "/assets/node-icons/zebflow/logic.reduce.svg",
       "source_url": "",
       "supports": [
-        "n.logic.reduce"
+        "logic.reduce"
       ]
     },
-    "n.logic.retry": {
+    "logic.retry": {
       "label": "TRY",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.logic.retry.svg",
+      "path": "/assets/node-icons/zebflow/logic.retry.svg",
       "source_url": "",
       "supports": [
-        "n.logic.retry"
+        "logic.retry"
       ]
     },
-    "n.mail.send": {
+    "mail.message.send": {
       "label": "MAIL",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.mail.send.svg",
+      "path": "/assets/node-icons/zebflow/mail.message.send.svg",
       "source_url": "",
       "supports": [
-        "n.mail.send"
+        "mail.message.send"
       ]
     },
-    "n.ms.get": {
+    "ms.layer.get": {
       "label": "MSGET",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ms.get.svg",
+      "path": "/assets/node-icons/zebflow/ms.layer.get.svg",
       "source_url": "",
       "supports": [
-        "n.ms.get"
+        "ms.layer.get"
       ]
     },
-    "n.ms.list": {
+    "ms.layer.list": {
       "label": "MSLS",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ms.list.svg",
+      "path": "/assets/node-icons/zebflow/ms.layer.list.svg",
       "source_url": "",
       "supports": [
-        "n.ms.list"
+        "ms.layer.list"
       ]
     },
-    "n.ms.publish": {
+    "ms.layer.publish": {
       "label": "PUB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ms.publish.svg",
+      "path": "/assets/node-icons/zebflow/ms.layer.publish.svg",
       "source_url": "",
       "supports": [
-        "n.ms.publish"
+        "ms.layer.publish"
       ]
     },
-    "n.ms.unpublish": {
+    "ms.layer.unpublish": {
       "label": "UNPUB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.ms.unpublish.svg",
+      "path": "/assets/node-icons/zebflow/ms.layer.unpublish.svg",
       "source_url": "",
       "supports": [
-        "n.ms.unpublish"
+        "ms.layer.unpublish"
       ]
     },
-    "n.pg.query": {
+    "pg.query.run": {
       "label": "PG",
       "method": "official-svg",
-      "path": "/assets/node-icons/zebflow/n.pg.query.svg",
+      "path": "/assets/node-icons/zebflow/pg.query.run.svg",
       "source_url": "https://wiki.postgresql.org/wiki/File:PostgreSQL_logo.3colors.svg",
       "supports": [
-        "n.pg.query"
+        "pg.query.run"
       ]
     },
-    "n.script": {
+    "script.result.run": {
       "label": "JS",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.script.svg",
+      "path": "/assets/node-icons/zebflow/script.result.run.svg",
       "source_url": "",
       "supports": [
-        "n.script"
+        "script.result.run"
       ]
     },
-    "n.sekejap.insert": {
+    "sekejap.record.create": {
       "label": "SJI",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.sekejap.insert.svg",
+      "path": "/assets/node-icons/zebflow/sekejap.record.create.svg",
       "source_url": "",
       "supports": [
-        "n.sekejap.insert"
+        "sekejap.record.create"
       ]
     },
-    "n.sekejap.query": {
+    "sekejap.query.run": {
       "label": "SJQ",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.sekejap.query.svg",
+      "path": "/assets/node-icons/zebflow/sekejap.query.run.svg",
       "source_url": "",
       "supports": [
-        "n.sekejap.query"
+        "sekejap.query.run"
       ]
     },
     "n.sqlite.mutate": {
@@ -531,58 +531,58 @@
         "n.sqlite.mutate"
       ]
     },
-    "n.sqlite.query": {
+    "sqlite.query.run": {
       "label": "SQL",
       "method": "brand-svg",
-      "path": "/assets/node-icons/zebflow/n.sqlite.query.svg",
+      "path": "/assets/node-icons/zebflow/sqlite.query.run.svg",
       "source_url": "https://commons.wikimedia.org/wiki/File:Sqlite-square-icon.svg",
       "supports": [
-        "n.sqlite.query"
+        "sqlite.query.run"
       ]
     },
-    "n.table.convert": {
+    "table.data.convert": {
       "label": "TBLC",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.table.convert.svg",
+      "path": "/assets/node-icons/zebflow/table.data.convert.svg",
       "source_url": "",
       "supports": [
-        "n.table.convert"
+        "table.data.convert"
       ]
     },
-    "n.table.query": {
+    "table.query.run": {
       "label": "TBLQ",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.table.query.svg",
+      "path": "/assets/node-icons/zebflow/table.query.run.svg",
       "source_url": "",
       "supports": [
-        "n.table.query"
+        "table.query.run"
       ]
     },
-    "n.trigger.function": {
+    "trigger.function": {
       "label": "FN",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.function.svg",
+      "path": "/assets/node-icons/zebflow/trigger.function.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.function"
+        "trigger.function"
       ]
     },
-    "n.trigger.kv.subscribe": {
+    "trigger.topic": {
       "label": "KVSUB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.kv.subscribe.svg",
+      "path": "/assets/node-icons/zebflow/trigger.topic.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.kv.subscribe"
+        "trigger.topic"
       ]
     },
-    "n.trigger.manual": {
+    "trigger.manual": {
       "label": "RUN",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.manual.svg",
+      "path": "/assets/node-icons/zebflow/trigger.manual.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.manual"
+        "trigger.manual"
       ]
     },
     "n.trigger.mapserver": {
@@ -594,13 +594,13 @@
         "n.trigger.mapserver"
       ]
     },
-    "n.trigger.mcp": {
+    "trigger.mcp": {
       "label": "MCP",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.mcp.svg",
+      "path": "/assets/node-icons/zebflow/trigger.mcp.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.mcp"
+        "trigger.mcp"
       ]
     },
     "n.trigger.memsubscribe": {
@@ -612,49 +612,49 @@
         "n.trigger.memsubscribe"
       ]
     },
-    "n.trigger.schedule": {
+    "trigger.schedule": {
       "label": "CRON",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.schedule.svg",
+      "path": "/assets/node-icons/zebflow/trigger.schedule.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.schedule"
+        "trigger.schedule"
       ]
     },
-    "n.trigger.weberror": {
+    "trigger.error": {
       "label": "ERR",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.weberror.svg",
+      "path": "/assets/node-icons/zebflow/trigger.error.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.weberror"
+        "trigger.error"
       ]
     },
-    "n.trigger.webhook": {
+    "trigger.webhook": {
       "label": "WH",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.webhook.svg",
+      "path": "/assets/node-icons/zebflow/trigger.webhook.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.webhook"
+        "trigger.webhook"
       ]
     },
-    "n.trigger.ws": {
+    "trigger.room": {
       "label": "WS",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.ws.svg",
+      "path": "/assets/node-icons/zebflow/trigger.room.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.ws"
+        "trigger.room"
       ]
     },
-    "n.trigger.ws.client": {
+    "trigger.socket": {
       "label": "WSC",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.ws.client.svg",
+      "path": "/assets/node-icons/zebflow/trigger.socket.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.ws.client"
+        "trigger.socket"
       ]
     },
     "n.web.docs.generate": {
@@ -666,22 +666,22 @@
         "n.web.docs.generate"
       ]
     },
-    "n.web.response": {
+    "web.response.send": {
       "label": "RESP",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.web.response.svg",
+      "path": "/assets/node-icons/zebflow/web.response.send.svg",
       "source_url": "",
       "supports": [
-        "n.web.response"
+        "web.response.send"
       ]
     },
-    "n.web.static.generate": {
+    "web.site.generate": {
       "label": "SSG",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.web.static.generate.svg",
+      "path": "/assets/node-icons/zebflow/web.site.generate.svg",
       "source_url": "",
       "supports": [
-        "n.web.static.generate"
+        "web.site.generate"
       ]
     },
     "n.ws.client.send": {

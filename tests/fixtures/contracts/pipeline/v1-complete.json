@@ -22,7 +22,7 @@
     "nodes": [
       {
         "id": "trigger",
-        "kind": "n.trigger.webhook",
+        "kind": "trigger.webhook",
         "input_pins": [],
         "output_pins": [
           "out"
@@ -34,7 +34,7 @@
       },
       {
         "id": "respond",
-        "kind": "n.web.response",
+        "kind": "web.response.send",
         "input_pins": [
           "in"
         ],

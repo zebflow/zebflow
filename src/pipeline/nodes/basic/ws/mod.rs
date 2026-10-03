@@ -1,5 +1,5 @@
 //! `ws.*` — WebSocket rooms: `ws.emit`, `ws.sync_state`, `ws.client_send`,
-//! and the trigger that starts a pipeline from a room event (`trigger.ws`,
+//! and the trigger that starts a pipeline from a room event (`trigger.room`,
 //! whose code lives with the family it serves).
 
 use crate::pipeline::NodeDefinition;

@@ -145,7 +145,7 @@ mod tests {
     fn file_ref(lifecycle: &str, mime: &str) -> Value {
         let kind = mime.split('/').next().unwrap_or("binary");
         json!({ "__zf_type": "file_ref", "backend": "zebfs", "ref": "tmp/runs/r/files/a.png", "filename": "a.png", "mime": mime, "kind": kind,
-            "size": 1, "sha256": format!("sha256:{}", "0".repeat(64)), "lifecycle": lifecycle, "origin": "fs.svg.convert", "trust": "generated" })
+            "size": 1, "sha256": format!("sha256:{}", "0".repeat(64)), "lifecycle": lifecycle, "origin": "fs.image.render", "trust": "generated" })
     }
 
     #[test]

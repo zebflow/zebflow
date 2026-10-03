@@ -36,7 +36,7 @@ robots is authored by hand (`addressing.md` §0).
 |---|---|
 | default | HTML, as today |
 | `?format=md` or `Accept: text/markdown` on a `--template` route | the same page as Markdown: `<main>` only (the shell's landmarks are dropped), headings, paragraphs, lists, tables, links made absolute, images as their `alt`, followed by a facts block from `jsonld` |
-| `web.response` with a content type picked from a list (JSON, HTML, Markdown, text, XML, CSV, iCalendar, RSS) or typed by hand | that content type (`--body` or a payload field) — design when built |
+| `web.response.send` with a content type picked from a list (JSON, HTML, Markdown, text, XML, CSV, iCalendar, RSS) or typed by hand | that content type (`--body` or a payload field) — design when built |
 
 ## 3. What the platform generates per project (the site surface — design when built)
 
@@ -85,15 +85,15 @@ site at `/`, a member app at `/member/`), each a separate icon.
 
 | Piece | Where it lives | Rule |
 |---|---|---|
-| manifest | `pwa/manifest.webmanifest` in the repo; `trigger.webhook --path /manifest.webmanifest \| web.response --file pwa/manifest.webmanifest` | a plain JSON file the author writes; typed by its extension. A second app is a second file and route with its own `id`, `scope` (ending in `/`) and `start_url` inside it |
-| worker | `pwa/site.sw.ts` in the repo; `trigger.webhook --path /sw.js \| web.response --file pwa/site.sw.ts` | TypeScript, compiled by the page engine; every script `--file` serves starts with `self.__ZF = { version, source }`; `text/javascript`, `Cache-Control: no-cache`. It must answer at the scope root: a store object at `/_files/sw.js` controls nothing. Served from deeper, add `--header Service-Worker-Allowed=/` |
+| manifest | `pwa/manifest.webmanifest` in the repo; `trigger.webhook --path /manifest.webmanifest \| web.response.send --file pwa/manifest.webmanifest` | a plain JSON file the author writes; typed by its extension. A second app is a second file and route with its own `id`, `scope` (ending in `/`) and `start_url` inside it |
+| worker | `pwa/site.sw.ts` in the repo; `trigger.webhook --path /sw.js \| web.response.send --file pwa/site.sw.ts` | TypeScript, compiled by the page engine; every script `--file` serves starts with `self.__ZF = { version, source }`; `text/javascript`, `Cache-Control: no-cache`. It must answer at the scope root: a store object at `/_files/sw.js` controls nothing. Served from deeper, add `--header Service-Worker-Allowed=/` |
 | icons | repo files `static/pwa/*.png` → `/_static/pwa/…`: they ship with the code (the repo write API takes bytes with `?encoding=base64`) | 192, 512, maskable 512, apple 180 (no transparency) |
 | head | `page.head`: `links: [{rel:"manifest"}, {rel:"apple-touch-icon"}]`, `themeColor` | the renderer already emits these; the shell's shared head links carry them once |
 | page side | a project component: registers the worker, keeps `beforeinstallprompt` and shows a quiet card, iOS hint, dismiss remembered | never a modal on first visit; a page places it on purpose |
 | offline page | an ordinary page pipeline, e.g. `/offline`, precached by the worker | the worker answers it on a failed navigation |
 | verification | `route_fetch` → `pwa: { installable, reasons[], icons, worker }` | Chrome's checklist without a browser: name, `start_url` inside `scope`, display, 192 + 512 icons, a worker whose effective scope covers `start_url` (`serviceworker.src` in the manifest, else `sw.js` under the scope). Headless Chromium never fires `beforeinstallprompt`; real Chrome is the judge of the button |
 
-There is no PWA node and no PWA setting: `web.response --file` is the only
+There is no PWA node and no PWA setting: `web.response.send --file` is the only
 platform piece, and it serves any project file (robots, sitemap, an icon)
 the same way. The whole set — folder, routes, page, component — is what a
 hub package of kind `folder_bundle` carries, so "add a PWA" is an install,
@@ -102,13 +102,13 @@ and a generator can later ask the questions and write the same files.
 Rules: the worker never caches a signed-in scope (two people on one phone
 must not see each other's back office); every `start_url` renders for a
 guest; a scope is a directory and ends in `/`. Not covered here: push (a
-sender node next to `n.mail.send`, a subscriptions table, VAPID as a
+sender node next to `mail.message.send`, a subscriptions table, VAPID as a
 credential), background sync, store packaging.
 
 ## 6a. The error page a visitor sees
 
 An uncaught failure never answers a browser with JSON. On a page request a
-5xx renders the project's own error page — the `trigger.weberror --code 500`
+5xx renders the project's own error page — the `trigger.error --code 500`
 archetype, registered like the 404 — or, when the project has none, the
 platform's neutral fallback: unbranded, no Studio styling, one sentence and the
 first eight characters of the run id as "reference". With `errors: shown`
@@ -124,11 +124,11 @@ What the catcher takes, and what it leaves alone:
 | a page needed a sign-in it did not have | `weberror` 401, else the redirect to the project's login |
 | a pipeline failed (uncaught) | `weberror` `500`/`5xx`/`*`, else the neutral page; JSON form for a JSON request |
 | a pipeline answered `_status ≥ 400` in its payload (legacy convention) | `weberror` for that code, else JSON |
-| a pipeline answered through `web.response --status ≥ 400` with a message, body or template | **that response, as authored, always** — the catcher never replaces what an author wrote |
+| a pipeline answered through `web.response.send --status ≥ 400` with a message, body or template | **that response, as authored, always** — the catcher never replaces what an author wrote |
 
 A request is a *JSON request* when its `Accept` names `application/json` and not `text/html`; everything else is a page request.
 
-What the page receives as `input`, from `trigger.weberror`: `error_code`,
+What the page receives as `input`, from `trigger.error`: `error_code`,
 `error_message` (the reason phrase), `original_path`, `method`,
 `request_id` (the run id, full; the page prints the first eight), and — only
 when the effective `errors` is `shown` — `detail: { code, message, node_id,

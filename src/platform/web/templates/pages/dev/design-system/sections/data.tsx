@@ -25,12 +25,12 @@ const ROWS = [
 const MD = `## Release notes
 
 - **Sandbox**: scripts are validated at save time.
-- \`n.auth.token.verify\` is new — see \`help("pipeline/nodes")\`.
+- \`auth.token.verify\` is new — see \`help("pipeline/nodes")\`.
 
 | node | pins |
 |---|---|
 | logic.if | true, false |
-| kv.get | out |
+| kv.entry.get | out |
 
 > Help describes the implementation. It does not define it.`;
 

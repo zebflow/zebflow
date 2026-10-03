@@ -16,19 +16,19 @@ shows tables and columns. Read the schema before writing SQL.
 
 | Node | Database | Binds |
 |---|---|---|
-| `sekejap.query` | Sekejap | `$1, $2 …` |
-| `sekejap.insert` | Sekejap — bulk records and graph edges from a payload (`--target`, `--records-key`, `--edges-key`) | |
-| `sqlite.query` / `sqlite.mutate` | the project's `default` SQLite | `?1, ?2 …` |
-| `pg.query` | PostgreSQL — `--credential <id from credential_list>` | `$1, $2 …` |
-| `table.query` | files (CSV, JSON, NDJSON, Parquet) with SQL | `$1, $2 …` |
+| `sekejap.query.run` | Sekejap | `$1, $2 …` |
+| `sekejap.record.create` | Sekejap — bulk records and graph edges from a payload (`--target`, `--records-key`, `--edges-key`) | |
+| `sqlite.query.run` / `sqlite.mutate` | the project's `default` SQLite | `?1, ?2 …` |
+| `pg.query.run` | PostgreSQL — `--credential <id from credential_list>` | `$1, $2 …` |
+| `table.query.run` | files (CSV, JSON, NDJSON, Parquet) with SQL | `$1, $2 …` |
 
 SQL goes in the body; values go in `--params`:
 
 ```
-| sekejap.query --params "{{ [$trigger.params.id] }}" -- "SELECT id, title FROM posts WHERE id = $1"
-| sekejap.query --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-| sqlite.query --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = ?1"
-| pg.query --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT * FROM accounts WHERE id = $1"
+| sekejap.query.run --params "{{ [$trigger.params.id] }}" -- "SELECT id, title FROM posts WHERE id = $1"
+| sekejap.query.run --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+| sqlite.query.run --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = ?1"
+| pg.query.run --credential pg_main --params "{{ [$trigger.auth.sub] }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 
 Query nodes answer `{ columns, rows, row_count, … }` for reads and
@@ -41,7 +41,7 @@ queries it from a pipeline.
 `pipeline_run` runs a body once without saving it:
 
 ```
-pipeline_run body="| trigger.function | sekejap.query --limit 5 -- \"SELECT * FROM posts\""
+pipeline_run body="| trigger.function | sekejap.query.run --limit 5 -- \"SELECT * FROM posts\""
 ```
 
 The Studio's DB pages (`/projects/{o}/{p}/db/{kind}/{slug}/query`) run the
@@ -52,7 +52,7 @@ is the HTTP form.
 
 - **Sekejap:** plain SQL through the node — `CREATE TABLE posts (id TEXT, title TEXT, body_json JSON, created_at TEXT)` — or a *managed table* with declared attributes and indexes (hash, range, full-text, vector, spatial) in Studio → the connection's Tables tab, or `POST /api/projects/{o}/{p}/tables`. Declared schemas live in `schemas/sekejap/`; seed rows in `initial-data/`.
 - **SQLite:** `sqlite.mutate -- "CREATE TABLE …"`; schema in `schemas/sqlite/schema.sql`.
-- **PostgreSQL:** `pg.query --credential … -- "CREATE TABLE …"` against a credential that is allowed to.
+- **PostgreSQL:** `pg.query.run --credential … -- "CREATE TABLE …"` against a credential that is allowed to.
 
 `help("db/sekejap")` for SekejapQL: graph reads with `FROM MATCH`, full-text,
 vectors, spatial, the managed-table API.

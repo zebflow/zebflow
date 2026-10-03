@@ -35,7 +35,7 @@ pub struct DeclaredHosts {
 /// still the reason the connection is being made at all.
 ///
 /// Scope is deliberately bundle-provided nodes only. A project's own pipeline
-/// calling `n.http.request` carries no policy and is not restricted: the threat
+/// calling `http.response.fetch` carries no policy and is not restricted: the threat
 /// model is third-party code the user installed, not the user's own work.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BundleEgress {
@@ -316,13 +316,13 @@ mod tests {
     fn declared_hosts_admit_what_the_bundle_stated() {
         let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com", "*.example.org"]));
         policy
-            .check_url("https://api.openai.com/v1/embeddings", "n.http.request")
+            .check_url("https://api.openai.com/v1/embeddings", "http.response.fetch")
             .expect("exact host");
         policy
-            .check_url("https://API.OpenAI.com:443/v1", "n.http.request")
+            .check_url("https://API.OpenAI.com:443/v1", "http.response.fetch")
             .expect("case and port are not part of the host");
         policy
-            .check_url("https://eu.api.example.org/x", "n.http.request")
+            .check_url("https://eu.api.example.org/x", "http.response.fetch")
             .expect("wildcard covers a subdomain");
     }
 
@@ -330,18 +330,18 @@ mod tests {
     fn an_undeclared_host_is_refused_by_name() {
         let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com", "*.example.org"]));
         let err = policy
-            .check_url("https://evil.example.com/steal", "n.http.request")
+            .check_url("https://evil.example.com/steal", "http.response.fetch")
             .expect_err("undeclared host");
         assert_eq!(err.code, "FW_EGRESS_UNDECLARED_HOST");
         assert_eq!(
             err.message,
-            "n.http.request outbound host 'evil.example.com' is not declared by node bundle 'ml' \
+            "http.response.fetch outbound host 'evil.example.com' is not declared by node bundle 'ml' \
              (spec.hosts: api.openai.com, *.example.org)"
         );
 
         // A wildcard label is a label, so the apex it hangs off is not covered.
         let err = policy
-            .check_url("https://example.org/x", "n.http.request")
+            .check_url("https://example.org/x", "http.response.fetch")
             .expect_err("wildcard does not match its own apex");
         assert_eq!(err.code, "FW_EGRESS_UNDECLARED_HOST");
     }
@@ -354,18 +354,18 @@ mod tests {
             "absent and empty are the same bytes on the wire, so empty cannot deny a host"
         );
         silent
-            .check_url("https://anywhere.example.com/", "n.http.request")
+            .check_url("https://anywhere.example.com/", "http.response.fetch")
             .expect("no layer restricts a host");
 
         // Declaring nothing does not buy anonymity: the bundle is still the one
         // a refusal names, so the incentive to stay silent does not exist.
-        let err = silent.refuse_uncheckable("n.pg.query");
+        let err = silent.refuse_uncheckable("pg.query.run");
         assert_eq!(err.code, "FW_EGRESS_UNCHECKED_NODE");
         assert!(err.message.contains("'ml'"), "{}", err.message);
 
         assert!(!BundleEgress::default().is_active());
         BundleEgress::default()
-            .check_url("https://anywhere.example.com/", "n.http.request")
+            .check_url("https://anywhere.example.com/", "http.response.fetch")
             .expect("an inactive policy checks nothing");
     }
 
@@ -380,7 +380,7 @@ mod tests {
             "https://elsewhere.com/x",
         ] {
             let err = nested
-                .check_url(url, "n.http.request")
+                .check_url(url, "http.response.fetch")
                 .expect_err("no host satisfies both lists");
             assert_eq!(err.code, "FW_EGRESS_UNDECLARED_HOST");
         }
@@ -388,11 +388,11 @@ mod tests {
         // A bundle that declares nothing does not escape the one that composed it.
         let silent = BundleEgress::extend(Some(&outer), "silent", &[]);
         silent
-            .check_url("https://api.outer.com/x", "n.http.request")
+            .check_url("https://api.outer.com/x", "http.response.fetch")
             .expect("the outer declaration still admits its own host");
         assert_eq!(
             silent
-                .check_url("https://elsewhere.com/x", "n.http.request")
+                .check_url("https://elsewhere.com/x", "http.response.fetch")
                 .expect_err("and still refuses everything else")
                 .code,
             "FW_EGRESS_UNDECLARED_HOST"
@@ -404,14 +404,14 @@ mod tests {
         let policy = BundleEgress::extend(None, "ml", &hosts(&["api.openai.com"]));
         assert_eq!(
             policy
-                .check_url("not-a-url", "n.http.request")
+                .check_url("not-a-url", "http.response.fetch")
                 .expect_err("a URL that will not parse has no host to check")
                 .code,
             "FW_EGRESS_URL_INVALID"
         );
-        let err = policy.refuse_uncheckable("n.ai.agent");
+        let err = policy.refuse_uncheckable("ai.text.generate");
         assert_eq!(err.code, "FW_EGRESS_UNCHECKED_NODE");
-        assert!(err.message.contains("n.ai.agent"), "{}", err.message);
+        assert!(err.message.contains("ai.text.generate"), "{}", err.message);
         assert!(err.message.contains("'ml'"), "{}", err.message);
     }
 

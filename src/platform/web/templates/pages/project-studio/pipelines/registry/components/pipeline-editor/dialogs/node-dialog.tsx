@@ -114,7 +114,7 @@ export default function NodeDialog({
 
   const [formState, setFormState] = useState<Record<string, unknown>>({});
 
-  // Dynamic function params (for n.function.call)
+  // Dynamic function params (for function.result.call)
   const [functionParams, setFunctionParams] = useState<Record<string, any> | null>(null);
   const [functionParamsLoading, setFunctionParamsLoading] = useState(false);
 
@@ -126,9 +126,9 @@ export default function NodeDialog({
     }
   }, [nodeData]);
 
-  // Load function params when the selected function changes (n.function.call only)
+  // Load function params when the selected function changes (function.result.call only)
   useEffect(() => {
-    if (kind !== "n.function.call") return;
+    if (kind !== "function.result.call") return;
     const slug = String(formState.function || "").trim();
     if (!slug) { setFunctionParams(null); return; }
 
@@ -151,7 +151,7 @@ export default function NodeDialog({
         if (!data) { setFunctionParams(null); return; }
         let graph: any;
         try { graph = JSON.parse(data.source || "{}"); } catch { graph = {}; }
-        const triggerNode = (graph?.nodes || []).find((n: any) => n.kind === "n.trigger.function");
+        const triggerNode = (graph?.nodes || []).find((n: any) => n.kind === "trigger.function");
         const params = schemaPropertiesFromTriggerConfig(triggerNode?.config || {});
         setFunctionParams(params && Object.keys(params).length > 0 ? params : null);
 
@@ -175,7 +175,7 @@ export default function NodeDialog({
 
   // Sync webhook URL field when path changes
   useEffect(() => {
-    if (kind !== "n.trigger.webhook") return;
+    if (kind !== "trigger.webhook") return;
     const path = String(formState.path || "/");
     const base = webhookBaseUrl || (typeof window !== "undefined" ? window.location.origin : "");
     const norm = path.startsWith("/") ? path : `/${path}`;
@@ -262,15 +262,15 @@ export default function NodeDialog({
             formState={formState}
             titlePlaceholder={catalogEntry?.title || kind}
             onChange={handleChange}
-            hidePreviewIn={kind.startsWith("n.input.")}
+            hidePreviewIn={kind.startsWith("input.")}
           />
 
           {/* Server-driven fields via NodeForm.
-              For n.function.call with params loaded: hide input_path (replaced by param inputs below). */}
+              For function.result.call with params loaded: hide input_path (replaced by param inputs below). */}
           {serverFields.length > 0 ? (
             <NodeForm
               fields={
-                kind === "n.function.call" && functionParams !== null
+                kind === "function.result.call" && functionParams !== null
                   ? serverFields.filter((f) => f.name !== "input_path" && f.name !== "input")
                   : serverFields
               }
@@ -299,8 +299,8 @@ export default function NodeDialog({
             </Field>
           )}
 
-          {/* Dynamic function input panel (n.function.call only) */}
-          {kind === "n.function.call" && formState.function && (
+          {/* Dynamic function input panel (function.result.call only) */}
+          {kind === "function.result.call" && formState.function && (
             <div className="mt-1 rounded border border-border overflow-hidden">
               <div className="flex items-center gap-2 px-3 py-2 bg-success/40 border-b border-border">
                 <span className="text-[0.7rem] font-semibold uppercase tracking-wide text-muted-foreground">

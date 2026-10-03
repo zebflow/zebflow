@@ -61,7 +61,7 @@ package. Hub package versions and digests belong to `HubPackage`.
     "nodes": [
       {
         "id": "trigger",
-        "kind": "n.trigger.webhook",
+        "kind": "trigger.webhook",
         "input_pins": [],
         "output_pins": ["out"],
         "config": {
@@ -71,7 +71,7 @@ package. Hub package versions and digests belong to `HubPackage`.
       },
       {
         "id": "respond",
-        "kind": "n.web.response",
+        "kind": "web.response.send",
         "input_pins": ["in"],
         "output_pins": ["out"],
         "config": {
@@ -140,7 +140,7 @@ messages. `max_run_bytes` is per invocation; a called function pipeline uses its
 own policy and budget. Count/age retention remains independent of capture size.
 
 Pins are stored on each instance in v1. This supports configuration-dependent
-pins such as routes from `n.logic.match`. An edge may use a declared output pin
+pins such as routes from `logic.match`. An edge may use a declared output pin
 or the engine-wide `error` output. Its target pin must be declared by the target
 instance. Node definitions remain the source used by authoring tools to create
 and validate those instance pins.

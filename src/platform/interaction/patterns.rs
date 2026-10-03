@@ -73,8 +73,8 @@ pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
         }
     }
 
-    // contains pg.query
-    if lower.contains("pg.query") {
+    // contains pg.query.run
+    if lower.contains("pg.query.run") {
         return Some(format!("/projects/{owner}/{project}/db"));
     }
 

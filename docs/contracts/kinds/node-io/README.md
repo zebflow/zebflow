@@ -27,7 +27,7 @@ NodeOutput
 ├── error?      { class, code, message }                 present exactly when status is refused/failed
 ├── meta        { "zf.cache": "hit" }                    flat string map — the ONE extension point
 ├── cost        { duration_ms, payload_bytes }           stamped by the engine, never by the node
-└── trace       ["n.mail.send: delivered …"]             bounded lines; trace_capture governs the bound
+└── trace       ["mail.message.send: delivered …"]             bounded lines; trace_capture governs the bound
 ```
 
 The mapping that explains every choice: payload = HTTP body, status/error =
@@ -61,7 +61,7 @@ Codes (`FW_NODE_MAIL_ADDRESS`, …) are a registry with IANA manners: each code
 is declared once with its class, **append-only, never renamed, never reused**.
 A code's class never changes — if a refusal turns out to be a system fault,
 that is a new code, not an edit. `logic.retry` retries only `failed`;
-`trigger.weberror` matches on class or code.
+`trigger.error` matches on class or code.
 
 ## Payload rules
 
@@ -79,7 +79,7 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
   bytes stay in storage and are redeemed at the storage boundary by the node
   that needs them. A FileRef is a *value*: nestable (`{ user: { avatar } }`),
   plural (`{ pages: [...] }`). There is deliberately no sibling binary
-  channel. Inlining bytes is legal when explicit (`fs.get --encoding base64`).
+  channel. Inlining bytes is legal when explicit (`fs.file.get --encoding base64`).
 - **Trigger context is initial payload.** `query`, `body`, `auth`, `params`,
   `files` arrive as ordinary keys, freely overwritable downstream — the
   originals are reachable forever via `$trigger`.
@@ -96,8 +96,8 @@ that is a new code, not an edit. `logic.retry` retries only `failed`;
   trigger is that trigger's declaration, and `$nodes.<id>` of one is the
   value it checked.
 - **Manners are per family.** A producer (query, convert, generate) replaces
-  the payload with its product; a reader (`kv.get`, `kv.exists`, `kv.incr`)
-  merges into it; a doer (`kv.set`, `ws.emit`) passes it through or returns a
+  the payload with its product; a reader (`kv.entry.get`, `kv.entry.head`, `kv.entry.increment`)
+  merges into it; a doer (`kv.entry.put`, `ws.emit`) passes it through or returns a
   receipt. Sibling nodes never differ in manner, and every node's
   `output_schema` states which it is.
 
@@ -221,10 +221,10 @@ outside world knows, `X-Request-Id`:
 - a `trigger.webhook` run answers with `X-Request-Id: <run_id>` on every
   response, success or failure, and adopts an inbound `X-Request-Id` as its
   `run_id` when a proxy sent one;
-- every `http.request` a run makes carries `X-Request-Id: <run_id>` outward,
+- every `http.response.fetch` a run makes carries `X-Request-Id: <run_id>` outward,
   whatever trigger started the run, so a failure two services away traces
   back;
 - no other trigger has a caller to answer; the run keeps the same id in the
   log and nothing else happens.
 
-Decided and implemented 2026-09-17: `webhook_run_id` adopts or mints, the ingress sets the header on every response, `http.request` forwards it unless the author set one.
+Decided and implemented 2026-09-17: `webhook_run_id` adopts or mints, the ingress sets the header on every response, `http.response.fetch` forwards it unless the author set one.

@@ -41,18 +41,18 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
   (`input.result`, `input.body` still there). Reach an earlier node's output
   with `$nodes.<id>` in `{{ }}`.
 - **SQL in the body, values in `--params`:**
-  `sekejap.query --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"`.
+  `sekejap.query.run --params "{{ [input.body.email] }}" -- "SELECT * FROM users WHERE email = $1"`.
   Never interpolate a value into SQL text.
 - **A script returns the next payload and nothing else.** It cannot set a
   status or a header, `return null` does not stop the pipeline, and
   `setTimeout` / `fetch` are blocked in it. Branch with `logic.if --expr`,
-  answer with `web.response`, call out with `http.request`.
-- **`web.response`** decides the response: nothing → JSON of the payload;
+  answer with `web.response.send`, call out with `http.response.fetch`.
+- **`web.response.send`** decides the response: nothing → JSON of the payload;
   `--template pages/x.tsx` → the page; `--location /path` → redirect (always
   root-relative — `/admin`, never `/wh/…/admin`; the project's host makes it right);
   `--status`, `--set-cookie "…"`, `--header K=V`. A 404 is a `logic.if` with
-  two `web.response` nodes on its pins.
-- **A site-wide 404 is `trigger.weberror --code 404 | web.response --status 404 --template pages/not-found.tsx`.**
+  two `web.response.send` nodes on its pins.
+- **A site-wide 404 is `trigger.error --code 404 | web.response.send --status 404 --template pages/not-found.tsx`.**
   A webhook with `--path /*` or `/:path` does not catch unknown routes — four
   of five models tried; none of them worked.
 - **Forms are two pipelines.** `GET` renders the page; `POST` validates
@@ -63,9 +63,9 @@ Facts live in `help(topic="pipeline")`, `pipeline/dsl`, `pipeline/authoring`,
 register api/posts/create --title "Create post"
 [a] trigger.webhook --path /api/posts --method POST --auth-type jwt --auth-credential jwt_main --auth-required-role editor
 [b] logic.if --expr "typeof input.body?.title === 'string' && input.body.title.length > 0"
-[c] sekejap.query --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-[d] web.response --location /admin/posts
-[e] web.response --status 400 --body "{{ { error: 'title is required' } }}"
+[c] sekejap.query.run --params "{{ [input.body.title, input.body.slug] }}" --read-only false -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
+[d] web.response.send --location /admin/posts
+[e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
 [b]:true -> [c]
 [c] -> [d]

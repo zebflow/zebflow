@@ -1,4 +1,4 @@
-//! n.fs.compress — archive one project file or folder into a compressed bundle.
+//! fs.archive.create — archive one project file or folder into a compressed bundle.
 //!
 //! First slice supports only `tar.gz`. The answer, `compressed`, is a bare
 //! durable FileRef for the archive — the eleven contract fields and nothing
@@ -24,7 +24,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.fs.compress";
+pub const NODE_KIND: &str = "fs.archive.create";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -107,7 +107,7 @@ pub fn definition() -> NodeDefinition {
                         "size": { "type": "integer" },
                         "sha256": { "type": "string" },
                         "lifecycle": { "type": "string", "const": "durable" },
-                        "origin": { "type": "string", "const": "fs.compress" },
+                        "origin": { "type": "string", "const": "fs.archive.create" },
                         "trust": { "type": "string", "const": "generated" }
                     }
                 }
@@ -229,9 +229,9 @@ pub fn definition() -> NodeDefinition {
         }],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Archive an export folder", "fs.compress --source-key export.folder --filename export.tar.gz")
+            crate::pipeline::model::NodeExample::dsl("Archive an export folder", "fs.archive.create --source-key export.folder --filename export.tar.gz")
                 .input(serde_json::json!({ "export": { "folder": "exports/2026-09" } }))
-                .output(serde_json::json!({ "export": { "folder": "exports/2026-09" }, "compressed": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "archives/export.tar.gz", "filename": "export.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.compress", "trust": "generated" } })),
+                .output(serde_json::json!({ "export": { "folder": "exports/2026-09" }, "compressed": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "archives/export.tar.gz", "filename": "export.tar.gz", "mime": "application/gzip", "kind": "archive", "size": 40211, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.archive.create", "trust": "generated" } })),
         ],
         ..Default::default()
     }
@@ -346,12 +346,12 @@ impl NodeHandler for Node {
             .await
             .map_err(|err| PipelineError::new("FW_NODE_FS_COMPRESS", format!("archive task failed: {err}")))??;
             scratch.push_file(&store.fs, &archive_abs, &archive_rel)?;
-            // `compressed` is a bare durable FileRef for the archive, so `fs.copy
+            // `compressed` is a bare durable FileRef for the archive, so `fs.file.copy
             // --from "{{ input.compressed }}"` or a `--preview` takes it as it is.
             let leaf = archive_rel.rsplit('/').next().unwrap_or(&archive_rel).to_string();
-            store.file_ref_from_file(&archive_rel, &leaf, "application/gzip", &archive_abs, "fs.compress", "generated", "FW_NODE_FS_COMPRESS")?
+            store.file_ref_from_file(&archive_rel, &leaf, "application/gzip", &archive_abs, "fs.archive.create", "generated", "FW_NODE_FS_COMPRESS")?
         } else {
-            store.stored_ref(&archive_rel, "fs.compress", "generated", "FW_NODE_FS_COMPRESS")?
+            store.stored_ref(&archive_rel, "fs.archive.create", "generated", "FW_NODE_FS_COMPRESS")?
         };
         let size = compressed["size"].as_u64().unwrap_or(0);
         Ok(NodeExecutionOutput {

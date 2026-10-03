@@ -42,7 +42,7 @@ pub struct NodeExecutionOutput {
 /// Node interface implemented by every framework node kind.
 #[async_trait]
 pub trait NodeHandler: Send + Sync {
-    /// Stable node kind id (for example `n.web.response`).
+    /// Stable node kind id (for example `web.response.send`).
     fn kind(&self) -> &'static str;
     /// Supported input pin names.
     fn input_pins(&self) -> &'static [&'static str];
@@ -58,7 +58,7 @@ pub trait NodeHandler: Send + Sync {
     /// Executes node business logic and may emit multiple downstream outputs from one input.
     ///
     /// Default behavior wraps `execute_async` as a single emission so existing nodes do not
-    /// need any changes. Nodes like `n.logic.foreach` override this to emit many item runs.
+    /// need any changes. Nodes like `logic.foreach` override this to emit many item runs.
     async fn execute_many_async(
         &self,
         input: NodeExecutionInput,

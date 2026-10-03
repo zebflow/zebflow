@@ -1411,7 +1411,7 @@ TRUNCATE TABLE tags;
     }
 
     /// The findings the substring matcher got right are still produced, and now
-    /// for a reason: `n.pg.query` reads a store and `n.fs.put` writes files
+    /// for a reason: `pg.query.run` reads a store and `fs.file.put` writes files
     /// because the catalog says so, not because their names contain `pg` and
     /// `file`.
     #[test]
@@ -1421,19 +1421,19 @@ TRUNCATE TABLE tags;
             &[pipeline_entry(
                 "pipelines/demo.zf.json",
                 &[
-                    "n.trigger.webhook",
-                    "n.http.request",
-                    "n.pg.query",
-                    "n.fs.put",
+                    "trigger.webhook",
+                    "http.response.fetch",
+                    "pg.query.run",
+                    "fs.file.put",
                 ],
             )],
             Vec::new(),
             PackageReviewOptions::default(),
         );
 
-        assert!(review.database_effects.contains(&"n.pg.query".to_string()));
-        assert!(review.filesystem_effects.contains(&"n.fs.put".to_string()));
-        assert!(review.nodes_used.contains(&"n.http.request".to_string()));
+        assert!(review.database_effects.contains(&"pg.query.run".to_string()));
+        assert!(review.filesystem_effects.contains(&"fs.file.put".to_string()));
+        assert!(review.nodes_used.contains(&"http.response.fetch".to_string()));
         assert_eq!(review.risk_level, "high");
         assert!(review.violations.is_empty(), "{:?}", review.violations);
     }
@@ -1446,7 +1446,7 @@ TRUNCATE TABLE tags;
             &ResolvedProjectLayout::platform_default(),
             &[pipeline_entry(
                 "pipelines/demo.zf.json",
-                &["n.trigger.webhook", "n.trigger.schedule"],
+                &["trigger.webhook", "trigger.schedule"],
             )],
             Vec::new(),
             PackageReviewOptions::default(),
@@ -1465,23 +1465,23 @@ TRUNCATE TABLE tags;
             &ResolvedProjectLayout::platform_default(),
             &[pipeline_entry(
                 "pipelines/demo.zf.json",
-                &["n.browser.run", "n.fs.compress", "n.logic.collect"],
+                &["browser.page.run", "fs.archive.create", "logic.collect"],
             )],
             Vec::new(),
             PackageReviewOptions::default(),
         );
 
-        assert_eq!(review.network_effects, vec!["n.browser.run".to_string()]);
+        assert_eq!(review.network_effects, vec!["browser.page.run".to_string()]);
         assert_eq!(
             review.code_execution,
-            vec!["n.browser.run".to_string(), "n.fs.compress".to_string()]
+            vec!["browser.page.run".to_string(), "fs.archive.create".to_string()]
         );
         // A node that reaches nothing appears in none of the effect lists, and
         // that is an answer from the catalog rather than a gap in it.
         assert!(
             !review
                 .filesystem_effects
-                .contains(&"n.logic.collect".to_string())
+                .contains(&"logic.collect".to_string())
         );
         assert!(
             review
@@ -1511,7 +1511,7 @@ TRUNCATE TABLE tags;
             &ResolvedProjectLayout::platform_default(),
             &[pipeline_entry(
                 "pipelines/demo.zf.json",
-                &["n.x.nowhere.thing", "n.fs.put"],
+                &["x.nowhere.thing", "fs.file.put"],
             )],
             Vec::new(),
             PackageReviewOptions::default(),
@@ -1521,7 +1521,7 @@ TRUNCATE TABLE tags;
             review
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("n.x.nowhere.thing")),
+                .any(|warning| warning.contains("x.nowhere.thing")),
             "{:?}",
             review.warnings
         );
@@ -1543,7 +1543,7 @@ TRUNCATE TABLE tags;
                     "description": "A bundle whose function reaches the network.",
                     "functions": {"main": "functions/main.zf.json"},
                     "nodes": [{
-                        "kind": "n.x.acme.sync",
+                        "kind": "x.acme.sync",
                         "title": "Sync",
                         "description": "Push a payload somewhere.",
                         "run": {"function": "main"},
@@ -1559,9 +1559,9 @@ TRUNCATE TABLE tags;
             ),
             pipeline_entry(
                 "functions/main.zf.json",
-                &["n.trigger.function", "n.http.request"],
+                &["trigger.function", "http.response.fetch"],
             ),
-            pipeline_entry("pipelines/uses-it.zf.json", &["n.x.acme.sync"]),
+            pipeline_entry("pipelines/uses-it.zf.json", &["x.acme.sync"]),
         ];
 
         let review = review_package_entries(
@@ -1580,14 +1580,14 @@ TRUNCATE TABLE tags;
         assert!(
             review
                 .network_effects
-                .contains(&"n.x.acme.sync".to_string()),
+                .contains(&"x.acme.sync".to_string()),
             "{:?}",
             review.network_effects
         );
         assert!(
             review
                 .network_effects
-                .contains(&"n.http.request".to_string())
+                .contains(&"http.response.fetch".to_string())
         );
         assert!(
             !review
@@ -1616,7 +1616,7 @@ TRUNCATE TABLE tags;
                     "description": "A bundle shadowing a native node.",
                     "functions": {"main": "functions/main.zf.json"},
                     "nodes": [{
-                        "kind": "n.http.request",
+                        "kind": "http.response.fetch",
                         "title": "HTTP Request",
                         "description": "Not the one you think.",
                         "run": {"function": "main"},
@@ -1642,7 +1642,7 @@ TRUNCATE TABLE tags;
         assert_eq!(
             review.violations,
             vec![
-                "definition.json: declares node kind 'n.http.request', which this build already \
+                "definition.json: declares node kind 'http.response.fetch', which this build already \
                  provides"
                     .to_string()
             ]
@@ -1664,7 +1664,7 @@ TRUNCATE TABLE tags;
                     "description": "A bundle that owns the kind it declares.",
                     "functions": {"main": "functions/main.zf.json"},
                     "nodes": [{
-                        "kind": "n.x.acme.request",
+                        "kind": "x.acme.request",
                         "title": "Acme Request",
                         "description": "Its own node.",
                         "run": {"function": "main"},

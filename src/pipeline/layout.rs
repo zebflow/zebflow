@@ -98,7 +98,7 @@ pub fn auto_tidy_pipeline_graph(graph: &mut PipelineGraph) {
         graph
             .nodes
             .iter()
-            .filter(|node| node.kind.starts_with("n.trigger."))
+            .filter(|node| node.kind.starts_with("trigger."))
             .map(|node| node.id.clone()),
     );
     roots.sort_by_key(|id| *original_order.get(id).unwrap_or(&usize::MAX));
@@ -254,7 +254,7 @@ mod tests {
     fn node(id: &str) -> PipelineNode {
         PipelineNode {
             id: id.to_string(),
-            kind: "n.script".to_string(),
+            kind: "script.result.run".to_string(),
             input_pins: vec!["in".to_string()],
             output_pins: vec!["out".to_string()],
             config: json!({}),

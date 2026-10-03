@@ -40,9 +40,9 @@ pub const WASM_JSON_ABI_V1: &str = "zebflow-wasm-json-v1";
 /// Reserved kind prefix for third-party nodes.
 ///
 /// Zebflow curates `n.*` and guarantees uniqueness there. Everyone else gets
-/// `n.x.{package}.*`, which is collision-proof by construction because the kind
+/// `x.{package}.*`, which is collision-proof by construction because the kind
 /// embeds the package that provides it.
-pub const INSTALLED_NODE_KIND_PREFIX: &str = "n.x.";
+pub const INSTALLED_NODE_KIND_PREFIX: &str = "x.";
 
 /// Where a bundle is consumed, which decides the namespace its kinds may use.
 ///
@@ -54,7 +54,7 @@ pub enum BundleScope {
     /// Consumed at build time and shipped inside the binary. Zebflow curates
     /// these names, so they live in `n.*` and are guaranteed present.
     Platform,
-    /// Installed into one project. These names are package-scoped under `n.x.`
+    /// Installed into one project. These names are package-scoped under `x.`
     /// so no two bundles can ever claim the same kind.
     Project,
 }
@@ -102,7 +102,7 @@ pub const BUNDLE_TRIGGER_TYPES: &[&str] = &["webhook", "ws", "ws_client", "cron"
 /// Converts a package slug into its node-kind segment.
 ///
 /// Kind segments allow underscores but not hyphens, so `openai-embedding`
-/// owns `n.x.openai_embedding.`.
+/// owns `x.openai_embedding.`.
 pub fn package_kind_token(package: &str) -> String {
     package.replace('-', "_")
 }
@@ -504,8 +504,7 @@ pub fn validate_normalized_node_definition(
 
     let kind_segments = definition.kind.split('.').collect::<Vec<_>>();
     if kind_segments.len() < 2
-        || kind_segments[0] != "n"
-        || kind_segments[1..].iter().any(|segment| {
+        || kind_segments.iter().any(|segment| {
             segment.is_empty()
                 || !segment
                     .bytes()
@@ -513,7 +512,7 @@ pub fn validate_normalized_node_definition(
         })
     {
         return Err(ContractError::invalid(
-            "spec.kind must use lowercase dot-separated n.* segments",
+            "spec.kind must use lowercase dot-separated segments",
         ));
     }
 
@@ -892,9 +891,9 @@ mod tests {
         assert_eq!(
             sources,
             vec![
-                ("n.x.mixed.load", NodePackageSource::Composite),
-                ("n.x.mixed.crunch", NodePackageSource::Wasm),
-                ("n.x.mixed.inbox", NodePackageSource::Declarative),
+                ("x.mixed.load", NodePackageSource::Composite),
+                ("x.mixed.crunch", NodePackageSource::Wasm),
+                ("x.mixed.inbox", NodePackageSource::Declarative),
             ]
         );
     }
@@ -923,7 +922,7 @@ mod tests {
         let manifests = normalize_node_bundle(&bundle(V1_MIXED).spec).expect("normalize");
         let load = &manifests[0];
         let crunch = &manifests[1];
-        assert_eq!(load.definition.kind, "n.x.mixed.load");
+        assert_eq!(load.definition.kind, "x.mixed.load");
         assert_eq!(
             load.credentials
                 .iter()
@@ -1010,10 +1009,10 @@ mod tests {
 
     #[test]
     fn package_owns_its_kind_namespace() {
-        assert_eq!(package_kind_namespace("ml"), "n.x.ml.");
+        assert_eq!(package_kind_namespace("ml"), "x.ml.");
         assert_eq!(
             package_kind_namespace("openai-embedding"),
-            "n.x.openai_embedding."
+            "x.openai_embedding."
         );
     }
 
@@ -1023,13 +1022,13 @@ mod tests {
     fn namespace_rules_follow_the_consumption_scope() {
         let project = bundle(V1_COMPOSITE).spec;
         validate_bundle_namespace(&project, BundleScope::Project)
-            .expect("n.x.composite.* is owned by package 'composite'");
+            .expect("x.composite.* is owned by package 'composite'");
         assert!(
             validate_bundle_namespace(&project, BundleScope::Platform).is_err(),
             "a curated bundle may not use the third-party namespace"
         );
 
-        for kind in ["n.x.other.load", "n.composite.load", "n.x.composite"] {
+        for kind in ["x.other.load", "n.composite.load", "x.composite"] {
             let spec = bundle(&mutate(V1_COMPOSITE, |value| {
                 value["spec"]["nodes"][0]["kind"] = serde_json::json!(kind);
             }))
@@ -1058,7 +1057,7 @@ mod tests {
     fn rejects_duplicate_node_kind() {
         assert!(
             decode_node_bundle(&mutate(V1_WASM, |value| {
-                value["spec"]["nodes"][1]["kind"] = serde_json::json!("n.x.wasmpkg.train");
+                value["spec"]["nodes"][1]["kind"] = serde_json::json!("x.wasmpkg.train");
             }))
             .is_err()
         );

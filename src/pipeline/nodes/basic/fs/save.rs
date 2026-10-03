@@ -267,7 +267,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem],
         title: "FS Save".to_string(),
         description: "Keep a file that came through the run. Reads the file at `--source-key` (default `files.file`: the upload field `file` set by \
-            `trigger.webhook`; `files.photo` for a field named photo, `response.body` after `http.request --response-type bytes`, `image` after `fs.svg.convert`) — \
+            `trigger.webhook`; `files.photo` for a field named photo, `response.body` after `http.response.fetch --response-type bytes`, `image` after `fs.image.render`) — \
             an upload, a FileRef or a byte envelope, and nothing else is looked at — checks the kind by MIME and magic bytes (`--allowed-kinds images|documents|…`) and the \
             size (`--max-size` MB), then writes it under `--folder` (default `uploads/`; private until the owner exposes the folder in Studio → Files) or at \
             an exact `--path`. Adds `saved` — a durable FileRef and nothing else (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, \
@@ -460,7 +460,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("Photo with a caption", "fs.save --source-key files.photo --folder uploads --allowed-kinds images --max-size 10")
                 .input(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } } }))
                 .output(serde_json::json!({ "body": { "caption": "Sunset" }, "files": { "photo": { "__zf_type": "file_ref", "filename": "IMG_1.jpg", "mime": "image/jpeg", "size": 182331 } }, "saved": { "__zf_type": "file_ref", "backend": "zebfs", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.save", "trust": "untrusted" } }))
-                .note("Then `sekejap.query --read-only false --params \"{{ [input.body.caption, input.saved.ref] }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`. `saved` is a FileRef, so `fs.image.thumbnail`, `fs.copy --from \"{{ input.saved }}\"` and a `--preview image` all take it as it is."),
+                .note("Then `sekejap.query.run --read-only false --params \"{{ [input.body.caption, input.saved.ref] }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`. `saved` is a FileRef, so `fs.image.thumbnail`, `fs.file.copy --from \"{{ input.saved }}\"` and a `--preview image` all take it as it is."),
         ],
         ..Default::default()
     }
@@ -854,7 +854,7 @@ mod tests {
     fn file_ref(name: &str) -> Value {
         serde_json::json!({ "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": format!("tmp/runs/r/files/{name}"), "filename": name,
             "mime": "image/png", "kind": "image", "size": 1, "sha256": format!("sha256:{}", "0".repeat(64)),
-            "lifecycle": "temporary", "origin": "fs.svg.convert", "trust": "generated" })
+            "lifecycle": "temporary", "origin": "fs.image.render", "trust": "generated" })
     }
 
     #[test]

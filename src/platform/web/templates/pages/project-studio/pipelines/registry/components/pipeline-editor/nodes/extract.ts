@@ -127,7 +127,7 @@ function deriveTemplateIdFromPath(rawPath: string): string {
 /**
  * Extract a typed node config object from a form state map.
  *
- * @param kind - canonical node kind (e.g. "n.trigger.webhook")
+ * @param kind - canonical node kind (e.g. "trigger.webhook")
  * @param formState - flat map of field name → raw string/boolean value
  * @returns cleaned config object ready for the node's `zfConfig`
  */

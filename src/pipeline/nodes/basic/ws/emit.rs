@@ -17,7 +17,7 @@
 //! # Room resolution
 //!
 //! 1. If `--room` is set, use `{owner}/{project}/{room}` as the room key.
-//! 2. Otherwise read `room_id` from `input.payload.room_id` (injected by `n.trigger.ws`).
+//! 2. Otherwise read `room_id` from `input.payload.room_id` (injected by `trigger.room`).
 //!
 //! A missing room (no clients have ever joined) is silently skipped.
 //!
@@ -30,7 +30,7 @@
 //! | `others` | Deliver to all sessions *except* the triggering session |
 //!
 //! For `session` and `others`, `session_id` is read from `input.payload.session_id`
-//! (injected by `n.trigger.ws`); without one the node fails with
+//! (injected by `trigger.room`); without one the node fails with
 //! `FW_NODE_WS_EMIT_NO_SESSION`. For server-initiated pipelines without a WS
 //! trigger, `all` is the natural choice.
 //!
@@ -48,27 +48,27 @@
 //!
 //! **Broadcast chat message to everyone:**
 //! ```text
-//! | n.trigger.ws --event chat
+//! | trigger.room --event chat
 //! | n.ws.emit --event message --to all
 //! ```
 //!
 //! **Echo move acknowledgment only to sender:**
 //! ```text
-//! | n.trigger.ws --event move
+//! | trigger.room --event move
 //! | n.ws.sync_state --op merge --state-key /players/{session_id} --silent
 //! | n.ws.emit --event move_ack --to session
 //! ```
 //!
 //! **AI agent broadcasting a narration from a scheduled job:**
 //! ```text
-//! | n.trigger.schedule --cron "0 * * * *"
-//! | n.script -- "return { text: 'The hour strikes...' }"
+//! | trigger.schedule --cron "0 * * * *"
+//! | script.result.run -- "return { text: 'The hour strikes...' }"
 //! | n.ws.emit --event narration --to all --room lobby
 //! ```
 //!
 //! **Propagate a game event to all other players:**
 //! ```text
-//! | n.trigger.ws --event shoot
+//! | trigger.room --event shoot
 //! | n.ws.emit --event player_shot --to others
 //! ```
 
@@ -182,7 +182,7 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Broadcast a chat line to the room", r#"ws.emit --event chat.message --to all --payload "{{ { from: input.session_id, text: input.payload.text } }}""#)
-                .note("After `trigger.ws`, the room is the one the event came from. Payload passes through unchanged."),
+                .note("After `trigger.room`, the room is the one the event came from. Payload passes through unchanged."),
             crate::pipeline::model::NodeExample::dsl("Push from a schedule to a fixed room", r#"ws.emit --room dashboard --event stats.tick --payload "{{ { online: input.online } }}""#),
         ],
         ..Default::default()
@@ -280,7 +280,7 @@ impl NodeHandler for Node {
         if room_id.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_WS_EMIT_NO_ROOM",
-                "n.ws.emit: room_id missing — set --room or ensure n.trigger.ws is upstream",
+                "n.ws.emit: room_id missing — set --room or ensure trigger.room is upstream",
             ));
         }
 
@@ -296,7 +296,7 @@ impl NodeHandler for Node {
         if matches!(self.config.to.as_str(), "session" | "others") && session_id.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_WS_EMIT_NO_SESSION",
-                "n.ws.emit: --to session/others needs session_id in the payload (n.trigger.ws upstream)",
+                "n.ws.emit: --to session/others needs session_id in the payload (trigger.room upstream)",
             ));
         }
 

@@ -94,7 +94,7 @@ pub fn open_source(
 }
 
 /// One repository file's bytes, for a node that serves or draws from the
-/// project's source (`web.response --file`, `svg.convert repo://`, a site's
+/// project's source (`web.response.send --file`, `svg.convert repo://`, a site's
 /// static assets). The key is normalised (`..`, absolute and empty segments
 /// refused), no segment may be a link, and the read is capped
 /// (`node-conventions.md` §3).

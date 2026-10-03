@@ -25,7 +25,7 @@
           "entry": "nodes/zebflow.sim-des/definition.json",
           "integrity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "definitions": [
-            "n.x.sim.des"
+            "x.sim.des"
           ]
         }
       }

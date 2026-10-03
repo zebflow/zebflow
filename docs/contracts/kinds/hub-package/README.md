@@ -313,7 +313,7 @@ the same rule and the same reason as the target-folder fix.
 
 `preview_pipeline` read the stored pipeline as raw JSON and looked for a
 top-level `nodes` array. A stored pipeline is a `Pipeline` contract document
-whose nodes live under `spec`, so the lookup found none, no `n.web.response`
+whose nodes live under `spec`, so the lookup found none, no `web.response.send`
 node was ever seen, and the bundle was published without the template it
 renders. It decodes through `decode_pipeline_graph` now, like every other reader
 of a stored pipeline.

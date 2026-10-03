@@ -1,4 +1,4 @@
-//! `n.sekejap.insert` - structured high-throughput Sekejap insert node.
+//! `sekejap.record.create` - structured high-throughput Sekejap insert node.
 //!
 //! See [`crate::pipeline::nodes`] (`src/pipeline/nodes/mod.rs`) for the
 //! framework node contract and [`super`] (`src/pipeline/nodes/basic/mod.rs`)
@@ -26,7 +26,7 @@ use crate::platform::sekejap::{
     self, StructuredInsertEdge, StructuredInsertRecord, StructuredWriteMode,
 };
 
-pub const NODE_KIND: &str = "n.sekejap.insert";
+pub const NODE_KIND: &str = "sekejap.record.create";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
@@ -41,7 +41,7 @@ pub fn definition() -> NodeDefinition {
             exactly n numbers, and an edge's two endpoints must exist, in this batch or before it. An edge whose `type` is an \
             edge table's label is written into that table, its `fields` as the table's columns; the target itself must be a \
             table of rows. Answers \
-            `inserted_records`, `inserted_edges`, … added to the payload, the rest kept. For one row from a form use `sekejap.query … INSERT`; \
+            `inserted_records`, `inserted_edges`, … added to the payload, the rest kept. For one row from a form use `sekejap.query.run … INSERT`; \
             this node is for imports and seeds, up to `--max-records` (default 1000) per run."
             .to_string(),
         input_schema: json!({
@@ -129,7 +129,7 @@ pub fn definition() -> NodeDefinition {
             }),
         },
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Seed from a prepared array", r#"sekejap.insert --target products --records-key items"#)
+            crate::pipeline::model::NodeExample::dsl("Seed from a prepared array", r#"sekejap.record.create --target products --records-key items"#)
                 .input(serde_json::json!({ "items": [{ "key": "sku-1", "fields": { "name": "Mug", "price": 12 } }] }))
                 .output(serde_json::json!({ "inserted_records": 1, "inserted_edges": 0 })),
         ],

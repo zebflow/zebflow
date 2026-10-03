@@ -773,7 +773,7 @@ an answer but are declared, not enforced. Decide during the `RweLibraryManifest`
 review, and apply the decision to every channel at once.
 
 **Promotion into the curated namespace.** A third-party package adopted by
-Zebflow moves from `n.x.acme.thing` to `n.acme.thing`, which is a rename and
+Zebflow moves from `x.acme.thing` to `n.acme.thing`, which is a rename and
 therefore a breaking change. Promotion must be a deliberate versioned event, or
 must not happen to packages authored by others.
 
@@ -796,7 +796,7 @@ verified, or updated, and the digest a static repository pins protects only the
 fetch that used it. Found while implementing static repositories; it belongs to
 every channel equally and is not fixed here.
 
-**Intra-project references.** `n.function.call` targets another pipeline by
+**Intra-project references.** `function.result.call` targets another pipeline by
 slug and nothing verifies the target resolves, so an export that omits it fails
 only at run time. Recorded against
 [`ProjectBundle`](./kinds/project-bundle/README.md).
