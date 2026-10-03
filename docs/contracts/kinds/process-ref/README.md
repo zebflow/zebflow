@@ -65,7 +65,7 @@ files are removed; durable files it wrote stay where it wrote them.
 | Writes | Reads |
 | --- | --- |
 | a node run with `--return process` | `pipeline.process.get` `.wait` `.cancel` `.list` (`--from` takes a ProcessRef or its `id`) |
-| `pipeline.run.start` | `trigger.process`, which fires once when a process ends, with the ref, `status` and outcome |
+| `pipeline.process.start` | `trigger.process`, which fires once when a process ends, with the ref, `status` and outcome |
 | | pages and other pipelines, which may store it (`kv.entry.put`) and show it |
 
 ## Rules
@@ -83,5 +83,5 @@ files are removed; durable files it wrote stay where it wrote them.
 ## Implementation
 
 To be written in 0.11 (ledger: `zebflow › security › fs › zf-0-11-grammar`):
-the record store, the `pipeline.process.*` nodes, `pipeline.run.start` and
+the record store, the `pipeline.process.*` nodes, `pipeline.process.start` and
 `trigger.process`.

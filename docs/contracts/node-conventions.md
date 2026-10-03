@@ -35,8 +35,12 @@ logic.<verb>          control node   logic.if              logic.foreach
   chat id means nothing to WhatsApp, a Postgres statement is not SQLite's — the
   platform's own concepts are the grammar and the **brand is the family**,
   spelled in full (`telegram`, `whatsapp`, `slack`, `discord`), as an engine
-  keeps its own (`pg`, `sqlite`, `sekejap`) and a language its own
-  (`js.script.run`, `ts.script.run`).
+  keeps its own (`postgres`, `sqlite`, `sekejap`) and a language its own
+  (`javascript.script.run`, `typescript.script.run`).
+- **A family is the word a developer would search for.** A name of ours or an
+  ambiguous abbreviation is spelled out (`mapserver`, not `ms`; `postgres`,
+  not `pg`); a word developers already use as a word stays short (`fs`, `kv`,
+  `ws`, `http`, `ai`).
 - Brand families still speak the dictionary: the same nouns, verbs and words
   where the meaning is the same (`telegram.message.send` and
   `whatsapp.message.send` both take `--recipient` `--text` `--file` and answer
@@ -51,7 +55,9 @@ logic.<verb>          control node   logic.if              logic.foreach
   platform, e.g. `telegram.*`) share these names: how a node is built is
   never in its name, so either can become the other without a rename; the
   catalog shows it as a badge. A *custom composite* — built by a user or
-  installed from the hub — is `x.<package>.<noun>.<verb>`: the package owns
+  installed from the hub — is `x.<package>.<noun>.<verb>` (the package's
+  name in lowercase letters, digits and `_`; a `-` in a package name becomes
+  `_`): the package owns
   every name under it, so no two packages and no official release can ever
   collide. Everything after `x.<package>.` follows this contract, its answer
   key is its noun, and the engine places the function's result under that
@@ -61,7 +67,7 @@ logic.<verb>          control node   logic.if              logic.foreach
 
 | Families | |
 | --- | --- |
-| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `mail` `js` `mcp` `ms` `pg` `pipeline` `sekejap` `sqlite` `table` `trigger` `ts` `web` `ws` |
+| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `javascript` `mail` `mapserver` `mcp` `pipeline` `postgres` `sekejap` `sqlite` `table` `trigger` `typescript` `web` `ws` |
 | Brands | `telegram` (now, from the curated bundle) · `whatsapp` `slack` `discord` (when built) |
 | Reserved | `cloud` (provider-neutral resources: queue, function, bucket — `--provider aws\|gcp\|azure`) · `job` (external commands) · `sec` (scanning, detection) |
 
@@ -74,7 +80,7 @@ logic.<verb>          control node   logic.if              logic.foreach
 | Act | `run` `call` `scan` `sign` `verify` `hash` `wait` `cancel` |
 
 A verb two kinds share is in this list; a verb only one kind uses stays local
-(`chromakey`, `increment`, `expire`, `publish` on `ms.layer`).
+(`chromakey`, `increment`, `expire`, `publish` on `mapserver.layer`).
 
 ## 2. Flags
 
@@ -226,11 +232,11 @@ rest, through `with_answer`. Everything about the result nests inside it:
 ```
 trigger.webhook        → webhook: { body, query, params, headers, files, method, path, auth }
 fs.image.thumbnail     → image:   { …FileRef…, width, height, source_deleted }
-pg.query.run           → query:   { rows, columns, row_count }
+postgres.query.run     → query:   { rows, columns, row_count }
 kv.entry.get           → entry:   { key, value, ttl }
 auth.token.create      → token:   { access_token, token_type, expires_in, profile }
 fs.folder.list         → folder:  { path, items, count }
-js.script.run          → script:  <what the code returned>
+javascript.script.run  → script:  <what the code returned>
 ```
 
 - A list answers `{ items, count }` (and `next` when `--offset` applies).
@@ -270,7 +276,7 @@ pipeline.process.get     --from REF   → process: { status, result?, error? }  
 pipeline.process.wait    --from REF   → process: { status, result | error }    up to --timeout
 pipeline.process.cancel  --from REF   → process: { status: cancelled }
 pipeline.process.list    [--kind K] [--name N] [--filter status=running] → process: { items, count }
-pipeline.run.start       --route|--name PIPELINE --argument k=v --return process   (a pipeline in the background)
+pipeline.process.start   --route|--name PIPELINE --argument k=v                    (a pipeline in the background → process)
 trigger.process          [--kind K] [--name N] [--pipeline P] → process: { …ref, status, result | error }
 ```
 
