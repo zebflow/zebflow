@@ -84,18 +84,18 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | trigger.webhook --path /auth/register --method POST
 | logic.if --expr "input.body.username && input.body.email && input.body.password && input.body.password.length >= 12"
 (false pin → `web.response.send --status 400 --message "username, email and a password of at least 12 characters are required"`)
-| crypto --op argon2_hash --value "{{ input.body.password }}"
-(`n.crypto` adds `result` — the hash — to the payload and keeps everything
-else, so `input.body.username` is still there for the insert.)
-| pg.query.run --credential main-db --write --param "1={{ input.body.username }}" --param "2={{ input.body.email }}" --param "3={{ input.result }}" --param "4=user" \
+| crypto.password.hash --from "{{ input.body.password }}"
+(`crypto.password.hash` adds `password: { hash, algorithm }` to the payload and
+keeps everything else, so `input.body.username` is still there for the insert.)
+| pg.query.run --credential main-db --write --param "1={{ input.body.username }}" --param "2={{ input.body.email }}" --param "3={{ input.password.hash }}" --param "4=user" \
     -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
 | web.response.send --location /auth/login?registered=1
 ```
 
 **Never hash a password yourself.** An earlier version of this example wrote
 `btoa(password + 'salt')`, which is base64 — not a hash at all, and reversible by
-anyone holding the row. `n.crypto` has `argon2_hash` and `argon2_verify`; verify
-answers on `true`/`false` pins, so the branch is the check.
+anyone holding the row. `crypto.password.hash` and `crypto.password.verify` do it;
+verify answers on `true`/`false` pins, so the branch is the check.
 
 ### auth-logout — clear session cookie
 

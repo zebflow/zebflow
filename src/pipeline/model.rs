@@ -317,6 +317,10 @@ pub struct DslFlag {
     /// The most times a repeatable role may be given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_repeat: Option<u32>,
+    /// The value is a secret (a password, a key): a run record masks it in
+    /// the node's recorded config, as `secret_paths` masks the answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 /// The value types a flag may declare (`node-conventions.md` §4). `file` takes

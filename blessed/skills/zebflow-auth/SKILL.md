@@ -12,7 +12,7 @@ Authentication in Zebflow is a property of the **trigger**, not of a script:
 `trigger.webhook --auth-type jwt --auth-credential <id> --auth-required-role admin`
 refuses the request before any node runs. Facts:
 `help(topic="pipeline/examples/cookie-jwt-auth")`, `pipeline/examples/auth-and-authorization`,
-`pipeline/examples/oauth-login-google`, and the `auth.token.*`, `crypto` nodes.
+`pipeline/examples/oauth-login-google`, and the `auth.token.*`, `crypto.*` nodes.
 
 ## Pieces
 
@@ -23,7 +23,7 @@ refuses the request before any node runs. Facts:
 | the cookie | `web.response.send --set-cookie "name=zebflow_session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax"` — the verifier reads `Authorization: Bearer` first, then this cookie. Behind HTTPS add `secure`. |
 | `--auth-required-role` | matches one entry of the token's **`roles` array** claim. A scalar `role` never authorises. |
 | `:public` | only claims marked `:public` reach the browser as `input.auth`; everything else stays server-side (`$trigger.auth`, `ctx.trigger.auth`). A public array claim stays an array. |
-| `crypto` | `--op argon2_hash --value "{{ input.body.password }}"` → payload plus `result` (`input.body` kept); `--op argon2_verify --value "{{ … }}" --hash "{{ input.query.rows[0].password_hash }}"` → `true`/`false` pins, payload unchanged |
+| `crypto.password.*` | `crypto.password.hash --from "{{ input.body.password }}"` → payload plus `password: { hash, algorithm }` (`input.body` kept); `crypto.password.verify --from "{{ … }}" --hash "{{ input.query.rows[0]?.password_hash }}"` → `password: { valid }` on the `true`/`false` pins; an empty hash (no such user) goes to `:error` |
 
 ## Build order
 
@@ -37,8 +37,8 @@ refuses the request before any node runs. Facts:
    ```
    | trigger.webhook --path /auth/register --method POST
    | logic.if --expr "typeof input.body?.email === 'string' && typeof input.body?.password === 'string' && input.body.password.length >= 12"
-   | crypto --op argon2_hash --value "{{ input.body.password }}"
-   | sekejap.query.run --write --param "1={{ input.body.email }}" --param "2={{ input.result }}" --param "3={{ ['user'] }}" --param "4={{ new Date().toISOString() }}" -- "INSERT INTO users (email, password_hash, roles, created_at) VALUES ($1, $2, $3, $4)"
+   | crypto.password.hash --from "{{ input.body.password }}"
+   | sekejap.query.run --write --param "1={{ input.body.email }}" --param "2={{ input.password.hash }}" --param "3={{ ['user'] }}" --param "4={{ new Date().toISOString() }}" -- "INSERT INTO users (email, password_hash, roles, created_at) VALUES ($1, $2, $3, $4)"
    | web.response.send --location /login?registered=1
    ```
 
@@ -46,8 +46,8 @@ refuses the request before any node runs. Facts:
    "email is unique" is a `SELECT` before the `INSERT`, not a constraint
    (`zebflow-data`).
 3. **Login.** `POST /auth/login`: look the user up by `input.body.email`,
-   `logic.if` one row, `crypto --op argon2_verify` with `--value "{{ $nodes.<trigger id>.body.password }}"`
-   and `--hash "{{ input.query.rows[0].password_hash }}"`, mint the token with
+   `logic.if` one row, `crypto.password.verify` with `--from "{{ $nodes.<trigger id>.body.password }}"`
+   and `--hash "{{ input.query.rows[0]?.password_hash }}"`, mint the token with
    `roles` as an array, set the cookie, `--location /home`. The `false` pins
    answer `401` — never a different message for "no such user" and "wrong
    password".
@@ -87,6 +87,6 @@ for the API cases; `pipeline_get_invocations` shows which node refused.
 ## Never
 
 - a role check in a script instead of on the trigger;
-- a password compared in a script instead of `crypto --op argon2_verify`;
+- a password compared in a script instead of `crypto.password.verify`;
 - a secret, token or hash marked `:public` or written to a page;
 - a credential id or secret typed into a pipeline body from memory.

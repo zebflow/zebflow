@@ -117,7 +117,9 @@ list, bool, key-value pairs, schema field) and `required`, and — added
 2026-10-03 for the 0.11 grammar, optional and additive — `value` (what the
 value is: `text` `number` `duration` `size` `json` `expression` `ref` `file`
 `file:<kind>` `process`), `choices` (the closed words of a choice) and
-`max_repeat` (a repeatable role's ceiling). From these the node's one-line
+`max_repeat` (a repeatable role's ceiling) and `secret` (the value is a
+password or a key: a run record masks it in the node's recorded config, as
+`secret_paths` masks the answer). From these the node's one-line
 signature, its editor form and its save-time checks are generated
 ([Node Conventions](../../node-conventions.md) §2–§4).
 

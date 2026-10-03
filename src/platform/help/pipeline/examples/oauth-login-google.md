@@ -103,13 +103,13 @@ proves *who* the visitor is; this table decides *whether they may enter*.
 ```zf
 register auth/google-start --
 | trigger.webhook --path /auth/google/start --method GET
-| crypto --op random_hex --length 16
-| kv.entry.put --key "oauth:state:{{ input.result }}" --ttl 600
-| script.result.run -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.result, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
+| crypto.random.generate --size 16B
+| kv.entry.put --key "oauth:state:{{ input.random.value }}" --ttl 600
+| script.result.run -- "const q = { client_id: 'YOUR_CLIENT_ID.apps.googleusercontent.com', redirect_uri: 'https://your.site/wh/OWNER/PROJECT/auth/google/callback', response_type: 'code', scope: 'openid email profile', state: input.random.value, access_type: 'online', prompt: 'select_account' }; const qs = Object.keys(q).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&'); return { auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?' + qs };"
 | web.response.send --location "{{ input.auth_url }}"
 ```
 
-- `crypto --op random_hex` yields `{ result }`; that value is the OAuth `state`.
+- `crypto.random.generate` adds `random: { value }` (hex); that value is the OAuth `state`.
 - `kv.entry.put` remembers the state for ten minutes. A callback whose state is not in
   KV was not started by this server — that is the CSRF check.
 - The client id is public by design; it may live in the pipeline. The client
@@ -197,7 +197,7 @@ password form and every protected route stays as it is.
 
 ## Nodes Used
 
-- `crypto --op random_hex --length <bytes>` — output `{ result }`
+- `crypto.random.generate --size <bytes>B` — adds `random: { value }`, 32B of hex by default
 - `kv.entry.put --key <k> --ttl <secs>` / `kv.entry.get --key <k> --out-key <k>` / `kv.entry.delete --key <k>` — state store; `kv.entry.get` merges, `kv.entry.delete` passes the payload through
 - `http.response.fetch --credential <secure_request id> --bind NAME=<expr>` — the credential owns URL, method, headers and body; one `--bind` per declared variable; output `{ request, response }`
 - `sqlite.query.run --param "1={{ expr }}"` — `?1` placeholders

@@ -1229,6 +1229,10 @@ impl BasicPipelineEngine {
         if let Some(egress) = &self.bundle_egress {
             refuse_uncheckable_egress_node(egress, &node.kind, self.language.grants_network())?;
         }
+        // One kind per task, one builder for the family (`crypto/mod.rs`).
+        if let Some(handler) = crypto::build(&node.kind, &node.config, self.credentials.clone())? {
+            return Ok(NodeDispatch::Crypto(handler));
+        }
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
                 serde_json::from_value(node.config.clone())
@@ -1531,10 +1535,6 @@ impl BasicPipelineEngine {
                     ws_hub.clone(),
                 )?))
             }
-            crypto::NODE_KIND => Ok(NodeDispatch::Crypto(crypto::Node::new(
-                serde_json::from_value(node.config.clone())
-                    .map_err(|err| PipelineError::new("FW_NODE_CRYPTO_CONFIG", err.to_string()))?,
-            )?)),
             trigger_function::NODE_KIND => {
                 let config: trigger_function::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
@@ -2185,7 +2185,9 @@ impl BasicPipelineEngine {
             // the outcome is not known yet. At `on-error` a successful node
             // drops it below; at `none` it is never taken at all.
             let base_trace_config = if trace_capture.records_any_payload() {
-                trace_capture.config(&effective_config)
+                trace_capture
+                    .config(&effective_config)
+                    .map(|config| mask_secret_config(&node.kind, config))
             } else {
                 None
             };
@@ -3577,9 +3579,48 @@ fn declared_secret_paths(kind: &str) -> Option<&'static [String]> {
     SECRET_PATHS_BY_KIND.get(kind).map(Vec::as_slice)
 }
 
+/// The config keys of each kind's flags declared `secret`, built once.
+static SECRET_CONFIG_KEYS_BY_KIND: std::sync::LazyLock<
+    std::collections::HashMap<String, Vec<String>>,
+> = std::sync::LazyLock::new(|| {
+    crate::pipeline::nodes::builtin_node_definitions()
+        .into_iter()
+        .filter_map(|def| {
+            let keys: Vec<String> = def
+                .dsl_flags
+                .iter()
+                .filter(|flag| flag.secret)
+                .map(|flag| format!("/{}", flag.config_key))
+                .collect();
+            (!keys.is_empty()).then_some((def.kind, keys))
+        })
+        .collect()
+});
+
+/// The recorded config with every value a flag declares `secret` masked: the
+/// resolved config holds what the expression gave, a plaintext password
+/// included.
+fn mask_secret_config(kind: &str, config: Value) -> Value {
+    match SECRET_CONFIG_KEYS_BY_KIND.get(kind) {
+        Some(keys) => crate::pipeline::trace_capture::mask_secret_paths(&config, keys),
+        None => config,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    /// A flag declared `secret` is masked in the recorded config; the rest
+    /// of the config is recorded as it was.
+    #[test]
+    fn a_secret_flag_is_masked_in_the_recorded_config() {
+        let config = serde_json::json!({ "from": "a plaintext password", "hash": "$argon2id$v=19$stored" });
+        let recorded = super::mask_secret_config("crypto.password.verify", config.clone());
+        assert_ne!(recorded["from"], config["from"]);
+        assert_ne!(recorded["hash"], config["hash"]);
+        assert_eq!(super::mask_secret_config("logic.if", config.clone()), config);
+    }
 
     use serde_json::json;
 
@@ -5952,7 +5993,8 @@ enum NodeDispatch {
     WsTrigger(ws::trigger::Node),
     WsSyncState(ws::sync_state::Node),
     WsEmit(ws::emit::Node),
-    Crypto(crypto::Node),
+    /// Any `crypto.*` kind.
+    Crypto(Box<dyn crate::pipeline::nodes::NodeHandler>),
     TriggerFunction(trigger_function::Node),
     FunctionCall(function::call::Node),
     FilePut(fs::put::Node),

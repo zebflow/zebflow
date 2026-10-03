@@ -218,8 +218,8 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/browser.page.run.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.crypto.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.crypto.svg"),
+        path: "zebflow/crypto.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/crypto.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/fs.archive.create.svg",
@@ -517,6 +517,30 @@ pub fn platform_node_icon_asset(path: &str) -> Option<&'static [u8]> {
         .iter()
         .find(|asset| asset.path == normalized)
         .map(|asset| asset.bytes)
+}
+
+/// The icon of a native node kind: `zebflow/<kind>.svg`, or the icon whose
+/// manifest entry lists the kind in `supports` — one svg serving a family
+/// (`crypto.svg` for every `crypto.*` kind).
+pub fn platform_node_icon_for_kind(kind: &str) -> Option<&'static [u8]> {
+    static SUPPORTED: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
+    if let Some(bytes) = platform_node_icon_asset(&format!("zebflow/{kind}.svg")) {
+        return Some(bytes);
+    }
+    let supported = SUPPORTED.get_or_init(|| {
+        let manifest: serde_json::Value = platform_node_icon_asset("manifest.json")
+            .and_then(|bytes| serde_json::from_slice(bytes).ok())
+            .unwrap_or_default();
+        let mut map = std::collections::HashMap::new();
+        for entry in manifest["icons"].as_object().into_iter().flat_map(|icons| icons.values()) {
+            let Some(path) = entry["path"].as_str().and_then(|p| p.strip_prefix("/assets/node-icons/")) else { continue };
+            for supported in entry["supports"].as_array().into_iter().flatten().filter_map(|k| k.as_str()) {
+                map.insert(supported.to_string(), path.to_string());
+            }
+        }
+        map
+    });
+    supported.get(kind).and_then(|path| platform_node_icon_asset(path))
 }
 
 // PLATFORM_COMPOSITE_NODE_ASSETS — auto-generated at build time from src/pipeline/nodes/bundled/.
@@ -1017,6 +1041,17 @@ mod vendor_tests {
         let stale: Vec<_> = embedded.difference(&on_disk).collect();
         assert!(missing.is_empty(), "icons on disk not embedded — add them to PLATFORM_NODE_ICON_ASSETS: {missing:?}");
         assert!(stale.is_empty(), "embedded icons with no file: {stale:?}");
+    }
+
+    /// A family icon serves every kind its manifest entry lists.
+    #[test]
+    fn a_kind_finds_the_icon_its_manifest_entry_supports() {
+        let crypto = platform_node_icon_asset("zebflow/crypto.svg").expect("crypto icon");
+        for kind in crate::pipeline::nodes::basic::crypto::KINDS {
+            assert_eq!(platform_node_icon_for_kind(kind), Some(crypto), "{kind}");
+        }
+        assert!(platform_node_icon_for_kind("logic.if").is_some());
+        assert!(platform_node_icon_for_kind("crypto.nothing.here").is_none());
     }
 
     /// The Studio vendors every library its own pages import.

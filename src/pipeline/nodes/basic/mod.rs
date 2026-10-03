@@ -31,8 +31,8 @@ use crate::pipeline::NodeDefinition;
 
 // One folder per DSL family, one file per node, the path mirroring the kind:
 // `fs.file.put` is `fs/put.rs`, `kv.entry.get` is `kv/get.rs`. A family with one
-// node and no submodules keeps that node in its `mod.rs` (`crypto`,
-// `script`). Every family exposes `definitions()`; nothing else is registered
+// node and no submodules keeps that node in its `mod.rs` (`script`); one
+// file may carry the verbs of one noun (`crypto/password.rs`). Every family exposes `definitions()`; nothing else is registered
 // here. A test in `crate::pipeline::nodes` refuses a `.rs` file beside this
 // one and a folder that is not a family of the catalogue.
 pub mod ai;
@@ -172,7 +172,7 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with("mail.") {
         return ("communication.mail", "Mail");
     }
-    if kind.starts_with("auth.") || kind == "n.crypto" {
+    if kind.starts_with("auth.") || kind.starts_with("crypto.") {
         return ("security", "");
     }
     if kind.starts_with("fs.") {

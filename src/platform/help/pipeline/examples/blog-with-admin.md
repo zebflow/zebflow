@@ -28,14 +28,14 @@ CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, body TEXT, published BOOL
 CREATE TABLE users (_key TEXT PRIMARY KEY, password_hash TEXT, roles JSON)
 ```
 
-Seed one admin user. `crypto --op argon2_hash` adds `result` to the payload
-and keeps the rest, so the next node still sees `username` and `roles`:
+Seed one admin user. `crypto.password.hash` adds `password: { hash, algorithm }`
+to the payload and keeps the rest, so the next node still sees `username` and `roles`:
 
 ```zf
 run
 | script.result.run -- "return { username: 'admin', password: 'changeme', roles: ['admin'] }"
-| crypto --op argon2_hash --value "{{ input.password }}"
-| sekejap.query.run --write --param "1={{ input.username }}" --param "2={{ input.result }}" --param "3={{ input.roles }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
+| crypto.password.hash --from "{{ input.password }}"
+| sekejap.query.run --write --param "1={{ input.username }}" --param "2={{ input.password.hash }}" --param "3={{ input.roles }}" -- "INSERT INTO users (_key, password_hash, roles) VALUES ($1, $2, $3)"
 ```
 
 ---
@@ -127,7 +127,7 @@ register blog/auth-login --
 [trig] trigger.webhook --path /auth/login --method POST
 [lookup] sekejap.query.run --param "1={{ input.body.username }}" -- "SELECT _key, password_hash, roles FROM users WHERE _key = $1"
 [found] logic.if --expr "input.query.rows.length > 0"
-[verify] crypto --op argon2_verify --value "{{ input.body.password }}" --hash "{{ input.query.rows[0].password_hash }}"
+[verify] crypto.password.verify --from "{{ input.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [token] auth.token.create --credential blog-jwt --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}" --expires-in 86400
 [welcome] web.response.send --location /admin --set-cookie "name=session,value={{ input.access_token }},http-only,max-age=86400,same-site=Lax,path=/"
 [denied] web.response.send --status 401 --message "invalid credentials"
@@ -142,9 +142,10 @@ register blog/auth-login --
 ```
 
 Never compare a password with `===`, and never read one from an environment
-variable. `crypto --op argon2_verify` answers on `true`/`false` pins and
-forwards the payload — including `input.query.rows` from `[lookup]` — unchanged, so
-the comparison is both the branch and constant-time.
+variable. `crypto.password.verify` answers on `true`/`false` pins and
+adds `password: { valid }`, keeping the rest of the payload — including
+`input.query.rows` from `[lookup]` — so the comparison is both the branch and
+constant-time.
 
 ---
 
@@ -154,7 +155,7 @@ the comparison is both the branch and constant-time.
 - `sekejap.query.run` — SQL against Sekejap; no `--table`/`--op`, just `SELECT`/`INSERT`/`UPDATE`/`DELETE` with `--param`, and `--write` for a write
 - `logic.if` — branch on "does this slug/user already exist"
 - `script` — slugify, validate, shape rows
-- `crypto` — `argon2_hash` to seed the password, `argon2_verify` to check it
+- `crypto.password.hash` to seed the password, `crypto.password.verify` to check it
 - `auth.token.create` / `web.response.send --set-cookie` — issue the session
 - `web.response.send` — TSX templates for public and admin pages
 

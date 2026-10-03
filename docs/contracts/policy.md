@@ -23,7 +23,7 @@ MCP session        Bearer token per project · capabilities allow-listed per ses
 project JWT        auth.token.create / auth.token.verify · algorithm pinned by the credential,
                    never by the token header (RS256 verifier refuses an HS256 token) · exp always
                    checked · aud checked when set · roles claim as string or array
-passwords          argon2 (platform users) · bcrypt available to pipelines (n.crypto)
+passwords          argon2 (platform users) · bcrypt available to pipelines (crypto.password.hash)
 ```
 
 Rules: a token verifies against exactly one credential; two areas that must

@@ -108,7 +108,7 @@ use crate::rwe::{
 use crate::version::APP_VERSION;
 use embedded::{
     PLATFORM_TEMPLATE_ASSETS, hub_catalogue_asset, platform_library_asset,
-    platform_node_icon_asset,
+    platform_node_icon_asset, platform_node_icon_for_kind,
 };
 use crate::platform::db::sql_ddl::SqlDialect;
 
@@ -8294,10 +8294,7 @@ async fn api_list_node_definitions(
                 .platform
                 .node_registry
                 .load_icon_any(&owner, &project, &kind)
-                .or_else(|| {
-                    let path = format!("zebflow/{}.svg", kind);
-                    platform_node_icon_asset(&path).map(|b| b.to_vec())
-                });
+                .or_else(|| platform_node_icon_for_kind(&kind).map(|b| b.to_vec()));
 
             if let Some(bytes) = icon_bytes {
                 item.icon_url = format!("/api/projects/{}/{}/nodes/icon/{}", owner, project, kind);
@@ -8570,9 +8567,8 @@ async fn api_node_icon(
             .into_response();
     }
 
-    // 2. Fall back to embedded builtin icon.
-    let icon_path = format!("zebflow/{}.svg", kind);
-    if let Some(bytes) = platform_node_icon_asset(&icon_path) {
+    // 2. Fall back to embedded builtin icon (its own, or its family's).
+    if let Some(bytes) = platform_node_icon_for_kind(&kind) {
         return (
             [
                 (CONTENT_TYPE, "image/svg+xml"),

@@ -1,500 +1,162 @@
-//! `n.crypto` — cryptographic primitives for pipeline security.
+//! The `crypto` family: one kind per task, the noun its answer key.
 //!
-//! A single multipurpose node covering the most common cryptographic
-//! operations needed in authentication and data-integrity pipelines.
-//!
-//! # Operations
-//!
-//! | `--op` | Description | Output pin |
+//! | Kind | File | Answer |
 //! |---|---|---|
-//! | `sha256` | SHA-256 hex digest of input | `out` |
-//! | `sha512` | SHA-512 hex digest of input | `out` |
-//! | `bcrypt_hash` | bcrypt password hash | `out` |
-//! | `bcrypt_verify` | Compare plaintext against bcrypt hash | `true` / `false` |
-//! | `argon2_hash` | Argon2id password hash (PHC string format) | `out` |
-//! | `argon2_verify` | Compare plaintext against Argon2 hash | `true` / `false` |
-//! | `hmac_sha256` | HMAC-SHA256 hex of input using `key` | `out` |
-//! | `base64_encode` | Standard Base64 encode | `out` |
-//! | `base64_decode` | Standard Base64 decode to UTF-8 | `out` |
-//! | `random_hex` | Cryptographically random hex string | `out` |
+//! | `crypto.password.hash` | `password.rs` | `password: { hash, algorithm }` |
+//! | `crypto.password.verify` | `password.rs` | `password: { valid }` on `true` / `false` |
+//! | `crypto.digest.create` | `digest.rs` | `digest: { algorithm, value }` (hex) |
+//! | `crypto.signature.sign` | `signature.rs` | `signature: { algorithm, value }` (hex) |
+//! | `crypto.signature.verify` | `signature.rs` | `signature: { valid }` on `true` / `false` |
+//! | `crypto.base64.encode` | `base64.rs` | `base64: { value }` |
+//! | `crypto.base64.decode` | `base64.rs` | `base64: { text }` |
+//! | `crypto.random.generate` | `random.rs` | `random: { value }` |
 //!
-//! # Config flags
-//!
-//! | Flag | Type | Default | Description |
-//! |---|---|---|---|
-//! | `--op` | string | *(required)* | Operation name (see table above) |
-//! | `--value` | any | *(required by every op but `random_hex`)* | The value to operate on — a literal or `{{ expr }}` |
-//! | `--hash` | any | *(required by verify ops)* | The stored hash — a literal or `{{ expr }}` |
-//! | `--key` | any | *(required by `hmac_sha256`)* | The HMAC secret — a literal or `{{ expr }}` |
-//! | `--cost` | integer | `12` | bcrypt cost factor (4–31) |
-//! | `--length` | integer | `32` | Random byte count for `random_hex` |
-//!
-//! # Values
-//!
-//! There is no fallback to a payload field: an op that needs a value and finds
-//! it empty refuses (`FW_NODE_CRYPTO_CONFIG`), so a missing password is never
-//! hashed as the empty string.
-//!
-//! # Output pins
-//!
-//! Hash / encode / decode operations add `result` to the payload (the rest of
-//! it flows on unchanged) and emit to the `out` pin.
-//!
-//! Verify operations (`bcrypt_verify`, `argon2_verify`) route to the `true`
-//! or `false` pin, forwarding the original payload unchanged — no extra
-//! `logic.if` node needed.
-//!
-//! # Example pipelines
-//!
-//! **User registration — hash a password:**
-//! ```text
-//! | trigger.webhook --path /auth/register --method POST
-//! | n.crypto --op bcrypt_hash
-//! | pg.query.run --credential main-db --write --param "1={{ input.email }}" --param "2={{ input.result }}" -- "INSERT INTO users (email, pw_hash) VALUES ($1, $2)"
-//! ```
-//!
-//! **User login — verify password and issue JWT:**
-//! ```text
-//! | trigger.webhook --path /auth/login --method POST
-//! | pg.query.run --credential main-db --param "1={{ input.email }}" -- "SELECT pw_hash AS hash FROM users WHERE email = $1"
-//! | n.crypto --op bcrypt_verify
-//! | [true]  → auth.token.create --credential jwt-key
-//! | [false] → script.result.run -- "return { _status: 401, error: 'Invalid credentials' }"
-//! ```
-//!
-//! **Webhook signature check (HMAC-SHA256):**
-//! ```text
-//! | trigger.webhook --path /webhooks/github --method POST
-//! | n.crypto --op hmac_sha256 --key "{{ input.webhook_secret }}"
-//! | logic.if -- "payload.result === payload.expected_sig"
-//! ```
-//!
-//! **Generate a secure session token:**
-//! ```text
-//! | trigger.webhook --path /auth/session --method POST
-//! | n.crypto --op random_hex --length 32
-//! | pg.query.run --credential main-db --write --param "1={{ input.result }}" --param "2={{ input.user_id }}" -- "INSERT INTO sessions (token, user_id) VALUES ($1, $2)"
-//! ```
+//! Every value a kind works on comes from a flag (a literal or `{{ expr }}`,
+//! resolved before the node is built), and a needed value that is empty is
+//! refused with the kind's `_EMPTY` code — a missing password is never hashed
+//! as the empty string, and an unknown user's empty hash never verifies.
 
-use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose};
-use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sha2::{Digest, Sha256, Sha512};
+pub mod base64;
+pub mod digest;
+pub mod password;
+pub mod random;
+pub mod signature;
 
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
-use crate::pipeline::{
-    NodeDefinition, PipelineError,
-    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
-};
+#[cfg(test)]
+mod tests;
 
-pub const NODE_KIND: &str = "n.crypto";
+use std::sync::Arc;
+
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType, SelectOptionDef};
+use crate::pipeline::nodes::{NodeExecutionOutput, NodeHandler};
+use crate::pipeline::nodes::shared::util::with_answer;
+use crate::pipeline::{NodeDefinition, PipelineError};
+use crate::platform::services::CredentialService;
+
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 const OUTPUT_PIN_TRUE: &str = "true";
 const OUTPUT_PIN_FALSE: &str = "false";
 
-/// Return the [`NodeDefinition`] for `n.crypto`.
-pub fn definition() -> NodeDefinition {
-    NodeDefinition {
-        kind: NODE_KIND.to_string(),
-        title: "Crypto".to_string(),
-        description: "Cryptographic primitives: hash, verify, HMAC, base64, random. \
-            Use --op to select the operation. Hash/encode ops add `result` to the payload \
-            (everything else flows on unchanged) and emit to the 'out' pin. Verify ops (bcrypt_verify, argon2_verify) \
-            route to 'true' or 'false' pin, forwarding the payload unchanged. \
-            Each flag is a literal or {{ expr }}; an operation refuses a value it needs that is empty."
-            .to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {}
-        }),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "result": {
-                    "type": "string",
-                    "description": "Computed value (hex digest, base64 string, bcrypt/argon2 hash, etc.)."
-                }
-            }
-        }),
-        input_pins: vec![INPUT_PIN_IN.to_string()],
-        output_pins: vec![
-            OUTPUT_PIN_OUT.to_string(),
-            OUTPUT_PIN_TRUE.to_string(),
-            OUTPUT_PIN_FALSE.to_string(),
-        ],
-        script_available: false,
-        script_bridge: None,
-        config_schema: Default::default(),
-        dsl_flags: vec![
-            DslFlag { flag: "--op".to_string(), config_key: "op".to_string(), description: "Cryptographic operation: sha256, sha512, bcrypt_hash, bcrypt_verify, argon2_hash, argon2_verify, hmac_sha256, base64_encode, base64_decode, random_hex.".to_string(), kind: DslFlagKind::Scalar, required: true, ..Default::default() },
-            DslFlag { flag: "--value".to_string(), config_key: "value".to_string(), description: "The value to operate on — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--hash".to_string(), config_key: "hash".to_string(), description: "The stored hash to verify against — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--key".to_string(), config_key: "key".to_string(), description: "The HMAC secret — a literal or {{ expr }}.".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--cost".to_string(), config_key: "cost".to_string(), description: "bcrypt cost factor 4-31 (default 12).".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-            DslFlag { flag: "--length".to_string(), config_key: "length".to_string(), description: "Random byte count for random_hex (default 32).".to_string(), kind: DslFlagKind::Scalar, required: false, ..Default::default() },
-        ],
-        fields: {
-            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
-            vec![
-                NodeFieldDef { name: "op".to_string(), label: "Operation".to_string(), field_type: NodeFieldType::Select, options: vec![
-                    SelectOptionDef { value: "sha256".to_string(), label: "SHA-256 hash".to_string() },
-                    SelectOptionDef { value: "sha512".to_string(), label: "SHA-512 hash".to_string() },
-                    SelectOptionDef { value: "bcrypt_hash".to_string(), label: "bcrypt hash".to_string() },
-                    SelectOptionDef { value: "bcrypt_verify".to_string(), label: "bcrypt verify → true/false pin".to_string() },
-                    SelectOptionDef { value: "argon2_hash".to_string(), label: "Argon2id hash".to_string() },
-                    SelectOptionDef { value: "argon2_verify".to_string(), label: "Argon2id verify → true/false pin".to_string() },
-                    SelectOptionDef { value: "hmac_sha256".to_string(), label: "HMAC-SHA256".to_string() },
-                    SelectOptionDef { value: "base64_encode".to_string(), label: "Base64 encode".to_string() },
-                    SelectOptionDef { value: "base64_decode".to_string(), label: "Base64 decode".to_string() },
-                    SelectOptionDef { value: "random_hex".to_string(), label: "Random hex token".to_string() },
-                ], help: Some("Cryptographic operation to perform. Verify operations route to true/false pins.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "value".to_string(), label: "Value".to_string(), field_type: NodeFieldType::Text, help: Some("The value to operate on — a literal or {{ expr }}.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "hash".to_string(), label: "Hash Path (verify)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the stored hash used by verify operations. Empty reads payload.hash.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "key".to_string(), label: "Key Path (HMAC)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the HMAC secret key. Empty reads payload.key.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "cost".to_string(), label: "Cost (bcrypt)".to_string(), field_type: NodeFieldType::Text, help: Some("bcrypt cost factor from 4 to 31. Defaults to 12.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "length".to_string(), label: "Length (random_hex)".to_string(), field_type: NodeFieldType::Text, help: Some("Random byte count for random_hex output. Defaults to 32.".to_string()), ..Default::default() },
-            ]
-        },
-        layout: vec![
-            LayoutItem::Field("op".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("value".to_string()), LayoutItem::Field("hash".to_string())] },
-            LayoutItem::Row { row: vec![LayoutItem::Field("key".to_string()), LayoutItem::Field("cost".to_string())] },
-            LayoutItem::Field("length".to_string()),
-        ],
-        ai_tool: Default::default(),
-        examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Hash a password at registration", r#"crypto --op argon2_hash --value "{{ input.body.password }}""#)
-                .input(serde_json::json!({ "body": { "email": "a@x.io", "password": "correct horse" } }))
-                .output(serde_json::json!({ "body": { "email": "a@x.io", "password": "correct horse" }, "result": "$argon2id$v=19$m=19456,t=2,p=1$…" }))
-                .note("`result` is added; `input.body.email` is still there for the INSERT."),
-            crate::pipeline::model::NodeExample::dsl("Check a password at login", r#"crypto --op argon2_verify --value "{{ $nodes.n0.body.password }}" --hash "{{ input.query.rows[0].password_hash }}""#)
-                .note("Fires `true` or `false`; the payload (the user row) passes through unchanged. Wire `false` to a 401."),
-            crate::pipeline::model::NodeExample::dsl("A random token", "crypto --op random_hex --length 16")
-                .output(serde_json::json!({ "result": "9f2c…" })),
-        ],
+/// Every kind of the family, in the order the node index shows them.
+pub const KINDS: &[&str] = &[
+    password::HASH_KIND,
+    password::VERIFY_KIND,
+    digest::NODE_KIND,
+    signature::SIGN_KIND,
+    signature::VERIFY_KIND,
+    base64::ENCODE_KIND,
+    base64::DECODE_KIND,
+    random::NODE_KIND,
+];
+
+/// The family list.
+pub fn definitions() -> Vec<NodeDefinition> {
+    vec![
+        password::hash_definition(),
+        password::verify_definition(),
+        digest::definition(),
+        signature::sign_definition(),
+        signature::verify_definition(),
+        base64::encode_definition(),
+        base64::decode_definition(),
+        random::definition(),
+    ]
+}
+
+/// The node for `kind`, built from its resolved config; `None` when `kind`
+/// is not of this family. The signature kinds read their key from the
+/// credential service, which an engine without one cannot offer.
+pub fn build(
+    kind: &str,
+    config: &Value,
+    credentials: Option<Arc<CredentialService>>,
+) -> Result<Option<Box<dyn NodeHandler>>, PipelineError> {
+    let signing = |code: &'static str| {
+        credentials.clone().ok_or_else(|| PipelineError::new(code, "credential service is not configured on this framework engine"))
+    };
+    let node: Box<dyn NodeHandler> = match kind {
+        password::HASH_KIND => Box::new(password::Hash::new(parse(config, password::HASH_CONFIG_CODE)?)?),
+        password::VERIFY_KIND => Box::new(password::Verify::new(parse(config, password::VERIFY_CONFIG_CODE)?)?),
+        digest::NODE_KIND => Box::new(digest::Node::new(parse(config, digest::CONFIG_CODE)?)?),
+        signature::SIGN_KIND => Box::new(signature::Sign::new(
+            parse(config, signature::SIGN_CONFIG_CODE)?,
+            signing(signature::SIGN_CODE)?,
+        )?),
+        signature::VERIFY_KIND => Box::new(signature::Verify::new(
+            parse(config, signature::VERIFY_CONFIG_CODE)?,
+            signing(signature::VERIFY_CODE)?,
+        )?),
+        base64::ENCODE_KIND => Box::new(base64::Encode::new(parse(config, base64::ENCODE_CONFIG_CODE)?)?),
+        base64::DECODE_KIND => Box::new(base64::Decode::new(parse(config, base64::DECODE_CONFIG_CODE)?)?),
+        random::NODE_KIND => Box::new(random::Node::new(parse(config, random::CONFIG_CODE)?)?),
+        _ => return Ok(None),
+    };
+    Ok(Some(node))
+}
+
+fn parse<T: DeserializeOwned>(config: &Value, code: &'static str) -> Result<T, PipelineError> {
+    serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(code, err.to_string()))
+}
+
+// ── Shared by the kinds ──────────────────────────────────────────────────────
+
+/// A scalar flag with its 0.11 metadata.
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag {
+        flag: name.to_string(),
+        config_key: key.to_string(),
+        description: description.to_string(),
+        kind: DslFlagKind::Scalar,
+        value: value.to_string(),
         ..Default::default()
     }
 }
 
-/// Configuration for `n.crypto`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Config {
-    /// Cryptographic operation to perform (required).
-    ///
-    /// Valid values: `sha256`, `sha512`, `bcrypt_hash`, `bcrypt_verify`,
-    /// `argon2_hash`, `argon2_verify`, `hmac_sha256`, `base64_encode`,
-    /// `base64_decode`, `random_hex`.
-    pub op: String,
-
-    /// The value to operate on (`--value`), resolved before the node runs.
-    #[serde(default)]
-    pub value: String,
-
-    /// The stored hash (`--hash`, verify ops only).
-    #[serde(default)]
-    pub hash: String,
-
-    /// The HMAC secret (`--key`, `hmac_sha256` only).
-    #[serde(default)]
-    pub key: String,
-
-    /// bcrypt cost factor (default `12`, range 4–31).
-    ///
-    /// Higher cost = slower hash = harder to brute-force.
-    /// Cost 12 takes ~200–400 ms on modern hardware.
-    #[serde(default)]
-    pub cost: Option<u32>,
-
-    /// Number of random bytes for `random_hex` (default `32`).
-    ///
-    /// Output hex string length = `length * 2`.
-    /// Example: `length = 32` → 64-character hex string.
-    #[serde(default)]
-    pub length: Option<u32>,
+/// A closed choice: its words listed, so the signature and the save-time
+/// check both see them.
+fn choice_flag(name: &str, key: &str, description: &str, words: &[&str]) -> DslFlag {
+    DslFlag { choices: words.iter().map(|w| w.to_string()).collect(), ..flag(name, key, description, "") }
 }
 
-/// `n.crypto` node instance.
-pub struct Node {
-    config: Config,
+fn field(name: &str, label: &str, help: &str) -> NodeFieldDef {
+    NodeFieldDef { name: name.to_string(), label: label.to_string(), field_type: NodeFieldType::Text, help: Some(help.to_string()), ..Default::default() }
 }
 
-impl Node {
-    pub fn new(config: Config) -> Result<Self, PipelineError> {
-        const VALID_OPS: &[&str] = &[
-            "sha256",
-            "sha512",
-            "bcrypt_hash",
-            "bcrypt_verify",
-            "argon2_hash",
-            "argon2_verify",
-            "hmac_sha256",
-            "base64_encode",
-            "base64_decode",
-            "random_hex",
-        ];
-        if config.op.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_CRYPTO_CONFIG",
-                "n.crypto: --op must be specified",
-            ));
-        }
-        if !VALID_OPS.contains(&config.op.as_str()) {
-            return Err(PipelineError::new(
-                "FW_NODE_CRYPTO_OP",
-                format!(
-                    "n.crypto: unknown op '{}'. Valid ops: {}",
-                    config.op,
-                    VALID_OPS.join(", ")
-                ),
-            ));
-        }
-        Ok(Self { config })
+fn select(name: &str, label: &str, help: &str, words: &[&str]) -> NodeFieldDef {
+    NodeFieldDef {
+        field_type: NodeFieldType::Select,
+        options: words.iter().map(|w| SelectOptionDef { value: w.to_string(), label: w.to_string() }).collect(),
+        default_value: words.first().map(|w| Value::String(w.to_string())),
+        ..field(name, label, help)
     }
 }
 
-// ── Payload helpers ──────────────────────────────────────────────────────────
-
-/// Extract a string value from the payload using a JSON pointer path.
-///
-/// If `path` is empty, falls back to `payload[fallback_key]`.
-/// Returns `""` if neither is found or the value is not a string.
-/// The string a crypto operation works on.
-///
-/// `configured` arrives final — a literal or a resolved `{{ expr }}`
-/// (NodeIO §Value resolution). Empty means "not set", so the payload's
-/// conventional key is used, which is the old empty-path default.
-/// A flag the operation needs, refused when empty: hashing or signing an
-/// absent value silently would store the digest of nothing.
-fn required(value: &str, flag: &str) -> Result<String, PipelineError> {
-    if value.is_empty() {
-        return Err(PipelineError::new("FW_NODE_CRYPTO_CONFIG", format!("{flag} is required for this operation")));
-    }
-    Ok(value.to_string())
-}
-
-
-// ── NodeHandler impl ───────────────────────────────────────────────────────
-
-#[async_trait]
-impl NodeHandler for Node {
-    fn kind(&self) -> &'static str {
-        NODE_KIND
-    }
-    fn input_pins(&self) -> &'static [&'static str] {
-        &[INPUT_PIN_IN]
-    }
-    fn output_pins(&self) -> &'static [&'static str] {
-        &[OUTPUT_PIN_OUT, OUTPUT_PIN_TRUE, OUTPUT_PIN_FALSE]
-    }
-
-    async fn execute_async(
-        &self,
-        input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, PipelineError> {
-        let payload = input.payload;
-
-        match self.config.op.as_str() {
-            // ── sha256 ────────────────────────────────────────────────────────
-            "sha256" => {
-                let input_val = required(&self.config.value, "--value")?;
-                let mut h = Sha256::new();
-                h.update(input_val.as_bytes());
-                let result = hex::encode(h.finalize());
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec!["n.crypto: sha256".to_string()],
-                })
-            }
-
-            // ── sha512 ────────────────────────────────────────────────────────
-            "sha512" => {
-                let input_val = required(&self.config.value, "--value")?;
-                let mut h = Sha512::new();
-                h.update(input_val.as_bytes());
-                let result = hex::encode(h.finalize());
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec!["n.crypto: sha512".to_string()],
-                })
-            }
-
-            // ── bcrypt_hash ───────────────────────────────────────────────────
-            "bcrypt_hash" => {
-                let input_val = required(&self.config.value, "--value")?;
-                let cost = self.config.cost.unwrap_or(12);
-                let result = tokio::task::spawn_blocking(move || {
-                    bcrypt::hash(&input_val, cost).map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?
-                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_BCRYPT_HASH", e))?;
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec![format!("n.crypto: bcrypt_hash cost={cost}")],
-                })
-            }
-
-            // ── bcrypt_verify ─────────────────────────────────────────────────
-            "bcrypt_verify" => {
-                let plaintext = required(&self.config.value, "--value")?;
-                let stored = required(&self.config.hash, "--hash")?;
-                let is_valid = tokio::task::spawn_blocking(move || {
-                    bcrypt::verify(&plaintext, &stored).unwrap_or(false)
-                })
-                .await
-                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
-                let pin = if is_valid {
-                    OUTPUT_PIN_TRUE
-                } else {
-                    OUTPUT_PIN_FALSE
-                };
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![pin.to_string()],
-                    payload,
-                    trace: vec![format!("n.crypto: bcrypt_verify result={is_valid}")],
-                })
-            }
-
-            // ── argon2_hash ───────────────────────────────────────────────────
-            "argon2_hash" => {
-                let input_val = required(&self.config.value, "--value")?;
-                let result = tokio::task::spawn_blocking(move || {
-                    use argon2::{
-                        Argon2,
-                        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-                    };
-                    let salt = SaltString::generate(&mut OsRng);
-                    Argon2::default()
-                        .hash_password(input_val.as_bytes(), &salt)
-                        .map(|h| h.to_string())
-                        .map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?
-                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_ARGON2_HASH", e))?;
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec!["n.crypto: argon2_hash".to_string()],
-                })
-            }
-
-            // ── argon2_verify ─────────────────────────────────────────────────
-            "argon2_verify" => {
-                let plaintext = required(&self.config.value, "--value")?;
-                let stored = required(&self.config.hash, "--hash")?;
-                let is_valid = tokio::task::spawn_blocking(move || {
-                    use argon2::{
-                        Argon2,
-                        password_hash::{PasswordHash, PasswordVerifier},
-                    };
-                    PasswordHash::new(&stored)
-                        .map(|h| {
-                            Argon2::default()
-                                .verify_password(plaintext.as_bytes(), &h)
-                                .is_ok()
-                        })
-                        .unwrap_or(false)
-                })
-                .await
-                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
-                let pin = if is_valid {
-                    OUTPUT_PIN_TRUE
-                } else {
-                    OUTPUT_PIN_FALSE
-                };
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![pin.to_string()],
-                    payload,
-                    trace: vec![format!("n.crypto: argon2_verify result={is_valid}")],
-                })
-            }
-
-            // ── hmac_sha256 ───────────────────────────────────────────────────
-            "hmac_sha256" => {
-                let input_val = required(&self.config.value, "--value")?;
-                let key_val = required(&self.config.key, "--key")?;
-                type HmacSha256 = Hmac<Sha256>;
-                let mut mac = HmacSha256::new_from_slice(key_val.as_bytes())
-                    .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_HMAC_KEY", e.to_string()))?;
-                mac.update(input_val.as_bytes());
-                let result = hex::encode(mac.finalize().into_bytes());
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec!["n.crypto: hmac_sha256".to_string()],
-                })
-            }
-
-            // ── base64_encode ─────────────────────────────────────────────────
-            "base64_encode" => {
-                let input_val = required(&self.config.value, "--value")?;
-                let result = general_purpose::STANDARD.encode(input_val.as_bytes());
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec!["n.crypto: base64_encode".to_string()],
-                })
-            }
-
-            // ── base64_decode ─────────────────────────────────────────────────
-            "base64_decode" => {
-                let input_val = required(&self.config.value, "--value")?;
-                let bytes = general_purpose::STANDARD
-                    .decode(input_val.as_bytes())
-                    .map_err(|e| {
-                        PipelineError::new("FW_NODE_CRYPTO_BASE64_DECODE", e.to_string())
-                    })?;
-                let result = String::from_utf8(bytes)
-                    .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_BASE64_UTF8", e.to_string()))?;
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec!["n.crypto: base64_decode".to_string()],
-                })
-            }
-
-            // ── random_hex ────────────────────────────────────────────────────
-            "random_hex" => {
-                // 1..=1024 random bytes: an empty token is not a token.
-                let length = crate::pipeline::nodes::shared::limits::within(
-                    self.config.length.unwrap_or(32),
-                    1,
-                    1024,
-                    "--length",
-                    "FW_NODE_CRYPTO_CONFIG",
-                )? as usize;
-                let result = tokio::task::spawn_blocking(move || {
-                    use rand::RngExt;
-                    let mut rng = rand::rng();
-                    let bytes: Vec<u8> = (0..length).map(|_| rng.random::<u8>()).collect();
-                    hex::encode(&bytes)
-                })
-                .await
-                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
-                Ok(NodeExecutionOutput {
-                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: crate::pipeline::nodes::shared::util::with_answer(&payload, json!({ "result": result })),
-                    trace: vec![format!("n.crypto: random_hex length={length}")],
-                })
-            }
-
-            // ── unknown op (validation should have caught this) ───────────────
-            other => Err(PipelineError::new(
-                "FW_NODE_CRYPTO_OP",
-                format!("n.crypto: unknown op '{other}'"),
-            )),
-        }
+/// A flag's value as text: a string, or a number or boolean read as written.
+/// `null` (unset) is empty; an object or a list is not text and is refused.
+fn text_of(value: &Value, flag: &str, code: &'static str) -> Result<String, PipelineError> {
+    match value {
+        Value::Null => Ok(String::new()),
+        Value::String(s) => Ok(s.clone()),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Bool(b) => Ok(b.to_string()),
+        _ => Err(PipelineError::new(code, format!("{flag} must be text, not a JSON {}", if value.is_array() { "list" } else { "object" }))),
     }
 }
 
-/// The family list: this family is one node, and it lives in this file.
-pub fn definitions() -> Vec<NodeDefinition> {
-    vec![definition()]
+/// A needed text flag: refused when empty ("empty is not a value").
+fn required(value: &Value, flag: &str, config_code: &'static str, empty_code: &'static str) -> Result<String, PipelineError> {
+    let text = text_of(value, flag, config_code)?;
+    if text.is_empty() {
+        return Err(PipelineError::new(empty_code, format!("{flag} is empty; it needs a value")));
+    }
+    Ok(text)
+}
+
+/// The node's answer under its noun, the rest of the payload kept.
+fn answer(pin: &str, payload: &Value, answer: Value, trace: String) -> NodeExecutionOutput {
+    NodeExecutionOutput { output_pins: vec![pin.to_string()], payload: with_answer(payload, answer), trace: vec![trace] }
 }

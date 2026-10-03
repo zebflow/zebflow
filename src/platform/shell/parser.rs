@@ -350,7 +350,7 @@ pub fn expand_kind(word: &str) -> Option<&'static str> {
 ///
 /// It used to be the other way round, and the table was a second, divergent
 /// copy of what every definition already said. A node whose pins were not
-/// remembered here silently got `in`/`out` — so `n.crypto`, which declares
+/// remembered here silently got `in`/`out` — so the crypto node, which declared
 /// `true`/`false` for its verify operations, could not be branched on from the
 /// DSL at all: the edge was refused as "'true' is not declared by node".
 pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {

@@ -98,7 +98,7 @@ add a singular, unit-free noun.
 | Typed inputs | `--image` `--video` `--audio` `--file` (repeat) · `--text` (text content) `--html` · `--body` (what goes over a wire) · `--value` (what a store write holds) · `--argument` (k=v: what a callable receives) · `--default` |
 | Generation | `--prompt` `--system-prompt` `--seed` `--duration` `--aspect` `--first-frame` `--last-frame` `--mask` `--reference` (repeat) `--schema` (a JSON schema) `--tool` (repeat) `--budget` `--option` (k=v) |
 | Destination | `--folder` `--filename` `--path` `--store` `--on-conflict` (`error\|skip\|overwrite`) `--delete-source` `--recursive` |
-| Shape | `--format` (what is produced) `--parse` (how input is read, else sniffed) `--encoding` (`text\|base64`) `--width` `--height` `--fit` `--quality` `--return` (`inline\|file\|process`) |
+| Shape | `--format` (what is produced) `--parse` (how input is read, else sniffed) `--encoding` (how bytes are written as text: `text\|base64\|hex`, each node listing the ones it takes) `--width` `--height` `--fit` `--quality` `--return` (`inline\|file\|process`) |
 | Ceilings and time | `--timeout` `--ttl` `--delay` `--backoff` `--max-attempts` · `--max-size` `--max-length` `--max-items` (refusal ceilings) · `--limit` `--offset` (rows returned) · `--min` `--max` (numeric bounds) `--batch-size` |
 | Selection | `--query` (a statement in the target's own language) `--param` (k=v bindings; `1=` for `$1`) `--filter` `--field` (repeat) `--accept` (allowed file kinds) `--kind` (a node kind) `--layer` `--when` `--template` `--write` `--cron` `--algorithm` |
 | Addressing | `--url` `--route` (a path this project serves) `--method` `--header` (k=v) `--status` `--room` `--connection` `--event` `--topic` |

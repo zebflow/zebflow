@@ -166,7 +166,7 @@ async fn a_logic_expression_reads_input_as_the_payload() {
 ///
 /// `default_pins` used to keep a hardcoded table that duplicated every
 /// definition. A kind nobody remembered to add silently got `in`/`out`, so
-/// `n.crypto` — which declares `true`/`false` for its verify operations —
+/// the crypto node — which declared `true`/`false` for its verify operations —
 /// could not be branched on from the DSL at all: the edge was refused as
 /// "'true' is not declared by node". Two sources of truth, and the quiet one
 /// won.
@@ -197,7 +197,8 @@ fn the_dsl_takes_a_nodes_pins_from_its_definition() {
 /// The case that exposed it: a verify operation has to be branchable.
 #[test]
 fn crypto_verify_pins_are_reachable_from_the_dsl() {
-    let (_, outputs) = zebflow::platform::shell::parser::default_pins("n.crypto");
-    assert!(outputs.contains(&"true".to_string()), "{outputs:?}");
-    assert!(outputs.contains(&"false".to_string()), "{outputs:?}");
+    for kind in ["crypto.password.verify", "crypto.signature.verify"] {
+        let (_, outputs) = zebflow::platform::shell::parser::default_pins(kind);
+        assert_eq!(outputs, ["true", "false"], "{kind}");
+    }
 }

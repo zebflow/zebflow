@@ -29,7 +29,6 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.ws.emit": "#065f46",
   "n.ws.client.send": "#064e3b",
   "auth.token.create": "#78350f",
-  "n.crypto": "#6b21a8",
   "browser.page.run": "#0369a1",
   "trigger.function": "#166534",
   "function.result.call": "#1e40af",
@@ -67,6 +66,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
 
 export function nodeColor(kind: string): string {
   if (NODE_KIND_COLORS[kind]) return NODE_KIND_COLORS[kind];
+  if (kind.startsWith("crypto.")) return "#6b21a8";
   if (kind.startsWith("x.")) return "#6d28d9";
   return "#334155";
 }
@@ -95,7 +95,7 @@ export function categoryForNodeKind(kind: string): string {
   if (canonical.startsWith("logic.") || canonical.startsWith("function.") || canonical.startsWith("ai.")) return "logic";
   if (canonical.startsWith("ms.")) return "data";
   if (canonical.startsWith("fs.")) return "files";
-  if (canonical.startsWith("auth.") || canonical.startsWith("n.crypto")) return "security";
+  if (canonical.startsWith("auth.") || canonical.startsWith("crypto.")) return "security";
   if (canonical.startsWith("web.") || canonical.startsWith("ws.") || canonical.startsWith("http.") || canonical.startsWith("browser.")) return "web";
   if (canonical.startsWith("geo.") || canonical.startsWith("kv.") || canonical.startsWith("mem.") || canonical.startsWith("pg.") || canonical.startsWith("sqlite.") || canonical.startsWith("sekejap.") || canonical.startsWith("table.")) return "data";
   // Installed nodes carry their own ui_category. This fallback only runs when a

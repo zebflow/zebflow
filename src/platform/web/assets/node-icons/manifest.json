@@ -63,13 +63,20 @@
         "logic.concept"
       ]
     },
-    "n.crypto": {
+    "crypto": {
       "label": "HASH",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.crypto.svg",
+      "path": "/assets/node-icons/zebflow/crypto.svg",
       "source_url": "",
       "supports": [
-        "n.crypto"
+        "crypto.password.hash",
+        "crypto.password.verify",
+        "crypto.digest.create",
+        "crypto.signature.sign",
+        "crypto.signature.verify",
+        "crypto.base64.encode",
+        "crypto.base64.decode",
+        "crypto.random.generate"
       ]
     },
     "fs.archive.create": {
