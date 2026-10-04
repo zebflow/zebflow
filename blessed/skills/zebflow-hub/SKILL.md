@@ -17,7 +17,7 @@ dependencies. Facts: `help(topic="guide/hub")`, `guide/hub/how-it-works`,
 |---|---|---|
 | `pipeline_bundle`, `template_bundle`, `folder_bundle`, `project_bundle` | files copied into the project (source under `hub/<package>/` unless the review says otherwise; assets under `static/`, docs under `docs/`) | no — it is your source now |
 | `skill` | `skills/<name>/` copied into the project and listed by `skill_list` from then on; the optional skills (`procedural-assets`, the brand family) arrive this way, and a project skill shadows a core one of the same name | no — edit it freely |
-| `node_bundle` | node kinds `n.x.<bundle>.<node>` become available; materialized under `data/hub/nodes/` | yes — `zeb.lock` |
+| `node_bundle` | node kinds `x.<package>.<noun>.<verb>` become available; materialized under `data/hub/nodes/` | yes — `zeb.lock` |
 | `rwe_library` | a `zeb/*` runtime library the project may load | yes — `zeb.lock` and `zebflow.yaml` |
 
 `zeb/ui` components are not hub packages: `install_ui_components` clones one

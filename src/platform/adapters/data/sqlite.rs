@@ -8245,7 +8245,7 @@ mod tests {
             error: None,
             trace: vec![NodeTraceEntry {
                 node_id: "a".to_string(),
-                node_kind: "n.test".to_string(),
+                node_kind: "javascript.script.run".to_string(),
                 config: None,
                 duration_ms: 42,
                 input: json!({"in": true}),

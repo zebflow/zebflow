@@ -135,7 +135,7 @@ pub fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
         .iter()
         .filter(|n| entry_ids.contains(n.id.as_str()))
         .find_map(|n| {
-            let canonical = canonical_pipeline_node_kind(&n.kind);
+            let canonical = n.kind.as_str();
             canonical
                 .strip_prefix("trigger.")
                 .map(|suffix| suffix.to_string())
@@ -153,7 +153,7 @@ pub fn webhook_triggers_from_graph(graph: &PipelineGraph) -> Vec<ProjectWebhookT
     graph
         .nodes
         .iter()
-        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "trigger.webhook")
+        .filter(|node| node.kind.as_str() == "trigger.webhook")
         .map(|node| ProjectWebhookTrigger {
             node_id: node.id.clone(),
             path: canonical_webhook_path(
@@ -278,17 +278,6 @@ fn parse_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
         .map(|document| document.spec)
 }
 
-fn canonical_pipeline_node_kind(kind: &str) -> &str {
-    if let Some(stripped) = kind.strip_prefix("x.n.") {
-        return match stripped {
-            "trigger.webhook" => "trigger.webhook",
-            "trigger.schedule" => "trigger.schedule",
-            "trigger.manual" => "trigger.manual",
-            _ => kind,
-        };
-    }
-    kind
-}
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), PlatformError> {
     fs::create_dir_all(dst)?;

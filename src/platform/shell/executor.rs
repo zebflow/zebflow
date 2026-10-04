@@ -406,7 +406,7 @@ impl DslExecutor {
                                 format!(
                                     "{}({})",
                                     n.id,
-                                    n.kind.strip_prefix("n.").unwrap_or(&n.kind)
+                                    n.kind
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -824,12 +824,11 @@ impl DslExecutor {
             i
         } else {
             let (kind_ref, explicit_idx) = parse_node_kind_ref(node_id);
-            let norm_ref = kind_ref.strip_prefix("n.").unwrap_or(&kind_ref);
             let candidates: Vec<usize> = graph
                 .nodes
                 .iter()
                 .enumerate()
-                .filter(|(_, n)| n.kind.strip_prefix("n.").unwrap_or(&n.kind) == norm_ref)
+                .filter(|(_, n)| n.kind == kind_ref)
                 .map(|(i, _)| i)
                 .collect();
             match (candidates.len(), explicit_idx) {

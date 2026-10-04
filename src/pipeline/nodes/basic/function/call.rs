@@ -20,7 +20,8 @@
 //!
 //! # Input/output
 //! - **Input:** any payload; only `--argument` reaches the function
-//! - **Output `out`:** the payload plus `result`, the function pipeline's last node payload
+//! - **Output `out`:** the payload plus `result`, the function's result: its last node's
+//!   answer (`PipelineOutput::function_result` — the rule composite nodes share)
 //! - **Output `error`:** the payload plus `result: { ok: false, error: { code, message } }`
 
 use std::sync::Arc;
@@ -70,13 +71,14 @@ pub fn definition() -> NodeDefinition {
         description: "Calls another active pipeline that starts with `trigger.function`. `--function` is that pipeline's slug — the file stem, \
             `send-welcome` for `jobs/send-welcome`, not the path. What it receives is `--argument`: repeated `key=value` (`--argument \"email={{ $trigger.body.email }}\" --argument plan=pro`) \
             or one `{{ object }}` (`--argument \"{{ { email: $trigger.body.email } }}\"`); without it the function receives `{}` and \
-            answers under its trigger's key, `function`. `out` adds `result` — the function's last node's payload — and keeps the caller's \
-            payload. `error` adds `result: { ok: false, error: { code, message } }` when the function is missing, inactive or failed."
+            answers under its trigger's key, `function`. `out` adds `result` — the function's result: what its last node answered (a \
+            `javascript.script.run` ending the function answers `script`, so `result` is that value; a last `logic.*` node leaves the \
+            function's final payload without `function`) — and keeps the caller's payload. `error` adds `result: { ok: false, error: { code, message } }` when the function is missing, inactive or failed."
             .to_string(),
         input_pins: vec!["in".to_string()],
         output_pins: vec!["out".to_string(), "error".to_string()],
         output_schema: serde_json::json!({
-            "description": "On `out`: the payload plus `result`, the called function's last node payload. On `error`: the payload plus `result: { ok: false, error: { code, message } }`.",
+            "description": "On `out`: the payload plus `result`, what the called function's last node answered. On `error`: the payload plus `result: { ok: false, error: { code, message } }`.",
             "properties": { "result": {} }
         }),
         config_schema: serde_json::json!({
@@ -133,7 +135,7 @@ pub fn definition() -> NodeDefinition {
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Reuse a lookup function", r#"function.result.call --function find-user --argument "email={{ $trigger.body.email }}""#)
                 .output(serde_json::json!({ "result": { "user": { "_key": "u_1", "email": "a@example.com" } } }))
-                .note("`result` is whatever `jobs/find-user`'s last node produced; the rest of the payload is kept."),
+                .note("`result` is what `jobs/find-user`'s last node answered — here a `javascript.script.run` returning `{ user }`; the rest of the payload is kept."),
         ],
         ..Default::default()
     }
@@ -243,5 +245,71 @@ mod tests {
         assert_eq!(call_arguments(&json!("{\"a\":1}")), json!({ "a": 1 }), "a JSON literal is parsed");
         assert_eq!(call_arguments(&json!(null)), json!({}), "unset: no arguments, not the payload");
         assert_eq!(call_arguments(&json!("  ")), json!({}));
+    }
+
+    /// `result` is what the function's last node answered — the rule a
+    /// composite node's answer shares — and the caller's payload is kept; a
+    /// missing function answers `result: { ok: false, error }` on `error`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_result_is_the_functions_last_answer_under_result() {
+        use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
+
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let function = json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "Pipeline",
+            "metadata": { "name": "find-user" },
+            "spec": {
+                "id": "find-user",
+                "nodes": [
+                    { "id": "trigger", "kind": "trigger.function", "config": { "description": "Find one user by email." }, "input_pins": [], "output_pins": ["out"] },
+                    { "id": "shape", "kind": "javascript.script.run",
+                      "config": { "source": "return { user: { email: input.function.email } };" },
+                      "input_pins": ["in"], "output_pins": ["out"] }
+                ],
+                "edges": [{ "from_node": "trigger", "from_pin": "out", "to_node": "shape", "to_pin": "in" }]
+            }
+        });
+        let meta = platform
+            .projects
+            .upsert_pipeline_definition("superadmin", "default", "jobs/find-user.zf.json", "Find user", "", "trigger.function", &function.to_string())
+            .expect("function saved");
+        platform
+            .projects
+            .activate_pipeline_definition("superadmin", "default", &meta.file_rel_path)
+            .expect("function activated");
+        platform.pipeline_runtime.refresh_project("superadmin", "default").expect("runtime");
+
+        let call = |function: &str| {
+            let node = super::Node::new(
+                serde_json::from_value(json!({ "function": function, "argument": { "email": "a@example.com" } })).unwrap(),
+                Some((*platform).clone()),
+            );
+            async move {
+                node.execute_async(NodeExecutionInput {
+                    node_id: "n1".to_string(),
+                    input_pin: "in".to_string(),
+                    payload: json!({ "kept": 1 }),
+                    metadata: json!({ "owner": "superadmin", "project": "default" }),
+                    bus: None,
+                })
+                .await
+                .expect("delivers")
+            }
+        };
+
+        let out = call("find-user").await;
+        assert_eq!(out.output_pins, ["out"]);
+        assert_eq!(
+            out.payload,
+            json!({ "kept": 1, "result": { "user": { "email": "a@example.com" } } }),
+            "the last node's answer, not the function's whole payload"
+        );
+
+        let out = call("no-such-function").await;
+        assert_eq!(out.output_pins, ["error"]);
+        assert_eq!(out.payload["kept"], 1);
+        assert_eq!(out.payload["result"]["ok"], false);
+        assert_eq!(out.payload["result"]["error"]["code"], "FW_FUNCTION_NOT_FOUND");
     }
 }

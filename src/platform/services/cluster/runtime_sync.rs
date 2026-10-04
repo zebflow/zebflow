@@ -224,7 +224,6 @@ fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
             "trigger.webhook" => Some("webhook".to_string()),
             "trigger.schedule" => Some("schedule".to_string()),
             "trigger.room" => Some("ws".to_string()),
-            "n.trigger.memsubscribe" => Some("memsubscribe".to_string()),
             "trigger.function" => Some("function".to_string()),
             _ => None,
         })

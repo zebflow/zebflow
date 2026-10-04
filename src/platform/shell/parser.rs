@@ -199,9 +199,9 @@ fn command_accepts_opaque_body(prefix: &str) -> bool {
 /// Resolves an author-written node kind against the live catalog.
 ///
 /// `expand_kind` only knows native shorthands, so anything provided by a bundle
-/// has to be resolved by existence. Namespace is deliberately not consulted: a
-/// curated `n.telegram.send` and a third-party `x.acme.thing.run` are both just
-/// kinds the catalog either has or does not.
+/// has to be resolved by existence. Namespace is deliberately not consulted: an
+/// official `telegram.message.send` and a third-party `x.acme.thing.run` are
+/// both just kinds the catalog either has or does not.
 fn resolve_catalog_kind(raw_kind: &str, definitions: &[NodeDefinition]) -> Option<String> {
     if let Some(kind) = expand_kind(raw_kind) {
         return Some(kind.to_string());
@@ -209,19 +209,12 @@ fn resolve_catalog_kind(raw_kind: &str, definitions: &[NodeDefinition]) -> Optio
     if definitions.iter().any(|def| def.kind == raw_kind) {
         return Some(raw_kind.to_string());
     }
-    let prefixed = format!("n.{raw_kind}");
-    if definitions.iter().any(|def| def.kind == prefixed) {
-        return Some(prefixed);
-    }
     None
 }
 
 /// Shape-only check used before a catalog is available.
 fn looks_like_node_kind(raw_kind: &str) -> bool {
-    expand_kind(raw_kind).is_some()
-        || raw_kind.starts_with("n.")
-        || raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX)
-        || raw_kind.starts_with("x.")
+    expand_kind(raw_kind).is_some() || raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX)
 }
 
 /// The reserved word for a canvas note in both DSL modes. A note is not a
@@ -318,12 +311,6 @@ fn note_to_statement(note: &PipelineNote, with_id: bool) -> String {
     parts.join(" ")
 }
 
-/// The name the DSL writes for a kind. A kind is written as itself; the
-/// `n.` strip only serves kinds the 0.11 renames have not reached yet.
-pub fn short_kind(kind: &str) -> String {
-    kind.strip_prefix("n.").unwrap_or(kind).to_string()
-}
-
 /// The native kind a DSL word names, if any. There are no aliases: a kind is
 /// written as itself. Graph mode decides whether a line starts a node from
 /// this alone, so it answers for every native kind without a catalogue.
@@ -339,7 +326,7 @@ pub fn expand_kind(word: &str) -> Option<&'static str> {
     native
         .iter()
         .copied()
-        .find(|kind| *kind == word || kind.strip_prefix("n.") == Some(word))
+        .find(|kind| *kind == word)
 }
 
 /// Default input/output pins per node kind.
@@ -1468,7 +1455,7 @@ fn is_graph_node_statement(line: &str) -> bool {
     looks_like_node_kind(raw_kind) || is_dotted_kind(raw_kind) || is_note_keyword(raw_kind)
 }
 
-/// A bundled or installed node's short name (`ai.embedding.generate`, `telegram.send`)
+/// A bundled or installed node's name (`ai.embedding.generate`, `telegram.message.send`)
 /// is in no built-in list, so a `[label]` line is a node when its first word
 /// is kind-shaped: lowercase words joined by dots. Without this the line was
 /// glued onto the statement above it and its label went missing; now an
@@ -1994,8 +1981,8 @@ return { values };
         assert!(source.contains("return { values };"));
     }
 
-    /// Curated composites live in `n.*`, which no namespace rule can recognise,
-    /// so the parser has to resolve kinds against the catalog it is given.
+    /// Official composites have plain names no built-in list knows, so the
+    /// parser has to resolve kinds against the catalog it is given.
     #[test]
     fn a_graph_line_naming_a_catalogue_node_by_its_short_name_is_its_own_node() {
         let embed = NodeDefinition {
@@ -2005,16 +1992,16 @@ return { values };
             input_pins: vec!["in".to_string()],
             output_pins: vec!["out".to_string()],
             dsl_flags: vec![DslFlag {
-                flag: "--input-expr".to_string(),
-                config_key: "input_expr".to_string(),
-                description: "What to embed.".to_string(),
+                flag: "--model".to_string(),
+                config_key: "model".to_string(),
+                description: "The embedding model.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
                 ..Default::default()
             }],
             ..Default::default()
         };
-        let dsl = "[a] trigger.manual\n[b] javascript.script.run -- \"return { text: ['x'] }\"\n[c] ai.embedding.generate --input-expr input.text\n[a] -> [b]\n[b] -> [c]";
+        let dsl = "[a] trigger.manual\n[b] javascript.script.run -- \"return { text: ['x'] }\"\n[c] ai.embedding.generate --model text-embedding-3-small\n[a] -> [b]\n[b] -> [c]";
         let graph = build_pipeline_graph_with_definitions("short-kind", dsl, &[embed]).expect("graph");
         let c = graph.nodes.iter().find(|n| n.id == "c").expect("[c] is a node, not glued onto [b]'s body");
         assert_eq!(c.kind, "ai.embedding.generate");
@@ -2026,7 +2013,7 @@ return { values };
     #[test]
     fn curated_and_third_party_kinds_both_resolve_from_the_catalog() {
         let curated = NodeDefinition {
-            kind: "n.telegram.send".to_string(),
+            kind: "telegram.message.send".to_string(),
             title: "Telegram Send".to_string(),
             description: "Send a message.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -2044,20 +2031,20 @@ return { values };
         let definitions = vec![curated, third_party];
 
         assert_eq!(
-            super::resolve_catalog_kind("n.telegram.send", &definitions),
-            Some("n.telegram.send".to_string())
+            super::resolve_catalog_kind("telegram.message.send", &definitions),
+            Some("telegram.message.send".to_string())
         );
         assert_eq!(
-            super::resolve_catalog_kind("telegram.send", &definitions),
-            Some("n.telegram.send".to_string()),
-            "the n. prefix stays optional for authors"
+            super::resolve_catalog_kind("n.telegram.message.send", &definitions),
+            None,
+            "a kind has one name: the retired n. prefix is not an alias"
         );
         assert_eq!(
             super::resolve_catalog_kind("x.acme.thing.run", &definitions),
             Some("x.acme.thing.run".to_string())
         );
         assert_eq!(
-            super::resolve_catalog_kind("n.telegramm.send", &definitions),
+            super::resolve_catalog_kind("telegramm.message.send", &definitions),
             None,
             "a kind the catalog does not have is still rejected"
         );
@@ -2090,9 +2077,9 @@ return { values };
                     ..Default::default()
                 },
                 DslFlag {
-                    flag: "--input-expr".to_string(),
-                    config_key: "input_expr".to_string(),
-                    description: "Text expression.".to_string(),
+                    flag: "--text".to_string(),
+                    config_key: "text".to_string(),
+                    description: "The text to embed.".to_string(),
                     kind: DslFlagKind::Scalar,
                     required: false,
                     ..Default::default()
@@ -2105,7 +2092,7 @@ return { values };
             "composite-embedding-dsl",
             r#"
 | trigger.manual
-| x.openai_embedding.embedding.generate --credential qwen-embed --model text-embedding-v4 --input-expr input.text
+| x.openai_embedding.embedding.generate --credential qwen-embed --model text-embedding-v4 --text hello
 "#,
             &definitions,
         )
@@ -2117,7 +2104,7 @@ return { values };
             .expect("composite node");
         assert_eq!(node.config["credential_id"], json!("qwen-embed"));
         assert_eq!(node.config["model"], json!("text-embedding-v4"));
-        assert_eq!(node.config["input_expr"], json!("input.text"));
+        assert_eq!(node.config["text"], json!("hello"));
     }
 
     #[test]
@@ -2376,9 +2363,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
     let definition = all_defs.iter().find(|d| d.kind == node.kind);
     let dsl_flags = definition.map(|d| d.dsl_flags.as_slice()).unwrap_or(&[]);
 
-    // Strip "n." prefix for cleaner output; expand_kind accepts both forms.
-    let kind = node.kind.strip_prefix("n.").unwrap_or(&node.kind);
-    let mut parts = vec![kind.to_string()];
+    let mut parts = vec![node.kind.clone()];
 
     // A positional is written bare, right after the kind, the way it is read.
     let positional = positional_segment_token(definition, &node.config);
@@ -2500,8 +2485,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
     let definition = all_defs.iter().find(|d| d.kind == node.kind);
     let dsl_flags = definition.map(|d| d.dsl_flags.as_slice()).unwrap_or(&[]);
 
-    let kind = node.kind.strip_prefix("n.").unwrap_or(&node.kind);
-    let mut parts = vec![kind.to_string()];
+    let mut parts = vec![node.kind.clone()];
 
     let positional = positional_segment_token(definition, &node.config);
     if let Some((_, token)) = &positional {
@@ -2754,7 +2738,10 @@ fn build_pipe_mode(
     let first_tokens = tokenize(segments[0]);
     let first_raw_kind = first_tokens.first().map(|s| s.as_str()).unwrap_or("");
     let first_full_kind = expand_kind(first_raw_kind).unwrap_or(first_raw_kind);
-    let has_trigger_first = first_full_kind.starts_with("trigger.");
+    // A bundle's entry node need not be named `trigger.*` (a custom
+    // composite's is `x.<package>.<noun>.<verb>`): its definition takes no input.
+    let has_trigger_first = first_full_kind.starts_with("trigger.")
+        || definitions.iter().any(|d| d.kind == first_full_kind && d.input_pins.is_empty());
 
     // Auto-prepend trigger.manual if first node is not a trigger
     if !has_trigger_first {
@@ -2987,25 +2974,24 @@ mod note_tests {
 mod quoting_tests {
     use super::*;
 
-    /// Every node in the catalogue must be reachable by the short name the
-    /// DSL writes, because `short_kind` is what the help pages, the node
-    /// dialog and every written example print. `mail.message.send` shipped with no
-    /// entry here, so `mail.message.send` — the form its own help page showed —
-    /// failed to parse, and the error named a flag rather than the kind.
+    /// Every node in the catalogue is reachable by its kind, written as
+    /// itself — what the help pages, the node dialog and every written example
+    /// print. `mail.message.send` once shipped with no entry here, so the form
+    /// its own help page showed failed to parse, and the error named a flag
+    /// rather than the kind.
     #[test]
-    fn every_catalogue_kind_is_reachable_by_its_short_name() {
+    fn every_catalogue_kind_is_reachable_as_written() {
         let mut unreachable = Vec::new();
         for definition in crate::pipeline::nodes::builtin_node_definitions() {
             let kind = definition.kind.clone();
-            let short = short_kind(&kind);
-            match expand_kind(&short) {
+            match expand_kind(&kind) {
                 Some(resolved) if resolved == kind => {}
-                other => unreachable.push(format!("{kind} (short {short} resolved to {other:?})")),
+                other => unreachable.push(format!("{kind} (resolved to {other:?})")),
             }
         }
         assert!(
             unreachable.is_empty(),
-            "these kinds have no working short alias in expand_kind:\n  {}",
+            "these kinds do not resolve to themselves in expand_kind:\n  {}",
             unreachable.join("\n  ")
         );
     }

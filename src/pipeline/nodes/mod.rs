@@ -35,7 +35,7 @@
 //! ```rust,ignore
 //! pub fn definition() -> NodeDefinition {
 //!     NodeDefinition {
-//!         kind: NODE_KIND.to_string(),           // "n.category.action"
+//!         kind: NODE_KIND.to_string(),           // "family.noun.verb"
 //!         title: "Human Title".to_string(),      // shown in UI catalogs
 //!         description: "...".to_string(),        // shown in UI + fed to LLM
 //!         config_schema: serde_json::json!({ ... }),  // or schemars::schema_for!(Config)
@@ -249,7 +249,7 @@
 //!         Ok(NodeExecutionOutput {
 //!             output_pins: vec!["out".to_string()],
 //!             payload: serde_json::json!({ "result": "..." }),
-//!             trace: vec![format!("n.my.node: done")],
+//!             trace: vec![format!("example.thing.run: done")],
 //!         })
 //!     }
 //! }
@@ -288,7 +288,7 @@
 //! # Complete example
 //!
 //! ```rust,ignore
-//! //! `n.example.echo` — passes the upstream payload through unchanged with a tag.
+//! //! `example.message.echo` — passes the upstream payload through unchanged with a tag.
 //! //!
 //! //! # Pipeline position
 //! //! Middleware node. Always between a trigger and a terminal.
@@ -301,7 +301,7 @@
 //! //! # DSL
 //! //! ```text
 //! //! | trigger.webhook --route /ping
-//! //! | n.example.echo --tag hello
+//! //! | example.message.echo --tag hello
 //! //! ```
 //!
 //! use async_trait::async_trait;
@@ -311,7 +311,7 @@
 //! use crate::pipeline::model::{DslFlag, DslFlagKind};
 //! use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
 //!
-//! pub const NODE_KIND: &str = "n.example.echo";
+//! pub const NODE_KIND: &str = "example.message.echo";
 //!
 //! pub fn definition() -> NodeDefinition {
 //!     NodeDefinition {
@@ -361,7 +361,7 @@
 //!         Ok(NodeExecutionOutput {
 //!             output_pins: vec!["out".to_string()],
 //!             payload,
-//!             trace: vec![format!("n.example.echo: tag={}", self.config.tag)],
+//!             trace: vec![format!("example.message.echo: tag={}", self.config.tag)],
 //!         })
 //!     }
 //! }
@@ -557,7 +557,7 @@ pub fn node_signature(def: &NodeDefinition) -> String {
         .into_iter()
         .map(|flag| flag.flag)
         .collect();
-    let kind = crate::platform::shell::parser::short_kind(&def.kind);
+    let kind = def.kind.as_str();
     let mut out = kind.to_string();
     for flag in def.dsl_flags.iter().filter(|flag| !common.contains(&flag.flag)) {
         let value = if !flag.choices.is_empty() {
@@ -582,24 +582,27 @@ pub fn node_signature(def: &NodeDefinition) -> String {
             out.push_str(&format!(" [{token}]"));
         }
     }
-    if let Some(key) = answer_key(&kind) {
+    if let Some(key) = answer_key(kind) {
         out.push_str(&format!(" → {key}"));
     }
     out
 }
 
 /// The key a kind answers under (`node-conventions.md` §1, §6): an acting
-/// node's noun, an entry node's source, and the two closing loop nodes'
-/// verbs (`reduce`, `collect`); the other control nodes and run inputs (whose
-/// key is their `--name`) have none fixed.
-pub fn answer_key(short_kind: &str) -> Option<String> {
-    let parts: Vec<&str> = short_kind.split('.').collect();
+/// node's noun (a custom composite's too: `x.<package>.<noun>.<verb>`), an
+/// entry node's source, and the two closing loop nodes' verbs (`reduce`,
+/// `collect`); the other control nodes and run inputs (whose key is their
+/// `--name`) have none fixed.
+pub fn answer_key(kind: &str) -> Option<String> {
+    let parts: Vec<&str> = kind.split('.').collect();
     match parts.as_slice() {
         ["trigger", source, ..] => Some((*source).to_string()),
         ["logic", verb @ ("reduce" | "collect")] => Some((*verb).to_string()),
         ["logic", ..] | ["input", ..] => None,
         // It answers the caller and passes its payload on (§4, §6).
         ["web", "response", "send"] => None,
+        ["x", _package, noun, _verb] => Some((*noun).to_string()),
+        ["x", ..] => None,
         [_, noun, _] => Some((*noun).to_string()),
         _ => None,
     }
@@ -693,18 +696,7 @@ pub fn kind_query_matches_def(def: &NodeDefinition, query: &str) -> bool {
     if q.is_empty() {
         return false;
     }
-    let kn = def.kind.to_lowercase();
-    let qn = q.to_lowercase();
-    if kn == qn {
-        return true;
-    }
-    if qn.starts_with("n.") {
-        return kn == qn;
-    }
-    if kn == format!("n.{qn}") {
-        return true;
-    }
-    kn.strip_prefix("n.").is_some_and(|tail| tail == qn)
+    def.kind.eq_ignore_ascii_case(q)
 }
 
 /// One node section — same source as [`builtin_node_definitions`].
@@ -886,7 +878,7 @@ mod tests {
         let basic = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pipeline/nodes/basic");
         let families: std::collections::BTreeSet<String> = super::builtin_node_definitions()
             .iter()
-            .map(|def| def.kind.strip_prefix("n.").unwrap_or(&def.kind).split('.').next().unwrap_or_default().to_string())
+            .map(|def| def.kind.split('.').next().unwrap_or_default().to_string())
             .collect();
 
         let mut failures = Vec::new();

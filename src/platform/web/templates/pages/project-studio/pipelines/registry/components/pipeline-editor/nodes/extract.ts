@@ -136,7 +136,7 @@ export function extractNodeConfig(
   const values = { ...formState };
 
   // Fallback: unknown kind with config_json textarea
-  if (values.config_json && !String(kind || "").startsWith("n.")) {
+  if (values.config_json) {
     try {
       return JSON.parse(String(values.config_json)) as Record<string, unknown>;
     } catch {

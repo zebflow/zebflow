@@ -73,7 +73,7 @@ pub fn definition() -> NodeDefinition {
         title: "Function Trigger".to_string(),
         description: "Makes this pipeline a function other pipelines call with `function.result.call --function <slug>` — the slug is the file's \
             stem (`jobs/send-welcome` → `send-welcome`). Answers one key, `function`: exactly the arguments the caller passed \
-            (`input.function.<name>`, `$trigger.<name>`); the function's result is its last node's payload. Declare the contract with \
+            (`input.function.<name>`, `$trigger.<name>`); the function's result is what its last node answered (a closing `javascript.script.run`'s `script`). Declare the contract with \
             `--parameter name:type! \"doc\"` / `--result name:type!` (or full `--schema` / `--result-schema` JSON) so callers and the \
             assistant see typed fields. Also the trigger for one-off runs through `pipeline_run` (`| trigger.function | …`), where the \
             `input` argument is what it answers."

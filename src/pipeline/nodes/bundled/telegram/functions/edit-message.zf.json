@@ -20,7 +20,7 @@
         "id": "prepare",
         "kind": "javascript.script.run",
         "config": {
-          "source": "var body = { chat_id: String(input.function.chat_id), message_id: Number(input.function.message_id), text: String(input.function.text) }; if (input.function.parse_mode) body.parse_mode = String(input.function.parse_mode); return body;"
+          "source": "var a = input.function; var body = { chat_id: String(a.recipient), message_id: Number(a.id), text: String(a.text) };  var modes = { text: null, markdown: 'MarkdownV2', html: 'HTML' }; if (a.format) { if (!(a.format in modes)) throw new Error('--format takes text, markdown or html'); if (modes[a.format]) body.parse_mode = modes[a.format]; } var keyboard = a.keyboard; if (typeof keyboard === 'string' && keyboard.trim() !== '') keyboard = JSON.parse(keyboard); if (keyboard && typeof keyboard === 'object') { var rows = []; Object.keys(keyboard).forEach(function (label) { [].concat(keyboard[label]).forEach(function (data) { rows.push([{ text: label, callback_data: String(data) }]); }); }); if (rows.length) body.reply_markup = { inline_keyboard: rows }; }  return { method: 'editMessageText', body: body };"
         },
         "input_pins": [
           "in"
@@ -34,11 +34,24 @@
         "kind": "http.response.fetch",
         "config": {
           "method": "POST",
-          "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/editMessageText",
+          "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/{{ input.script.method }}",
           "headers": {
             "Content-Type": "application/json"
           },
-          "body": "{{ input.script }}"
+          "body": "{{ input.script.body }}"
+        },
+        "input_pins": [
+          "in"
+        ],
+        "output_pins": [
+          "out"
+        ]
+      },
+      {
+        "id": "answer",
+        "kind": "javascript.script.run",
+        "config": {
+          "source": "var r = input.response || {}; var b = r.body || {}; if (b.ok !== true || !b.result || typeof b.result !== 'object') throw new Error('Telegram refused the message: ' + (b.description || ('HTTP ' + r.status))); var m = b.result; var out = { id: m.message_id, recipient: m.chat ? m.chat.id : null, sent_at: new Date(m.date * 1000).toISOString() }; if (m.edit_date) out.edited_at = new Date(m.edit_date * 1000).toISOString(); out.telegram = m; return out;"
         },
         "input_pins": [
           "in"
@@ -59,6 +72,12 @@
         "from_node": "prepare",
         "from_pin": "out",
         "to_node": "send",
+        "to_pin": "in"
+      },
+      {
+        "from_node": "send",
+        "from_pin": "out",
+        "to_node": "answer",
         "to_pin": "in"
       }
     ]

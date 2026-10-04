@@ -38,7 +38,7 @@
         "id": "clear",
         "kind": "kv.entry.delete",
         "config": {
-          "key": "webhook_registered"
+          "key": "telegram:webhook:{{ input.function.config.credential_id }}"
         },
         "input_pins": [
           "in"

@@ -15,7 +15,6 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "table.data.convert": "#0f766e",
   "table.query.run": "#0f766e",
   "postgres.query.run": "#7c3aed",
-  "n.web.render": "#be185d",
   "web.site.generate": "#c2410c",
   "ai.text.generate": "#4338ca",
   "ai.audio.generate": "#4338ca",
@@ -72,12 +71,9 @@ export function nodeColor(kind: string): string {
   return "#334155";
 }
 
+/** A kind is written as itself; this only trims what a caller passed. */
 export function canonicalNodeKind(kind: string): string {
-  const raw = String(kind || "").trim();
-  if (raw.startsWith("x.n.")) {
-    return `n.${raw.slice("x.n.".length)}`;
-  }
-  return raw;
+  return String(kind || "").trim();
 }
 
 export function isTriggerNodeKind(kind: string): boolean {
@@ -187,7 +183,6 @@ export function normalizeNodePins(
   fallback: string[] = []
 ): string[] {
   const canonicalKind = canonicalNodeKind(kind);
-  if (pinRole === "output" && canonicalKind === "n.web.render") return [];
   if (
     pinRole === "input" &&
     (canonicalKind === "trigger.webhook" ||

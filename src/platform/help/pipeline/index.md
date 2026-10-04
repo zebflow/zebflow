@@ -97,7 +97,7 @@ edge is a second entry and runs on every request.
 
 - **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.room`, `trigger.socket`, `trigger.topic`, `trigger.mcp`, `trigger.error`.
 - **Middle nodes** read, transform or decide: `sekejap.query.run`, `sekejap.record.create`, `postgres.query.run`, `sqlite.query.run`, `javascript.script.run`, `typescript.script.run`, `http.response.fetch`, `kv.entry.get`, `kv.entry.put`, `kv.entry.increment`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto.*`, `auth.token.create`, `auth.token.verify`, `fs.file.put`, `fs.image.thumbnail`, `fs.*`, `table.query.run`, `table.data.convert`, `geo.*`, `mail.message.send`, `ai.text.generate`, `ai.embedding.generate`, `ai.audio.generate`, `browser.page.run`, …
-- **Last nodes** answer: `web.response.send` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.message.send`, `ws.state.update`, `kv.message.publish`, `telegram.send`, `mapserver.layer.publish`.
+- **Last nodes** answer: `web.response.send` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.message.send`, `ws.state.update`, `kv.message.publish`, `telegram.message.send`, `mapserver.layer.publish`.
 
 Flags are declared per node and an undeclared flag is a parse error, so read
 the node before guessing:
@@ -109,8 +109,8 @@ the node before guessing:
 | `help(topic="pipeline/nodes/fs.file.put")` | one node: description, pins, every flag with its config key, required or not |
 | `help_search query="thumbnail"` | search across the help files **and** every node's description and flags |
 
-The DSL accepts the short form (`trigger.webhook`, `sekejap.query.run`) or the full
-kind (`trigger.webhook`). Installed third-party nodes are `n.x.<bundle>.<node>`.
+The DSL writes a kind as itself (`trigger.webhook`, `sekejap.query.run`).
+Installed third-party nodes are `x.<package>.<noun>.<verb>`.
 
 ---
 

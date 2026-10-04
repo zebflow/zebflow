@@ -39,9 +39,10 @@ pub const WASM_JSON_ABI_V1: &str = "zebflow-wasm-json-v1";
 
 /// Reserved kind prefix for third-party nodes.
 ///
-/// Zebflow curates `n.*` and guarantees uniqueness there. Everyone else gets
-/// `x.{package}.*`, which is collision-proof by construction because the kind
-/// embeds the package that provides it.
+/// Official kinds have plain names (`family.noun.verb`) and Zebflow guarantees
+/// their uniqueness. Everyone else gets `x.{package}.*`, which is
+/// collision-proof by construction because the kind embeds the package that
+/// provides it.
 pub const INSTALLED_NODE_KIND_PREFIX: &str = "x.";
 
 /// Where a bundle is consumed, which decides the namespace its kinds may use.
@@ -52,7 +53,7 @@ pub const INSTALLED_NODE_KIND_PREFIX: &str = "x.";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BundleScope {
     /// Consumed at build time and shipped inside the binary. Zebflow curates
-    /// these names, so they live in `n.*` and are guaranteed present.
+    /// these names, so they are plain official names and guaranteed present.
     Platform,
     /// Installed into one project. These names are package-scoped under `x.`
     /// so no two bundles can ever claim the same kind.
@@ -596,6 +597,32 @@ fn validate_role_and_run(spec: &NodePackageManifest) -> Result<(), ContractError
         if let Some(template) = &trigger.path_template {
             validate_path_template(kind, template, &spec.definition.config_schema)?;
         }
+        if let Some(secret) = &trigger.secret_header {
+            if trigger.trigger_type != "webhook" {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' declares a secret_header on a '{}' trigger; only a webhook has headers",
+                    trigger.trigger_type
+                )));
+            }
+            let header_name = !secret.header.is_empty()
+                && secret.header.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            if !header_name {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' secret_header.header '{}' is not a header name",
+                    secret.header
+                )));
+            }
+            if !spec
+                .credentials
+                .iter()
+                .any(|credential| credential.placeholders.contains_key(&secret.placeholder))
+            {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' secret_header.placeholder '{}' is not declared by any credential it uses",
+                    secret.placeholder
+                )));
+            }
+        }
         if !spec.definition.input_pins.is_empty() {
             return Err(ContractError::invalid(format!(
                 "trigger node '{kind}' must not declare input pins"
@@ -1059,7 +1086,7 @@ mod tests {
     #[test]
     fn platform_scope_accepts_curated_kinds() {
         let spec = bundle(&mutate(V1_COMPOSITE, |value| {
-            value["spec"]["nodes"][0]["kind"] = serde_json::json!("n.telegram.send");
+            value["spec"]["nodes"][0]["kind"] = serde_json::json!("telegram.message.send");
         }))
         .spec;
         validate_bundle_namespace(&spec, BundleScope::Platform).expect("curated kind is accepted");

@@ -9,7 +9,7 @@
     "package": "telegram",
     "version": "1.0.0",
     "title": "Telegram",
-    "description": "Telegram Bot \u2014 send messages, photos, documents, receive updates via webhook.",
+    "description": "Telegram Bot — send and edit messages, receive updates via webhook.",
     "icon": "icon.svg",
     "credentials": [
       {
@@ -22,7 +22,7 @@
             "label": "Bot Token",
             "type": "password",
             "required": true,
-            "placeholder": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+            "placeholder": "<bot id>:<token from @BotFather>",
             "help": "Get this from @BotFather on Telegram."
           },
           {
@@ -31,14 +31,14 @@
             "type": "password",
             "required": false,
             "generate": "random_hex_32",
-            "help": "Optional secret token for verifying webhook requests. Auto-generated if empty."
+            "help": "The secret Telegram sends with every update; an update without it is refused. Generated when the trigger is activated if empty."
           }
         ],
         "placeholders": {
           "BOT_TOKEN": "token",
           "WEBHOOK_SECRET": "webhook_secret"
         },
-        "config_key": "bot_credential_id"
+        "config_key": "credential_id"
       }
     ],
     "hosts": [
@@ -46,8 +46,6 @@
     ],
     "functions": {
       "send-message": "functions/send-message.zf.json",
-      "send-photo": "functions/send-photo.zf.json",
-      "send-document": "functions/send-document.zf.json",
       "edit-message": "functions/edit-message.zf.json",
       "register-webhook": "functions/register-webhook.zf.json",
       "delete-webhook": "functions/delete-webhook.zf.json",
@@ -56,9 +54,9 @@
     "modules": {},
     "nodes": [
       {
-        "kind": "n.telegram.trigger",
+        "kind": "trigger.telegram",
         "title": "Telegram Trigger",
-        "description": "Receive Telegram bot updates via webhook.",
+        "description": "Starts a run for each update the bot receives. Answers `telegram`: the update, flattened — `{ update_id, type, chat_id, message_id, from_id, text, … }`, `type` being message, edited_message, callback_query (with `data`), inline_query (with `query`) or unknown (with `raw`). Activating the pipeline registers the webhook with Telegram, deactivating it removes it.",
         "icon": "icons/trigger.svg",
         "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
@@ -70,7 +68,11 @@
         },
         "trigger": {
           "type": "webhook",
-          "path_template": "/tg/{{ bot_credential_id }}"
+          "path_template": "/tg/{{ credential_id }}",
+          "secret_header": {
+            "header": "X-Telegram-Bot-Api-Secret-Token",
+            "placeholder": "WEBHOOK_SECRET"
+          }
         },
         "lifecycle": {
           "on_activate": {
@@ -88,56 +90,120 @@
           "config_schema": {
             "type": "object",
             "properties": {
-              "bot_credential_id": {
+              "credential_id": {
                 "type": "string"
               },
-              "allowed_updates": {
-                "type": "string"
+              "event": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "output_schema": {
+            "type": "object",
+            "properties": {
+              "telegram": {
+                "type": "object",
+                "description": "The update, flattened: update_id, type, chat_id, message_id, from_id, text, …"
               }
             }
           },
           "dsl_flags": [
             {
               "flag": "--credential",
-              "config_key": "bot_credential_id",
+              "config_key": "credential_id",
               "kind": "scalar",
               "required": true,
-              "description": "Telegram bot credential."
+              "value": "text",
+              "description": "The telegram_bot credential: the bot whose updates start the pipeline."
             },
             {
-              "flag": "--allowed-updates",
-              "config_key": "allowed_updates",
-              "kind": "scalar",
+              "flag": "--event",
+              "config_key": "event",
+              "kind": "repeated_list",
               "required": false,
-              "description": "Comma-separated update types: message,callback_query,etc."
+              "value": "text",
+              "choices": [
+                "message",
+                "edited_message",
+                "channel_post",
+                "edited_channel_post",
+                "business_connection",
+                "business_message",
+                "edited_business_message",
+                "deleted_business_messages",
+                "message_reaction",
+                "message_reaction_count",
+                "inline_query",
+                "chosen_inline_result",
+                "callback_query",
+                "shipping_query",
+                "pre_checkout_query",
+                "purchased_paid_media",
+                "poll",
+                "poll_answer",
+                "my_chat_member",
+                "chat_member",
+                "chat_join_request",
+                "chat_boost",
+                "removed_chat_boost"
+              ],
+              "description": "An update type to receive — repeat for several. Omitted: Telegram's default, every type but chat_member, message_reaction and message_reaction_count."
             }
           ],
           "fields": [
             {
-              "name": "bot_credential_id",
+              "name": "credential_id",
               "label": "Bot Credential",
               "type": "select",
               "data_source": "credentials:telegram_bot",
-              "help": "Select your Telegram bot credential."
+              "help": "The telegram_bot credential whose updates start this pipeline."
             },
             {
-              "name": "allowed_updates",
-              "label": "Allowed Updates",
-              "type": "text",
-              "help": "Comma-separated: message, edited_message, callback_query, inline_query, etc. Empty = all."
+              "name": "event",
+              "label": "Events",
+              "type": "multi_checkbox",
+              "options": [
+                { "value": "message", "label": "message" },
+                { "value": "edited_message", "label": "edited_message" },
+                { "value": "channel_post", "label": "channel_post" },
+                { "value": "edited_channel_post", "label": "edited_channel_post" },
+                { "value": "business_connection", "label": "business_connection" },
+                { "value": "business_message", "label": "business_message" },
+                { "value": "edited_business_message", "label": "edited_business_message" },
+                { "value": "deleted_business_messages", "label": "deleted_business_messages" },
+                { "value": "message_reaction", "label": "message_reaction" },
+                { "value": "message_reaction_count", "label": "message_reaction_count" },
+                { "value": "inline_query", "label": "inline_query" },
+                { "value": "chosen_inline_result", "label": "chosen_inline_result" },
+                { "value": "callback_query", "label": "callback_query" },
+                { "value": "shipping_query", "label": "shipping_query" },
+                { "value": "pre_checkout_query", "label": "pre_checkout_query" },
+                { "value": "purchased_paid_media", "label": "purchased_paid_media" },
+                { "value": "poll", "label": "poll" },
+                { "value": "poll_answer", "label": "poll_answer" },
+                { "value": "my_chat_member", "label": "my_chat_member" },
+                { "value": "chat_member", "label": "chat_member" },
+                { "value": "chat_join_request", "label": "chat_join_request" },
+                { "value": "chat_boost", "label": "chat_boost" },
+                { "value": "removed_chat_boost", "label": "removed_chat_boost" }
+              ],
+              "help": "The update types to receive. None ticked: Telegram's default, every type but chat_member, message_reaction and message_reaction_count."
             }
           ],
           "layout": [
-            "bot_credential_id",
-            "allowed_updates"
+            "credential_id",
+            "event"
           ]
         }
       },
       {
-        "kind": "n.telegram.send",
+        "kind": "telegram.message.send",
         "title": "Telegram Send Message",
-        "description": "Send a text message via Telegram Bot API.",
-        "icon": "icons/send.svg",
+        "description": "Sends a message to a chat through the Telegram Bot API: text, or a photo (`--image`) or a document (`--file`) with `--text` as its caption. `--image` and `--file` take a URL Telegram can fetch or a Telegram file_id. Answers `message: { id, recipient, sent_at, telegram }` — `recipient` is the chat id, `telegram` the Message Telegram returned — and keeps the payload; a refusal from Telegram delivers `error`.",
+        "icon": "icons/message-send.svg",
         "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
         "uses_credentials": [
@@ -157,143 +223,186 @@
           "config_schema": {
             "type": "object",
             "properties": {
-              "bot_credential_id": {
-                "type": "string"
-              }
+              "credential_id": { "type": "string" },
+              "recipient": { "type": ["string", "number"] },
+              "text": { "type": "string" },
+              "image": { "type": "string" },
+              "file": { "type": "string" },
+              "format": { "type": "string", "enum": ["text", "markdown", "html"] },
+              "keyboard": { "type": ["object", "string"] },
+              "in_reply_to": { "type": ["number", "string"] },
+              "silent": { "type": "boolean" }
             }
           },
-          "dsl_flags": [
-            {
-              "flag": "--credential",
-              "config_key": "bot_credential_id",
-              "kind": "scalar",
-              "required": true,
-              "description": "Telegram bot credential."
-            }
-          ],
-          "fields": [
-            {
-              "name": "bot_credential_id",
-              "label": "Bot Credential",
-              "type": "select",
-              "data_source": "credentials:telegram_bot",
-              "help": "Select your Telegram bot credential."
-            }
-          ],
-          "layout": [
-            "bot_credential_id"
-          ]
-        }
-      },
-      {
-        "kind": "n.telegram.send.photo",
-        "title": "Telegram Send Photo",
-        "description": "Send a photo via Telegram Bot API. Accepts a URL or file_id.",
-        "icon": "icons/send-photo.svg",
-        "ui_category": "communication.telegram",
-        "ui_category_label": "Telegram",
-        "uses_credentials": [
-          "telegram_bot"
-        ],
-        "run": {
-          "function": "send-photo"
-        },
-        "definition": {
-          "input_pins": [
-            "in"
-          ],
-          "output_pins": [
-            "out",
-            "error"
-          ],
-          "config_schema": {
+          "output_schema": {
             "type": "object",
             "properties": {
-              "bot_credential_id": {
-                "type": "string"
+              "message": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "integer" },
+                  "recipient": { "description": "The chat id." },
+                  "sent_at": { "type": "string", "description": "ISO 8601." },
+                  "telegram": { "type": "object", "description": "The Message object Telegram returned." }
+                }
               }
             }
           },
           "dsl_flags": [
             {
               "flag": "--credential",
-              "config_key": "bot_credential_id",
+              "config_key": "credential_id",
               "kind": "scalar",
               "required": true,
-              "description": "Telegram bot credential."
+              "value": "text",
+              "description": "The telegram_bot credential: the bot that sends."
+            },
+            {
+              "flag": "--recipient",
+              "config_key": "recipient",
+              "kind": "scalar",
+              "required": true,
+              "value": "text",
+              "description": "The chat to send to: its id, or @username of a public channel."
+            },
+            {
+              "flag": "--text",
+              "config_key": "text",
+              "kind": "scalar",
+              "required": true,
+              "value": "text",
+              "description": "The message text; with --image or --file, its caption."
+            },
+            {
+              "flag": "--image",
+              "config_key": "image",
+              "kind": "scalar",
+              "required": false,
+              "value": "text",
+              "description": "A photo to send: a URL Telegram can fetch, or a Telegram file_id. Not with --file."
+            },
+            {
+              "flag": "--file",
+              "config_key": "file",
+              "kind": "scalar",
+              "required": false,
+              "value": "text",
+              "description": "A document to send: a URL Telegram can fetch, or a Telegram file_id. Not with --image."
+            },
+            {
+              "flag": "--format",
+              "config_key": "format",
+              "kind": "scalar",
+              "required": false,
+              "value": "text",
+              "choices": ["text", "markdown", "html"],
+              "description": "How --text is read: text (default), markdown (Telegram MarkdownV2) or html."
+            },
+            {
+              "flag": "--keyboard",
+              "config_key": "keyboard",
+              "kind": "key_value_pairs",
+              "required": false,
+              "value": "text",
+              "description": "An inline button, LABEL=DATA, one per row; DATA comes back as a callback_query's data. Repeat for several, or one {{ object }}."
+            },
+            {
+              "flag": "--in-reply-to",
+              "config_key": "in_reply_to",
+              "kind": "scalar",
+              "required": false,
+              "value": "number",
+              "description": "The id of a message in the same chat this one replies to."
+            },
+            {
+              "flag": "--silent",
+              "config_key": "silent",
+              "kind": "bool",
+              "required": false,
+              "description": "Deliver without a notification sound."
             }
           ],
           "fields": [
             {
-              "name": "bot_credential_id",
+              "name": "credential_id",
               "label": "Bot Credential",
               "type": "select",
               "data_source": "credentials:telegram_bot",
-              "help": "Select your Telegram bot credential."
+              "help": "The telegram_bot credential that sends."
+            },
+            {
+              "name": "recipient",
+              "label": "Recipient",
+              "type": "text",
+              "help": "The chat id, or @username of a public channel. Literal or {{ expr }}."
+            },
+            {
+              "name": "text",
+              "label": "Text",
+              "type": "textarea",
+              "rows": 4,
+              "help": "The message, or the caption of the image or file. Literal or {{ expr }}."
+            },
+            {
+              "name": "image",
+              "label": "Image",
+              "type": "text",
+              "help": "A photo URL or Telegram file_id. Leave empty for a text message."
+            },
+            {
+              "name": "file",
+              "label": "File",
+              "type": "text",
+              "help": "A document URL or Telegram file_id. Not together with an image."
+            },
+            {
+              "name": "format",
+              "label": "Format",
+              "type": "select",
+              "options": [
+                { "value": "text", "label": "text" },
+                { "value": "markdown", "label": "markdown" },
+                { "value": "html", "label": "html" }
+              ],
+              "help": "How the text is read: text (default), markdown (MarkdownV2) or html."
+            },
+            {
+              "name": "keyboard",
+              "label": "Keyboard",
+              "type": "key_value_pairs",
+              "help": "Inline buttons, one per row: a label and the data a press sends back."
+            },
+            {
+              "name": "in_reply_to",
+              "label": "In Reply To",
+              "type": "text",
+              "help": "The id of a message in the same chat this one replies to."
+            },
+            {
+              "name": "silent",
+              "label": "Silent",
+              "type": "checkbox",
+              "help": "Deliver without a notification sound."
             }
           ],
           "layout": [
-            "bot_credential_id"
+            "credential_id",
+            "recipient",
+            "text",
+            "image",
+            "file",
+            "format",
+            "keyboard",
+            "in_reply_to",
+            "silent"
           ]
         }
       },
       {
-        "kind": "n.telegram.send.document",
-        "title": "Telegram Send Document",
-        "description": "Send a document/file via Telegram Bot API. Accepts a URL or file_id.",
-        "icon": "icons/send-document.svg",
-        "ui_category": "communication.telegram",
-        "ui_category_label": "Telegram",
-        "uses_credentials": [
-          "telegram_bot"
-        ],
-        "run": {
-          "function": "send-document"
-        },
-        "definition": {
-          "input_pins": [
-            "in"
-          ],
-          "output_pins": [
-            "out",
-            "error"
-          ],
-          "config_schema": {
-            "type": "object",
-            "properties": {
-              "bot_credential_id": {
-                "type": "string"
-              }
-            }
-          },
-          "dsl_flags": [
-            {
-              "flag": "--credential",
-              "config_key": "bot_credential_id",
-              "kind": "scalar",
-              "required": true,
-              "description": "Telegram bot credential."
-            }
-          ],
-          "fields": [
-            {
-              "name": "bot_credential_id",
-              "label": "Bot Credential",
-              "type": "select",
-              "data_source": "credentials:telegram_bot",
-              "help": "Select your Telegram bot credential."
-            }
-          ],
-          "layout": [
-            "bot_credential_id"
-          ]
-        }
-      },
-      {
-        "kind": "n.telegram.edit",
+        "kind": "telegram.message.edit",
         "title": "Telegram Edit Message",
-        "description": "Edit an existing text message via Telegram Bot API.",
-        "icon": "icons/edit.svg",
+        "description": "Replaces the text (and the inline keyboard) of a message the bot sent. Answers `message: { id, recipient, sent_at, edited_at, telegram }` and keeps the payload; a refusal from Telegram delivers `error`.",
+        "icon": "icons/message-edit.svg",
         "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",
         "uses_credentials": [
@@ -313,31 +422,132 @@
           "config_schema": {
             "type": "object",
             "properties": {
-              "bot_credential_id": {
-                "type": "string"
+              "credential_id": { "type": "string" },
+              "recipient": { "type": ["string", "number"] },
+              "id": { "type": ["number", "string"] },
+              "text": { "type": "string" },
+              "format": { "type": "string", "enum": ["text", "markdown", "html"] },
+              "keyboard": { "type": ["object", "string"] }
+            }
+          },
+          "output_schema": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "integer" },
+                  "recipient": { "description": "The chat id." },
+                  "sent_at": { "type": "string", "description": "ISO 8601." },
+                  "edited_at": { "type": "string", "description": "ISO 8601." },
+                  "telegram": { "type": "object", "description": "The Message object Telegram returned." }
+                }
               }
             }
           },
           "dsl_flags": [
             {
               "flag": "--credential",
-              "config_key": "bot_credential_id",
+              "config_key": "credential_id",
               "kind": "scalar",
               "required": true,
-              "description": "Telegram bot credential."
+              "value": "text",
+              "description": "The telegram_bot credential: the bot that sent the message."
+            },
+            {
+              "flag": "--recipient",
+              "config_key": "recipient",
+              "kind": "scalar",
+              "required": true,
+              "value": "text",
+              "description": "The chat the message is in: its id, or @username of a public channel."
+            },
+            {
+              "flag": "--id",
+              "config_key": "id",
+              "kind": "scalar",
+              "required": true,
+              "value": "number",
+              "description": "The message to edit, e.g. {{ input.message.id }}."
+            },
+            {
+              "flag": "--text",
+              "config_key": "text",
+              "kind": "scalar",
+              "required": true,
+              "value": "text",
+              "description": "The new text."
+            },
+            {
+              "flag": "--format",
+              "config_key": "format",
+              "kind": "scalar",
+              "required": false,
+              "value": "text",
+              "choices": ["text", "markdown", "html"],
+              "description": "How --text is read: text (default), markdown (Telegram MarkdownV2) or html."
+            },
+            {
+              "flag": "--keyboard",
+              "config_key": "keyboard",
+              "kind": "key_value_pairs",
+              "required": false,
+              "value": "text",
+              "description": "The new inline buttons, LABEL=DATA, one per row. Repeat for several, or one {{ object }}."
             }
           ],
           "fields": [
             {
-              "name": "bot_credential_id",
+              "name": "credential_id",
               "label": "Bot Credential",
               "type": "select",
               "data_source": "credentials:telegram_bot",
-              "help": "Select your Telegram bot credential."
+              "help": "The telegram_bot credential that sent the message."
+            },
+            {
+              "name": "recipient",
+              "label": "Recipient",
+              "type": "text",
+              "help": "The chat id, or @username of a public channel. Literal or {{ expr }}."
+            },
+            {
+              "name": "id",
+              "label": "Message Id",
+              "type": "text",
+              "help": "The message to edit, e.g. {{ input.message.id }}."
+            },
+            {
+              "name": "text",
+              "label": "Text",
+              "type": "textarea",
+              "rows": 4,
+              "help": "The new text. Literal or {{ expr }}."
+            },
+            {
+              "name": "format",
+              "label": "Format",
+              "type": "select",
+              "options": [
+                { "value": "text", "label": "text" },
+                { "value": "markdown", "label": "markdown" },
+                { "value": "html", "label": "html" }
+              ],
+              "help": "How the text is read: text (default), markdown (MarkdownV2) or html."
+            },
+            {
+              "name": "keyboard",
+              "label": "Keyboard",
+              "type": "key_value_pairs",
+              "help": "The new inline buttons, one per row: a label and the data a press sends back."
             }
           ],
           "layout": [
-            "bot_credential_id"
+            "credential_id",
+            "recipient",
+            "id",
+            "text",
+            "format",
+            "keyboard"
           ]
         }
       }

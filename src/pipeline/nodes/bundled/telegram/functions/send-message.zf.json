@@ -20,7 +20,7 @@
         "id": "prepare",
         "kind": "javascript.script.run",
         "config": {
-          "source": "var body = { chat_id: String(input.function.chat_id), text: String(input.function.text) }; if (input.function.parse_mode) body.parse_mode = String(input.function.parse_mode); if (input.function.disable_notification) body.disable_notification = true; if (input.function.reply_to_message_id) body.reply_to_message_id = Number(input.function.reply_to_message_id); return body;"
+          "source": "var a = input.function; function given(v) { return v !== undefined && v !== null && String(v).trim() !== ''; } function source(v, flag) { if (typeof v === 'object') throw new Error(flag + ' takes a URL or a Telegram file_id; a stored file cannot be sent yet'); return String(v); } if (given(a.image) && given(a.file)) throw new Error('telegram.message.send takes --image or --file, not both'); var body = { chat_id: String(a.recipient) }; var method = 'sendMessage'; if (given(a.image)) { method = 'sendPhoto'; body.photo = source(a.image, '--image'); body.caption = String(a.text); } else if (given(a.file)) { method = 'sendDocument'; body.document = source(a.file, '--file'); body.caption = String(a.text); } else { body.text = String(a.text); }  var modes = { text: null, markdown: 'MarkdownV2', html: 'HTML' }; if (a.format) { if (!(a.format in modes)) throw new Error('--format takes text, markdown or html'); if (modes[a.format]) body.parse_mode = modes[a.format]; } var keyboard = a.keyboard; if (typeof keyboard === 'string' && keyboard.trim() !== '') keyboard = JSON.parse(keyboard); if (keyboard && typeof keyboard === 'object') { var rows = []; Object.keys(keyboard).forEach(function (label) { [].concat(keyboard[label]).forEach(function (data) { rows.push([{ text: label, callback_data: String(data) }]); }); }); if (rows.length) body.reply_markup = { inline_keyboard: rows }; }  if (a.silent === true) body.disable_notification = true; if (given(a.in_reply_to)) body.reply_to_message_id = Number(a.in_reply_to); return { method: method, body: body };"
         },
         "input_pins": [
           "in"
@@ -34,11 +34,24 @@
         "kind": "http.response.fetch",
         "config": {
           "method": "POST",
-          "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/sendMessage",
+          "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/{{ input.script.method }}",
           "headers": {
             "Content-Type": "application/json"
           },
-          "body": "{{ input.script }}"
+          "body": "{{ input.script.body }}"
+        },
+        "input_pins": [
+          "in"
+        ],
+        "output_pins": [
+          "out"
+        ]
+      },
+      {
+        "id": "answer",
+        "kind": "javascript.script.run",
+        "config": {
+          "source": "var r = input.response || {}; var b = r.body || {}; if (b.ok !== true || !b.result || typeof b.result !== 'object') throw new Error('Telegram refused the message: ' + (b.description || ('HTTP ' + r.status))); var m = b.result; var out = { id: m.message_id, recipient: m.chat ? m.chat.id : null, sent_at: new Date(m.date * 1000).toISOString() }; if (m.edit_date) out.edited_at = new Date(m.edit_date * 1000).toISOString(); out.telegram = m; return out;"
         },
         "input_pins": [
           "in"
@@ -59,6 +72,12 @@
         "from_node": "prepare",
         "from_pin": "out",
         "to_node": "send",
+        "to_pin": "in"
+      },
+      {
+        "from_node": "send",
+        "from_pin": "out",
+        "to_node": "answer",
         "to_pin": "in"
       }
     ]

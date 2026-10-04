@@ -66,7 +66,7 @@ function setInstall(ctx, tab, cmd) {
         isTabTsx: true,
         isTabZfJson: false,
         codeTsx: `import { usePageState } from 'zeb/react';\n\nexport const app = {\n  state: {\n    ui: { title: \"Zebflow Engine\", count: 0 }\n  },\n  actions: {\n    \"counter.inc\": (ctx) => {\n      const n = Number(ctx.get(\"ui.count\") || 0) + 1;\n      ctx.set(\"ui.count\", n);\n      return \"ui.count\";\n    }\n  }\n};\n\nexport default function Page(input) {\n  const { ui } = usePageState();\n  return (\n    <div className=\"p-4 bg-gray-50\">\n      <h1>{ui?.title ?? 'Loading...'}</h1>\n      <button onClick=\"counter.inc\" className=\"btn-primary\">\n        Count: {ui?.count ?? 0}\n      </button>\n    </div>\n  );\n}`,
-        codeZfJson: `{\n  \"id\": \"analysis-pipeline\",\n  \"nodes\": [\n    { \"id\": \"fetch\", \"type\": \"x.n.http.get\" },\n    { \"id\": \"process\", \"type\": \"x.n.script.deno\" }\n  ],\n  \"edges\": [\n    { \"from\": \"fetch.out\", \"to\": \"process.in\" }\n  ]\n}`
+        codeZfJson: `{\n  \"id\": \"analysis-pipeline\",\n  \"nodes\": [\n    { \"id\": \"fetch\", \"type\": \"http.response.fetch\" },\n    { \"id\": \"process\", \"type\": \"javascript.script.run\" }\n  ],\n  \"edges\": [\n    { \"from\": \"fetch.out\", \"to\": \"process.in\" }\n  ]\n}`
       }
     },
     effect: {

@@ -79,6 +79,15 @@ mod tests {
     /// check.
     const CONTRACT: &str = include_str!("../../../docs/contracts/node-conventions.md");
 
+    /// Every backticked token on the first contract line starting with `prefix`.
+    fn contract_words(prefix: &str) -> Vec<String> {
+        let line = CONTRACT
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("the contract has a line starting {prefix:?}"));
+        line.split('`').skip(1).step_by(2).map(str::to_string).collect()
+    }
+
     /// The dictionary's words: every `--flag` in the table under "### The dictionary".
     fn dictionary_words() -> std::collections::BTreeSet<String> {
         let start = CONTRACT.find("### The dictionary").expect("dictionary section");
@@ -92,6 +101,54 @@ mod tests {
         let mut defs = crate::pipeline::nodes::builtin_node_definitions();
         defs.extend(crate::platform::services::NodeRegistryService::embedded_official_definitions());
         defs
+    }
+
+    /// §1: `family.noun.verb`, `trigger.<source>`, `input.<type>`,
+    /// `logic.<verb>`; the family from the closed list; a verb from the shared
+    /// list or used by one kind only.
+    #[test]
+    fn kinds_follow_the_shapes() {
+        let mut families: std::collections::BTreeSet<String> = contract_words("| Now |").into_iter().collect();
+        families.extend(contract_words("| Brands |"));
+        let mut verbs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for row in ["| Read |", "| Write |", "| Make |", "| Talk |", "| Act |"] {
+            verbs.extend(contract_words(row));
+        }
+        let logic_line = CONTRACT.lines().position(|l| l.contains("`logic.*` is closed:")).expect("logic list");
+        let logic: Vec<String> = CONTRACT.lines().skip(logic_line).take(2).collect::<Vec<_>>().join(" ")
+            .split("is closed:").nth(1).unwrap_or_default().split('(').next().unwrap_or_default()
+            .split('`').skip(1).step_by(2).map(str::to_string).collect();
+        let defs = official_definitions();
+        let mut verb_uses: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for def in &defs {
+            if let Some(verb) = def.kind.split('.').nth(2) {
+                *verb_uses.entry(verb.to_string()).or_default() += 1;
+            }
+        }
+        let mut problems = Vec::new();
+        for def in &defs {
+            let kind = def.kind.as_str();
+            let segments: Vec<&str> = kind.split('.').collect();
+            if segments.iter().any(|s| s.is_empty() || !s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')) {
+                problems.push(format!("{kind}: a segment is not one lowercase word"));
+                continue;
+            }
+            match segments.as_slice() {
+                ["trigger" | "input", _] => {}
+                ["logic", verb] if logic.iter().any(|l| l == verb) => {}
+                ["logic", verb] => problems.push(format!("{kind}: logic.{verb} is not in the closed logic list")),
+                [family, _noun, verb] => {
+                    if !families.contains(*family) {
+                        problems.push(format!("{kind}: family '{family}' is not in the contract's closed list"));
+                    }
+                    if !verbs.contains(*verb) && verb_uses.get(*verb).copied().unwrap_or(0) > 1 {
+                        problems.push(format!("{kind}: verb '{verb}' is shared by several kinds but missing from the contract's verb list"));
+                    }
+                }
+                _ => problems.push(format!("{kind}: not family.noun.verb, trigger.<source>, input.<type> or logic.<verb>")),
+            }
+        }
+        report("kinds_follow_the_shapes", problems);
     }
 
     /// §2: a flag two kinds share is a dictionary word, and is a switch, a
@@ -116,13 +173,20 @@ mod tests {
                 uses.entry(flag.flag.clone()).or_default().push((def.kind.clone(), shape));
             }
         }
+        // §1: a brand's own concepts are local words of that brand
+        // (`--keyboard` on `telegram.*`), so a word shared only inside one
+        // brand family is not a dictionary word.
+        let brands: std::collections::BTreeSet<String> = contract_words("| Brands |").into_iter().collect();
         let mut problems = Vec::new();
         for (flag, kinds) in &uses {
             let distinct_kinds: std::collections::BTreeSet<&String> = kinds.iter().map(|(k, _)| k).collect();
             if distinct_kinds.len() < 2 {
                 continue;
             }
-            if !dictionary.contains(flag) {
+            let families: std::collections::BTreeSet<&str> =
+                distinct_kinds.iter().map(|k| k.split('.').next().unwrap_or_default()).collect();
+            let one_brand = families.len() == 1 && families.iter().all(|f| brands.contains(*f));
+            if !dictionary.contains(flag) && !one_brand {
                 problems.push(format!("{flag} is shared by {} kinds but is not a dictionary word: {}", distinct_kinds.len(), distinct_kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")));
             }
             let shapes: std::collections::BTreeSet<&str> = kinds.iter().map(|(_, s)| *s).collect();
@@ -301,27 +365,35 @@ mod tests {
         // layer record the registry holds, never from a flag.
         const STORE_FROM_RECORD: &[&str] = &["mapserver.layer.get", "mapserver.layer.list", "mapserver.layer.unpublish"];
         let pinned = crate::pipeline::nodes::shared::project_store::store_node_kinds();
+        let defs = crate::pipeline::nodes::builtin_node_definitions();
+        let mut checked = 0usize;
         let mut problems = Vec::new();
         for (file, text) in node_sources() {
-            if !file.starts_with("basic/") {
+            if !file.starts_with("basic/") || file.ends_with("tests.rs") {
                 continue;
             }
             let touches = ["open_store(", "open_source(", "object_local_path("].iter().any(|n| text.contains(n));
             if !touches {
                 continue;
             }
-            let kinds: Vec<&str> = text
-                .match_indices("\"n.")
-                .filter_map(|(at, _)| text[at + 1..].split('"').next())
-                .filter(|kind| kind.chars().all(|c| c.is_ascii_lowercase() || c == '.' || c == '_'))
-                .filter(|kind| crate::pipeline::nodes::builtin_node_definitions().iter().any(|d| d.kind == *kind))
+            // A kind is named in its own file as a string literal.
+            let kinds: Vec<&str> = defs
+                .iter()
+                .map(|def| def.kind.as_str())
+                .filter(|kind| text.contains(&format!("\"{kind}\"")))
                 .collect();
+            assert!(
+                !kinds.is_empty() || !text.contains("NODE_KIND"),
+                "{file} touches a store and declares a kind, but none was recognised: the check would pass by seeing nothing"
+            );
             for kind in kinds {
+                checked += 1;
                 if !pinned.contains(kind) && !STORE_FROM_RECORD.contains(&kind) {
                     problems.push(format!("{file}: {kind} touches a store but declares no --store"));
                 }
             }
         }
+        assert!(checked >= 10, "only {checked} store-touching kinds were found; the check has gone blind");
         problems.sort();
         problems.dedup();
         report("store_nodes_declare_their_store", problems);

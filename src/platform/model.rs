@@ -2874,9 +2874,28 @@ pub struct PackageTriggerConfig {
     #[serde(rename = "type")]
     pub trigger_type: String,
     /// Webhook path template with `{{ config_key }}` placeholders.
-    /// E.g. `"/tg/{{ bot_credential_id }}"` resolves from node config.
+    /// E.g. `"/tg/{{ credential_id }}"` resolves from node config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_template: Option<String>,
+    /// A webhook trigger whose sender proves itself with a shared secret in a
+    /// header: every inbound request must carry `header` equal to the
+    /// node's credential value named by `placeholder`, or it is refused
+    /// before any run. Activation generates the value when the credential
+    /// has none, so the lifecycle hook can hand it to the sender.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_header: Option<PackageTriggerSecretHeader>,
+}
+
+/// The header a webhook trigger's sender proves itself with, and the
+/// credential placeholder holding the expected value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PackageTriggerSecretHeader {
+    /// Header name, e.g. `X-Telegram-Bot-Api-Secret-Token`.
+    pub header: String,
+    /// A placeholder one of the node's credentials declares, e.g.
+    /// `WEBHOOK_SECRET`.
+    pub placeholder: String,
 }
 
 /// Lifecycle hooks for a trigger node. Each hook is a run binding, so composite

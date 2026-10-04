@@ -176,7 +176,7 @@ Each node bundle adds:
 | --- | --- |
 | `definitions` | Sorted, unique node kinds provided by the resolved bundle |
 
-Every definition must use a valid node kind such as `x.telegram.send` or
+Every definition must use a valid node kind such as `x.acme.invoice.create` or
 `x.sim.des.run`. The lock does not police the node namespace; that rule belongs to
 `NodeBundle`. A node kind cannot be provided by two locked bundles in the
 same project.

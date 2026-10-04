@@ -13494,6 +13494,19 @@ async fn run_composite_lifecycle_hooks(
             Some(m) => m,
             None => continue,
         };
+        // A trigger whose sender proves itself with a secret header gets its
+        // secret before the hook runs, so the hook can hand it to the sender.
+        if hook == "on_activate"
+            && let Err(message) = crate::pipeline::engines::composite_host::ensure_trigger_secret(
+                &state.platform,
+                owner,
+                project,
+                &node.kind,
+                &node.config,
+            )
+        {
+            eprintln!("composite_lifecycle: {hook} for '{}': {message}", node.kind);
+        }
         let lifecycle = match &manifest.lifecycle {
             Some(lc) => lc,
             None => continue,
@@ -23598,6 +23611,7 @@ async fn public_webhook_ingress_run(
 
     struct Candidate {
         compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
+        trigger_node: String,
         path_params: serde_json::Map<String, Value>,
         static_segments: usize,
         dynamic_segments: usize,
@@ -23629,6 +23643,7 @@ async fn public_webhook_ingress_run(
                 auth_optional: trigger.auth_optional,
                 errors: trigger.errors.clone(),
                 compiled: compiled.clone(),
+                trigger_node: trigger.node_id.clone(),
                 path_params: path_match.params,
                 static_segments: path_match.static_segments,
                 dynamic_segments: path_match.dynamic_segments,
@@ -23667,6 +23682,38 @@ async fn public_webhook_ingress_run(
             .into_response();
     };
     let retention = resolve_invocation_retention(&project_cfg, Some(&selected.compiled.graph));
+    // A bundle trigger whose sender proves itself with a secret header
+    // (`trigger.telegram`): refused here, before any run, when it does not.
+    if let Some(trigger) = selected
+        .compiled
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == selected.trigger_node)
+    {
+        let header = |name: &str| {
+            headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_string)
+        };
+        if let Err(refused) = crate::pipeline::engines::composite_host::check_trigger_secret(
+            &state.platform,
+            &owner,
+            &project,
+            &trigger.kind,
+            &trigger.config,
+            &header,
+        ) {
+            let status = if refused.code == "FW_WEBHOOK_SECRET_MISSING" {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            return (
+                status,
+                Json(json!({ "ok": false, "error": { "code": refused.code, "message": refused.message, "request_id": request_id } })),
+            )
+                .into_response();
+        }
+    }
     // Verify trigger-level auth before executing the pipeline.
     let auth_claims = if is_controller_call(&state, &headers) {
         Ok(None)
@@ -26666,17 +26713,6 @@ fn require_project_api_capability(
     }
 }
 
-fn canonical_pipeline_node_kind(kind: &str) -> &str {
-    if let Some(stripped) = kind.strip_prefix("x.n.") {
-        return match stripped {
-            "trigger.webhook" => "trigger.webhook",
-            "trigger.schedule" => "trigger.schedule",
-            "trigger.manual" => "trigger.manual",
-            _ => kind,
-        };
-    }
-    kind
-}
 
 /// The trigger a run is validated against once `trigger` is resolved: an
 /// explicit value as given; absent, `manual` — unless the graph's first
@@ -26705,9 +26741,9 @@ fn resolve_execute_trigger(
         .entry_node_ids()
         .into_iter()
         .filter_map(|id| graph.nodes.iter().find(|node| node.id == id))
-        .find(|node| canonical_pipeline_node_kind(&node.kind).starts_with("trigger."));
+        .find(|node| node.kind.as_str().starts_with("trigger."));
     let webhook = first_trigger
-        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "trigger.webhook")
+        .filter(|node| node.kind.as_str() == "trigger.webhook")
         .and_then(|node| {
             crate::platform::services::project::webhook_triggers_from_graph(graph)
                 .into_iter()
@@ -26756,7 +26792,7 @@ fn validate_execute_trigger(
         PipelineExecuteTrigger::Schedule => {
             let wanted_cron = req.schedule_cron.as_deref().map(str::trim);
             let matched = graph.nodes.iter().any(|node| {
-                if canonical_pipeline_node_kind(&node.kind) != "trigger.schedule" {
+                if node.kind.as_str() != "trigger.schedule" {
                     return false;
                 }
                 match wanted_cron {
@@ -26782,7 +26818,7 @@ fn validate_execute_trigger(
             let matched = graph
                 .nodes
                 .iter()
-                .any(|node| canonical_pipeline_node_kind(&node.kind) == "trigger.manual");
+                .any(|node| node.kind.as_str() == "trigger.manual");
             if matched {
                 Ok(())
             } else {
@@ -28991,7 +29027,7 @@ mod webhook_sse_tests {
             kind: kind.to_string(),
             message: format!("{node_id} {kind}"),
             node_id: node_id.to_string(),
-            node_kind: "n.db.query".to_string(),
+            node_kind: "postgres.query.run".to_string(),
             data: None,
             at: "1ms".to_string(),
         }

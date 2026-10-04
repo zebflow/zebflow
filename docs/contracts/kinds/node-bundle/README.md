@@ -228,17 +228,19 @@ anything the document declares. One authoring contract, two consumption paths.
 
 | Scope | Consumed at | Namespace | Guaranteed present |
 | --- | --- | --- | --- |
-| `Platform` | build time, shipped in the binary | `n.*` | yes |
+| `Platform` | build time, shipped in the binary | plain `family.noun.verb` | yes |
 | `Project` | install time, into one project | `x.{package_token}.*` | no |
 
-Zebflow curates `n.*` and guarantees uniqueness there, which is why a platform
-bundle needs no package scoping. Everyone else gets `x.{package_token}.*`,
-where `package_token` is `spec.package` with every hyphen replaced by an
-underscore, because kind segments allow underscores but not hyphens.
+A platform bundle's kinds are official names, the same grammar as native
+nodes (`node-conventions.md` §1): how a node is built is never in its name, and
+Zebflow guarantees their uniqueness, which is why a platform bundle needs no
+package scoping. Everyone else gets `x.{package_token}.{noun}.{verb}`, where
+`package_token` is `spec.package` with every hyphen replaced by an underscore,
+because kind segments allow underscores but not hyphens.
 
 ```text
-platform bundle             → n.telegram.send
-package "ml"                → x.ml.gb.train
+platform bundle "telegram"  → telegram.message.send, trigger.telegram
+package "ml"                → x.ml.model.train
 package "openai-embedding"  → x.openai_embedding.embedding.generate
 ```
 
@@ -257,8 +259,9 @@ lowercase dot-separated segments of ASCII letters, digits, and underscores.
 Neither implementation nor availability is encoded in the kind. A node may move
 between composite and WASM without changing its kind, and whether a node is
 currently installed is answered by the registry and `zeb.lock`, not by its name.
-Promoting a third-party package into the curated namespace is therefore a
-rename, and must be a deliberate versioned event rather than a quiet blessing.
+Promoting a third-party package to official is therefore a rename, from
+`x.<package>.<noun>.<verb>` to a plain name under a family, and must be a
+deliberate versioned event rather than a quiet blessing.
 
 ### Run Binding
 
@@ -278,6 +281,34 @@ trigger emits its event payload unchanged.
 
 Implementation type is derived from this binding. There is no `source` field,
 so nothing can contradict the artifact a node actually points at.
+
+### Inputs And Answers
+
+A bundle node answers like a native node (`node-conventions.md` §6); the
+engine places the answer, not the bundle (`src/pipeline/engines/composite_host.rs`):
+
+| Node | Adds to the payload it was given |
+| --- | --- |
+| action | one key, its noun (`telegram.message.send` → `message`, `x.acme.invoice.create` → `invoice`), holding the result |
+| action, failed function | the same key: `{ ok: false, error: { code, message } }`, on `error` |
+| trigger | one key, its source (`trigger.telegram` → `telegram`), holding the handler's result — or what the ingress delivered, when there is no handler or it fails |
+
+- A composite's result is its function's **last node's answer** — the one rule
+  every caller of a function shares (`PipelineOutput::function_result`;
+  `function.result.call` answers it as `result`): the value the last node that
+  answered added under its own key (its noun, or a trigger's source). A last node with no key of its own (`logic.*`,
+  `web.response.send`) makes the result the function's final payload without
+  the trigger's `function` key. A function ends in the node whose answer is the
+  result, usually a `javascript.script.run` that shapes it.
+- A WASM node's result is what its export returned.
+- A composite's function receives the node's **flags**, never the payload:
+  every declared config key (a flag's `config_key` or a `config_schema`
+  property) as the engine resolved it, except credential keys, whose secrets
+  are `$placeholder` values. `trigger.function` answers them under `function`:
+  `input.function.<config key>`. A trigger's handler receives the event
+  (a webhook's `body`).
+- Before a composite or WASM action runs, a required flag that resolved empty,
+  or a word outside a flag's `choices`, is refused with `FW_NODE_PACKAGE_CONFIG`.
 
 | Node declares | Implementation |
 | --- | --- |
@@ -309,6 +340,18 @@ with `{{ key }}`, and every referenced key must exist in the node's
 
 A trigger node has no input pin. Its inbound handler is `run`, which is why a
 WASM trigger is expressible.
+
+A webhook trigger whose sender proves itself with a shared secret declares
+`secret_header: { "header": "X-Telegram-Bot-Api-Secret-Token", "placeholder":
+"WEBHOOK_SECRET" }`; the placeholder must be one a credential the node uses
+declares. Every inbound request must carry that header equal (compared in
+constant time) to the node's credential value, or it is refused before any run:
+401 `FW_WEBHOOK_SECRET_MISSING`, 403 `FW_WEBHOOK_SECRET_MISMATCH`, or 403
+`FW_WEBHOOK_SECRET_UNSET` when the credential holds no value. Activating the
+pipeline generates the value (32 random bytes, hex) when the credential has
+none, before `lifecycle.on_activate` runs, so the hook can hand it to the
+sender. `secret_header` is an optional field added under `zebflow.com/v1`
+while Zebflow is pre-release.
 
 ### Lifecycle
 
@@ -371,7 +414,7 @@ known contract instead of guessing.
 
 Rules:
 
-- Only `x.*` kinds get an interface. Curated `n.*` nodes are guaranteed by the
+- Only `x.*` kinds get an interface. Official nodes are guaranteed by the
   platform and carry no portability risk.
 - Only kinds a project's pipelines actually reference. `repo/` states this
   project's dependencies, not a mirror of everything installed.
@@ -648,6 +691,28 @@ Declared-host enforcement, in `src/pipeline/engines/composite_host.rs`,
     declared
 39. `javascript.script.run` runs inside a bundle under the shipped sandbox, and is refused
     once that sandbox is granted network access
+
+Answers, in `src/pipeline/engines/composite_host.rs` (`answer_tests`, running
+the shipped bundles' own definitions and functions with their HTTP calls
+stubbed):
+
+40. a composite adds one key, its noun, holding its function's last node's
+    answer; the payload is kept and never reaches the function
+41. `telegram.message.send` sends text, an image or a file (with `--text` as the
+    caption) and answers `message: { id, recipient, sent_at, telegram }`;
+    `telegram.message.edit` answers the same plus `edited_at`; the bot token
+    never reaches the answer
+42. a refusal — from the function or from Telegram — answers
+    `message: { ok: false, error }` on `error`; an empty required flag or a word
+    outside a choice is refused with `FW_NODE_PACKAGE_CONFIG`
+43. `trigger.telegram` answers `telegram: <the update>` and nothing else; its
+    `register-webhook` hook still registers the route its path template serves
+44. `ai.embedding.generate` answers `embedding: { vectors, model, dims, usage }`,
+    one vector per text in order
+45. a webhook trigger with a `secret_header` refuses an update with no header
+    (401) or a wrong one (403) before any run and runs for the right one
+    (`tests/platform/smoke.rs`); activation generates a missing secret and the
+    `register-webhook` hook hands it to `setWebhook`
 
 ### Live and browser evidence, 2026-08-18
 

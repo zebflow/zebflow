@@ -322,8 +322,17 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_OUTPUT_FILE_JSON", ErrorClass::Failed),
     ("FW_NODE_OUTPUT_FILE_TOO_LARGE", ErrorClass::Refused),
     ("FW_NODE_OUTPUT_FILE_WRITE", ErrorClass::Failed),
+    // An installed or official composite whose resolved flags break its own
+    // definition: a required flag empty, a word outside a closed choice.
+    ("FW_NODE_PACKAGE_CONFIG", ErrorClass::Refused),
     ("FW_NODE_PACKAGE_NOT_EXECUTABLE", ErrorClass::Failed),
     ("FW_NODE_PACKAGE_NOT_FOUND", ErrorClass::Refused),
+    // An inbound request to a webhook trigger whose sender must prove itself
+    // with a secret header (`trigger.secret_header`): none was sent, it does
+    // not match, or the credential holds no secret to compare with.
+    ("FW_WEBHOOK_SECRET_MISMATCH", ErrorClass::Refused),
+    ("FW_WEBHOOK_SECRET_MISSING", ErrorClass::Refused),
+    ("FW_WEBHOOK_SECRET_UNSET", ErrorClass::Refused),
     ("FW_NODE_FS_PDF_CONVERT", ErrorClass::Failed),
     ("FW_NODE_FS_PDF_CONVERT_CONFIG", ErrorClass::Refused),
     ("FW_NODE_FS_PDF_CONVERT_SOURCE", ErrorClass::Refused),

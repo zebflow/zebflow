@@ -11,7 +11,7 @@
 //!
 //! `blessed/nodes/` and `blessed/pipelines/` are deliberately empty today:
 //! foundation composites in `src/pipeline/nodes/bundled/` are part of the
-//! `n.*` node set the binary provides, not hub packages.
+//! official node set the binary provides, not hub packages.
 
 use serde::Deserialize;
 

@@ -1,0 +1,77 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeBundle",
+  "metadata": {
+    "name": "tgstub",
+    "version": "1.0.0"
+  },
+  "spec": {
+    "package": "tgstub",
+    "version": "1.0.0",
+    "title": "HTTP stub",
+    "description": "Answers like http.response.fetch without leaving the machine: a canned Telegram Bot API or embeddings reply that echoes the request.",
+    "icon": "icon.svg",
+    "functions": {
+      "reply": "functions/reply.zf.json"
+    },
+    "nodes": [
+      {
+        "kind": "x.tgstub.response.fetch",
+        "title": "Stub fetch",
+        "description": "Answers a canned reply and echoes the request.",
+        "run": {
+          "function": "reply"
+        },
+        "definition": {
+          "input_pins": [
+            "in"
+          ],
+          "output_pins": [
+            "out",
+            "error"
+          ],
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "method": {},
+              "url": {},
+              "headers": {},
+              "body": {},
+              "timeout": {}
+            }
+          },
+          "dsl_flags": [
+            {
+              "flag": "--method",
+              "config_key": "method",
+              "kind": "scalar",
+              "required": false,
+              "description": "As http.response.fetch takes it."
+            },
+            {
+              "flag": "--url",
+              "config_key": "url",
+              "kind": "scalar",
+              "required": false,
+              "description": "As http.response.fetch takes it."
+            },
+            {
+              "flag": "--header",
+              "config_key": "headers",
+              "kind": "key_value_pairs",
+              "required": false,
+              "description": "As http.response.fetch takes it."
+            },
+            {
+              "flag": "--body",
+              "config_key": "body",
+              "kind": "scalar",
+              "required": false,
+              "description": "As http.response.fetch takes it."
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

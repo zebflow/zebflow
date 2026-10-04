@@ -63,8 +63,8 @@ the pin `:error`.
   and refused with a message that says so.
 - **Multiline** — end a line with `\` to continue; in a console, `&&` chains
   commands and stops at the first failure.
-- **Kinds** — `sekejap.query.run` and `sekejap.query.run` are the same node. Installed
-  third-party nodes are `n.x.<bundle>.<node>`.
+- **Kinds** — a kind is written as itself: `sekejap.query.run`. Installed
+  third-party nodes are `x.<package>.<noun>.<verb>`.
 
 Flag value kinds, as each node declares them:
 

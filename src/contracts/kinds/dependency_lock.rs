@@ -479,7 +479,7 @@ mod tests {
 
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();
         value["spec"]["nodes"]["bundles"]["zebflow.sim-des"]["definitions"] =
-            serde_json::json!(["n.wasm.z", "n.wasm.a"]);
+            serde_json::json!(["x.wasm.model.score", "x.wasm.model.load"]);
         assert!(decode_dependency_lock(&serde_json::to_vec(&value).unwrap()).is_err());
 
         let mut value: serde_json::Value = serde_json::from_slice(fixture()).unwrap();

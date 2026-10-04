@@ -77,7 +77,7 @@ fn the_family_is_eight_kinds_with_their_signatures() {
         ]
     );
     assert_eq!(super::KINDS.len(), signatures.len());
-    assert!(build("n.crypto", &json!({}), None).expect("not an error").is_none());
+    assert!(build("crypto", &json!({}), None).expect("not an error").is_none());
 }
 
 #[tokio::test]

@@ -27,10 +27,19 @@ All installable node sources use one source package shape:
 `definition.json` is used for one node or many nodes. A single node is simply a
 package with `nodes.length == 1`.
 
-Node kinds split by who curates them. Zebflow owns `n.*` and guarantees the
-names there are unique, so official nodes look like `n.telegram.send`. Everything
-installed from the Hub is `x.{package}.{noun}.{verb}`, so a kind names the package
-that provides it and two bundles can never claim the same kind.
+Node kinds split by who curates them. Official nodes — native ones and the
+composites shipped with the platform — have plain names, `family.noun.verb`
+(`telegram.message.send`, `ai.embedding.generate`), and Zebflow guarantees they
+are unique. Everything installed from the Hub is `x.{package}.{noun}.{verb}`, so
+a kind names the package that provides it and two bundles can never claim the
+same kind. Promoting a Hub package to official is therefore a rename.
+
+A bundle node answers like a native one: the engine adds one key, the kind's
+noun (`message`, `embedding`; a trigger's source, `telegram`), and keeps the
+rest of the payload. A composite's answer is what its function's last node
+answered, usually a `javascript.script.run` shaping the result. The function
+receives the node's flags (`input.function.<config key>`), never the payload,
+and the credential's secrets as `$placeholder` values.
 
 The kind says nothing about how a node is built, and nothing about whether it is
 currently installed. The first is the run binding's job, the second is answered

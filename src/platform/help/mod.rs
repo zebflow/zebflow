@@ -50,7 +50,7 @@ fn official_node_definitions_for_help() -> Vec<crate::pipeline::NodeDefinition> 
 }
 
 /// The traversable layer between "what nodes exist" and one node's full
-/// documentation: every kind on one line — short name, title, the first
+/// documentation: every kind on one line — kind, title, the first
 /// sentence of its description — grouped by family. About 4 KB for 70 kinds,
 /// so an agent can find the name of the node it needs before spending
 /// tokens on its flags.
@@ -58,15 +58,14 @@ pub fn official_nodes_index_markdown() -> String {
     let defs = official_node_definitions_for_help();
     let mut families: std::collections::BTreeMap<String, Vec<&crate::pipeline::NodeDefinition>> = std::collections::BTreeMap::new();
     for d in &defs {
-        let short = crate::platform::shell::parser::short_kind(&d.kind);
-        let family = short.split('.').next().unwrap_or(&short).to_string();
+        let family = d.kind.split('.').next().unwrap_or(&d.kind).to_string();
         families.entry(family).or_default().push(d);
     }
     let mut s = format!(
         "# Node index — {} kinds\n\n\
-         One line per node: `short name` — title — what it does. One node in full (flags, pins, schemas, examples): \
-         `help topic=\"pipeline/nodes/<short name>\"`. The whole catalogue at once: `help topic=\"pipeline/nodes/all\"` (large). \
-         In the DSL a node is written by its short name: `| web.response.send --template pages/x.tsx`.\n",
+         One line per node: `kind` — title — what it does. One node in full (flags, pins, schemas, examples): \
+         `help topic=\"pipeline/nodes/<kind>\"`. The whole catalogue at once: `help topic=\"pipeline/nodes/all\"` (large). \
+         In the DSL a node is written as its kind: `| web.response.send --template pages/x.tsx`.\n",
         defs.len()
     );
     for (family, kinds) in families {
@@ -74,7 +73,7 @@ pub fn official_nodes_index_markdown() -> String {
         let mut kinds = kinds;
         kinds.sort_by(|a, b| a.kind.cmp(&b.kind));
         for d in kinds {
-            let short = crate::platform::shell::parser::short_kind(&d.kind);
+            let short = &d.kind;
             let first = d.description.split(". ").next().unwrap_or(&d.description).trim().trim_end_matches('.');
             s.push_str(&format!("- `{short}` — {} — {}\n", d.title.trim(), clip_words(first, 110)));
         }
@@ -334,7 +333,7 @@ pub fn expand_definition_markers(content: &str) -> String {
 /// pipeline editor and `help_nodes` show.
 pub fn format_node_flags_markdown(def: &crate::pipeline::NodeDefinition) -> String {
     use crate::pipeline::model::DslFlagKind;
-    let short = crate::platform::shell::parser::short_kind(&def.kind);
+    let short = &def.kind;
     let mut s = format!("| `{short}` flag | Meaning |
 |---|---|
 ");
@@ -358,14 +357,13 @@ pub fn format_node_flags_markdown(def: &crate::pipeline::NodeDefinition) -> Stri
     s
 }
 
-/// Every kind grouped by its family (`n.<family>.…`), short names, from the
-/// catalogue — the list `pipeline/dsl` shows.
+/// Every kind grouped by its family (`<family>.…`), from the catalogue — the
+/// list `pipeline/dsl` shows.
 pub fn format_node_families_markdown(defs: &[crate::pipeline::NodeDefinition]) -> String {
     let mut families: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
     for d in defs {
-        let short = crate::platform::shell::parser::short_kind(&d.kind);
-        let family = short.split('.').next().unwrap_or(&short).to_string();
-        families.entry(family).or_default().push(short);
+        let family = d.kind.split('.').next().unwrap_or(&d.kind).to_string();
+        families.entry(family).or_default().push(d.kind.clone());
     }
     let mut s = String::new();
     for (family, mut kinds) in families {
@@ -549,28 +547,27 @@ mod help_lint {
         let defs = official_node_definitions_for_help();
         let families: std::collections::BTreeSet<String> = defs
             .iter()
-            .filter_map(|d| d.kind.strip_prefix("n.").unwrap_or(&d.kind).split('.').next().map(str::to_string))
+            .filter_map(|d| d.kind.split('.').next().map(str::to_string))
             .collect();
         let exists = |name: &str| {
             expand_kind(name).is_some_and(|k| defs.iter().any(|d| d.kind == k))
                 || defs.iter().any(|d| crate::pipeline::nodes::kind_query_matches_def(d, name))
         };
-        let token = regex::Regex::new(r"`(n\.)?([a-z][a-z0-9_]*)((?:\.[a-z][a-z0-9_]*)+)`").unwrap();
+        let token = regex::Regex::new(r"`([a-z][a-z0-9_]*)((?:\.[a-z][a-z0-9_]*)+)`").unwrap();
         let mut failures = Vec::new();
         let mut checked = 0usize;
         for page in HELP.iter() {
             for (i, line) in page.content.lines().enumerate() {
                 for caps in token.captures_iter(line) {
-                    let family = &caps[2];
-                    let name = format!("{}{}{}", caps.get(1).map(|m| m.as_str()).unwrap_or(""), family, &caps[3]);
+                    let family = &caps[1];
+                    let name = format!("{}{}", family, &caps[2]);
                     // A wildcard family (`logic.*`, `fs.*`) names the family, not a kind.
                     if name.ends_with(".*") { continue; }
-                    if !families.contains(family) && !name.starts_with("n.") { continue; }
+                    if !families.contains(family) { continue; }
                     // `input` is both a node family and the name of the flowing
                     // payload in every expression: `input.rows`, `input.body.x`.
-                    // A bare `input.…` that is not a kind is the payload, not a
-                    // typo; only the `n.input.…` spelling is held to the catalogue.
-                    if family == "input" && !name.starts_with("n.") && !exists(&name) { continue; }
+                    // An `input.…` that is not a kind is the payload, not a typo.
+                    if family == "input" && !exists(&name) { continue; }
                     checked += 1;
                     if !exists(&name) {
                         failures.push(format!("{}:{}: `{name}`", page.path, i + 1));
@@ -605,9 +602,8 @@ mod help_lint {
         let defs = official_node_definitions_for_help();
         let index = get_help("pipeline/nodes").expect("index");
         for d in &defs {
-            let short = crate::platform::shell::parser::short_kind(&d.kind);
-            let needle = format!("- `{short}` — ");
-            assert_eq!(index.matches(&needle).count(), 1, "{short} must appear exactly once in the index");
+            let needle = format!("- `{}` — ", d.kind);
+            assert_eq!(index.matches(&needle).count(), 1, "{} must appear exactly once in the index", d.kind);
         }
         assert!(index.len() < 12_000, "the index is {} bytes; it must stay a cheap read", index.len());
         let all = get_help("pipeline/nodes/all").expect("catalogue");

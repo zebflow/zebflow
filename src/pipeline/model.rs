@@ -135,7 +135,7 @@
 //!
 //! pub fn definition() -> NodeDefinition {
 //!     NodeDefinition {
-//!         kind: "n.my.node".to_string(),
+//!         kind: "example.thing.run".to_string(),
 //!         title: "My Node".to_string(),
 //!         description: "Does the thing.".to_string(),
 //!         config_schema: serde_json::to_value(schemars::schema_for!(Config)).unwrap_or_default(),
@@ -999,7 +999,7 @@ pub struct NodeAiToolDefinition {
 #[serde(deny_unknown_fields)]
 pub struct NodeDefinition {
     /// Stable kind id — must be unique across all registered nodes.
-    /// Convention: `n.<category>.<action>` (e.g. `postgres.query.run`, `web.response.send`).
+    /// `family.noun.verb` (`node-conventions.md` §1, e.g. `postgres.query.run`, `web.response.send`).
     pub kind: String,
     /// Short display title for UI catalogs and tooltips (e.g. `"Postgres Query"`).
     pub title: String,
@@ -1669,6 +1669,35 @@ pub struct PipelineOutput {
     pub node_trace: Vec<NodeTraceEntry>,
 }
 
+impl PipelineOutput {
+    /// A function pipeline's result — the one rule for every caller of a
+    /// function (`function.result.call`, a composite node, an agent tool, a
+    /// map layer): **its last node's answer**, the value the last node that
+    /// answered (trace status `ok`) added under its own key (its noun, a
+    /// trigger's source, `node-conventions.md` §6), read from the final
+    /// payload. A last node with no key of its own (`logic.*`,
+    /// `web.response.send`) answered nothing, so the result is then the final
+    /// payload without the function trigger's `function` key. A function
+    /// therefore ends in the node whose answer is its result, usually a
+    /// `javascript.script.run` shaping it.
+    pub fn function_result(&self) -> Value {
+        let last_key = self
+            .node_trace
+            .iter()
+            .rev()
+            .find(|entry| entry.status == "ok")
+            .and_then(|entry| crate::pipeline::nodes::answer_key(&entry.node_kind));
+        if let Some(value) = last_key.and_then(|key| self.value.get(&key).cloned()) {
+            return value;
+        }
+        let mut rest = self.value.clone();
+        if let Some(map) = rest.as_object_mut() {
+            map.remove("function");
+        }
+        rest
+    }
+}
+
 /// A typed error produced at any point during pipeline execution.
 ///
 /// `code` is a stable SCREAMING_SNAKE_CASE string prefixed by the node kind
@@ -1768,5 +1797,44 @@ mod node_timeout_tests {
         }
         let flag = engine_common_dsl_flags().into_iter().find(|f| f.flag == "--timeout").expect("--timeout");
         assert_eq!((flag.config_key.as_str(), flag.value.as_str()), ("timeout", "duration"));
+    }
+}
+
+#[cfg(test)]
+mod function_result_tests {
+    use serde_json::{Value, json};
+
+    use super::PipelineOutput;
+
+    fn output(value: Value, trace: &[(&str, &str)]) -> PipelineOutput {
+        let node_trace = trace
+            .iter()
+            .map(|(kind, status)| {
+                serde_json::from_value(json!({
+                    "node_id": "n", "node_kind": kind, "duration_ms": 0,
+                    "input": null, "output": null, "status": status
+                }))
+                .expect("trace entry")
+            })
+            .collect();
+        PipelineOutput { value, response: None, trace: Vec::new(), node_trace }
+    }
+
+    /// The last node that answered decides; a control node at the end leaves
+    /// the final payload without the trigger's `function`.
+    #[test]
+    fn a_functions_result_is_its_last_answer() {
+        let value = json!({ "function": { "a": 1 }, "response": { "status": 200 }, "script": { "ok": true } });
+        let ran = [("trigger.function", "ok"), ("http.response.fetch", "ok"), ("javascript.script.run", "ok")];
+        assert_eq!(output(value.clone(), &ran).function_result(), json!({ "ok": true }));
+
+        let skipped_last = [("trigger.function", "ok"), ("http.response.fetch", "ok"), ("javascript.script.run", "skip")];
+        assert_eq!(output(value.clone(), &skipped_last).function_result(), json!({ "status": 200 }));
+
+        let control_last = [("trigger.function", "ok"), ("javascript.script.run", "ok"), ("logic.if", "ok")];
+        assert_eq!(
+            output(value, &control_last).function_result(),
+            json!({ "response": { "status": 200 }, "script": { "ok": true } })
+        );
     }
 }

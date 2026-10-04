@@ -388,9 +388,8 @@ fn every_node_definition_documents_itself_with_a_building_example() {
                 failures.push(format!("{kind}: example `{}` has no dsl", example.title));
                 continue;
             }
-            let short = kind.strip_prefix("n.").unwrap_or(kind);
             let first = dsl.split_whitespace().next().unwrap_or("");
-            if first != short && first != kind {
+            if first != kind {
                 failures.push(format!("{kind}: example dsl starts with `{first}`, not the node"));
             }
             let body = if is_trigger { format!("| {dsl}") } else { format!("| trigger.function | {dsl}") };

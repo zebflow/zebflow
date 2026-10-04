@@ -772,10 +772,15 @@ trust basis is unclear. `spec.hosts` and the `violations` tier are the shape of
 an answer but are declared, not enforced. Decide during the `RweLibraryManifest`
 review, and apply the decision to every channel at once.
 
-**Promotion into the curated namespace.** A third-party package adopted by
-Zebflow moves from `x.acme.thing` to `n.acme.thing`, which is a rename and
-therefore a breaking change. Promotion must be a deliberate versioned event, or
-must not happen to packages authored by others.
+**Promotion to official.** A custom composite is `x.<package>.<noun>.<verb>`
+(`node-conventions.md` §1). Promoted to an official composite shipped with the
+platform, it takes a plain name under a family from the closed list, or under a
+brand family the owner adds: `x.acme.invoice.render` becomes
+`fs.invoice.render`, and a chat platform's `x.acme.message.send` becomes
+`acme.message.send` once the owner adds `acme` as a brand. That is a rename of
+every pipeline that used it — the old kind stops existing and nothing aliases
+it — and so a breaking change. Promotion must be a deliberate versioned event,
+or must not happen to packages authored by others.
 
 **Reproducibility of official content.** Resolved for RWE libraries and the UI
 template sets: the seeder — every boot, check-first (§1b) — publishes the binary's blessed content

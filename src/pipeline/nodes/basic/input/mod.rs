@@ -632,12 +632,6 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
 /// `files`. A required input after one of these would refuse every tick.
 const EMPTY_ENVELOPE_TRIGGERS: [&str; 1] = ["trigger.schedule"];
 
-/// A node kind as the catalogue spells it: `x.n.trigger.schedule` is the same
-/// kind as `trigger.schedule` for the purpose of what it delivers.
-fn canonical_kind(kind: &str) -> &str {
-    kind.strip_prefix("x.").unwrap_or(kind)
-}
-
 /// Whether this input can be satisfied by an envelope that carries nothing.
 fn satisfied_by_an_empty_envelope(kind: InputKind, config: &Config) -> bool {
     if config.optional {
@@ -665,9 +659,9 @@ pub fn ensure_inputs_reachable_from_empty_triggers(
     for trigger in graph
         .nodes
         .iter()
-        .filter(|node| EMPTY_ENVELOPE_TRIGGERS.contains(&canonical_kind(&node.kind)))
+        .filter(|node| EMPTY_ENVELOPE_TRIGGERS.contains(&node.kind.as_str()))
     {
-        let trigger_kind = canonical_kind(&trigger.kind).trim_start_matches("n.");
+        let trigger_kind = trigger.kind.as_str();
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::from([trigger.id.as_str()]);
         while let Some(current) = queue.pop_front() {
@@ -680,7 +674,7 @@ pub fn ensure_inputs_reachable_from_empty_triggers(
             let Some(node) = graph.nodes.iter().find(|node| node.id == current) else {
                 continue;
             };
-            let Some(kind) = InputKind::from_kind(canonical_kind(&node.kind)) else {
+            let Some(kind) = InputKind::from_kind(&node.kind) else {
                 continue;
             };
             let config = serde_json::from_value::<Config>(node.config.clone())

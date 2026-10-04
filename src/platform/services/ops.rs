@@ -2813,11 +2813,11 @@ fn normalize_trigger_filter(value: &str) -> String {
 
 fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
     let fallback = if meta.trigger_kind.trim().is_empty() {
-        "n.trigger.unknown".to_string()
+        "trigger.unknown".to_string()
     } else if meta.trigger_kind.starts_with("trigger.") {
         meta.trigger_kind.clone()
     } else {
-        format!("n.trigger.{}", meta.trigger_kind)
+        format!("trigger.{}", meta.trigger_kind)
     };
 
     let source = match ops.platform.projects.read_pipeline_source(

@@ -1,0 +1,42 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "Pipeline",
+  "metadata": {
+    "name": "tgstub-reply"
+  },
+  "spec": {
+    "id": "tgstub-reply",
+    "nodes": [
+      {
+        "id": "trigger",
+        "kind": "trigger.function",
+        "config": {},
+        "input_pins": [],
+        "output_pins": [
+          "out"
+        ]
+      },
+      {
+        "id": "reply",
+        "kind": "javascript.script.run",
+        "config": {
+          "source": "var a = input.function; var url = String(a.url); var method = url.split('/').pop(); var b = a.body || {}; if (method === 'embeddings') { var data = [].concat(b.input).map(function (t, i) { return { index: i, embedding: [String(t).length, 0.5, 0.25] }; }); return { status: 200, ok: true, body: { data: data.reverse(), model: b.model, usage: { prompt_tokens: 3, total_tokens: 3 } } }; } if (b.chat_id === 'refuse') return { status: 400, ok: false, body: { ok: false, error_code: 400, description: 'Bad Request: chat not found' } }; var echo = { method: method, body: b }; if (method.indexOf('send') !== 0 && method !== 'editMessageText') return { status: 200, ok: true, body: { ok: true, result: true, echo: echo } }; var chat = Number(b.chat_id); var m = { message_id: 42, date: 1767225600, chat: { id: isNaN(chat) ? b.chat_id : chat, type: 'private' }, stub_request: echo }; if (method === 'editMessageText') { m.message_id = b.message_id; m.date = 1767225600 - 60; m.edit_date = 1767225600; } return { status: 200, ok: true, body: { ok: true, result: m } };"
+        },
+        "input_pins": [
+          "in"
+        ],
+        "output_pins": [
+          "out"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from_node": "trigger",
+        "from_pin": "out",
+        "to_node": "reply",
+        "to_pin": "in"
+      }
+    ]
+  }
+}

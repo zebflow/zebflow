@@ -11,6 +11,7 @@ hand-editing formatting.
 | `v1-composite.json` | one composite action node with a scoped credential |
 | `v1-wasm.json` | two WASM nodes sharing one module through distinct exports |
 | `v1-mixed.json` | composite, WASM, and declarative trigger nodes in one bundle |
+| `http-stub/` | a composite (`x.tgstub.response.fetch`) answering like `http.response.fetch` from a canned Telegram or embeddings reply, so tests run the shipped bundles' functions without leaving the machine; not a golden document |
 | `two-exports.wasm` | a real `zebflow-wasm-json-v1` module exporting `e2e_train` and `e2e_score` |
 
 `two-exports.wasm` is a 22 KB Rust `cdylib` built for `wasm32-unknown-unknown`.

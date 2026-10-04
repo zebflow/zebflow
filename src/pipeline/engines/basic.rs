@@ -1878,7 +1878,7 @@ fn emit_node_fail(
     emit_lifecycle(
         bus,
         "node_fail",
-        format!("{node_id} {} fail {duration_ms} ms", short_kind_word(node_kind)),
+        format!("{node_id} {} fail {duration_ms} ms", node_kind),
         Some((node_id, node_kind)),
         Some(json!({
             "duration_ms": duration_ms,
@@ -1890,10 +1890,6 @@ fn emit_node_fail(
     );
 }
 
-/// `http.response.fetch` for `http.response.fetch` — the message is for a human.
-fn short_kind_word(kind: &str) -> &str {
-    kind.strip_prefix("n.").unwrap_or(kind)
-}
 
 impl BasicPipelineEngine {
     /// The run itself. `execute_with_options_async` brackets it with
@@ -2022,7 +2018,7 @@ impl BasicPipelineEngine {
             emit_lifecycle(
                 &bus,
                 "node_start",
-                format!("{} {} start", node.id, short_kind_word(&node.kind)),
+                format!("{} {} start", node.id, node.kind),
                 Some((&node.id, &node.kind)),
                 None,
                 &run_started,
@@ -2468,11 +2464,11 @@ impl BasicPipelineEngine {
                             match max_attempts {
                                 Some(max) => format!(
                                     "{trace_node_id} {} waiting {attempt}/{max} {duration_ms} ms",
-                                    short_kind_word(&trace_node_kind)
+                                    trace_node_kind
                                 ),
                                 None => format!(
                                     "{trace_node_id} {} waiting {attempt} {duration_ms} ms",
-                                    short_kind_word(&trace_node_kind)
+                                    trace_node_kind
                                 ),
                             },
                             Some((&trace_node_id, &trace_node_kind)),
@@ -2491,7 +2487,7 @@ impl BasicPipelineEngine {
                             outcome,
                             format!(
                                 "{trace_node_id} {} {duration_ms} ms",
-                                short_kind_word(&trace_node_kind)
+                                trace_node_kind
                             ),
                             Some((&trace_node_id, &trace_node_kind)),
                             Some(json!({ "duration_ms": duration_ms })),
@@ -2541,11 +2537,11 @@ impl BasicPipelineEngine {
                                 match max_attempts {
                                     Some(max) => format!(
                                         "{trace_node_id} {} retry {attempt}/{max} {duration_ms} ms",
-                                        short_kind_word(&trace_node_kind)
+                                        trace_node_kind
                                     ),
                                     None => format!(
                                         "{trace_node_id} {} retry {attempt} {duration_ms} ms",
-                                        short_kind_word(&trace_node_kind)
+                                        trace_node_kind
                                     ),
                                 },
                                 Some((&trace_node_id, &trace_node_kind)),
@@ -2567,7 +2563,7 @@ impl BasicPipelineEngine {
                                 "node_error_routed",
                                 format!(
                                     "{trace_node_id} {} error → {to_node} {duration_ms} ms",
-                                    short_kind_word(&trace_node_kind)
+                                    trace_node_kind
                                 ),
                                 Some((&trace_node_id, &trace_node_kind)),
                                 Some(json!({

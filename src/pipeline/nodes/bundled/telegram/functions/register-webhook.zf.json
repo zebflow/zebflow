@@ -20,7 +20,7 @@
         "id": "prepare",
         "kind": "javascript.script.run",
         "config": {
-          "source": "var body = { url: input.function.platform.public_url + '/wh/' + input.function.owner + '/' + input.function.project + '/tg/' + input.function.config.bot_credential_id }; if (input.function.config.allowed_updates) { body.allowed_updates = input.function.config.allowed_updates.split(',').map(function(s) { return s.trim(); }); } if (ctx.placeholder && ctx.placeholder.WEBHOOK_SECRET) { body.secret_token = ctx.placeholder.WEBHOOK_SECRET; } return body;"
+          "source": "var hook = input.function; var body = { url: hook.platform.public_url + '/wh/' + hook.owner + '/' + hook.project + '/tg/' + hook.config.credential_id }; var events = hook.config.event; if (events !== undefined && events !== null && events !== '') body.allowed_updates = [].concat(events).map(String); if (ctx.placeholder && ctx.placeholder.WEBHOOK_SECRET) body.secret_token = ctx.placeholder.WEBHOOK_SECRET; return body;"
         },
         "input_pins": [
           "in"
@@ -51,8 +51,8 @@
         "id": "store",
         "kind": "kv.entry.put",
         "config": {
-          "key": "webhook_registered",
-          "ttl": 0
+          "key": "telegram:webhook:{{ input.function.config.credential_id }}",
+          "value": "{{ input.response.body }}"
         },
         "input_pins": [
           "in"

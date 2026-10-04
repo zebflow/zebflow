@@ -473,9 +473,14 @@ impl PlatformService {
             .open_files())
     }
 
-    /// Execute an active function pipeline by slug and return its output value.
+    /// Execute an active function pipeline by slug and return its result:
+    /// its last node's answer ([`PipelineOutput::function_result`], the rule
+    /// composite nodes share).
     ///
-    /// Called from `function.result.call` nodes during pipeline execution.
+    /// Called from `function.result.call` nodes during pipeline execution,
+    /// and by agent tools and map layers that call a function.
+    ///
+    /// [`PipelineOutput::function_result`]: crate::pipeline::model::PipelineOutput::function_result
     /// The slug is matched against active pipelines that have an `trigger.function` entry node.
     pub async fn execute_function_pipeline(
         &self,
@@ -595,6 +600,8 @@ impl PlatformService {
         match engine.execute_async(&compiled.graph, &ctx).await {
             Ok(output) => {
                 let duration_ms = exec_start.elapsed().as_millis() as u64;
+                // The function's result, by the one rule every caller shares.
+                let result = output.function_result();
                 self.pipeline_hits
                     .record_success(owner, project, &file_rel_path);
                 let _ = self.data.log_pipeline_invocation(
@@ -613,7 +620,7 @@ impl PlatformService {
                     effective_max,
                     max_age_secs,
                 );
-                Ok(output.value)
+                Ok(result)
             }
             Err(e) => {
                 let duration_ms = exec_start.elapsed().as_millis() as u64;

@@ -7,7 +7,7 @@
  *  - Loads catalog, credentials, templates on mount
  *  - Loads selected pipeline on mount (and on selectedId change)
  *  - Renders PipelineGraph with the loaded pipeline JSON
- *  - Opens NodeDialog / WebRenderDialog when a node's "E" button is clicked
+ *  - Opens NodeDialog when a node's "E" button is clicked
  *  - Opens GitCommitDialog after save
  *  - Exposes addNode, save, activate, deactivate
  */
@@ -38,7 +38,6 @@ import {
 import { sanitizeSlug, ensureUniqueSlug } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
 import { extractNodeConfig } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
 import NodeDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/node-dialog";
-import WebRenderDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/web-render-dialog";
 import PipelineSettingsDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/pipeline-settings-dialog";
 import GitCommitDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/git-commit-dialog";
 import PreviewDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/preview-dialog";
@@ -307,7 +306,6 @@ export default function PipelineEditor({
 
   // ── Dialog state ────────────────────────────────────────────────────────────
   const [dialogNode, setDialogNode] = useState<PipelineNodeData | null>(null);
-  const [webRenderNode, setWebRenderNode] = useState<PipelineNodeData | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [continuationRequest, setContinuationRequest] = useState<ContinuationRequest | null>(null);
   const [nodePickerQuery, setNodePickerQuery] = useState("");
@@ -510,12 +508,7 @@ export default function PipelineEditor({
   // ── onNodeEdit callback from PipelineGraph ────────────────────────────────
   function handleNodeEdit(nodeData: PipelineNodeData) {
     if (currentLocked) return;
-    const kind = canonicalNodeKind(nodeData.zfKind);
-    if (kind === "n.web.render") {
-      setWebRenderNode(nodeData);
-    } else {
-      setDialogNode(nodeData);
-    }
+    setDialogNode(nodeData);
   }
 
   const handleOutputAdd = useCallback((req: ContinuationRequest) => {
@@ -552,7 +545,7 @@ export default function PipelineEditor({
     config: Record<string, unknown>
   ) {
     const app = graphRef.current?.getApp?.();
-    if (!app) { setDialogNode(null); setWebRenderNode(null); return; }
+    if (!app) { setDialogNode(null); return; }
 
     // Resolve live graph node — prefer _raw if still in graph, else find by id.
     const graphNodes: any[] = app.graph?.nodes || [];
@@ -560,7 +553,7 @@ export default function PipelineEditor({
     if (!rawNode || !graphNodes.includes(rawNode)) {
       rawNode = graphNodes.find((n: any) => n.id === nodeData.graphNodeId) || null;
     }
-    if (!rawNode) { setDialogNode(null); setWebRenderNode(null); return; }
+    if (!rawNode) { setDialogNode(null); return; }
 
     rawNode.zfPipelineNodeId = slug;
     // The dialog owns every key but `ui` — the box's position and a
@@ -598,7 +591,6 @@ export default function PipelineEditor({
     });
 
     setDialogNode(null);
-    setWebRenderNode(null);
   }
 
   // ── Save pipeline ─────────────────────────────────────────────────────────
@@ -972,11 +964,7 @@ export default function PipelineEditor({
       outputs: node.outputs || [],
       _raw: node,
     };
-    if (canonicalNodeKind(kind) === "n.web.render") {
-      setWebRenderNode(nodeData);
-    } else {
-      setDialogNode(nodeData);
-    }
+    setDialogNode(nodeData);
   }
 
   // ── Toolbar state indicators ──────────────────────────────────────────────
@@ -1701,23 +1689,6 @@ export default function PipelineEditor({
         onClose={() => setDialogNode(null)}
       />
 
-      {/* WebRenderDialog */}
-      <WebRenderDialog
-        nodeData={webRenderNode}
-        templates={dataState.pageTemplates.map((t: any) => ({
-          rel_path: String(t.rel_path || ""),
-          name: String(t.name || ""),
-        }))}
-        api={{
-          templateFile: api.templateFile,
-          templateSave: api.templateSave,
-          templateOutline: api.templateOutline,
-          templatesWorkspace: api.templatesWorkspace,
-        }}
-        allGraphNodes={currentGraph?.nodes || []}
-        onApply={handleNodeApply}
-        onClose={() => setWebRenderNode(null)}
-      />
 
       {/* PreviewDialog — the clicked canvas preview, at full size */}
       {openPreview ? (

@@ -7801,3 +7801,153 @@ export function getPage() { return { head: { title: "Not found" } }; }"#;
     assert!(html.contains(r#"<p id="path">/no/such/page</p>"#), "{html}");
     assert!(!html.contains("RWE component error"), "{html}");
 }
+
+/// A bundle webhook trigger whose sender proves itself (`trigger.secret_header`)
+/// is refused at the door without that proof: `trigger.telegram`'s route
+/// answers 401 to an update with no `X-Telegram-Bot-Api-Secret-Token`, 403 to a
+/// forged one, and runs the pipeline only for the secret the credential holds.
+///
+/// The shipped telegram bundle is installed as a project copy (`x.tgcopy.*`)
+/// whose HTTP calls go to the stub fixture, so activation's `setWebhook` never
+/// leaves the machine.
+#[tokio::test]
+async fn a_bundle_webhook_trigger_refuses_an_update_without_its_secret() {
+    let mut config = PlatformConfig::default();
+    let root = temp_test_dir("bundle-webhook-secret");
+    config.data_root = root.to_path_buf();
+    let password = format!("pw-{}-{}", std::process::id(), "x".repeat(8));
+    config.default_password = password.clone();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", &password).await;
+
+    let call = |uri: String, body: Value| {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .method("POST")
+                        .header(header::COOKIE, cookie)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body.to_string()))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            let status = response.status();
+            (status, response_json(response).await)
+        }
+    };
+    let file = |rel_path: &str, kind: &str, content: String| {
+        json!({ "rel_path": rel_path, "kind": kind, "size_bytes": content.len(), "reason": "test", "content": content })
+    };
+    let svg = || "<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n".to_string();
+    let stubbed = |text: &str| text.replace("\"http.response.fetch\"", "\"x.tgstub.response.fetch\"");
+    let telegram_copy = include_str!("../../src/pipeline/nodes/bundled/telegram/definition.json")
+        .replace("\"trigger.telegram\"", "\"x.tgcopy.telegram.receive\"")
+        .replace("\"telegram.message.send\"", "\"x.tgcopy.message.send\"")
+        .replace("\"telegram.message.edit\"", "\"x.tgcopy.message.edit\"")
+        .replace("\"name\": \"telegram\"", "\"name\": \"tgcopy\"")
+        .replace("\"package\": \"telegram\"", "\"package\": \"tgcopy\"")
+        .replace("telegram_bot", "tgcopy_bot");
+    let bundles = [
+        (
+            "tgstub",
+            vec![
+                file("definition.json", "node_definition", include_str!("../fixtures/contracts/node-bundle/http-stub/definition.json").to_string()),
+                file("functions/reply.zf.json", "pipeline", include_str!("../fixtures/contracts/node-bundle/http-stub/functions/reply.zf.json").to_string()),
+                file("icon.svg", "asset", svg()),
+            ],
+        ),
+        (
+            "tgcopy",
+            vec![
+                file("definition.json", "node_definition", telegram_copy),
+                file("functions/send-message.zf.json", "pipeline", stubbed(include_str!("../../src/pipeline/nodes/bundled/telegram/functions/send-message.zf.json"))),
+                file("functions/edit-message.zf.json", "pipeline", stubbed(include_str!("../../src/pipeline/nodes/bundled/telegram/functions/edit-message.zf.json"))),
+                file("functions/register-webhook.zf.json", "pipeline", stubbed(include_str!("../../src/pipeline/nodes/bundled/telegram/functions/register-webhook.zf.json"))),
+                file("functions/delete-webhook.zf.json", "pipeline", stubbed(include_str!("../../src/pipeline/nodes/bundled/telegram/functions/delete-webhook.zf.json"))),
+                file("functions/transform-update.zf.json", "pipeline", stubbed(include_str!("../../src/pipeline/nodes/bundled/telegram/functions/transform-update.zf.json"))),
+                file("icon.svg", "asset", svg()),
+                file("icons/trigger.svg", "asset", svg()),
+                file("icons/message-send.svg", "asset", svg()),
+                file("icons/message-edit.svg", "asset", svg()),
+            ],
+        ),
+    ];
+    for (package, files) in bundles {
+        let (status, body) = call(
+            "/api/projects/superadmin/default/nodes/install".to_string(),
+            json!({
+                "package_id": package,
+                "version": "1.0.0",
+                "artifact": {
+                    "apiVersion": "zebflow.com/v1",
+                    "kind": "HubPackage",
+                    "metadata": { "name": package, "version": "1.0.0" },
+                    "spec": { "asset_kind": "node_bundle", "title": package, "description": "A test bundle.", "files": files }
+                }
+            }),
+        )
+        .await;
+        assert_eq!((status, &body["ok"]), (StatusCode::OK, &json!(true)), "install {package}: {body}");
+    }
+
+    let token = format!("{}:{}", std::process::id(), "fake".repeat(9));
+    let secret = format!("{:064x}", std::process::id());
+    let (status, body) = call(
+        "/api/projects/superadmin/default/credentials".to_string(),
+        json!({ "credential_id": "bot", "title": "Bot", "kind": "tgcopy_bot", "notes": "",
+                "secret": { "token": token, "webhook_secret": secret } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for dsl in [
+        r#"register pipelines/tests/bot -- | x.tgcopy.telegram.receive --credential bot | web.response.send --body "{{ input.telegram }}""#,
+        "activate pipeline pipelines/tests/bot.zf.json",
+    ] {
+        let (_, body) = call("/api/projects/superadmin/default/pipelines/dsl".to_string(), json!({ "dsl": dsl })).await;
+        assert_eq!(body["ok"], json!(true), "dsl output: {body}");
+    }
+
+    let update = json!({ "update_id": 5, "message": {
+        "message_id": 9, "date": 1_767_225_600, "text": "hi",
+        "chat": { "id": 1001, "type": "private" }, "from": { "id": 77, "username": "demo" }
+    } });
+    let deliver = |header_value: Option<String>| {
+        let app = app.clone();
+        let update = update.clone();
+        async move {
+            let mut request = Request::builder()
+                .uri("/wh/superadmin/default/tg/bot")
+                .method("POST")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json");
+            if let Some(value) = header_value {
+                request = request.header("X-Telegram-Bot-Api-Secret-Token", value);
+            }
+            let response = app
+                .oneshot(request.body(Body::from(update.to_string())).expect("request"))
+                .await
+                .expect("response");
+            let status = response.status();
+            (status, response_json(response).await)
+        }
+    };
+
+    let (status, body) = deliver(None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"]["code"], json!("FW_WEBHOOK_SECRET_MISSING"));
+    let (status, body) = deliver(Some("forged".to_string())).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], json!("FW_WEBHOOK_SECRET_MISMATCH"));
+    assert!(!body.to_string().contains(&secret), "a refusal never repeats the secret");
+
+    let (status, body) = deliver(Some(secret.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["type"], json!("message"), "{body}");
+    assert_eq!(body["chat_id"], json!(1001));
+    assert_eq!(body["text"], json!("hi"));
+}

@@ -91,7 +91,7 @@ impl NodeRegistryService {
                 });
             let pkg_def = document.spec;
             // Bundles baked into the binary are curated by Zebflow, so their
-            // kinds live in `n.*` rather than the third-party namespace.
+            // kinds are plain official names, never the third-party `x.*`.
             validate_bundle_namespace(&pkg_def, BundleScope::Platform).unwrap_or_else(|error| {
                 panic!("embedded node bundle '{slug}' has an invalid namespace: {error}")
             });
@@ -1596,7 +1596,7 @@ impl NodeRegistryService {
     /// node's pins, fields, and configuration are, so it stays readable and can
     /// be reimplemented instead of failing opaquely.
     ///
-    /// Curated `n.*` nodes are omitted: the platform guarantees them, so they
+    /// Official nodes are omitted: the platform guarantees them, so they
     /// carry no portability risk.
     pub fn sync_project_node_interfaces(
         &self,

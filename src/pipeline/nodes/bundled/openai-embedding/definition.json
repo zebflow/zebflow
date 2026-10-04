@@ -51,7 +51,7 @@
       {
         "kind": "ai.embedding.generate",
         "title": "AI Embedding",
-        "description": "Generate text embeddings via OpenAI-compatible /v1/embeddings endpoint.",
+        "description": "Embeds text through an OpenAI-compatible /v1/embeddings endpoint (OpenAI, OpenRouter, or the credential's base URL). Answers `embedding: { vectors, model, dims, usage }` — one vector per `--text`, in order — and keeps the payload; a provider refusal delivers `error`.",
         "icon": "icons/embedding.svg",
         "ui_category": "logic.ai",
         "ui_category_label": "AI",
@@ -79,8 +79,11 @@
               "model": {
                 "type": "string"
               },
-              "input_expr": {
-                "type": "string"
+              "text": {
+                "type": [
+                  "array",
+                  "string"
+                ]
               }
             }
           },
@@ -90,21 +93,25 @@
               "config_key": "credential_id",
               "kind": "scalar",
               "required": true,
-              "description": "OpenAI or OpenRouter credential."
+              "value": "text",
+              "description": "The openai or openrouter credential."
             },
             {
               "flag": "--model",
               "config_key": "model",
               "kind": "scalar",
               "required": false,
-              "description": "Embedding model override (e.g. text-embedding-3-small)."
+              "value": "text",
+              "description": "The embedding model, e.g. text-embedding-3-small. Omitted: the credential's model, else text-embedding-3-small."
             },
             {
-              "flag": "--input-expr",
-              "config_key": "input_expr",
-              "kind": "scalar",
-              "required": false,
-              "description": "JS expression to extract text from input. Default: input.text || input.input"
+              "flag": "--text",
+              "config_key": "text",
+              "kind": "repeated_list",
+              "required": true,
+              "value": "text",
+              "max_repeat": 2048,
+              "description": "A text to embed — repeat for several, or one {{ [list] }}; each gets its own vector."
             }
           ],
           "fields": [
@@ -113,27 +120,55 @@
               "label": "Credential",
               "type": "select",
               "data_source": "credentials_open_ai",
-              "help": "Select an OpenAI or OpenRouter credential."
+              "help": "An OpenAI or OpenRouter credential."
             },
             {
               "name": "model",
               "label": "Model",
               "type": "text",
-              "help": "Embedding model id. Leave empty to use credential default."
+              "help": "Embedding model id. Empty: the credential's model, else text-embedding-3-small."
             },
             {
-              "name": "input_expr",
-              "label": "Input Expression",
+              "name": "text",
+              "label": "Text",
               "type": "textarea",
               "rows": 3,
-              "help": "JS expression to extract text to embed from the upstream payload. Examples: input.text, input.description, [input.title, input.body]. Default: input.text || input.input"
+              "help": "The text to embed: a literal or {{ expr }}, or {{ [list] }} for several."
             }
           ],
           "layout": [
             "credential_id",
             "model",
-            "input_expr"
-          ]
+            "text"
+          ],
+          "output_schema": {
+            "type": "object",
+            "properties": {
+              "embedding": {
+                "type": "object",
+                "properties": {
+                  "vectors": {
+                    "type": "array",
+                    "description": "One vector per text, in the order given."
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "dims": {
+                    "type": "integer",
+                    "description": "The length of each vector."
+                  },
+                  "usage": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "description": "Token usage as the provider reported it."
+                  }
+                }
+              }
+            }
+          }
         }
       }
     ]

@@ -575,15 +575,6 @@
         "trigger.manual"
       ]
     },
-    "n.trigger.mapserver": {
-      "label": "MAP",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.mapserver.svg",
-      "source_url": "",
-      "supports": [
-        "n.trigger.mapserver"
-      ]
-    },
     "trigger.mcp": {
       "label": "MCP",
       "method": "direct-svg",
@@ -591,15 +582,6 @@
       "source_url": "",
       "supports": [
         "trigger.mcp"
-      ]
-    },
-    "n.trigger.memsubscribe": {
-      "label": "SUB",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.memsubscribe.svg",
-      "source_url": "",
-      "supports": [
-        "n.trigger.memsubscribe"
       ]
     },
     "trigger.schedule": {

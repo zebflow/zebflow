@@ -37,12 +37,10 @@ pub const DEFAULT_DOCS_FOLDER: &str = "docs";
 pub const DEFAULT_DOCS_TEMPLATE: &str = "docs.template.tsx";
 /// The folder metadata file a docs folder may hold.
 pub const DOCS_META_FILE: &str = "_meta.yaml";
-/// What a docs-built page records as its generator in the site manifest.
-///
-/// It is the name the docs generator had before it became a mode of this
-/// kind. The manifest is read back on every regeneration of a live site, so
-/// the label stays: a regenerated site's manifest is byte-for-byte what it was.
-pub const DOCS_MANIFEST_GENERATOR: &str = "n.web.docs.generate";
+/// What a docs-built page records as its generator in the site manifest: the
+/// kind that built it, as the template mode records. A kind is written as
+/// itself; the retired `n.web.docs.generate` label is gone.
+pub const DOCS_MANIFEST_GENERATOR: &str = NODE_KIND;
 
 pub const CODE_CONFIG: &str = "FW_NODE_WEB_SITE_GENERATE_CONFIG";
 pub const CODE_MODE: &str = "FW_NODE_WEB_SITE_GENERATE_MODE";
