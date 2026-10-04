@@ -164,14 +164,9 @@ fn resolving_a_credential_registers_it_without_the_node_asking() {
     use zebflow::platform::model::{PlatformConfig, UpsertProjectCredentialRequest};
     use zebflow::platform::services::PlatformService;
 
+    let tmp = tempfile::tempdir().expect("tempdir");
     let mut cfg = PlatformConfig::default();
-    cfg.data_root = std::env::temp_dir().join(format!(
-        "zf_rule3_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    cfg.data_root = tmp.path().join("platform");
     let platform = PlatformService::from_config(cfg).expect("platform");
 
     let secret = "smtp-password-3f9a2c71b45e8d06";

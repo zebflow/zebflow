@@ -129,10 +129,10 @@ register auth/google-callback --
 [burn] kv.entry.delete --key "oauth:state:{{ input.script.state }}"
 [exchange] http.response.fetch --credential google-token-exchange --argument "CODE={{ input.script.code }}"
 [identity] javascript.script.run -- "const b = (input.response && input.response.body) || {}; const idt = b.id_token; if (!idt) throw new Error('google returned no id_token'); const seg = idt.split('.')[1]; const claims = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); if (!claims.email) throw new Error('id_token carried no email'); return { email: String(claims.email).toLowerCase(), name: claims.name || '' };"
-[member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --param "1={{ input.script.email }}"
+[member] sqlite.query.run --query "SELECT email, name, roles FROM members WHERE email = ?1" --param "1={{ $nodes.identity.script.email }}"
 [known] logic.if --when "input.query.rows && input.query.rows.length > 0"
 [claim] javascript.script.run -- "const m = input.query.rows[0]; return { sub: m.email, name: m.name, roles: JSON.parse(m.roles) };"
-[token] auth.token.create --credential session-signing-key --claim "sub={{ input.script.sub }}" --claim "name:public={{ input.script.name }}" --claim "roles={{ input.script.roles }}" --ttl 1d
+[token] auth.token.create --credential session-signing-key --claim "sub={{ $nodes.claim.script.sub }}" --claim "name:public={{ $nodes.claim.script.name }}" --claim "roles={{ $nodes.claim.script.roles }}" --ttl 1d
 [welcome] web.response.send --status 302 --header "Location=/wh/OWNER/PROJECT/me" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 [stranger] web.response.send --status 403 --body "This Google account is not a member yet."
 [in] -> [state]

@@ -871,15 +871,15 @@ mod tests {
         StoredUser,
     };
 
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "zebflow-join-token-{name}-{}-{}",
-            std::process::id(),
-            now_ts()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("temp root");
-        root
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("zebflow-join-token-{name}-"))
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        (tmp, root)
     }
 
     fn controller() -> ControllerSigningKey {
@@ -892,7 +892,7 @@ mod tests {
 
     #[test]
     fn a_first_join_stores_the_supplied_token_privately() {
-        let root = temp_root("first-join");
+        let (_tmp, root) = temp_root("first-join");
         let key = controller();
         let minted = mint_for("office-a", &key);
         let identity = resolve_office_identity(&root, Some(&minted.render()))
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn a_disagreeing_environment_variable_refuses_to_start() {
-        let root = temp_root("mismatch");
+        let (_tmp, root) = temp_root("mismatch");
         let key = controller();
         let stored = mint_for("office-a", &key);
         resolve_office_identity(&root, Some(&stored.render())).expect("first join");
@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn the_same_token_supplied_again_is_not_a_mismatch() {
-        let root = temp_root("same-token");
+        let (_tmp, root) = temp_root("same-token");
         let key = controller();
         let stored = mint_for("office-a", &key);
         resolve_office_identity(&root, Some(&stored.render())).expect("first join");
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn the_old_shared_secret_shape_refuses_and_names_the_fix() {
-        let root = temp_root("legacy-secret");
+        let (_tmp, root) = temp_root("legacy-secret");
         let err =
             resolve_office_identity(&root, Some("join-token")).expect_err("legacy shape refuses");
         assert_eq!(err.code, "CLUSTER_JOIN_TOKEN_MALFORMED");
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn a_controller_key_is_created_once_and_reused_for_the_life_of_the_instance() {
-        let root = temp_root("controller-key");
+        let (_tmp, root) = temp_root("controller-key");
         let first = resolve_controller_signing_key(&root).expect("first start");
         let path = controller_signing_key_path(&root);
         assert!(path.is_file());
@@ -1433,7 +1433,7 @@ mod tests {
     /// office on the next heartbeat ten seconds later.
     #[test]
     fn a_revoke_landing_mid_verification_is_not_undone_by_the_use_record() {
-        let root = temp_root("lost-update-revoke");
+        let (_tmp, root) = temp_root("lost-update-revoke");
         let inner = sqlite_at(&root);
         let token = mint_for("office-a", &controller());
         seed_token(inner.as_ref(), &token);
@@ -1475,7 +1475,7 @@ mod tests {
     /// restored, which would invalidate the token just issued to that office.
     #[test]
     fn a_rotation_landing_mid_verification_is_not_undone_by_the_use_record() {
-        let root = temp_root("lost-update-rotate");
+        let (_tmp, root) = temp_root("lost-update-rotate");
         let inner = sqlite_at(&root);
         let key = controller();
         let old = mint_for("office-a", &key);
@@ -1515,7 +1515,7 @@ mod tests {
     /// `base_url` — an office nothing can reach is not an office."
     #[test]
     fn minting_refuses_an_office_with_no_base_url() {
-        let root = temp_root("mint-no-base-url");
+        let (_tmp, root) = temp_root("mint-no-base-url");
         let data = sqlite_at(&root);
         let service = ClusterJoinTokenService::new(
             data.clone(),
@@ -1562,7 +1562,7 @@ mod tests {
     /// writing".
     #[test]
     fn an_uncontested_verification_records_the_use() {
-        let root = temp_root("touch");
+        let (_tmp, root) = temp_root("touch");
         let data = sqlite_at(&root);
         let key = controller();
         let token = mint_for("office-a", &key);
@@ -1591,7 +1591,7 @@ mod tests {
     /// FIX 3's direction rule, at the layer that owns it.
     #[test]
     fn each_half_of_the_credential_authenticates_one_direction_only() {
-        let root = temp_root("directions");
+        let (_tmp, root) = temp_root("directions");
         let key = Arc::new(controller());
         let data = sqlite_at(&root);
         let token = mint_for("office-a", &key);

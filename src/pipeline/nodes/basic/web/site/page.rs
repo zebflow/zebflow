@@ -274,6 +274,7 @@ fn escape_style_block(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use super::{build_static_html, default_route, page_key};
@@ -292,6 +293,17 @@ mod tests {
 
     fn page(path: &str) -> Config {
         Config { template: Some("pages/a.tsx".to_string()), path: Some(path.to_string()), ..Default::default() }
+    }
+
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("{name}-"))
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        (tmp, root)
     }
 
     #[test]
@@ -345,16 +357,10 @@ mod tests {
 
     #[tokio::test]
     async fn engine_generates_static_file_and_detects_unchanged_content() {
-        let root = std::env::temp_dir().join(format!(
-            "zebflow-staticgen-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("unix time")
-                .as_nanos()
-        ));
+        let (_tmp, root) = temp_root("zebflow-staticgen-test");
         let file = build_file_adapter(
             FileAdapterKind::Filesystem,
-            root.clone(),
+            root.to_path_buf(),
             std::sync::Arc::new(ProjectConfigurationService::new(root.join("users"))),
             None,
         );
@@ -445,7 +451,7 @@ export default function LyricPage(input) {
         )
         .with_project_layout(Some(layout.clone()))
         .with_template_cache(new_template_cache())
-        .with_data_root(root.clone());
+        .with_data_root(root.to_path_buf());
 
         let first = engine
             .execute_async(&graph, &ctx)
@@ -536,22 +542,14 @@ export default function LyricPage(input) {
             .await
             .expect("second generate");
         assert_eq!(second.value["site"]["status"], "unchanged");
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
     async fn regenerating_one_static_page_only_updates_that_page() {
-        let root = std::env::temp_dir().join(format!(
-            "zebflow-staticgen-single-page-update-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("unix time")
-                .as_nanos()
-        ));
+        let (_tmp, root) = temp_root("zebflow-staticgen-single-page-update");
         let file = build_file_adapter(
             FileAdapterKind::Filesystem,
-            root.clone(),
+            root.to_path_buf(),
             std::sync::Arc::new(ProjectConfigurationService::new(root.join("users"))),
             None,
         );
@@ -619,7 +617,7 @@ export default function LyricPage(input) {
         )
         .with_project_layout(Some(layout.clone()))
         .with_template_cache(new_template_cache())
-        .with_data_root(root.clone());
+        .with_data_root(root.to_path_buf());
 
         let aurora_ctx = PipelineContext {
             owner: "superadmin".to_string(),
@@ -718,7 +716,5 @@ export default function LyricPage(input) {
         let iwan_after = std::fs::read_to_string(&iwan_path).expect("iwan after");
         assert!(aurora_after.contains("I was listening to the ocean, again."));
         assert_eq!(iwan_before, iwan_after);
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

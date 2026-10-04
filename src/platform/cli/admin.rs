@@ -356,15 +356,15 @@ mod tests {
     use super::*;
     use crate::platform::model::{DataAdapterKind, PlatformOfficeIdentityWrite, now_ts};
 
-    fn temp_root(name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "zebflow-admin-{name}-{}-{}",
-            std::process::id(),
-            now_ts()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("temp root");
-        root
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn temp_root(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("zebflow-admin-{name}-"))
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        (tmp, root)
     }
 
     fn write(data: &dyn DataAdapter, id: &str, owner: &str, action: &str, at: i64) {
@@ -390,7 +390,7 @@ mod tests {
     /// unrelated repair. A decision must not be windowed.
     #[test]
     fn a_controller_created_account_is_refused_however_long_the_log_grows() {
-        let root = temp_root("deep-identity-log");
+        let (_tmp, root) = temp_root("deep-identity-log");
         let data = build_data_adapter(DataAdapterKind::Sqlite, &root).expect("adapter");
         let now = now_ts();
         write(
@@ -422,6 +422,5 @@ mod tests {
         assert!(err.to_string().contains("reachable by vouch"), "{err}");
         refuse_controller_created(data.as_ref(), "local-admin")
             .expect("a local account is still eligible");
-        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -361,7 +361,8 @@ impl AssistantPlatformTools {
                 name: "file_edit".to_string(),
                 description: "Surgical string replacement in a template file. \
                     No need to read the full file first — just provide old_string and new_string. \
-                    Fails if old_string not found or matches more than once.".to_string(),
+                    Fails if old_string not found or matches more than once. \
+                    A .tsx / .ts file is checked after the edit: template_problems lists what will break the page.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["rel_path", "old_string", "new_string"],
@@ -400,7 +401,8 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "file_batch_edit".to_string(),
                 description: "Apply multiple edits across one or more template files in a single call. \
-                    Each edit has rel_path, old_string, new_string. Fails fast on first error.".to_string(),
+                    Each edit has rel_path, old_string, new_string. Fails fast on first error. \
+                    Each .tsx / .ts file changed is checked: template_problems lists what will break the page.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["edits"],

@@ -1124,7 +1124,8 @@ impl ZebflowMcpHandler {
     #[tool(description = "Surgical string replacement in a template file. \
                        Equivalent to Edit — no need to read the full file first. \
                        Fails if old_string is not found or matches more than once (provide more context). \
-                       Returns the line number of the replacement.")]
+                       Answers { rel_path, line }; a .tsx / .ts file is checked as it stands after the edit and \
+                       template_problems lists what will break the page, as file_write does.")]
     async fn file_edit(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1203,7 +1204,9 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Apply multiple exact string edits across template files in one call. \
                        Each edit is rel_path + old_string + new_string. \
-                       Evicts template cache for edited files when the batch succeeds."
+                       Evicts template cache for edited files when the batch succeeds. \
+                       Answers { results }; every .tsx / .ts file it changed is checked once after its edits and \
+                       template_problems lists what will break the page, as file_write does."
     )]
     async fn file_batch_edit(
         &self,

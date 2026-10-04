@@ -12,14 +12,13 @@ use zebflow::language::{DenoSandboxConfigPatch, DenoSandboxEngine};
 /// Bounded: every call returns once the caller's own recv timeout expires.
 #[test]
 fn a_blocking_op_does_not_wedge_the_pool() {
-    let dir = std::env::temp_dir().join(format!(
-        "zf_fifo_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    // Kept bound (not `_`) for the whole test: the temp dir is removed when
+    // this drops, including on an early return or a failing assertion.
+    let tmp = tempfile::Builder::new()
+        .prefix("zf_fifo_")
+        .tempdir()
+        .expect("tempdir");
+    let dir = tmp.path();
     let fifo = dir.join("hang.fifo");
     let made = std::process::Command::new("mkfifo")
         .arg(&fifo)
@@ -57,9 +56,6 @@ fn a_blocking_op_does_not_wedge_the_pool() {
         }
     }
     println!("  workers still serving afterwards: {healthy}/8");
-
-    let _ = std::fs::remove_file(&fifo);
-    let _ = std::fs::remove_dir(&dir);
 
     assert_eq!(
         healthy, 8,

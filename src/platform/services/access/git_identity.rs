@@ -92,26 +92,14 @@ fn fallback_email(project_slug: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use crate::platform::adapters::data::build_data_adapter;
     use crate::platform::model::{CreateUserRequest, DataAdapterKind};
     use crate::platform::services::UserService;
 
-    fn temp_test_dir(label: &str) -> std::path::PathBuf {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("zebflow-{label}-{ts}"));
-        let _ = std::fs::create_dir_all(&path);
-        path
-    }
-
     #[test]
     fn falls_back_to_generated_identity_without_user_profile() {
-        let temp_dir = temp_test_dir("git-identity-project");
-        let data = build_data_adapter(DataAdapterKind::Sqlite, &temp_dir).unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data = build_data_adapter(DataAdapterKind::Sqlite, tmp.path()).unwrap();
         let users = Arc::new(UserService::new(data));
         let svc = GitIdentityService::new(users);
 
@@ -123,8 +111,8 @@ mod tests {
 
     #[test]
     fn user_profile_overrides_project_defaults() {
-        let temp_dir = temp_test_dir("git-identity-user");
-        let data = build_data_adapter(DataAdapterKind::Sqlite, &temp_dir).unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data = build_data_adapter(DataAdapterKind::Sqlite, tmp.path()).unwrap();
         let users = Arc::new(UserService::new(data));
         let _ = users.create_or_update_user(&CreateUserRequest {
             owner: "alice".to_string(),

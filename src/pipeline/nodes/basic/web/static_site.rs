@@ -41,8 +41,16 @@ impl SiteStore<'_> {
         }
     }
 
+    /// Writes `bytes` unless the object already holds exactly them: a run
+    /// that changes nothing leaves the store as it was (`--on-conflict skip`
+    /// is then a true no-op, and a bucket sees no needless PUTs).
     pub fn put(&self, rel: &str, bytes: &[u8]) -> Result<(), PipelineError> {
         let key = self.key(rel);
+        let unchanged = self.store.head(&key).is_ok_and(|stat| stat.size == bytes.len() as u64)
+            && self.get(rel).ok().flatten().is_some_and(|stored| stored == bytes);
+        if unchanged {
+            return Ok(());
+        }
         self.store.put(&key, bytes).map(|_| ()).map_err(|err| {
             PipelineError::new(
                 "FW_NODE_WEB_SITE_GENERATE_WRITE",
@@ -363,8 +371,9 @@ pub fn update_site_manifest(
 ) -> Result<StaticSiteManifest, PipelineError> {
     let deploy_base_url = normalize_deploy_base_url(deploy_base_url);
     let deploy_base_path = normalize_deploy_base_path(Some(deploy_base_path), "/")?;
-    let mut manifest = if let Some(raw) = site.get(SITE_MANIFEST_FILE)? {
-        serde_json::from_slice::<StaticSiteManifest>(&raw).unwrap_or_else(|_| {
+    let previous = site.get(SITE_MANIFEST_FILE)?;
+    let mut manifest = if let Some(raw) = &previous {
+        serde_json::from_slice::<StaticSiteManifest>(raw).unwrap_or_else(|_| {
             StaticSiteManifest::new(
                 site_root_rel.to_string(),
                 deploy_base_url.clone(),
@@ -382,7 +391,9 @@ pub fn update_site_manifest(
     manifest.site_root = site_root_rel.to_string();
     manifest.deploy_base_url = deploy_base_url;
     manifest.deploy_base_path = deploy_base_path;
-    manifest.updated_at_unix = now_unix();
+    // Kept until the end: a manifest whose content did not change keeps its
+    // time and is not written again.
+    let previous_updated_at = manifest.updated_at_unix;
 
     if !manifest
         .generators
@@ -468,13 +479,20 @@ pub fn update_site_manifest(
     }
     manifest.assets.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let payload = serde_json::to_vec_pretty(&manifest).map_err(|err| {
-        PipelineError::new(
-            "FW_NODE_WEB_SITE_GENERATE_MANIFEST_SERIALIZE",
-            format!("failed serializing site manifest: {err}"),
-        )
-    })?;
-    site.put(SITE_MANIFEST_FILE, &payload)?;
+    let serialize = |manifest: &StaticSiteManifest| {
+        serde_json::to_vec_pretty(manifest).map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_WEB_SITE_GENERATE_MANIFEST_SERIALIZE",
+                format!("failed serializing site manifest: {err}"),
+            )
+        })
+    };
+    manifest.updated_at_unix = previous_updated_at;
+    if previous.as_deref() == Some(serialize(&manifest)?.as_slice()) {
+        return Ok(manifest);
+    }
+    manifest.updated_at_unix = now_unix();
+    site.put(SITE_MANIFEST_FILE, &serialize(&manifest)?)?;
 
     Ok(manifest)
 }
@@ -1029,7 +1047,7 @@ mod tests {
         absolute_deploy_url, asset_group_id, localize_static_html_assets,
         normalize_deploy_base_path, normalize_page_output_path, normalize_site_root_rel_path,
         page_rel_path_from_site_root, route_path_for_output_path, site_manifest_rel_path,
-        update_site_manifest, SiteStore,
+        update_site_manifest, SiteStore, StaticSiteManifest, SITE_MANIFEST_FILE,
     };
     use crate::zebfs::{LocalZebFs, ZebFs};
     use tempfile::tempdir;
@@ -1213,6 +1231,32 @@ mod tests {
                 .any(|asset| asset.path == "_assets/project/fonts/demo.woff2")
         );
         assert!(assets.iter().all(|asset| asset.asset_group == "tpl-test"));
+    }
+
+    /// A run that changes nothing leaves the manifest as it was, time and all.
+    #[test]
+    fn an_unchanged_manifest_is_not_written_again() {
+        let temp = tempdir().expect("tempdir");
+        let store = local_store(temp.path());
+        let site = SiteStore { store: &store, root_rel: String::new() };
+        let page = StaticPageRecord {
+            path: "index.html".to_string(),
+            route: "/".to_string(),
+            template: "pages/a.tsx".to_string(),
+            asset_group: "tpl-a".to_string(),
+            generator: "web.site.generate".to_string(),
+        };
+        let update = || update_site_manifest(&site, "", None, "/", "web.site.generate", "pages/a.tsx", "tpl-a", std::slice::from_ref(&page), &[], false);
+        update().expect("first manifest");
+        // As if the first run were long ago.
+        let path = temp.path().join(SITE_MANIFEST_FILE);
+        let mut stored: StaticSiteManifest = serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
+        stored.updated_at_unix = 1;
+        let before = serde_json::to_vec_pretty(&stored).expect("bytes");
+        std::fs::write(&path, &before).expect("write");
+
+        assert_eq!(update().expect("same run").updated_at_unix, 1);
+        assert_eq!(std::fs::read(&path).expect("read"), before, "nothing changed, nothing written");
     }
 
     #[test]

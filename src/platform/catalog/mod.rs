@@ -362,14 +362,10 @@ impl CatalogService {
 mod tests {
     use super::*;
 
-    fn temp_shared_ui_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("zebflow-catalog-{name}-{}", std::process::id()))
-    }
-
     #[test]
     fn ui_install_review_reports_files_before_write() {
-        let dir = temp_shared_ui_dir("review-files-before-write");
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("shared-ui");
 
         let review = CatalogService::review_ui(
             &ResolvedProjectLayout::platform_default(),
@@ -386,14 +382,12 @@ mod tests {
         assert!(review.files_skipped.is_empty());
         assert!(review.files_overwritten.is_empty());
         assert_eq!(review.risk_level, "low");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn ui_install_review_reports_skip_and_overwrite() {
-        let dir = temp_shared_ui_dir("review-skip-overwrite");
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("shared-ui");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("button.tsx"), "local edit").unwrap();
 
@@ -415,7 +409,5 @@ mod tests {
         assert!(overwritten.files_skipped.is_empty());
         assert_eq!(overwritten.files_overwritten, vec!["shared/ui/button.tsx"]);
         assert_eq!(overwritten.risk_level, "medium");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1418,17 +1418,21 @@ fn ensure_contains(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use uuid::Uuid;
 
-    fn temp_cluster_dir() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("zebflow-k8s-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        root
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn temp_cluster_dir() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix("zebflow-k8s-")
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        (tmp, root)
     }
 
     #[test]
     fn init_and_add_office_updates_management_and_auto_update() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
         add_office(&root, "office-a").expect("add office");
 
@@ -1448,7 +1452,7 @@ mod tests {
 
     #[test]
     fn set_controller_rewrites_office_modes() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
         add_office(&root, "office-a").expect("add office");
         set_controller(&root, "office-a").expect("set controller");
@@ -1463,7 +1467,7 @@ mod tests {
 
     #[test]
     fn generated_manifests_leave_superadmin_password_optional() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
 
         let management = fs::read_to_string(root.join(MANAGEMENT_FILE)).expect("management");
@@ -1479,7 +1483,7 @@ mod tests {
 
     #[test]
     fn set_image_and_disable_auto_update_touch_disk_state() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
         set_image(&root, "example.com/zebflow:test").expect("set image");
         set_auto_update(&root, false).expect("disable");
@@ -1493,7 +1497,7 @@ mod tests {
 
     #[test]
     fn legacy_singular_workload_refs_are_normalized_on_write() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
 
         let management_path = root.join(MANAGEMENT_FILE);
@@ -1517,7 +1521,7 @@ mod tests {
 
     #[test]
     fn office_manifests_use_health_and_ready_probes() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
 
         let office = fs::read_to_string(root.join("office-main.yaml")).expect("office");
@@ -1531,7 +1535,7 @@ mod tests {
 
     #[test]
     fn office_manifests_default_to_fs_group_without_root_chmod_init() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
 
         let office = fs::read_to_string(root.join("office-main.yaml")).expect("office");
@@ -1546,7 +1550,7 @@ mod tests {
 
     #[test]
     fn legacy_init_chmod_strategy_is_preserved_when_present() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
 
         let management_path = root.join(MANAGEMENT_FILE);
@@ -1570,7 +1574,7 @@ mod tests {
 
     #[test]
     fn resource_suffix_renders_parallel_workloads_without_managed_secret() {
-        let root = temp_cluster_dir();
+        let (_tmp, root) = temp_cluster_dir();
         init_cluster(&root).expect("init");
         add_office(&root, "branch-a").expect("add office");
         set_namespace(&root, "main-app-cluster").expect("namespace");
@@ -1609,7 +1613,7 @@ mod tests {
 
     #[test]
     fn copy_jobs_use_source_and_target_workload_pvc_names() {
-        let source = temp_cluster_dir();
+        let (_tmp_source, source) = temp_cluster_dir();
         init_cluster(&source).expect("source init");
         add_office(&source, "zebflow-site-v4").expect("source office");
         set_namespace(&source, "main-app-cluster").expect("source namespace");
@@ -1625,7 +1629,7 @@ mod tests {
         )
         .expect("rewrite source workload names");
 
-        let target = temp_cluster_dir();
+        let (_tmp_target, target) = temp_cluster_dir();
         init_cluster(&target).expect("target init");
         add_office(&target, "zebflow-site-v4").expect("target office");
         set_namespace(&target, "main-app-cluster").expect("target namespace");

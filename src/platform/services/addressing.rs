@@ -85,15 +85,17 @@ impl Surface {
     }
 
     /// The host-agnostic prefix the platform serves this surface under.
-    pub fn platform_prefix(self, owner: &str, project: &str) -> String {
-        match self {
+    /// `files` has none (`addressing.md` §2): exposed objects answer only
+    /// through the ZebFS gateway on a project's hosts.
+    pub fn platform_prefix(self, owner: &str, project: &str) -> Option<String> {
+        Some(match self {
             Surface::Pages => format!("/wh/{owner}/{project}"),
             Surface::Ws => format!("/ws/{owner}/{project}"),
-            Surface::Files => format!("/files/{owner}/{project}"),
+            Surface::Files => return None,
             Surface::Static => format!("/static/{owner}/{project}"),
             Surface::Ms => format!("/ms/{owner}/{project}"),
             Surface::Mcp => format!("/api/projects/{owner}/{project}/mcp"),
-        }
+        })
     }
 
     /// Off unless the project turned it on: tiles need a published layer,
@@ -227,19 +229,19 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    /// The platform-form path this request is served as. `files` maps one to
-    /// one onto the store key: `/_files/photos/a.webp` is `photos/a.webp`,
-    /// readable only when the project's exposure rules say so.
-    pub fn platform_path(&self) -> String {
-        let prefix = self.surface.platform_prefix(&self.owner, &self.project);
-        if self.rest == "/" {
+    /// The platform-form path this request is served as; none for `files`,
+    /// which the gateway answers itself (`/_files/photos/a.webp` is the store
+    /// key `photos/a.webp`, readable only when the exposure rules say so).
+    pub fn platform_path(&self) -> Option<String> {
+        let prefix = self.surface.platform_prefix(&self.owner, &self.project)?;
+        Some(if self.rest == "/" {
             match self.surface {
                 Surface::Pages | Surface::Mcp => prefix,
                 _ => format!("{prefix}/"),
             }
         } else {
             format!("{prefix}{}", self.rest)
-        }
+        })
     }
 }
 
@@ -714,11 +716,11 @@ mod tests {
             dev_host: true,
             file_host: false,
         };
-        assert_eq!(r.platform_path(), "/files/o/p/a.jpg", "a folder name never decides exposure");
+        assert_eq!(r.platform_path(), None, "files has no platform form; the gateway answers it");
         let r = Resolution { surface: Surface::Pages, rest: "/".into(), ..r };
-        assert_eq!(r.platform_path(), "/wh/o/p");
+        assert_eq!(r.platform_path().as_deref(), Some("/wh/o/p"));
         let r = Resolution { surface: Surface::Pages, rest: "/book?x=1".into(), ..r };
-        assert_eq!(r.platform_path(), "/wh/o/p/book?x=1");
+        assert_eq!(r.platform_path().as_deref(), Some("/wh/o/p/book?x=1"));
     }
 }
 

@@ -1563,9 +1563,21 @@ fn strip_local_imports(
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
 
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("{name}-"))
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        (tmp, root)
+    }
 
     #[test]
     fn compile_detects_codemirror_library_imports() {
@@ -1591,10 +1603,7 @@ export default function DemoPage() {
 
     #[test]
     fn prepare_path_rewrite_is_not_required_for_zeb_imports() {
-        let root =
-            std::env::temp_dir().join(format!("rwe-zeb-rewrite-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create temp root");
+        let (_tmp, root) = temp_root("rwe-zeb-rewrite-test");
 
         let file = root.join("page.tsx");
         let source = r#"import { useState } from "zeb/react";
@@ -1607,14 +1616,11 @@ export default function Page() { return <div />; }"#;
             rewritten.contains(r#"from "zeb/react""#),
             "zeb/react imports must stay logical, got: {rewritten}"
         );
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn compile_collects_side_effect_css_imports() {
-        let root = std::env::temp_dir().join(format!("rwe-css-import-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let (_tmp, root) = temp_root("rwe-css-import-test");
         fs::create_dir_all(root.join("styles")).expect("create styles dir");
         fs::create_dir_all(root.join("pages")).expect("create pages dir");
         fs::write(
@@ -1660,17 +1666,13 @@ export default function Page() {
             "expected stylesheet dependency path, got {:?}",
             compiled.dependency_paths
         );
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// The contract rejects "a hook used without an import in that file".
     /// Before this, such a page compiled clean and failed in the browser.
     #[test]
     fn compile_refuses_a_hook_that_was_never_imported() {
-        let root = std::env::temp_dir().join(format!("rwe-hook-import-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create root");
+        let (_tmp, root) = temp_root("rwe-hook-import");
         let file = root.join("page.tsx");
         fs::write(
             &file,
@@ -1691,15 +1693,11 @@ export default function Page() {
         assert_eq!(err.code, "RWE_HOOK_NOT_IMPORTED");
         assert!(err.message.contains("useState"), "{}", err.message);
         assert!(err.message.contains("from \"zeb/react\""), "{}", err.message);
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn compile_accepts_a_hook_imported_from_zeb_react() {
-        let root = std::env::temp_dir().join(format!("rwe-hook-ok-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create root");
+        let (_tmp, root) = temp_root("rwe-hook-ok");
         let file = root.join("page.tsx");
         fs::write(
             &file,
@@ -1716,16 +1714,12 @@ export default function Page() {
             },
         )
         .expect("an imported hook compiles");
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// A hook name that is the project's own function is not the zeb hook.
     #[test]
     fn compile_accepts_a_locally_declared_hook_name() {
-        let root = std::env::temp_dir().join(format!("rwe-hook-local-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create root");
+        let (_tmp, root) = temp_root("rwe-hook-local");
         let file = root.join("page.tsx");
         fs::write(
             &file,
@@ -1742,8 +1736,6 @@ export default function Page() {
             },
         )
         .expect("a locally declared name is not the zeb hook");
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// A model emits `from "react"` out of habit. The refusal names `"zeb/react"`,
@@ -1751,9 +1743,7 @@ export default function Page() {
     /// `useRouter` do not exist there.
     #[test]
     fn compile_refuses_a_react_import_and_names_zeb_react() {
-        let root = std::env::temp_dir().join(format!("rwe-react-import-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create root");
+        let (_tmp, root) = temp_root("rwe-react-import");
 
         // Named hooks are caught by `validate_zeb_exclusive_symbols`, a default
         // import only by the allowlist. Both must name `"zeb/react"`, which is the
@@ -1790,8 +1780,6 @@ export default function Page() {
                 err.message
             );
         }
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// The contract refuses relative imports and requires the refusal to name
@@ -1799,9 +1787,7 @@ export default function Page() {
     /// here previously asserted the opposite.
     #[test]
     fn compile_refuses_a_relative_component_import() {
-        let root =
-            std::env::temp_dir().join(format!("rwe-relative-import-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let (_tmp, root) = temp_root("rwe-relative-import-test");
         fs::create_dir_all(root.join("pages")).expect("create pages dir");
         fs::create_dir_all(root.join("components")).expect("create components dir");
         fs::write(
@@ -1839,15 +1825,11 @@ export default function Page() {
             "the refusal must name the replacement, got: {}",
             err.message
         );
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn compile_refuses_a_relative_stylesheet_import() {
-        let root =
-            std::env::temp_dir().join(format!("rwe-relative-css-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let (_tmp, root) = temp_root("rwe-relative-css-test");
         fs::create_dir_all(root.join("pages")).expect("create pages dir");
         fs::write(
             root.join("pages/editor.css"),
@@ -1880,18 +1862,13 @@ export default function Page() {
 
         assert_eq!(err.code, "RWE_IMPORT_NOT_ALLOWED");
         assert!(err.message.contains("@/editor.css"), "{}", err.message);
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     /// The same table keeps npm:/node:/jsr:/http(s): specifiers legal — left
     /// alone rather than resolved. The allowlist had no branch for them.
     #[test]
     fn compile_leaves_external_specifiers_alone() {
-        let root =
-            std::env::temp_dir().join(format!("rwe-external-import-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create root");
+        let (_tmp, root) = temp_root("rwe-external-import-test");
         let file = root.join("page.tsx");
         fs::write(
             &file,
@@ -1914,17 +1891,12 @@ export default function Page() {
             },
         )
         .expect("an npm: specifier is one of the four legal forms");
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]
     #[test]
     fn canonical_module_identity_collapses_symlink_aliases() {
-        let root =
-            std::env::temp_dir().join(format!("rwe-canonical-module-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("create temp root");
+        let (_tmp, root) = temp_root("rwe-canonical-module-test");
 
         let target = root.join("real.tsx");
         let alias = root.join("alias.tsx");
@@ -1940,8 +1912,6 @@ export default function Page() {
         let aliased = canonical_module_identity(alias.to_str().expect("alias path utf8"))
             .expect("canonical alias");
         assert_eq!(real, aliased);
-
-        let _ = fs::remove_dir_all(&root);
     }
 }
 

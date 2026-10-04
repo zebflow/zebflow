@@ -120,6 +120,23 @@ pub fn template_problems(rel_path: &str, content: &str) -> Vec<String> {
         .collect()
 }
 
+/// Adds a template check's findings to a file tool's answer — the same two
+/// keys whichever tool wrote the file (`file_write`, `file_edit`,
+/// `file_batch_edit`): `template_problems`, and `next` saying what to do.
+/// A clean check adds nothing.
+fn add_template_problems(answer: &mut Value, problems: Vec<String>) {
+    if problems.is_empty() {
+        return;
+    }
+    if let Some(map) = answer.as_object_mut() {
+        map.insert("template_problems".to_string(), json!(problems));
+        map.insert(
+            "next".to_string(),
+            json!("The file is written, but these will break the page: fix each one, then route_fetch the page and check rwe_component_errors."),
+        );
+    }
+}
+
 // ── Orientation ───────────────────────────────────────────────────────────────
 
 /// What `start_here` teaches after the project's own state: how a pipeline
@@ -1444,6 +1461,7 @@ impl PlatformOps {
             return OpsResult::err("edits list must not be empty");
         }
         let mut results: Vec<String> = Vec::new();
+        let mut edited: Vec<&str> = Vec::new();
         for (i, (rel_path, old_string, new_string)) in edits.iter().enumerate() {
             if old_string.is_empty() {
                 results.push(format!("[{}] {} — SKIP: old_string empty", i + 1, rel_path));
@@ -1458,6 +1476,9 @@ impl PlatformOps {
             ) {
                 Ok(line_no) => {
                     results.push(format!("[{}] {} line {} — ok", i + 1, rel_path, line_no));
+                    if !edited.contains(&rel_path.as_str()) {
+                        edited.push(rel_path);
+                    }
                 }
                 Err(e) => {
                     results.push(format!("[{}] {} — ERROR: {}", i + 1, rel_path, e));
@@ -1466,7 +1487,23 @@ impl PlatformOps {
                 }
             }
         }
-        OpsResult::ok(results.join("\n"))
+        // Each file the batch changed is checked as it now stands, once,
+        // after every edit to it — the same check `file_write` runs.
+        let problems: Vec<String> = edited
+            .iter()
+            .flat_map(|rel_path| self.template_problems_on_disk(rel_path))
+            .collect();
+        let mut answer = json!({ "results": results });
+        add_template_problems(&mut answer, problems);
+        OpsResult::ok(serde_json::to_string_pretty(&answer).unwrap_or_default())
+    }
+
+    /// [`template_problems`] of a repository file as it is stored now.
+    fn template_problems_on_disk(&self, rel_path: &str) -> Vec<String> {
+        match self.platform.projects.read_repo_file_text(&self.owner, &self.project, rel_path) {
+            Ok(content) => template_problems(rel_path, &content),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Creates one file or folder at a path, with a starter body chosen by kind.
@@ -1548,14 +1585,7 @@ impl PlatformOps {
                 // A page or component is checked as it lands: the file is
                 // written either way, and the problems come back with their
                 // lines so they are fixed before the page is fetched.
-                let problems = template_problems(rel_path, content);
-                if !problems.is_empty() && let Some(map) = answer.as_object_mut() {
-                    map.insert("template_problems".to_string(), json!(problems));
-                    map.insert(
-                        "next".to_string(),
-                        json!("The file is written, but these will break the page: fix each one, then route_fetch the page and check rwe_component_errors."),
-                    );
-                }
+                add_template_problems(&mut answer, template_problems(rel_path, content));
                 OpsResult::ok_nav(serde_json::to_string_pretty(&answer).unwrap_or_default(), nav)
             }
             Err(e) => OpsResult::err(e.to_string()),
@@ -1627,7 +1657,11 @@ impl PlatformOps {
             old_string,
             new_string,
         ) {
-            Ok(line_no) => OpsResult::ok(format!("Replaced at line {} in {}.", line_no, rel_path)),
+            Ok(line_no) => {
+                let mut answer = json!({ "rel_path": rel_path, "line": line_no });
+                add_template_problems(&mut answer, self.template_problems_on_disk(rel_path));
+                OpsResult::ok(serde_json::to_string_pretty(&answer).unwrap_or_default())
+            }
             Err(e) => OpsResult::err(e.to_string()),
         }
     }
@@ -3454,5 +3488,40 @@ mod save_check_tests {
         // Not a template: nothing to check.
         let doc = ops.file_write("docs/notes.md", "# {{ not code }}\n");
         assert!(!doc.text.contains("template_problems"), "{}", doc.text);
+    }
+
+    /// `file_edit` and `file_batch_edit` run the same check on the file as it
+    /// stands after the edit, and answer it under the same keys.
+    #[test]
+    fn file_edits_report_a_broken_template_like_file_write() {
+        let platform = test_platform();
+        platform.file.ensure_project_layout("superadmin", "default").expect("layout");
+        let ops = PlatformOps::new((*platform).clone(), "superadmin", "default");
+        let page = "export default function Page() {\n  return <div>ok</div>;\n}\n";
+        ops.file_write("pages/a.tsx", page);
+        ops.file_write("pages/b.tsx", page);
+
+        let broke = ops.file_edit("pages/a.tsx", "<div>ok</div>", "<div>{cx(\"a\")}</div>");
+        let answer: Value = serde_json::from_str(&broke.text).expect("json answer");
+        assert_eq!(answer["line"], 2, "{answer}");
+        let problems = answer["template_problems"].as_array().expect("problems");
+        assert!(problems[0].as_str().unwrap().starts_with("pages/a.tsx:2:"), "{answer}");
+        assert!(problems[0].as_str().unwrap().contains("`cx` is used but never declared or imported"), "{answer}");
+        assert!(answer["next"].is_string(), "{answer}");
+
+        let fixed = ops.file_edit("pages/a.tsx", "{cx(\"a\")}", "ok");
+        let answer: Value = serde_json::from_str(&fixed.text).expect("json answer");
+        assert!(answer.get("template_problems").is_none(), "{answer}");
+
+        let edits = vec![
+            ("pages/a.tsx".to_string(), "<div>ok</div>".to_string(), "<div>\n".to_string()),
+            ("pages/b.tsx".to_string(), "<div>ok</div>".to_string(), "<div>{cx(\"b\")}</div>".to_string()),
+        ];
+        let batch = ops.file_batch_edit(&edits);
+        let answer: Value = serde_json::from_str(&batch.text).expect("json answer");
+        assert_eq!(answer["results"].as_array().map(Vec::len), Some(2), "{answer}");
+        let problems: Vec<&str> = answer["template_problems"].as_array().expect("problems").iter().filter_map(Value::as_str).collect();
+        assert!(problems.iter().any(|p| p.starts_with("pages/a.tsx:") && p.contains("does not parse")), "{answer}");
+        assert!(problems.iter().any(|p| p.starts_with("pages/b.tsx:2:") && p.contains("`cx`")), "{answer}");
     }
 }

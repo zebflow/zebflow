@@ -75,7 +75,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Query".to_string(),
         description: "Runs SQL across CSV, JSON, NDJSON and Parquet files in a project store as if they were tables. It has the \
-            GeoDataFusion `ST_*` functions. Each `--from \"<source> as <name>\"` binds one table: a store key, or `$expr` giving a FileRef or rows. \
+            GeoDataFusion `ST_*` functions. Each `--from \"<source> as <name>\"` binds one table: a store key, or a FileRef or rows (`\"{{ input.data }} as t\"`, or `$expr`). \
             The SQL is the body after `--` (or `--query`), SELECT or WITH only; `--param 1=…` binds `$1` (a whole `{{ expr }}` keeps its type). \
             Without a destination it adds `query: { rows, columns, row_count, truncated }`, as the db nodes do — `--limit` caps the rows (default 200, \
             at most 5000). With `--folder` / `--filename` / `--path` the whole result (at most 10000 rows) is written as `--format` and `query` holds \
@@ -111,7 +111,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--from".to_string(),
                 config_key: "from".to_string(),
-                description: "One table, repeated: \"<source> as <name>\" — a store key, or $expr giving a FileRef or rows.".to_string(),
+                description: "One table, repeated: \"<source> as <name>\" — a store key, or {{ expr }} (or $expr) giving a FileRef or rows.".to_string(),
                 kind: DslFlagKind::RepeatedList,
                 required: true,
                 value: "text".to_string(),
@@ -381,8 +381,7 @@ async fn execute_geodatafusion_engine(
         register_source(&ctx, stores, &binding, input, language, &mut temps).await?;
     }
 
-    let bounded_sql = bounded_select_sql(sql, fetch);
-    let batches = execute_geodatafusion_query(&ctx, &bounded_sql, params).await?;
+    let batches = execute_geodatafusion_query(&ctx, sql, params, fetch).await?;
     let mut rows = Vec::new();
     for batch in batches {
         rows.extend(record_batch_to_rows(&batch, CODE)?);
@@ -390,10 +389,6 @@ async fn execute_geodatafusion_engine(
     Ok(rows)
 }
 
-fn bounded_select_sql(sql: &str, fetch: usize) -> String {
-    let fetch = fetch.saturating_add(1);
-    format!("SELECT * FROM ({sql}) AS zf_table_query_limited LIMIT {fetch}")
-}
 
 #[derive(Debug, Clone)]
 struct SourceBinding {
@@ -475,8 +470,18 @@ async fn register_source(
     language: &dyn LanguageEngine,
     temps: &mut Vec<tempfile::NamedTempFile>,
 ) -> Result<(), PipelineError> {
-    if binding.source.trim_start().starts_with('$') {
-        let value = eval_deno_expr(language, &binding.source, &input.payload, &input.metadata)?;
+    // A source is a store key, a `$expr`, or a value a `{{ }}` already
+    // wrote into the text (`"{{ input.data }} as t"` — a FileRef or rows as
+    // JSON), which is read as that value, never as a key.
+    let source = binding.source.trim();
+    let value = if source.starts_with('$') {
+        Some(eval_deno_expr(language, &binding.source, &input.payload, &input.metadata)?)
+    } else if source.starts_with('{') || source.starts_with('[') {
+        serde_json::from_str::<Value>(source).ok()
+    } else {
+        None
+    };
+    if let Some(value) = value {
         if let Some(path) = zebfs_rel_path(&value)? {
             // A FileRef is read from the store it names, not the node's.
             let store = value.get("store").and_then(Value::as_str);
@@ -575,15 +580,22 @@ fn is_external_table_uri(source: &str) -> bool {
         || source.starts_with("https://")
 }
 
+/// Runs the statement and collects at most `fetch + 1` rows. The cap is a
+/// limit on the statement's own plan, never a `SELECT * FROM (…) LIMIT n`
+/// wrapper: the planner drops a subquery's `ORDER BY`, so a wrapper answers
+/// the rows in whatever order the scan produced them.
 async fn execute_geodatafusion_query(
     ctx: &SessionContext,
     sql: &str,
     params: &[Value],
+    fetch: usize,
 ) -> Result<Vec<RecordBatch>, PipelineError> {
+    let cap = Some(fetch.saturating_add(1));
     if params.is_empty() {
         return ctx
             .sql(sql)
             .await
+            .and_then(|frame| frame.limit(0, cap))
             .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))?
             .collect()
             .await
@@ -606,6 +618,7 @@ async fn execute_geodatafusion_query(
     let execute_sql = format!("EXECUTE zf_table_query({param_sql})");
     ctx.sql(&execute_sql)
         .await
+        .and_then(|frame| frame.limit(0, cap))
         .map_err(|err| PipelineError::new(EXECUTE_CODE, err.to_string()))?
         .collect()
         .await
@@ -728,16 +741,18 @@ mod tests {
         assert_eq!(source_format("uploads/a.txt").unwrap_err().code, SOURCE_CODE);
     }
 
-    #[test]
-    fn wraps_query_with_materialization_limit() {
-        let sql = bounded_select_sql("SELECT * FROM roads", 10);
-        assert_eq!(
-            sql,
-            "SELECT * FROM (SELECT * FROM roads) AS zf_table_query_limited LIMIT 11"
-        );
-        assert_eq!(
-            bounded_select_sql("SELECT * FROM roads", 0),
-            "SELECT * FROM (SELECT * FROM roads) AS zf_table_query_limited LIMIT 1"
-        );
+    /// The row cap keeps the statement's own order: `ORDER BY` holds, and
+    /// one row past `fetch` comes back to say more matched.
+    #[tokio::test]
+    async fn the_row_cap_keeps_the_statement_order() {
+        let ctx = SessionContext::new();
+        let sql = "SELECT * FROM (VALUES ('site-a', 120), ('site-b', 340), ('site-c', 90), ('site-d', 200)) AS t(city, pop) ORDER BY pop DESC";
+        for params in [vec![], vec![json!(0)]] {
+            let sql = if params.is_empty() { sql.to_string() } else { sql.replace("ORDER BY", "WHERE pop > $1 ORDER BY") };
+            let batches = execute_geodatafusion_query(&ctx, &sql, &params, 2).await.expect("query");
+            let rows: Vec<Value> = batches.iter().flat_map(|b| record_batch_to_rows(b, CODE).expect("rows")).collect();
+            let cities: Vec<&str> = rows.iter().filter_map(|r| r["city"].as_str()).collect();
+            assert_eq!(cities, ["site-b", "site-d", "site-a"], "{params:?}");
+        }
     }
 }

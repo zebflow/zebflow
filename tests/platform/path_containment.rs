@@ -18,12 +18,13 @@ use tower::ServiceExt;
 use zebflow::platform::model::CreateProjectRequest;
 use zebflow::platform::{PlatformConfig, PlatformService};
 
-fn temp_test_dir(name: &str) -> std::path::PathBuf {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!("zebflow-containment-{name}-{now}"))
+/// A temp dir whose removal is tied to the returned value's lifetime; the
+/// caller must keep the `tempfile::TempDir` bound (not `_`) for as long as
+/// `path` is used.
+fn temp_test_dir(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(format!("zebflow-containment-{name}"));
+    (tmp, path)
 }
 
 async fn login_cookie(app: axum::Router, identifier: &str, password: &str) -> String {
@@ -107,8 +108,9 @@ fn pipeline_source(id: &str, path: &str) -> String {
 /// rewrites the victim's pipeline in place.
 #[tokio::test]
 async fn a_pipeline_body_cannot_reach_across_projects_through_any_door() {
+    let (_tmp, data_root) = temp_test_dir("pipeline-cross-project");
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("pipeline-cross-project");
+    config.data_root = data_root;
     config.default_password = "test-pass".to_string();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform service"));
     let app = zebflow::platform::web::router(platform.clone()).await;
@@ -276,8 +278,9 @@ async fn a_pipeline_body_cannot_reach_across_projects_through_any_door() {
 /// Revert `normalize_repo_rel` and the install root escapes the repository.
 #[tokio::test]
 async fn a_hub_install_target_folder_cannot_write_outside_the_repository() {
+    let (_tmp, data_root_path) = temp_test_dir("hub-target-folder");
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("hub-target-folder");
+    config.data_root = data_root_path;
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform service"));

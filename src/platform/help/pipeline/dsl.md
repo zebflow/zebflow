@@ -432,7 +432,7 @@ keeps the key, and the run record redacts it:
 | input.text prompt --label "Describe the image"
 | http.response.fetch --credential image_api --body "{{ [ { taskType: 'imageInference', positivePrompt: input.prompt, width: 1024, height: 1024 } ] }}"
 | http.response.fetch --url "{{ input.response.body.data[0].imageURL }}" --parse bytes
-| fs.file.put --from "{{ input.response.body }}" --folder generated --preview image
+| fs.file.put --from "{{ $nodes.n3.response.body }}" --folder generated --preview image
 ```
 
 **Pictures from SVG.** `fs.image.render` draws an SVG — written by a model,

@@ -559,18 +559,16 @@ fn write_key_file(path: &Path, keys: &[SecretKey]) -> Result<(), CredentialKeyEr
 mod tests {
     use super::*;
 
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "zebflow-credential-keyring-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = fs::remove_dir_all(&root);
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("zebflow-credential-keyring-{name}-"))
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
         fs::create_dir_all(root.join("platform")).expect("temp root");
-        root
+        (tmp, root)
     }
 
     fn key_path(root: &Path) -> PathBuf {
@@ -579,7 +577,7 @@ mod tests {
 
     #[test]
     fn first_boot_writes_a_private_key_file_and_one_generation() {
-        let root = temp_root("first-boot");
+        let (_tmp, root) = temp_root("first-boot");
         let path = key_path(&root);
         let boot = CredentialKeyring::open(&path, None, &[], 100).expect("first boot");
         let row = boot.insert.expect("a first generation is minted");
@@ -613,7 +611,7 @@ mod tests {
 
     #[test]
     fn a_removed_key_refuses_rather_than_regenerating() {
-        let root = temp_root("removed-key");
+        let (_tmp, root) = temp_root("removed-key");
         let path = key_path(&root);
         let boot = CredentialKeyring::open(&path, None, &[], 1).expect("first boot");
         let row = boot.insert.expect("row");
@@ -640,7 +638,7 @@ mod tests {
 
     #[test]
     fn a_wrong_key_refuses_loudly_and_a_damaged_one_is_not_an_absent_one() {
-        let root = temp_root("wrong-key");
+        let (_tmp, root) = temp_root("wrong-key");
         let path = key_path(&root);
         let boot = CredentialKeyring::open(&path, None, &[], 1).expect("first boot");
         let row = boot.insert.expect("row");
@@ -672,7 +670,7 @@ mod tests {
 
     #[test]
     fn the_variable_and_the_file_disagreeing_refuses_and_overwrites_neither() {
-        let root = temp_root("mismatch");
+        let (_tmp, root) = temp_root("mismatch");
         let path = key_path(&root);
         let boot = CredentialKeyring::open(&path, None, &[], 1).expect("first boot");
         let row = boot.insert.expect("row");
@@ -696,7 +694,7 @@ mod tests {
 
     #[test]
     fn the_variable_supplies_a_key_on_an_instance_with_no_file() {
-        let root = temp_root("env-only");
+        let (_tmp, root) = temp_root("env-only");
         let path = key_path(&root);
         let supplied = SecretKey::generate().expect("generate").render();
         let boot = CredentialKeyring::open(&path, Some(&supplied), &[], 1).expect("env boot");
@@ -715,7 +713,7 @@ mod tests {
 
     #[test]
     fn rotation_adds_a_generation_and_leaves_the_old_one_readable() {
-        let root = temp_root("rotate");
+        let (_tmp, root) = temp_root("rotate");
         let path = key_path(&root);
         let boot = CredentialKeyring::open(&path, None, &[], 1).expect("first boot");
         let keyring = boot.keyring;
@@ -756,7 +754,7 @@ mod tests {
 
     #[test]
     fn a_rekey_interrupted_between_its_two_writes_is_still_readable() {
-        let root = temp_root("rekey-crash");
+        let (_tmp, root) = temp_root("rekey-crash");
         let path = key_path(&root);
         let boot = CredentialKeyring::open(&path, None, &[], 1).expect("first boot");
         let keyring = boot.keyring;
@@ -808,7 +806,7 @@ mod tests {
 
     #[test]
     fn a_ciphertext_naming_a_generation_the_keyring_lost_is_refused_by_name() {
-        let root = temp_root("unknown-generation");
+        let (_tmp, root) = temp_root("unknown-generation");
         let path = key_path(&root);
         let keyring = CredentialKeyring::open(&path, None, &[], 1)
             .expect("boot")

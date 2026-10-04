@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use zebflow::language::{DenoSandboxConfigPatch, DenoSandboxDangerZonePatch, DenoSandboxEngine};
@@ -49,7 +48,7 @@ fn deno_sandbox_clamps_limits_in_strict_mode() {
 
 #[test]
 fn deno_sandbox_runtime_supports_local_fetch_with_root() {
-    let dir = make_temp_dir("zebflow_deno_fetch");
+    let (_tmp, dir) = make_temp_dir("zebflow_deno_fetch");
     let file_path = dir.join("payload.json");
     fs::write(&file_path, br#"{"value": 42}"#).expect("write payload file");
 
@@ -69,9 +68,6 @@ return { value: data.value, hasTime: n.time.now() > 0 };
 
     assert_eq!(out.get("value").and_then(|v| v.as_i64()), Some(42));
     assert_eq!(out.get("hasTime").and_then(|v| v.as_bool()), Some(true));
-
-    let _ = fs::remove_file(file_path);
-    let _ = fs::remove_dir(dir);
 }
 
 #[test]
@@ -162,7 +158,7 @@ return { status: response.status };
 
 #[test]
 fn deno_sandbox_runtime_reads_only_under_the_project_root() {
-    let dir = make_temp_dir("zebflow_deno_project_root");
+    let (_tmp, dir) = make_temp_dir("zebflow_deno_project_root");
     fs::write(dir.join("payload.json"), br#"{"value": 7}"#).expect("write payload file");
 
     let engine = DenoSandboxEngine::for_project(&dir);
@@ -174,14 +170,11 @@ fn deno_sandbox_runtime_reads_only_under_the_project_root() {
         )
         .expect("a project-scoped sandbox reads its own project");
     assert_eq!(out.get("value").and_then(|v| v.as_i64()), Some(7));
-
-    let _ = fs::remove_file(dir.join("payload.json"));
-    let _ = fs::remove_dir(dir);
 }
 
 #[test]
 fn deno_sandbox_runtime_blocks_local_fetch_escape_paths() {
-    let dir = make_temp_dir("zebflow_deno_fetch_escape");
+    let (_tmp, dir) = make_temp_dir("zebflow_deno_fetch_escape");
     let outside = dir
         .parent()
         .expect("temp dir parent")
@@ -207,9 +200,6 @@ return { status: response.status, text: await response.text() };
         "unexpected error: {}",
         err.message
     );
-
-    let _ = fs::remove_file(outside);
-    let _ = fs::remove_dir(dir);
 }
 
 #[test]
@@ -300,12 +290,12 @@ return { x, missing, z };
     assert_eq!(out.get("z").and_then(|v| v.as_str()), Some("null_default"));
 }
 
-fn make_temp_dir(prefix: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("{prefix}_{nonce}"));
+/// A fixture root whose removal is tied to the returned `TempDir`'s
+/// lifetime; the caller must keep it bound (not `_`) for as long as `dir`,
+/// or any sibling path under it, is used.
+fn make_temp_dir(prefix: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().join(prefix);
     fs::create_dir_all(&dir).expect("create temp dir");
-    dir
+    (tmp, dir)
 }

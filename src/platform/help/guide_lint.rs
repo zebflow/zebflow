@@ -415,6 +415,14 @@ pub(super) fn check_example(example: &Example, defs: &[NodeDefinition]) -> Vec<S
                 if let Err(err) = crate::pipeline::engines::basic::validate_flow(&graph) {
                     problems.push(format!("would be refused at activation: {}", err.message));
                 }
+                // The same reference check `pipeline_check` runs as a
+                // warning (node-conventions.md §4): an `input.<key>` two
+                // upstream nodes answer, or a `$nodes.<id>.<key>` no node
+                // upstream answers. A guide example should name the one it
+                // means, not leave a reader to guess.
+                for problem in crate::pipeline::nodes::check::references::check_references(&graph, defs) {
+                    problems.push(format!("reference warning: {problem}"));
+                }
             }
             Ok(_) => {}
         }
@@ -683,5 +691,39 @@ mod tests {
         let retired: Vec<String> = guide.text.lines().flat_map(retired_reads).collect();
         assert_eq!(retired.len(), 2, "{retired:?}");
         assert_eq!(guide.text.lines().filter(|l| copies_a_flag_row(l)).count(), 1);
+    }
+
+    /// A whole example is also run through `check_references`
+    /// (`node-conventions.md` §4): an `input.<key>` two upstream nodes
+    /// answer is a reference warning, and naming the one meant with
+    /// `$nodes.<id>.<key>` clears it.
+    #[test]
+    fn the_lint_catches_an_ambiguous_reference_in_a_whole_example() {
+        let defs = catalogue();
+        let ambiguous = Example {
+            line: 1,
+            text: "| trigger.webhook --route /up --method POST\n\
+                   | sqlite.query.run -- \"SELECT 1\"\n\
+                   | sqlite.query.run -- \"SELECT 2\"\n\
+                   | web.response.send --body \"{{ input.query.rows }}\""
+                .to_string(),
+            whole: true,
+        };
+        let found = check_example(&ambiguous, &defs);
+        assert!(
+            found.iter().any(|p| p.starts_with("reference warning:") && p.contains("upstream nodes answer `query`")),
+            "{found:?}"
+        );
+
+        let named = Example {
+            line: 1,
+            text: "| trigger.webhook --route /up --method POST\n\
+                   | sqlite.query.run -- \"SELECT 1\"\n\
+                   | sqlite.query.run -- \"SELECT 2\"\n\
+                   | web.response.send --body \"{{ $nodes.n1.query.rows }}\""
+                .to_string(),
+            whole: true,
+        };
+        assert!(check_example(&named, &defs).is_empty(), "{:?}", check_example(&named, &defs));
     }
 }

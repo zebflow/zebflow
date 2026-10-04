@@ -3844,6 +3844,10 @@ pub fn error_group_parts(entry: &PipelineInvocationEntry) -> (String, String, St
             Some((c, m)) if c.len() < 48 && c.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit()) => (c.to_string(), m.to_string()),
             _ => (String::new(), err),
         };
+        // A message that names its code (`ZEBFS_READ_ONLY: …`, passed through
+        // a node's own) keys on that, the more precise one; any other keys on
+        // the registered code the run recorded beside the message.
+        let code = if code.is_empty() { t.error_code.clone().unwrap_or_default() } else { code };
         return (t.node_id.clone(), code, message);
     }
     (String::new(), String::new(), entry.error.clone().unwrap_or_default())
@@ -4539,5 +4543,36 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         // Move resource (requires both pipelines write + templates write — use higher capability)
         "move_resource" => Some(ProjectCapability::PipelinesWrite),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod error_group_tests {
+    use super::*;
+
+    /// A node's refusal carries its registered code beside the message, not
+    /// inside it; the error group keys on that code.
+    #[test]
+    fn an_error_group_takes_the_code_the_trace_recorded() {
+        let trace = serde_json::from_value(serde_json::json!([
+            { "node_id": "n0", "node_kind": "trigger.webhook", "duration_ms": 0, "input": null, "output": null, "status": "ok" },
+            { "node_id": "n1", "node_kind": "fs.file.delete", "duration_ms": 1, "input": null, "output": null, "status": "refused",
+              "error": "'a/b' is a folder that holds files", "error_code": "FW_NODE_FS_FILE_DELETE_FOLDER" }
+        ]))
+        .expect("trace");
+        let entry = PipelineInvocationEntry { status: "error".into(), trace, ..Default::default() };
+        let (node, code, message) = error_group_parts(&entry);
+        assert_eq!((node.as_str(), code.as_str()), ("n1", "FW_NODE_FS_FILE_DELETE_FOLDER"));
+        assert_eq!(message, "'a/b' is a folder that holds files");
+
+        // A contract's code the message carries is the more precise key.
+        let trace = serde_json::from_value(serde_json::json!([
+            { "node_id": "n1", "node_kind": "fs.file.put", "duration_ms": 1, "input": null, "output": null, "status": "failed",
+              "error": "ZEBFS_READ_ONLY: the store is read-only", "error_code": "FW_NODE_FS_FILE_PUT" }
+        ]))
+        .expect("trace");
+        let entry = PipelineInvocationEntry { status: "error".into(), trace, ..Default::default() };
+        let (_, code, message) = error_group_parts(&entry);
+        assert_eq!((code.as_str(), message.as_str()), ("ZEBFS_READ_ONLY", "the store is read-only"));
     }
 }

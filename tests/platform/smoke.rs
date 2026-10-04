@@ -8018,3 +8018,61 @@ async fn route_fetch_uploads_a_file_to_an_upload_route() {
 
     server.abort();
 }
+
+/// Deleting a project switches its live pipelines off: its webhook answers
+/// 404 afterwards, and calling it does not bring the project's folders back.
+#[tokio::test]
+async fn a_deleted_project_stops_answering_its_webhooks() {
+    let mut config = PlatformConfig::default();
+    let test_root = temp_test_dir("delete-project-webhooks");
+    config.data_root = test_root.to_path_buf();
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    let post_json = |uri: String, method: &'static str, body: Value| {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .method(method)
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response")
+        }
+    };
+    let created = post_json("/api/users/superadmin/projects".into(), "POST", json!({ "project": "doomed", "title": "Doomed" })).await;
+    assert_eq!(created.status(), StatusCode::OK);
+    for dsl in [
+        r#"register pipelines/hello -- | trigger.webhook --route /hello --method GET | web.response.send --body "hi""#,
+        "activate pipeline pipelines/hello.zf.json",
+    ] {
+        let r = post_json("/api/projects/superadmin/doomed/pipelines/dsl".into(), "POST", json!({ "dsl": dsl })).await;
+        assert_eq!(response_json(r).await["ok"], json!(true));
+    }
+    let call = || {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::builder().uri("/wh/superadmin/doomed/hello").body(Body::empty()).expect("request"))
+                .await
+                .expect("webhook")
+                .status()
+        }
+    };
+    assert_eq!(call().await, StatusCode::OK);
+
+    let deleted = post_json(
+        "/api/users/superadmin/projects/doomed".into(),
+        "DELETE",
+        json!({ "project_name": "doomed", "password": "test-pass" }),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    assert_eq!(call().await, StatusCode::NOT_FOUND);
+    assert!(!test_root.join("users/superadmin/doomed").exists(), "a call to a deleted project re-created its folders");
+}

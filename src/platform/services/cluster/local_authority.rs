@@ -430,15 +430,15 @@ mod tests {
     use crate::platform::adapters::data::build_data_adapter;
     use crate::platform::model::DataAdapterKind;
 
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "zebflow-local-authority-{name}-{}-{}",
-            std::process::id(),
-            now_ts()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("temp root");
-        root
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("zebflow-local-authority-{name}-"))
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        (tmp, root)
     }
 
     fn service(root: &Path) -> OfficeLocalAuthorityService {
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn a_standalone_instance_allows_local_login_and_has_nothing_to_break_out_of() {
-        let root = temp_root("standalone");
+        let (_tmp, root) = temp_root("standalone");
         let svc = service(&root);
         assert_eq!(svc.join_file(), OfficeJoinFile::Absent);
         assert!(svc.local_login_allowed().expect("allowed"));
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn a_joined_office_refuses_local_login_until_break_glass_and_the_refusal_is_actionable() {
-        let root = temp_root("joined");
+        let (_tmp, root) = temp_root("joined");
         let token = minted_token("office-a");
         write_token(&root, &token);
         let svc = service(&root);
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn break_glass_does_not_detach_and_detach_is_a_separate_act() {
-        let root = temp_root("break-glass-keeps-membership");
+        let (_tmp, root) = temp_root("break-glass-keeps-membership");
         let token = minted_token("office-a");
         write_token(&root, &token);
         let svc = service(&root);
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn a_break_glass_does_not_survive_into_a_later_join() {
-        let root = temp_root("refingerprint");
+        let (_tmp, root) = temp_root("refingerprint");
         write_token(&root, &minted_token("office-a"));
         let svc = service(&root);
         svc.break_glass("", "first").expect("break glass");
@@ -560,7 +560,7 @@ mod tests {
     /// locked out of itself".
     #[test]
     fn a_break_glass_stays_in_force_however_long_the_log_grows() {
-        let root = temp_root("deep-log");
+        let (_tmp, root) = temp_root("deep-log");
         let token = minted_token("office-a");
         write_token(&root, &token);
         let svc = service(&root);
@@ -602,7 +602,7 @@ mod tests {
     /// The same rule for the other decision this module makes: what to report.
     #[test]
     fn an_unreported_break_glass_survives_a_long_log() {
-        let root = temp_root("deep-log-reporting");
+        let (_tmp, root) = temp_root("deep-log-reporting");
         write_token(&root, &minted_token("office-a"));
         let svc = service(&root);
         let event = svc
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn a_damaged_token_file_fails_closed() {
-        let root = temp_root("damaged");
+        let (_tmp, root) = temp_root("damaged");
         let path = office_token_path(&root);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("parent");
         std::fs::write(&path, "not-a-token\n").expect("write");
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn only_a_break_glass_is_ever_reported() {
-        let root = temp_root("reporting");
+        let (_tmp, root) = temp_root("reporting");
         write_token(&root, &minted_token("office-a"));
         let svc = service(&root);
         let event = svc.break_glass("", "test").expect("break glass");

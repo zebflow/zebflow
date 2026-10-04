@@ -25,12 +25,13 @@ use zebflow::platform::{PlatformConfig, PlatformService};
 const SECRET: &str = "correct-horse-battery-staple-9271";
 const HOST: &str = "db.internal.example";
 
-fn temp_test_dir(name: &str) -> PathBuf {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!("zebflow-credential-{name}-{now}"))
+/// A fixture root whose removal is tied to the returned `TempDir`'s
+/// lifetime; the caller must keep it bound (not `_`) for as long as the
+/// path is used.
+fn temp_test_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(format!("zebflow-credential-{name}"));
+    (tmp, path)
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -127,8 +128,9 @@ fn files_containing(root: &Path, needle: &str) -> Vec<PathBuf> {
 
 #[tokio::test]
 async fn a_credential_saved_through_the_api_appears_nowhere_in_the_data_root_as_plaintext() {
+    let (_tmp, root) = temp_test_dir("at-rest");
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("at-rest");
+    config.data_root = root;
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
@@ -226,14 +228,13 @@ async fn a_credential_saved_through_the_api_appears_nowhere_in_the_data_root_as_
         elsewhere.is_empty(),
         "the instance key is stored beside the ciphertext: {elsewhere:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&data_root);
 }
 
 #[tokio::test]
 async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
+    let (_tmp, root) = temp_test_dir("rotate");
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("rotate");
+    config.data_root = root;
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
@@ -385,15 +386,14 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
             .expect("response");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
     }
-
-    let _ = std::fs::remove_dir_all(&data_root);
 }
 
 /// (c) The refusal, from a whole platform rather than from an adapter.
 #[tokio::test]
 async fn an_instance_restarted_without_its_key_refuses_to_start() {
+    let (_tmp, root) = temp_test_dir("refuse");
     let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("refuse");
+    config.data_root = root;
     config.default_password = "test-pass".to_string();
     let data_root = config.data_root.clone();
     {
@@ -464,6 +464,4 @@ async fn an_instance_restarted_without_its_key_refuses_to_start() {
     )
     .await;
     assert_eq!(read["credential"]["secret"]["password"], json!(SECRET));
-
-    let _ = std::fs::remove_dir_all(&data_root);
 }

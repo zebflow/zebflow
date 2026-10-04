@@ -104,8 +104,14 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
                   />
                   <code className="font-mono text-[0.74rem] text-muted-foreground">{s.default_path}</code>
                   <span className="text-[0.74rem] text-muted-foreground">·</span>
-                  <code className="font-mono text-[0.74rem] text-muted-foreground">{s.platform_path}</code>
-                  <Button type="button" size="sm" variant="ghost" className="ml-auto" onClick={() => copy(s.platform_path)}>{copied === s.platform_path ? "Copied" : "Copy"}</Button>
+                  {s.platform_path ? (
+                    <code className="font-mono text-[0.74rem] text-muted-foreground">{s.platform_path}</code>
+                  ) : (
+                    <span className="text-[0.74rem] text-muted-foreground">no platform form — the project's hosts only</span>
+                  )}
+                  {s.platform_path ? (
+                    <Button type="button" size="sm" variant="ghost" className="ml-auto" onClick={() => copy(s.platform_path)}>{copied === s.platform_path ? "Copied" : "Copy"}</Button>
+                  ) : null}
                 </li>
               ))}
             </ul>

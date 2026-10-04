@@ -1511,7 +1511,7 @@ async fn addressing_gate(
                 .query()
                 .map(|q| format!("?{q}"))
                 .unwrap_or_default();
-            let target = format!("{}{}", resolution.platform_path(), query);
+            let target = format!("{}{}", resolution.platform_path().unwrap_or_default(), query);
             if let Ok(path_and_query) = target.parse::<axum::http::uri::PathAndQuery>() {
                 let mut parts = request.uri().clone().into_parts();
                 parts.path_and_query = Some(path_and_query);
@@ -11897,6 +11897,24 @@ async fn api_delete_project(
         Ok(Some(_)) => {}
     }
 
+    // A deleted project answers nothing: every live pipeline is switched off
+    // first — its webhook routes, schedules, subscriptions and socket
+    // clients. Left registered, a webhook kept running after the delete,
+    // failed, and re-created the project's folders to log the failure.
+    let active = state
+        .platform
+        .projects
+        .list_active_pipeline_meta(&owner_slug, &project_slug)
+        .unwrap_or_default();
+    let mut unswitched = Vec::new();
+    for meta in &active {
+        if state.pipeline_switch.deactivate(&owner_slug, &project_slug, &meta.file_rel_path).await.is_err() {
+            // A locked pipeline refuses deactivation; it goes all the same.
+            state.platform.pipeline_runtime.evict(&owner_slug, &project_slug, &meta.file_rel_path);
+            unswitched.push(meta.file_rel_path.clone());
+        }
+    }
+
     // Delete metadata from the platform DB. A project that hosts a hub
     // authority is refused rather than cascaded, and that refusal is a
     // conflict the caller can act on, not a server fault.
@@ -11929,6 +11947,12 @@ async fn api_delete_project(
             // DB record already gone — log but don't fail the response
             eprintln!("WARN: Failed to remove project dir {:?}: {e}", project_root);
         }
+    }
+    // With its record gone, a sync drops whatever the switch could not.
+    for file_rel_path in &unswitched {
+        state.scheduler.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
+        state.kv_subscriber.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
+        state.ws_client_manager.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
     }
 
     Json(json!({"ok": true})).into_response()

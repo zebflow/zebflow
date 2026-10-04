@@ -433,12 +433,15 @@ mod tests {
     use super::*;
     use crate::rwe::CompiledScriptScope;
 
-    fn tmp_root(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        std::env::temp_dir().join(format!("zebflow-rwe-script-cache-{label}-{nanos}"))
+    /// A temp root removed when the returned `TempDir` is dropped; the
+    /// caller must keep it bound (not `_`) for as long as the path is used.
+    fn tmp_root(label: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("zebflow-rwe-script-cache-{label}-"))
+            .tempdir()
+            .expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        (tmp, root)
     }
 
     fn script(hash: &str, content: &str) -> CompiledScript {
@@ -458,8 +461,8 @@ mod tests {
 
     #[test]
     fn script_cache_persists_to_disk_and_reads_back() {
-        let root = tmp_root("disk");
-        let cache = RenderScriptCache::new(ScriptCacheConfig::new(root.clone(), 8))
+        let (_tmp, root) = tmp_root("disk");
+        let cache = RenderScriptCache::new(ScriptCacheConfig::new(root.to_path_buf(), 8))
             .expect("create script cache");
 
         let entry = script("h1", "console.log('one')");
@@ -468,14 +471,12 @@ mod tests {
 
         let loaded = cache.get("h1").expect("get").expect("content exists");
         assert_eq!(loaded, "console.log('one')");
-
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn script_cache_evicts_hot_entries_by_budget() {
-        let root = tmp_root("evict");
-        let cache = RenderScriptCache::new(ScriptCacheConfig::new(root.clone(), 10))
+        let (_tmp, root) = tmp_root("evict");
+        let cache = RenderScriptCache::new(ScriptCacheConfig::new(root.to_path_buf(), 10))
             .expect("create script cache");
 
         let _ = cache
@@ -491,14 +492,12 @@ mod tests {
 
         let b = cache.get("b").expect("read b").expect("b exists");
         assert_eq!(b, "abcdefghij");
-
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn scoped_store_rotates_old_hash_for_same_script_id() {
-        let root = tmp_root("rotate");
-        let cache = RenderScriptCache::new(ScriptCacheConfig::new(root.clone(), 128))
+        let (_tmp, root) = tmp_root("rotate");
+        let cache = RenderScriptCache::new(ScriptCacheConfig::new(root.to_path_buf(), 128))
             .expect("create script cache");
 
         let mut v1 = script("h1", "console.log('one')");
@@ -532,7 +531,5 @@ mod tests {
             .expect("get scoped")
             .expect("exists");
         assert_eq!(loaded, "console.log('two')");
-
-        let _ = fs::remove_dir_all(root);
     }
 }

@@ -1913,10 +1913,17 @@ mod tests {
             return;
         }
 
-        let data_root = std::env::temp_dir().join("zf-tts-node-benchmark");
-        let _ = fs::remove_dir_all(&data_root);
+        // The benchmark keeps every result inline (`"return": "inline"`); it
+        // never writes anything a human needs to inspect afterward, so a
+        // `TempDir` (removed when it drops, including on a failing
+        // assertion) is all the scratch data root needs. Kept bound (not
+        // `_`) for the whole test.
+        let tmp = tempfile::Builder::new()
+            .prefix("zf-tts-node-benchmark-")
+            .tempdir()
+            .expect("tempdir");
         let mut cfg = PlatformConfig::default();
-        cfg.data_root = data_root.clone();
+        cfg.data_root = tmp.path().to_path_buf();
         cfg.default_password = "secret".to_string();
         let platform = Arc::new(PlatformService::from_config(cfg).expect("platform"));
         let layout = platform

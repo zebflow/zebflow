@@ -16,6 +16,17 @@ fn library_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("blessed/source-libraries/ui/0.1/src")
 }
 
+/// A temp root removed when the returned `TempDir` is dropped; the caller
+/// must keep it bound (not `_`) for as long as the path is used.
+fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::Builder::new()
+        .prefix(&format!("{name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    (tmp, root)
+}
+
 fn component_files() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(library_src())
         .expect("zeb/ui source dir")
@@ -255,8 +266,7 @@ fn every_named_export_of_a_component_reaches_the_page() {
 /// defined` from exactly this path.
 #[test]
 fn a_component_that_imports_zeb_ui_inlines_it_transitively() {
-    let root = std::env::temp_dir().join(format!("zeb-ui-transitive-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let (_tmp, root) = temp_root("zeb-ui-transitive");
     std::fs::create_dir_all(root.join("components")).unwrap();
     std::fs::write(
         root.join("components/notice.tsx"),
@@ -284,7 +294,6 @@ fn a_component_that_imports_zeb_ui_inlines_it_transitively() {
     let server = &compiled.server_module_source;
     assert!(server.contains("function AlertTitle"), "AlertTitle must be inlined:\n{server}");
     assert!(!server.contains("zeb/ui/alert"), "the specifier must be resolved away:\n{server}");
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The materialized library survives the platform template root's debug
@@ -333,8 +342,7 @@ fn aliased_and_default_imports_bind_the_local_name() {
 /// 'Button' has already been declared` at render, naming a temp path.
 #[test]
 fn two_modules_exporting_one_name_are_refused_by_name() {
-    let root = std::env::temp_dir().join(format!("zeb-ui-collision-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let (_tmp, root) = temp_root("zeb-ui-collision");
     std::fs::create_dir_all(root.join("shared/ui")).unwrap();
     std::fs::write(root.join("shared/ui/button.tsx"), "export function Button() { return <button>mine</button>; }\nexport default Button;\n").unwrap();
     std::fs::write(
@@ -357,15 +365,13 @@ fn two_modules_exporting_one_name_are_refused_by_name() {
     .expect_err("a cloned Button next to zeb/ui's (reached through alert-dialog) must be refused");
     assert_eq!(err.code, "RWE_BUNDLE_NAME_COLLISION", "{err:?}");
     assert!(err.message.contains("'Button'") && err.message.contains("shared/ui/button.tsx"), "{}", err.message);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// An unknown component imported by a *component* (not the page) is refused
 /// by name too, not silently stripped as if it were a runtime library.
 #[test]
 fn an_unknown_component_reached_transitively_is_refused_by_name() {
-    let root = std::env::temp_dir().join(format!("zeb-ui-transitive-unknown-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let (_tmp, root) = temp_root("zeb-ui-transitive-unknown");
     std::fs::create_dir_all(root.join("components")).unwrap();
     std::fs::write(root.join("components/wiz.tsx"), "import { Wizard } from \"zeb/ui/wizard\";\nexport default function Wiz() { return <Wizard />; }\n").unwrap();
     std::fs::write(root.join("page.tsx"), "import Wiz from \"@/components/wiz\";\nexport default function Page() { return <Wiz />; }\n").unwrap();
@@ -375,7 +381,6 @@ fn an_unknown_component_reached_transitively_is_refused_by_name() {
     let err = compile(&source, CompileOptions { template_root: Some(root.display().to_string()), file_path: Some(root.join("page.tsx").display().to_string()), library_roots: roots, ..Default::default() })
         .expect_err("must be refused");
     assert!(err.message.contains("zeb/ui/wizard"), "{err:?}");
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A side override (`rounded-l-none`, `border-l-0`) must win over the

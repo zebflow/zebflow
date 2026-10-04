@@ -68,7 +68,7 @@ register game/api-room-create --
 [draft] javascript.script.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.webhook.body && input.webhook.body.name) || id };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.draft.script.id }}" --param "2={{ $nodes.draft.script.name }}" --param "3={{ Date.now() }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
 [ok] javascript.script.run -- "return { ok: true, room_id: $nodes.draft.script.id };"
-[resp] web.response.send --body "{{ input.script }}"
+[resp] web.response.send --body "{{ $nodes.ok.script }}"
 
 [trig] -> [draft]
 [draft] -> [ins]

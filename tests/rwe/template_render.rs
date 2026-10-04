@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use zebflow::language::NoopLanguageEngine;
@@ -60,14 +59,14 @@ fn demo_component_options() -> ReactiveWebOptions {
     }
 }
 
-fn temp_fixture_root(name: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("unix time")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("zebflow-{name}-{nonce}"));
+/// A fixture root whose removal is tied to the returned `TempDir`'s
+/// lifetime; the caller must keep it bound (not `_`) for as long as the
+/// path is used.
+fn temp_fixture_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join(name);
     fs::create_dir_all(&root).expect("create temp fixture root");
-    root
+    (tmp, root)
 }
 
 #[test]
@@ -269,7 +268,7 @@ fn template_render_supports_list_hydration_demo() {
 fn template_compile_resolves_imports_from_template_root() {
     let engine = RweReactiveWebEngine;
     let language = NoopLanguageEngine;
-    let root = temp_fixture_root("rwe-import-root");
+    let (_tmp, root) = temp_fixture_root("rwe-import-root");
     let shared_dir = root.join("shared/ui");
     let pages_dir = root.join("pages");
     fs::create_dir_all(&shared_dir).expect("create shared dir");

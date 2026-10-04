@@ -57,7 +57,7 @@ no `JSON.parse` step to write.
 | sekejap.query.run --param "1={{ input.script.cutoff }}" -- "SELECT * FROM events WHERE ts > $1"
 | ai.text.generate --provider openai --credential my-llm --answer-only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.query.rows }}
 | javascript.script.run -- "const r = input.text.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
-| sekejap.query.run --write --param "1={{ input.script.key }}" --param "2={{ input.script.summary }}" --param "3={{ input.script.patterns }}" --param "4={{ input.script.anomalies }}" --param "5={{ input.script.period }}" --param "6={{ input.script.generated_at }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+| sekejap.query.run --write --param "1={{ $nodes.n4.script.key }}" --param "2={{ $nodes.n4.script.summary }}" --param "3={{ $nodes.n4.script.patterns }}" --param "4={{ $nodes.n4.script.anomalies }}" --param "5={{ $nodes.n4.script.period }}" --param "6={{ $nodes.n4.script.generated_at }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
 ```
 
 ### daily-metrics-report — aggregate + report + send

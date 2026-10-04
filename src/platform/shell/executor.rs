@@ -663,11 +663,18 @@ impl DslExecutor {
                 // changed, so refresh the interfaces it carries in repo/nodes.
                 self.sync_node_interfaces();
                 let mut out = DslOutput::new_ok();
+                // A pipeline already live keeps answering with the version it
+                // was activated with; say so, or a re-register looks applied.
+                let live_differs = meta.active_hash.as_deref().is_some_and(|h| !h.is_empty() && h != meta.hash);
+                let next = if live_differs {
+                    format!("It is still live with its previous version: 'activate pipeline {}' makes this one live.", meta.file_rel_path)
+                } else {
+                    format!("Use 'activate pipeline {}' to make it live.", meta.file_rel_path)
+                };
                 out.push(DslLine::success(format!(
-                    "Pipeline '{}' registered ({} nodes). Use 'activate pipeline {}' to make it live.",
+                    "Pipeline '{}' registered ({} nodes). {next}",
                     meta.file_rel_path,
                     graph.nodes.len(),
-                    meta.file_rel_path
                 )));
                 out.extend(self.reference_warnings(&graph_source));
                 out

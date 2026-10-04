@@ -67,7 +67,7 @@ register forum/api-room-create --
 [draft] javascript.script.run -- "const id = String($trigger.body.name).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { id, name: $trigger.body.name };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.draft.script.id }}" --param "2={{ $nodes.draft.script.name }}" --param "3={{ Date.now() }}" --param "4={{ Date.now() }}" -- "INSERT INTO forum_rooms (_key, name, created_at, last_activity) VALUES ($1, $2, $3, $4)"
 [ok] javascript.script.run -- "return { ok: true, id: $nodes.draft.script.id };"
-[resp] web.response.send --body "{{ input.script }}"
+[resp] web.response.send --body "{{ $nodes.ok.script }}"
 
 [trig] -> [has_name]
 [has_name]:false -> [bad]

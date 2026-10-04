@@ -147,7 +147,7 @@ pub fn extensions(mime: &str) -> &'static [&'static str] {
         "application/pdf" => &["pdf"],
         "text/plain" => &["txt", "csv", "text"],
         "text/csv" => &["csv"],
-        "application/json" | "text/json" => &["json"],
+        "application/json" | "text/json" => &["json", "geojson"],
         "application/zip" => &["zip", "apk", "jar"],
         "video/mp4" => &["mp4", "m4v"],
         "video/webm" => &["webm"],
@@ -204,6 +204,8 @@ pub fn normalized_mime(mime: &str) -> String {
         "audio/x-wav" => "audio/wav".to_string(),
         "audio/m4a" => "audio/mp4".to_string(),
         "application/x-gzip" => "application/gzip".to_string(),
+        // GeoJSON is JSON: the map nodes read it from a `.geojson` key.
+        "application/geo+json" => "application/json".to_string(),
         _ => raw,
     }
 }
@@ -274,6 +276,15 @@ mod tests {
         assert_eq!(normalized_mime("audio/x-wav"), "audio/wav");
         assert_eq!(normalized_mime("audio/m4a"), "audio/mp4");
         assert!(Accept::Audio.mime_types().contains(&"audio/wav"));
+    }
+
+    /// A GeoJSON upload is JSON, kept under its own `.geojson` name.
+    #[test]
+    fn geojson_is_json_under_its_own_extension() {
+        let geo = br#"{"type":"FeatureCollection","features":[]}"#;
+        assert_eq!(effective_mime(geo, "application/geo+json", &[Accept::Json]).unwrap(), "application/json");
+        assert_eq!(stored_extension("places.geojson", "application/json"), "geojson");
+        assert_eq!(stored_extension("places", "application/json"), "json");
     }
 
     #[test]

@@ -820,13 +820,17 @@ mod tests {
 
     #[tokio::test]
     async fn engine_generates_static_docs_site_and_scaffolds_template() {
-        let root = std::env::temp_dir().join(format!(
-            "zebflow-docsgen-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("unix time")
-                .as_nanos()
-        ));
+        // Kept bound (not `_`) for the whole test: the temp dir is removed
+        // when this drops, including on a failing assertion — unless
+        // `ZEBFLOW_KEEP_DOCSGEN_TEST=1` asks to keep it for inspection.
+        let mut tmp = tempfile::Builder::new()
+            .prefix("zebflow-docsgen-test-")
+            .tempdir()
+            .expect("tempdir");
+        if std::env::var("ZEBFLOW_KEEP_DOCSGEN_TEST").ok().as_deref() == Some("1") {
+            tmp.disable_cleanup(true);
+        }
+        let root = tmp.path().to_path_buf();
         let file = build_file_adapter(
             FileAdapterKind::Filesystem,
             root.clone(),
@@ -894,7 +898,7 @@ mod tests {
         )
         .with_project_layout(Some(layout.clone()))
         .with_template_cache(new_template_cache())
-        .with_data_root(root.clone());
+        .with_data_root(root.to_path_buf());
 
         let result = engine
             .execute_async(&graph, &ctx)
@@ -971,9 +975,5 @@ mod tests {
         assert!(manifest.contains("\"site_root\": \"docs\""));
         assert!(manifest.contains("\"deploy_base_path\": \"/\""));
         assert!(manifest.contains("\"template\": \"pages/docs/docs.template.tsx\""));
-
-        if std::env::var("ZEBFLOW_KEEP_DOCSGEN_TEST").ok().as_deref() != Some("1") {
-            let _ = std::fs::remove_dir_all(root);
-        }
     }
 }
