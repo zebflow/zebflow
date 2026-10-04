@@ -10,13 +10,13 @@ A project has two MCPs, and they are never mixed:
 | What it is | the developer surface an agent uses to **build** the project | functions the project's **app** publishes to outside agents (ChatGPT, Claude, any MCP client) |
 | Like | the Studio API | a webhook |
 | Tools | `start_here`, `help`, `pipeline_register`, `file_write`, … | exactly the `trigger.mcp` pipelines on that route, nothing else |
-| Address | `/api/projects/{o}/{p}/mcp` (the `mcp` surface, [Addressing](./addressing.md) §2) | the app's own routes (the `pages` surface): `ROUTE` on the project's hosts, `/wh/{o}/{p}/ROUTE` on the platform |
+| Address | `/api/projects/{o}/{p}/mcp` on the platform only — never on a project host | the `mcp` surface ([Addressing](./addressing.md) §2): `/_mcp/ROUTE` on the project's hosts, `/mcp/{o}/{p}/ROUTE` on the platform; **off** by default |
 | Who may call | a developer's MCP session | whoever the route's `--auth` admits |
 
 ## Declaring one
 
 ```
-| trigger.mcp --route /mcp/shop --name search --description "Search the catalog by text"
+| trigger.mcp --route /shop --name search --description "Search the catalog by text"
               --parameter "q:string! the words to look for" --auth api_key --credential shop-mcp-key
 | postgres.query.run --credential shop --param "1={{ input.mcp.arguments.q }}" -- "SELECT … WHERE name ILIKE '%' || $1 || '%'"
 | web.response.send --body "{{ input.query.rows }}"
@@ -24,8 +24,8 @@ A project has two MCPs, and they are never mixed:
 
 - **A route is one MCP server.** Every active `trigger.mcp` with the same
   `--route` is one tool of that server; another `--route` is another server
-  with its own tools. In one project, `--route /mcp/catalog` and
-  `--route /mcp/support` publish two servers that share nothing.
+  with its own tools. In one project, `--route /catalog` and
+  `--route /support` publish two servers that share nothing.
 - `--name` is the tool name, unique on its route (a second is refused at
   activation, naming both pipelines); `--description` is what the agent reads;
   `--parameter name:type[!] "doc"` (repeat) declares its arguments, as on
@@ -49,7 +49,10 @@ A project has two MCPs, and they are never mixed:
   reaches the project only through what its pipelines do.
 - The project MCP never lists or calls published tools. A developer tests a
   published route as they test a webhook — by calling the route.
-- A published route is an app route: the `pages` surface's switches, hosts,
-  `/_` reservation and `--errors` apply to it as to `trigger.webhook`.
+- Published routes live on their own surface, `mcp`, never under the webhook
+  paths: knowing a project's pages and webhooks says nothing about its MCP.
+  The surface is **off** by default, so publishing takes two explicit acts —
+  switching the surface on and declaring `--auth` on each route. A route's
+  `--errors` and the surface's hosts work as for `trigger.webhook`.
 - Nothing is published by default: a project with no active `trigger.mcp`
   publishes no MCP at all.
