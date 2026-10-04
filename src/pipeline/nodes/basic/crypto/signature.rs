@@ -110,7 +110,7 @@ pub fn sign_definition() -> NodeDefinition {
         ..definition(
             SIGN_KIND,
             "Sign",
-            "HMAC-SHA256 of `--text`, keyed by the secret of the `hmac` credential `--credential` (an id from credential_list, never a value). \
+            "Signs `--text` with HMAC-SHA256 under an `hmac` credential. The signature is the HMAC-SHA256 of `--text`, keyed by the secret of the `hmac` credential `--credential` (an id from credential_list, never a value). \
              Adds `signature: { algorithm, value }` (lowercase hex) and keeps the rest of the payload. An empty `--text` is refused.",
             json!({ "algorithm": { "type": "string", "enum": ALGORITHMS }, "value": { "type": "string", "description": "Lowercase hex" } }),
             false,
@@ -131,7 +131,7 @@ pub fn verify_definition() -> NodeDefinition {
         ..definition(
             VERIFY_KIND,
             "Verify Signature",
-            "Check the hex `--signature` against the HMAC-SHA256 of `--text`, keyed by the secret of the `hmac` credential `--credential`, \
+            "Checks an HMAC-SHA256 signature in constant time. It checks the hex `--signature` against the HMAC-SHA256 of `--text`, keyed by the secret of the `hmac` credential `--credential`, \
              in constant time. A match answers `signature: { valid: true }` on the `true` pin, anything else `{ valid: false }` on `false`; \
              the rest of the payload is kept. An empty `--text` or `--signature` is refused.",
             json!({ "valid": { "type": "boolean" } }),

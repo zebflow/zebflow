@@ -2,85 +2,63 @@
 
 Authoritative code and docs:
 
-- `src/pipeline/model.rs`
-- `src/pipeline/engines/basic.rs`
-- `src/pipeline/nodes/basic/mod.rs`
-- `src/pipeline/nodes/basic/**/*.rs`
-- `src/platform/help/pipeline/index.md`
-- `src/platform/help/pipeline/dsl.md`
-- `src/platform/help/pipeline/authoring.md`
+- `docs/contracts/node-conventions.md` — the frozen node grammar (kinds, flags, values, answers)
+- `src/pipeline/model.rs` — `NodeDefinition`, `DslFlag`
+- `src/platform/shell/parser.rs` — the DSL parser
+- `src/pipeline/engines/basic.rs` — how a run moves the payload
+- `src/pipeline/nodes/basic/**/*.rs` — native nodes; `src/pipeline/nodes/bundled/` — official composites
+- `src/platform/help/pipeline/dsl.md` — the grammar as agents read it
+- `help(topic="pipeline/nodes")` and `help(topic="pipeline/nodes/<kind>")` — generated from the definitions
 
-Contract boundary:
+## The grammar
 
-- `src/platform/help/pipeline/index.md`
-- `src/platform/help/pipeline/dsl.md` (the DSL and `{{ }}` expressions)
-- `help(topic="pipeline/nodes")` — generated from the node definitions
-- `docs/contracts/project.md`
-- `docs/contracts/versioning.md`
+- A node is written as its kind: `family.noun.verb` (`fs.file.put`,
+  `postgres.query.run`, `mapserver.layer.publish`, `javascript.script.run`,
+  `telegram.message.send`). Entry nodes are `trigger.<source>`, run inputs
+  `input.<type>`, control `logic.<verb>`; a custom or Hub node is
+  `x.<package>.<noun>.<verb>`. There is no prefix and no alias.
+- Every node adds **one key** to the payload — its noun — through
+  `with_answer`, and keeps the rest: `input.webhook.body`, `input.query.rows`,
+  `input.file`, `input.script`, `input.token.access_token`. A trigger answers
+  under its source; `$trigger` is that envelope for the whole run.
+- `--from` names the subject of the node's own type; other inputs are typed
+  roles from the dictionary (`--text`, `--image`, `--file`, `--body`,
+  `--value`, `--argument`, …). Maps are repeated `key=value` (`--param 1=…`,
+  `--header "K=V"`), switches bare (`--write`), units travel in values
+  (`--timeout 30s`, `--max-size 10MB`), choices are closed.
+- Headers are sent exactly as written. Statement text never carries values;
+  `--param` binds them and `--write` allows a change.
+- Swappable vendors are one kind with `--provider`; each provider's signature
+  is printed on the node's page.
 
-Pipeline formats:
+## Formats
 
 | Format | Use when | Notes |
 |---|---|---|
-| Pipe DSL | Linear workflows | Starts with `|`; easiest for simple APIs/pages/jobs. |
-| Graph DSL | Branching or named pins | Uses `[id] node` and `[a]:pin -> [b]`. |
-| JSON graph | Exact storage and generated output | `.zf.json` files store nodes, edges, schemas, metadata. |
+| Pipe DSL | Linear workflows | Starts with `|`. |
+| Graph DSL | Branching, named pins, joins, loops | `[id] kind …` and `[a]:pin -> [b]`. |
+| JSON graph | Exact storage | `.zf.json` files store nodes, edges, notes, metadata. |
 
-Canonical lifecycle:
+## Lifecycle
 
-1. Choose `file_rel_path`, relative to the source root (the repo root by default): `api/{name}.zf.json`, `pages/{name}.zf.json`, `jobs/{name}.zf.json`. No `pipelines/` prefix.
-2. Write title and description.
-3. Register the pipeline.
-4. Activate when it should receive live traffic.
-5. Test through `pipeline_execute`, webhook, function call, schedule, or MCP trigger.
-6. Inspect invocation only when debugging or validating.
+1. Choose `file_rel_path`, relative to the source root: `api/{name}`,
+   `pages/{name}`, `jobs/{name}` (or the project's own layout). No
+   `pipelines/` prefix.
+2. Register the DSL (`pipeline_register`) — a draft.
+3. Activate (`pipeline_activate`) when it should receive traffic.
+4. Prove it through `route_fetch`, `pipeline_execute` or `pipeline_run`, and
+   `pipeline_get_invocations`.
 
-Required mental model:
+## Rules
 
-- `input` is business payload moving along edges.
-- `ctx` is run context and does not flow through edges.
-- Triggers start runs.
-- Nodes transform payloads.
-- Edges decide what downstream nodes receive.
-- Pins must match node definitions.
-
-Common trigger families:
-
-- `trigger.webhook`
-- `trigger.function`
-- `trigger.schedule`
-- `trigger.manual`
-- `trigger.room`
-- `trigger.socket`
-- `trigger.topic`
-- `trigger.mcp`
-- `trigger.error`
-
-Common work nodes:
-
-- `javascript.script.run`
-- `typescript.script.run`
-- `postgres.query.run`
-- `sqlite.query.run`
-- `sekejap.query.run`
-- `sekejap.record.create`
-- `http.response.fetch`
-- `function.result.call`
-- `logic.*`
-- `kv.*`
-- `fs.*`
-- `table.*`
-- `geo.*`
-- `mapserver.*`
-- `web.*`
-- `ws.*`
-- `ai.*`
-
-Safety rules:
-
-- Do not guess node flags. Read `help(topic="pipeline/nodes/{kind}")`.
-- Do not use malformed case pins. `logic.match` output edges must use declared case pins.
-- Do not carry huge arrays through `logic.foreach` unless the node is configured for item-only flow or the input is intentionally small.
-- Use FileRef/files for upload and artifact movement.
-- Use `fs.file.put` for every file write: `--from` an upload (checked by content, `--accept`), `--text`, or `--value` JSON; it answers `file`.
-- Use `table.data.convert` or `table.query.run` for structured file data instead of hand-parsing large CSV/JSON in scripts.
+- Never guess a node's flags or answer: read `help(topic="pipeline/nodes/<kind>")`.
+- Hand-written docs, skills and MCP texts carry no per-node flag tables or
+  answer shapes. They teach the grammar and point to the node's page, or
+  embed `<!-- node-flags:<kind> -->`, which renders the table from the
+  definition.
+- Every DSL example in the help, the skills, these references and the MCP
+  texts is parsed against the live catalogue by
+  `cargo test --lib guide_lint` — an unknown kind, an undeclared flag, a
+  choice word outside the list or a retired `input.<key>` fails it.
+- Files move as FileRefs; tables and spatial data go through `table.*`,
+  `geo.*`, `mapserver.*` rather than huge inline arrays.

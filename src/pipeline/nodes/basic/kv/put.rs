@@ -32,7 +32,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Put".to_string(),
-        description: "Write `--value` under `--key` in the project's key-value store (`--durable` for the disk-backed one), expiring \
+        description: "Writes one entry into the project's key-value store. Write `--value` under `--key` in the project's key-value store (`--durable` for the disk-backed one), expiring \
             after `--ttl` (a duration such as 600s or 1d; omitted, it never expires). Adds `entry: { key, ttl? }` and keeps the rest \
             of the payload. An empty `--value` is refused."
             .to_string(),

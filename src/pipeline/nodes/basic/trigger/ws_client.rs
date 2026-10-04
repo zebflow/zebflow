@@ -73,8 +73,8 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Credential],
-        title: "WS Client".to_string(),
-        description: "Keeps an outbound WebSocket connection to another server open while the pipeline is active and runs the pipeline \
+        title: "Socket Trigger".to_string(),
+        description: "Runs the pipeline for every message from an outbound WebSocket. It keeps an outbound WebSocket connection to another server open while the pipeline is active and runs the pipeline \
             for every message it receives — price feeds, a broker, another Zebflow. `--url` is `ws://` or `wss://`; `--credential` \
             supplies auth if the server needs it. A socket reconnects with backoff starting at `--delay` (default 5s); `--max-attempts` \
             bounds it (omitted = unlimited, 0 = never reconnect, N = at most N reconnects). Answers one key, `socket`: \

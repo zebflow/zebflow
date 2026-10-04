@@ -92,9 +92,8 @@ catch-all; it never sees a path that matched nothing.
 ```
 
 `--status 4xx`, `5xx` or empty widen it; the most specific active one wins.
-The trigger answers under `error`: `input.error.error_code`,
-`input.error.error_message`, `input.error.original_path`, `input.error.path`,
-`input.error.method` (`$trigger.error_code` … anywhere later in the chain).
+The trigger answers under its source, `error` (`input.error.original_path`
+is the path that failed); every field is on `help("pipeline/nodes/trigger.error")`.
 
 **Redirect**
 

@@ -19,7 +19,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Manual Trigger".to_string(),
-        description: "Starts the pipeline when someone runs it by hand — the Studio's Run button, `POST /pipelines/execute` with \
+        description: "Starts the pipeline when someone runs it by hand. That is the Studio's Run button, `POST /pipelines/execute` with \
             `trigger: \"manual\"`, or the console's `execute pipeline`. Answers one key, `manual`: whatever `input` the caller sent, \
             unchanged (`{}` when nothing was sent) — the Run form sends `{ body, files }`, so a field is `input.manual.body.<name>`, \
             and `$trigger.body.<name>` anywhere later. Use it for one-off jobs and admin actions; a pipeline another pipeline should call is \

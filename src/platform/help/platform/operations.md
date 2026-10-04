@@ -93,7 +93,10 @@ result would be too long for the tool window.
 10. docs_agent_write MEMORY.md         what was built, what was verified, what is open
 ```
 
-Before using a node for the first time in a session: `help(topic="pipeline/nodes/<kind>")`.
+A pipeline is a line of nodes written as their kinds (`family.noun.verb`),
+each adding one key — its noun — to the payload; the grammar is
+`help(topic="pipeline/dsl")`. Before using a node for the first time in a
+session: `help(topic="pipeline/nodes/<kind>")`.
 
 ---
 

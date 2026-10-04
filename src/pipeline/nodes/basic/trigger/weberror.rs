@@ -87,7 +87,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Web Error Trigger".to_string(),
-        description: "Runs when a request to this project ends in an HTTP error that no pipeline answered — a `/wh/…` path nobody \
+        description: "Runs when a request to this project ends in an HTTP error that no pipeline answered. It covers a `/wh/…` path nobody \
             registered (404), a refused auth (401/403), a failed node (500). `--status` picks which: `404`, `4xx`, `5xx`, or empty for \
             all. Answers one key, `error`: `{ error_code, error_message, original_path, method, request_id }` \
             (`input.error.error_code`, `$trigger.error_code`) — there is no `body`. End in \

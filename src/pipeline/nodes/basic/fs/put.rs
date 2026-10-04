@@ -202,8 +202,8 @@ pub fn definition() -> NodeDefinition {
             .collect(),
         examples: vec![
             NodeExample::dsl("Keep an uploaded photo", "fs.file.put --from \"{{ $trigger.files.photo }}\" --folder uploads --accept image --max-size 10MB")
-                .input(json!({ "body": { "caption": "Sunset" }, "files": { "photo": upload } }))
-                .output(json!({ "body": { "caption": "Sunset" }, "files": { "photo": upload }, "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": NODE_KIND, "trust": "untrusted" } }))
+                .input(json!({ "webhook": { "body": { "caption": "Sunset" }, "files": { "photo": upload } } }))
+                .output(json!({ "webhook": { "body": { "caption": "Sunset" }, "files": { "photo": upload } }, "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "uploads/3f9c….jpg", "filename": "3f9c….jpg", "mime": "image/jpeg", "kind": "image", "size": 182331, "sha256": "sha256:…", "lifecycle": "durable", "origin": NODE_KIND, "trust": "untrusted" } }))
                 .note("Then `sekejap.query.run --write --param \"1={{ $trigger.body.caption }}\" --param \"2={{ input.file.ref }}\" -- \"INSERT INTO photos (caption, path) VALUES ($1, $2)\"`. `file` is a FileRef, so `fs.image.thumbnail --from \"{{ input.file }}\"` and a `--preview image` take it as it is."),
             NodeExample::dsl("Write a report", "fs.file.put --value \"{{ input.report }}\" --folder exports --filename report.json")
                 .input(json!({ "report": { "total": 3 } }))

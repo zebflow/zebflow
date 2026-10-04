@@ -32,7 +32,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Expire".to_string(),
-        description: "Give the entry `--key` a new lifetime `--ttl` (a duration such as 30m, counted from now) without changing its \
+        description: "Gives a key-value entry a new lifetime without changing its value. Give the entry `--key` a new lifetime `--ttl` (a duration such as 30m, counted from now) without changing its \
             value; without `--ttl` the expiry is removed and it lives until deleted. `--durable` for the disk-backed store. Adds \
             `entry: { key, ttl?, updated }` and keeps the rest of the payload; a key that is not there answers `updated: false`."
             .to_string(),

@@ -6,6 +6,7 @@ Common local checks, cheapest first:
 cargo test --test rwe platform_templates_parse   # < 1 s: every platform template parses, no borrowed bindings
 cargo check
 cargo test --test framework help_matches         # the help tree matches the code (DSL fences build, imports resolve)
+cargo test --lib guide_lint                       # every DSL example in help, skills and MCP texts parses against the catalogue
 cargo test --lib
 cd tests/e2e && npm test                         # after any Studio or RWE change; fails on a console error
 ```

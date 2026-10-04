@@ -8,11 +8,10 @@ A server-rendered HTML page triggered by HTTP GET. The query result flows direct
 
 ## Core Pattern
 
-```
-trigger.webhook → (optional query node) → web.response.send --template pages/foo.tsx
-```
+`trigger.webhook`, then (optionally) a query node, then
+`web.response.send --template pages/foo.tsx`.
 
-The upstream node's entire output becomes `input` inside the TSX template. `input.query.rows` for postgres.query.run results; for a `javascript.script.run` (TypeScript: `typescript.script.run`) node, the template reads `input.script` — whatever shape the script returned, nested under that key, with the rest of the payload still there too.
+The payload that reaches `web.response.send` becomes `input` inside the TSX template. `input.query.rows` for postgres.query.run results; for a `javascript.script.run` (TypeScript: `typescript.script.run`) node, the template reads `input.script` — whatever shape the script returned, nested under that key, with the rest of the payload still there too.
 
 ---
 

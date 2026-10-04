@@ -36,7 +36,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Foreach".to_string(),
-        description: "Loop. Evaluates `--from` (JavaScript over `input`) to an array and runs everything wired to its `item` pin once per element, in order. \
+        description: "Runs the nodes wired to its `item` pin once per element of an array. Evaluates `--from` (JavaScript over `input`) to an array and runs everything wired to its `item` pin once per element, in order. \
              Each run receives `{ item, index, count }` — the element is `input.item`, not `input`; the upstream payload is \
              not carried unless `--keep-input` (then it is merged in beside `item`). `$item`, `$index` and `$count` name the \
              run's element anywhere down the branch, even after a node replaced the payload. Emissions are sequential; to \

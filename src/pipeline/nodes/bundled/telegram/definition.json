@@ -202,7 +202,7 @@
       {
         "kind": "telegram.message.send",
         "title": "Telegram Send Message",
-        "description": "Sends a message to a chat through the Telegram Bot API: text, or a photo (`--image`) or a document (`--file`) with `--text` as its caption. `--image` and `--file` take a URL Telegram can fetch or a Telegram file_id. Answers `message: { id, recipient, sent_at, telegram }` — `recipient` is the chat id, `telegram` the Message Telegram returned — and keeps the payload; a refusal from Telegram delivers `error`.",
+        "description": "Sends a message to a Telegram chat through the Bot API. It sends text, or a photo (`--image`) or a document (`--file`) with `--text` as its caption. `--image` and `--file` take a URL Telegram can fetch or a Telegram file_id. Answers `message: { id, recipient, sent_at, telegram }` — `recipient` is the chat id, `telegram` the Message Telegram returned — and keeps the payload; a refusal from Telegram delivers `error`.",
         "icon": "icons/message-send.svg",
         "ui_category": "communication.telegram",
         "ui_category_label": "Telegram",

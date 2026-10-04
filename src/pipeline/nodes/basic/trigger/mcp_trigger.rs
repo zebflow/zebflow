@@ -60,7 +60,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "MCP Tool Trigger".to_string(),
-        description: "Makes this pipeline a tool on the project's MCP endpoint: once active, `--name` appears in `tools/list` and an \
+        description: "Makes this pipeline a tool on the project's MCP endpoint. Once active, `--name` appears in `tools/list` and an \
             agent calling it runs the pipeline. Answers one key, `mcp`: `{ tool_name, arguments }` — an argument is \
             `input.mcp.arguments.<param>` (`$trigger.arguments.<param>`). `--params` declares the \
             arguments as `name:type` pairs (`string`, `number`, `boolean`, `object`, `array`); `--description` is what the agent \

@@ -60,7 +60,7 @@ pub fn definition(language: &Language) -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: language.title.to_string(),
         description: format!(
-            "Runs {name} in a sandbox: the body after `--` is the function body of `async function(input, n, ctx)`, and whatever it \
+            "Runs {name} in a sandbox and adds what it returns as `script`. The body after `--` is the function body of `async function(input, n, ctx)`, and whatever it \
              `return`s is added to the payload as `script` — the rest is kept, so the next node reads `input.script.x`. `input` is the \
              current payload (right after a webhook, `input.webhook.body.x`; the request anywhere, `$trigger.body.x`); \
              `ctx.trigger.params/query/auth` is the request and `ctx.nodes.<id>` an earlier node's output. It cannot set a status or header \

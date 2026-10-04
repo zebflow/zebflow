@@ -30,7 +30,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Head".to_string(),
-        description: "Check whether the entry `--key` exists and is still live in the project's key-value store (`--durable` for the \
+        description: "Checks whether a key-value entry exists, without reading its value. Check whether the entry `--key` exists and is still live in the project's key-value store (`--durable` for the \
             disk-backed one), without reading its value. Adds `entry: { key, exists }` and keeps the rest of the payload — branch on \
             `input.entry.exists` with `logic.if`."
             .to_string(),

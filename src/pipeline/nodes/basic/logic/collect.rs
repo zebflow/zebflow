@@ -25,7 +25,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Collect".to_string(),
-        description: "Fan-in. Waits until every node wired into it has delivered a payload, then fires once. Answers one key, \
+        description: "Joins branches: waits for every node wired into it, then fires once. Waits until every node wired into it has delivered a payload, then fires once. Answers one key, \
              `collect: { items, count }` — `items` the delivered payloads in DSL text order — on top of those payloads merged \
              in the same order (a key from a later one wins). Each upstream's answer also stays at `$nodes.<id>.<key>`. \
              Graph mode only — it needs two or more incoming edges (`[b] -> [d]`, `[c] -> [d]`). It is not a join for \

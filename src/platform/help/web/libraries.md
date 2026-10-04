@@ -214,7 +214,7 @@ import { DeckMap } from "zeb/deckgl";
 <DeckMap
   height="500px"
   initialViewState={{ longitude: 106.8, latitude: -6.2, zoom: 10 }}
-  layers={[{ type: "ScatterplotLayer", data: input.rows, getPosition: "[lon, lat]", getFillColor: [0, 180, 255], getRadius: 50, pickable: true }]}
+  layers={[{ type: "ScatterplotLayer", data: input.query.rows, getPosition: "[lon, lat]", getFillColor: [0, 180, 255], getRadius: 50, pickable: true }]}
   tooltip
 />
 ```

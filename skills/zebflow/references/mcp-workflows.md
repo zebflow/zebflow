@@ -51,6 +51,9 @@ Core tools by surface:
 
 Pipeline rule:
 
+- The DSL grammar is `help(topic="pipeline/dsl")`: kinds `family.noun.verb`,
+  one answer key per node, `--from` for the subject. A node's flags and
+  answer are on `help(topic="pipeline/nodes/<kind>")`.
 - Use `pipeline_register` for full pipeline creation or replacement.
 - Use `pipeline_patch` only after `pipeline_describe`, and only for one node at a time.
 - Long script/SQL bodies go in the DSL body (`-- "…"`); `pipeline_register` takes the whole DSL as `body`.

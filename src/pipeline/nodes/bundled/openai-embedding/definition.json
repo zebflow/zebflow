@@ -51,7 +51,7 @@
       {
         "kind": "ai.embedding.generate",
         "title": "AI Embedding",
-        "description": "Embeds text through the provider's /embeddings endpoint: `--provider openai` (OpenAI, its embedding models) or `--provider openrouter`, each with a credential of its own kind (the credential's base URL, when set, replaces the provider's). Answers `embedding: { vectors, model, dims, usage }` — one vector per `--text`, in order — and keeps the payload; a provider refusal delivers `error`.",
+        "description": "Turns text into embedding vectors through the provider's /embeddings endpoint. It takes `--provider openai` (OpenAI, its embedding models) or `--provider openrouter`, each with a credential of its own kind (the credential's base URL, when set, replaces the provider's). Answers `embedding: { vectors, model, dims, usage }` — one vector per `--text`, in order — and keeps the payload; a provider refusal delivers `error`.",
         "icon": "icons/embedding.svg",
         "ui_category": "logic.ai",
         "ui_category_label": "AI",

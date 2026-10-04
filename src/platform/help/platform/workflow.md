@@ -1,15 +1,13 @@
-# Full Project Workflow — Concept to Live Website
+# Full project workflow — from a brief to a live site
 
-A thought experiment: an LLM agent connects via MCP and builds a complete website from scratch.
-Scenario: **a personal blog with a public frontend and a private admin panel.**
-
-This document shows the exact sequence of thinking and tool calls at every phase.
+A worked example of one agent session over MCP: **a small blog with public
+pages and a signed-in admin**. Every step is a tool call; every claim of
+"done" is a fetch. The skills named here (`skill_read name="…"`) carry the
+procedure for each kind of task; this page shows them in order.
 
 ---
 
-## Phase 0: Connect
-
-Every session starts identically:
+## Phase 0 — orient
 
 ```
 start_here
@@ -18,592 +16,262 @@ docs_agent_read  name=MEMORY.md
 pipeline_list
 file_list
 connection_list
+credential_list
 ```
 
-**What the agent learns on a fresh project:**
-- AGENTS.md: "Blog for @acme. Tone is casual. DB is PostgreSQL (credential: `main-db`)."
-- MEMORY.md: "(empty — first session)"
-- pipeline_list: `count: 0` (nothing registered yet)
-- file_list: `count: 0` (no templates yet)
-- connection_list: `{"connections":[{"slug":"main-db","label":"main-db","kind":"postgres"}],"count":1}`
+On a fresh project the agent learns: no pipelines, a sample page, the two
+built-in connections (`default` SQLite, `default-multimodel` Sekejap), and
+one credential the owner made for sign-in — `jwt_main`, kind
+`jwt_signing_key`. A credential id is what `--credential` takes; a
+connection slug is only for `connection_describe`.
 
-**Agent decision:** Fresh project. Read the domain skills before anything else.
+Before writing, it reads what this task needs:
 
 ```
-help  topic="pipeline"
-help  topic="web"
-help  topic="platform/operations"
+skill_read  name=zebflow-basic
+skill_read  name=zebflow-engineering
+help        topic="pipeline/dsl"
+skill_read  name=zebflow-pipeline
 ```
 
 ---
 
-## Phase 1: Concept
+## Phase 1 — the brief and the layout
 
-The agent and owner clarify what "blog" means before touching any code.
-
-**Agent writes a concept doc first:**
+The agent writes down what it will build before building it, so the owner
+can correct it and the next session can read it:
 
 ```
-file_write
-  rel_path=docs/REQUIREMENTS.md
-  content="""
-  # Blog Concept
-
-  ## What we're building
-  A personal blog with:
-  - Public frontend: post list, post detail, about page
-  - Private admin: create/edit/delete posts, draft vs published
-
-  ## Users
-  - Visitors: read posts (no auth)
-  - Owner: write posts (JWT session cookie, verified at the trigger)
-
-  ## Tech decisions
-  - Data: PostgreSQL via credential `main-db`
-  - Auth: JWT session cookie on admin routes, checked by `--auth jwt`
-    on `trigger.webhook` before the pipeline runs
-  - No JS framework needed for public pages (hydration: static)
-  - Admin panel needs reactivity (hydration: reactive)
-  """
+file_write  rel_path=docs/brief.md  content="""
+# Blog
+Public: post list at /blog, a post at /blog/:slug.
+Admin (role admin): post list at /admin/posts, a form that creates a post.
+Data: Sekejap table posts (title, slug, body, status, created_at).
+Auth: --auth jwt --credential jwt_main on every /admin route, pages and POSTs.
+"""
+file_write  rel_path=docs/structure.md  content="""
+Flat layout: pages/ (pipelines + templates), api/ (POST pipelines), components/, db/.
+"""
 ```
-
-**Why write the doc first?** It forces clarity before any code. It's also committed to git — the owner can review and correct it before the agent builds anything.
 
 ---
 
-## Phase 2: Data Model
-
-Agent designs the schema and writes it as a spec doc before creating anything.
+## Phase 2 — the data
 
 ```
-file_write
-  rel_path=docs/schema.md
-  content="""
-  # Database Schema
-
-  ## posts
-  - id          SERIAL PRIMARY KEY
-  - slug        TEXT UNIQUE NOT NULL
-  - title       TEXT NOT NULL
-  - body        TEXT NOT NULL          -- markdown
-  - status      TEXT DEFAULT 'draft'  -- 'draft' | 'published'
-  - created_at  TIMESTAMPTZ DEFAULT now()
-  - updated_at  TIMESTAMPTZ DEFAULT now()
-
-  ## No other tables needed for v1.
-  """
+skill_read  name=zebflow-data
+skill_read  name=zebflow-sekejap
+connection_describe  slug=default-multimodel  scope=tables
+file_write  rel_path=db/001_posts.sql  content="CREATE TABLE posts (title TEXT, slug TEXT, body TEXT, status TEXT, created_at TEXT)"
+pipeline_run  body="| trigger.function | sekejap.query.run --write -- \"CREATE TABLE posts (title TEXT, slug TEXT, body TEXT, status TEXT, created_at TEXT)\""
+connection_describe  slug=default-multimodel  table=posts
 ```
 
-Agent checks DB schema:
+The migration is a file first and a statement second; `connection_describe`
+reads it back. `docs/schema.md` records the columns and what `status` may be.
+
+---
+
+## Phase 3 — the pipelines
+
+Each route is a pipeline and, when it renders, the template it names. Every
+node adds one key to the payload: after the query, the rows are
+`input.query.rows` — in the next node and in the page.
+
+**The post list**
 
 ```
-connection_describe  slug=main-db  scope=tables
+pipeline_register  file_rel_path=pages/blog  title="Blog"  body="""
+| trigger.webhook --route /blog --method GET
+| sekejap.query.run -- "SELECT title, slug, created_at FROM posts WHERE status = 'published' ORDER BY created_at DESC LIMIT 20"
+| web.response.send --template pages/blog.tsx
+"""
 ```
 
-Agent notes: the `posts` table must be created in PostgreSQL by the owner. Records this in MEMORY.md:
+**One post, or a 404**
 
 ```
-docs_agent_write
-  name=MEMORY.md
-  content="""
-  # Session 1 — Blog Setup
+pipeline_register  file_rel_path=pages/blog-post  title="Blog post"  body="""
+[a] trigger.webhook --route /blog/:slug --method GET
+[b] sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT title, body, created_at FROM posts WHERE slug = $1 AND status = 'published'"
+[c] logic.if --when "input.query.rows.length > 0"
+[d] web.response.send --template pages/blog-post.tsx
+[e] web.response.send --status 404 --template pages/not-found.tsx
+[a] -> [b]
+[b] -> [c]
+[c]:true -> [d]
+[c]:false -> [e]
+"""
+```
 
-  ## Status: Phase 2 (schema designed)
+**The admin list** — the trigger refuses anyone without the `admin` role
+before a node runs; a browser without a session is sent to the
+credential's `auth_redirect`.
 
-  ## Prerequisite (owner must do)
-  CREATE TABLE posts (
-    id SERIAL PRIMARY KEY,
-    slug TEXT UNIQUE NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    status TEXT DEFAULT 'draft',
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
+```
+pipeline_register  file_rel_path=pages/admin-posts  title="Admin posts"  body="""
+| trigger.webhook --route /admin/posts --method GET --auth jwt --credential jwt_main --role admin
+| sekejap.query.run -- "SELECT title, slug, status, created_at FROM posts ORDER BY created_at DESC LIMIT 100"
+| web.response.send --template pages/admin-posts.tsx
+"""
+```
+
+**Creating a post** — the form's POST: the same auth, a check, the insert
+with every value bound through `--param`, then a redirect back to the list.
+
+```
+pipeline_register  file_rel_path=api/admin-posts-create  title="Create post"  body="""
+[a] trigger.webhook --route /admin/posts --method POST --auth jwt --credential jwt_main --role admin
+[b] logic.if --when "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.trim().length > 0"
+[c] sekejap.query.run --write --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-') }}" --param "3={{ $trigger.body.body ?? '' }}" --param "4={{ $trigger.body.status === 'published' ? 'published' : 'draft' }}" --param "5={{ new Date().toISOString() }}" -- "INSERT INTO posts (title, slug, body, status, created_at) VALUES ($1, $2, $3, $4, $5)"
+[d] web.response.send --status 303 --header "Location=/admin/posts"
+[e] web.response.send --status 303 --header "Location=/admin/posts?error=title"
+[a] -> [b]
+[b]:true -> [c]
+[c] -> [d]
+[b]:false -> [e]
+"""
+```
+
+All four are `draft` until activated.
+
+---
+
+## Phase 4 — the pages
+
+```
+skill_read  name=zebflow-rwe
+skill_read  name=zebflow-ui
+list_ui_catalog
+```
+
+Every page imports what it uses and colours with theme roles. The list:
+
+```
+file_write  rel_path=pages/blog.tsx  content="""
+import "@/globals.css";
+
+export default function Blog(input) {
+  const posts = input.query?.rows ?? [];
+  return (
+    <main className="mx-auto max-w-2xl px-4 py-12">
+      <h1 className="text-3xl font-semibold text-foreground">Blog</h1>
+      {posts.length === 0 && <p className="mt-6 text-muted-foreground">No posts yet.</p>}
+      <ul className="mt-8 space-y-4">
+        {posts.map((p) => (
+          <li key={p.slug}>
+            <a href={`/blog/${p.slug}`} className="text-lg font-medium text-primary hover:underline">{p.title}</a>
+            <p className="text-sm text-muted-foreground">{p.created_at?.slice(0, 10)}</p>
+          </li>
+        ))}
+      </ul>
+    </main>
   );
-
-  ## Next
-  Build pipelines + templates (Phase 3+)
-  """
-```
-
----
-
-## Phase 3: Architecture Plan
-
-Before writing any pipeline or template, the agent designs the full architecture:
-
-```
-file_write
-  rel_path=docs/architecture.md
-  content="""
-  # Architecture
-
-  ## Pipelines
-  1. blog-list      GET /blog           → query published posts → render pages/blog-list
-  2. blog-post      GET /blog/:slug     → query single post    → render pages/blog-post
-  3. blog-about     GET /about          → static               → render pages/blog-about
-  4. admin-posts    GET /admin/posts    → auth check → query all posts → render pages/admin-posts
-  5. admin-post-get GET /admin/post/:slug → auth → query post → render pages/admin-editor
-  6. admin-post-put PUT /admin/post/:slug → auth → validate → upsert post → redirect
-
-  ## Templates
-  pages/blog-list.tsx       — post cards, pagination
-  pages/blog-post.tsx       — post detail, markdown render
-  pages/blog-about.tsx      — static about page
-  pages/admin-posts.tsx     — table of all posts, status badges, edit links
-  pages/admin-editor.tsx    — form: title, slug, body (markdown), status toggle, save
-
-  ## Auth strategy
-  Authenticate at the door, not in a script, on every /admin route:
-
-      trigger.webhook --route /admin/posts --method GET \
-        --auth jwt --credential session-key --role admin
-
-    The platform verifies the signature, the expiry and the role before the
-    pipeline runs, and redirects a browser with no session to the credential's
-    `auth_redirect`. A script cannot set a status, and a password compared with
-    `!==` in a script is neither constant-time nor hashed.
-  """
-```
-
-**Agent commits the docs before any code:**
-
-```
-git_command  subcommand=add      args="docs/"
-git_command  subcommand=commit   message="docs: concept, schema, architecture"
-```
-
----
-
-## Phase 4: Build Pipelines
-
-Agent builds pipelines one by one. Register first (draft), then scaffold template, then activate together.
-
-### 4.1 Public blog list
-
-```
-pipeline_register
-  file_rel_path=pages/blog-list.zf.json
-  body="""
-  | trigger.webhook --route /blog --method GET
-  | postgres.query.run --credential main-db -- "
-      SELECT id, slug, title, created_at
-      FROM posts
-      WHERE status = 'published'
-      ORDER BY created_at DESC
-      LIMIT 20
-    "
-  | web.response.send --template pages/blog-list.tsx
-  """
-```
-
-### 4.2 Blog post detail (slug from query param)
-
-```
-pipeline_register
-  file_rel_path=pages/blog-post.zf.json
-  body="""
-  | trigger.webhook --route /blog/post --method GET
-  | postgres.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
-      SELECT id, slug, title, body, created_at
-      FROM posts
-      WHERE slug = $1
-        AND status = 'published'
-      LIMIT 1
-    "
-  | web.response.send --template pages/blog-post.tsx
-  """
-```
-
-### 4.3 Admin posts list
-
-```
-pipeline_register
-  file_rel_path=admin/admin-posts.zf.json
-  body="""
-  | trigger.webhook --route /admin/posts --method GET \
-      --auth jwt --credential session-key --role admin
-  | postgres.query.run --credential main-db -- "
-      SELECT id, slug, title, status, created_at
-      FROM posts
-      ORDER BY created_at DESC
-    "
-  | web.response.send --template pages/admin-posts.tsx
-  """
-```
-
-### 4.4 Admin post editor (GET)
-
-```
-pipeline_register
-  file_rel_path=admin/admin-post-get.zf.json
-  body="""
-  | trigger.webhook --route /admin/post --method GET \
-      --auth jwt --credential session-key --role admin
-  | postgres.query.run --credential main-db --param "1={{ input.webhook.query.slug }}" -- "
-      SELECT id, slug, title, body, status
-      FROM posts
-      WHERE slug = $1
-      LIMIT 1
-    "
-  | web.response.send --template pages/admin-editor.tsx
-  """
-```
-
-### 4.5 Admin post save (PUT)
-
-```
-pipeline_register
-  file_rel_path=admin/admin-post-put.zf.json
-  body="""
-  | trigger.webhook --route /admin/post --method PUT \
-      --auth jwt --credential session-key --role admin
-  | javascript.script.run -- "
-      const { slug, title, body, status } = input.webhook.body
-      return { slug, title, body, status: status || 'draft' }
-    "
-  | postgres.query.run --credential main-db --write --param "1={{ input.script.slug }}" --param "2={{ input.script.title }}" --param "3={{ input.script.body }}" --param "4={{ input.script.status }}" -- "
-      INSERT INTO posts (slug, title, body, status)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (slug) DO UPDATE
-        SET title = EXCLUDED.title,
-            body  = EXCLUDED.body,
-            status = EXCLUDED.status,
-            updated_at = now()
-      RETURNING id, slug
-    "
-  | web.response.send --status 302 --header "Location=/admin/posts"
-  """
-```
-
-**Verify all pipelines registered:**
-
-```
-pipeline_list
-```
-
-Output shows 5 pipelines, all `draft`.
-
----
-
-## Phase 5: Build Templates
-
-Agent creates each template. Pattern: `file_create` → inspect scaffold → `file_write` with real content.
-
-### 5.1 Blog list page
-
-```
-file_create  kind=page  name=blog-list
-file_read     rel_path=pages/blog-list.tsx
-```
-
-Agent sees the scaffold, then writes the real component:
-
-```
-file_write
-  rel_path=pages/blog-list.tsx
-  content="""
-  export default function BlogList(input) {
-    const posts = input.query?.rows ?? [];
-    return (
-      <div className="max-w-2xl mx-auto px-4 py-12">
-        <h1 className="text-4xl font-bold text-slate-900 mb-2">Blog</h1>
-        <p className="text-slate-500 mb-10">Thoughts on code and building things.</p>
-        <div className="space-y-6">
-          {posts.map(p => (
-            <a key={p.id} href={`/blog/post?slug=${p.slug}`}
-               className="block group p-6 rounded-xl border border-slate-200 hover:border-sky-300 transition-colors">
-              <p className="text-xs text-slate-400 mb-1">{p.created_at?.slice(0, 10)}</p>
-              <h2 className="text-xl font-semibold text-slate-800 group-hover:text-sky-600 transition-colors">
-                {p.title}
-              </h2>
-            </a>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  export const page = { title: "Blog", description: "All posts" };
-  export const app  = { hydration: "static" };
-  """
-```
-
-### 5.2 Post detail
-
-```
-file_create  kind=page  name=blog-post
-file_write
-  rel_path=pages/blog-post.tsx
-  content="""
-  import { Markdown } from "zeb/markdown";
-
-  export default function BlogPost(input) {
-    const post = input.query?.rows?.[0];
-    if (!post) return (
-      <div className="max-w-2xl mx-auto px-4 py-12">
-        <h1 className="text-2xl font-bold text-slate-800">Post not found</h1>
-        <a href="/blog" className="text-sky-500 mt-4 inline-block">← Back</a>
-      </div>
-    );
-    return (
-      <article className="max-w-2xl mx-auto px-4 py-12">
-        <a href="/blog" className="text-sky-500 text-sm mb-6 inline-block">← All posts</a>
-        <h1 className="text-4xl font-bold text-slate-900 mb-2">{post.title}</h1>
-        <p className="text-slate-400 text-sm mb-10">{post.created_at?.slice(0, 10)}</p>
-        <Markdown content={post.body} className="prose prose-slate max-w-none" />
-      </article>
-    );
-  }
-
-  export const page = { title: "Post" };
-  export const app  = { hydration: "static" };
-  """
-```
-
-### 5.3 Admin posts table
-
-```
-file_create  kind=page  name=admin-posts
-file_write
-  rel_path=pages/admin-posts.tsx
-  content="""
-  import { Badge } from "zeb/ui/badge";
-  import { Button } from "zeb/ui/button";
-
-  export default function AdminPosts(input) {
-    const posts = input.query?.rows ?? [];
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-10">
-        <div className="flex items-center justify-between mb-8">
-          <h1 className="text-2xl font-bold text-slate-900">Posts</h1>
-          <Button as="a" href="/admin/post?slug=new">New post</Button>
-        </div>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-slate-400 border-b border-slate-200">
-              <th className="pb-2 font-medium">Title</th>
-              <th className="pb-2 font-medium">Status</th>
-              <th className="pb-2 font-medium">Date</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {posts.map(p => (
-              <tr key={p.id} className="border-b border-slate-100">
-                <td className="py-3 text-slate-800">{p.title}</td>
-                <td className="py-3">
-                  <Badge variant={p.status === 'published' ? 'default' : 'secondary'}>
-                    {p.status}
-                  </Badge>
-                </td>
-                <td className="py-3 text-slate-400">{p.created_at?.slice(0, 10)}</td>
-                <td className="py-3">
-                  <a href={`/admin/post?slug=${p.slug}`}
-                     className="text-sky-500 hover:underline text-xs">Edit</a>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  export const page = { title: "Admin — Posts" };
-  export const app  = { hydration: "static" };
-  """
-```
-
-### 5.4 Admin editor
-
-```
-file_create  kind=page  name=admin-editor
-file_write
-  rel_path=pages/admin-editor.tsx
-  content="""
-  import { useState } from "zeb/react";
-  import { Button } from "zeb/ui/button";
-  import { Input } from "zeb/ui/input";
-  import { Field } from "zeb/ui/field";
-  import { Label } from "zeb/ui/label";
-
-  export default function AdminEditor(input) {
-    const post = input.query?.rows?.[0] ?? {};
-    const [slug, setSlug]     = useState(post.slug    ?? '');
-    const [title, setTitle]   = useState(post.title   ?? '');
-    const [body, setBody]     = useState(post.body    ?? '');
-    const [status, setStatus] = useState(post.status  ?? 'draft');
-    const [saving, setSaving] = useState(false);
-
-    async function save() {
-      setSaving(true);
-      await fetch('/admin/post', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, title, body, status }),
-      });
-      window.location.href = '/admin/posts';
-    }
-
-    return (
-      <div className="max-w-2xl mx-auto px-4 py-10">
-        <div className="flex items-center justify-between mb-8">
-          <h1 className="text-2xl font-bold text-slate-900">
-            {post.slug ? 'Edit post' : 'New post'}
-          </h1>
-          <a href="/admin/posts" className="text-sm text-slate-400 hover:text-slate-600">Cancel</a>
-        </div>
-        <div className="space-y-5">
-          <Field>
-            <Label>Slug</Label>
-            <Input value={slug} onInput={e => setSlug(e.target.value)}
-                   placeholder="my-post-slug" disabled={!!post.slug} />
-          </Field>
-          <Field>
-            <Label>Title</Label>
-            <Input value={title} onInput={e => setTitle(e.target.value)}
-                   placeholder="Post title" />
-          </Field>
-          <Field>
-            <Label>Body (Markdown)</Label>
-            <textarea
-              className="w-full min-h-64 rounded-md border border-slate-200 px-3 py-2 text-sm
-                         font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
-              value={body}
-              onInput={e => setBody(e.target.value)}
-              placeholder="Write in markdown..."
-            />
-          </Field>
-          <div className="flex items-center justify-between pt-2">
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox"
-                checked={status === 'published'}
-                onChange={e => setStatus(e.target.checked ? 'published' : 'draft')}
-              />
-              Published
-            </label>
-            <Button onClick={save} disabled={saving}>
-              {saving ? 'Saving…' : 'Save post'}
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  export const page = { title: "Admin — Editor" };
-  export const app  = { hydration: "reactive" };
-  """
-```
-
----
-
-## Phase 6: Activate + Verify
-
-Agent activates all pipelines:
-
-```
-pipeline_activate  file_rel_path=pages/blog-list.zf.json
-pipeline_activate  file_rel_path=pages/blog-post.zf.json
-pipeline_activate  file_rel_path=admin/admin-posts.zf.json
-pipeline_activate  file_rel_path=admin/admin-post-get.zf.json
-pipeline_activate  file_rel_path=admin/admin-post-put.zf.json
-```
-
-Verify everything is active:
-
-```
-pipeline_list
-```
-
-All 5 show `active`. Routes are now live:
-
-| Route | Pipeline | Template |
-|-------|----------|----------|
-| `GET /blog` | blog-list | pages/blog-list.tsx |
-| `GET /blog/post?slug=...` | blog-post | pages/blog-post.tsx |
-| `GET /admin/posts` | admin-posts | pages/admin-posts.tsx |
-| `GET /admin/post?slug=...` | admin-post-get | pages/admin-editor.tsx |
-| `PUT /admin/post` | admin-post-put | — (redirects) |
-
-**Agent test-executes a pipeline to verify node-level behaviour:**
-
-```
-pipeline_execute
-  file_rel_path=pages/blog-list.zf.json
-  input={"query":{}}
-```
-
-Output is the pipeline result followed by an inline node trace:
-```
-Pipeline 'pages/blog-list.zf.json' executed.
-{
-  "query": { "rows": [], "columns": [], "row_count": 0, "truncated": false }
 }
---- node trace (2 nodes, 8ms total) ---
-  ✓  n0  (trigger.webhook)  0ms
-  ✓  n1  (postgres.query.run)  8ms
+
+export const page = { head: { title: "Blog" } };
+"""
 ```
 
-If a node shows `✗`, inspect that node ID and fix before moving on.
+The admin list carries the form; it posts to the route above and the page
+re-renders from the redirect:
+
+```
+file_write  rel_path=pages/admin-posts.tsx  content="""
+import { Badge } from "zeb/ui/badge";
+import { Button } from "zeb/ui/button";
+import { Input } from "zeb/ui/input";
+import { Textarea } from "zeb/ui/textarea";
+import { Field, FieldLabel } from "zeb/ui/field";
+import "@/globals.css";
+
+export default function AdminPosts(input) {
+  const posts = input.query?.rows ?? [];
+  const missingTitle = input.webhook?.query?.error === "title";
+  return (
+    <main className="mx-auto max-w-3xl space-y-10 px-4 py-10">
+      <form method="post" action="/admin/posts" className="space-y-4">
+        <Field>
+          <FieldLabel htmlFor="title">Title</FieldLabel>
+          <Input id="title" name="title" required />
+          {missingTitle && <p className="text-sm text-destructive">A post needs a title.</p>}
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="body">Body</FieldLabel>
+          <Textarea id="body" name="body" rows={8} />
+        </Field>
+        <label className="flex items-center gap-2 text-sm text-foreground">
+          <input type="checkbox" name="status" value="published" /> Publish now
+        </label>
+        <Button type="submit">Create post</Button>
+      </form>
+      <ul className="divide-y divide-border">
+        {posts.map((p) => (
+          <li key={p.slug} className="flex items-center justify-between py-3">
+            <span className="text-foreground">{p.title}</span>
+            <Badge variant={p.status === "published" ? "default" : "secondary"}>{p.status}</Badge>
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+
+export const page = { head: { title: "Posts — admin" } };
+"""
+```
+
+`pages/blog-post.tsx` reads `input.query.rows[0]`; `pages/not-found.tsx` is
+the empty state with a link home. Each `file_write` reports a compiler
+refusal (a hook used without its import, a disallowed import) at once — fix
+it before going on.
 
 ---
 
-## Phase 7: Commit + Handoff
+## Phase 5 — activate and prove
 
 ```
-git_command  subcommand=add      args="."
-git_command  subcommand=commit   message="feat: complete blog v1 — list, post detail, admin CRUD"
+pipeline_activate  glob="pages/**"
+pipeline_activate  file_rel_path=api/admin-posts-create
+pipeline_list      status=all                                     ← all four active
 ```
 
-Agent updates MEMORY.md:
-
 ```
-docs_agent_write
-  name=MEMORY.md
-  content="""
-  # Session 1 — Blog v1 Complete
-
-  ## Delivered
-  - 5 pipelines (all active): blog-list, blog-post, admin-posts, admin-post-get, admin-post-put
-  - 4 templates: blog-list, blog-post, admin-posts, admin-editor
-  - Docs: docs/REQUIREMENTS.md, docs/schema.md, docs/architecture.md
-
-  ## Prerequisites (owner must do)
-  - Create `posts` table in PostgreSQL (schema in docs/schema.md)
-
-  ## Known gaps for v2
-  - No pagination on blog-list (currently LIMIT 20)
-  - JWT session has no refresh/rotation yet — tokens are long-lived only
-  - No image upload support
-  - About page not built (low priority)
-
-  ## Routes
-  Public:  GET /blog,  GET /blog/post?slug=...
-  Admin:   GET /admin/posts,  GET /admin/post?slug=...  (JWT session, admin role required)
-  """
+skill_read   name=zebflow-verify
+route_fetch  path="/blog"                                          ← 200, no rwe_component_errors, "No posts yet."
+route_fetch  path="/admin/posts"                                   ← 303 to the auth_redirect: no session
+route_fetch  path="/admin/posts" cookie="zebflow_session=…"        ← 200 with a session the login gave you
+route_fetch  path="/admin/posts" method=POST form={"title":"Hello","status":"published"} cookie="zebflow_session=…"   ← 303 to /admin/posts
+route_fetch  path="/blog/hello"                                    ← 200, "Hello" in the body
+route_fetch  path="/blog/missing"                                  ← 404 page
+pipeline_get_invocations  file_rel_path=api/admin-posts-create     ← one clean run, the nodes you expected
 ```
+
+Then open `/admin/posts` in a browser with the console visible, submit the
+form, and check the new row appears — server HTML says nothing about
+hydration.
 
 ---
 
-## Key Patterns Demonstrated
+## Phase 6 — record and hand over
 
-| Pattern | Where shown |
-|---------|-------------|
-| Write spec before code | Phase 1–3: docs/REQUIREMENTS.md, docs/schema.md, docs/architecture.md |
-| Data flows from pipeline to template: `input` IS the pipeline's final payload | Phase 4 pipelines → Phase 5 `input.query.rows` |
-| Auth verified at the trigger, before the pipeline runs | admin-posts, admin-post-get, admin-post-put pipelines |
-| `hydration: "static"` for read-only pages | blog-list, blog-post, admin-posts |
-| `hydration: "reactive"` for interactive forms | admin-editor |
-| `useState` hooks for form binding | admin-editor component |
-| Always commit after logical chunk | Phase 6 |
-| Always update MEMORY.md before ending session | Phase 7 |
-| Design system components only — no raw HTML | Button, Input, Field, Label, Badge |
-| Test with `pipeline_execute` to see node trace | Phase 6 verification |
-| Use `pipeline_get_invocations` to debug scheduled runs | (when scheduler involved) |
+```
+git_command  subcommand=add     args="."
+git_command  subcommand=commit  message="feat: blog list, post page, admin create"
+docs_agent_write  name=MEMORY.md  content="""
+Built: /blog, /blog/:slug (404 when missing), /admin/posts (list + create form, role admin).
+Verified: route_fetch on each route and the failure paths; invocation of api/admin-posts-create clean.
+Open: editing and deleting posts; pagination after 20 posts.
+"""
+```
 
-> A script cannot set the response. It returns a value; the graph decides what
-> happens next. Branch with `logic.if` and let `web.response.send` answer —
-> `--status`, `--header` (`Location`, `Set-Cookie`), `--body`. See
-> `help("pipeline/examples/webhook-restapi-postgres")` § Answering with a status.
+| Pattern | Where |
+|---|---|
+| a written brief and layout before code | Phase 1 |
+| migrations are files, read back with `connection_describe` | Phase 2 |
+| one answer key per node: `input.query.rows` from the query to the page | Phase 3, 4 |
+| auth on the trigger, on the page **and** its POST | Phase 3 |
+| values bound through `--param`, a write marked `--write` | Phase 3 |
+| a form is two pipelines; the POST redirects with `--status 303 --header "Location=…"` | Phase 3, 4 |
+| theme roles and `zeb/ui` components, every import explicit | Phase 4 |
+| done means fetched, failure paths included | Phase 5 |

@@ -333,7 +333,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Credential, NodeCapability::Process],
         title: "AI Audio".to_string(),
-        description: "Speech from text. `--provider piper` runs a local Piper voice named by a `tts` credential (the owner \
+        description: "Speaks `--text` as an audio file through a text-to-speech `--provider`. `--provider piper` runs a local Piper voice named by a `tts` credential (the owner \
             puts the voice files in the store; the credential names their keys). `--text` is what to say; `--voice` and \
             `--speed` shape it; the provider's own settings are `--option` keys (piper: volume, lipsync). `--return file` \
             (default) writes a wav at `--path`, or `--folder`/`--filename` (default folder `audio`), and answers \

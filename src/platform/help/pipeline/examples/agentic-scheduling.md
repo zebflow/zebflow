@@ -37,15 +37,9 @@ payload; a long one goes after `--`. It is the only source of the prompt: the
 node reads nothing else of the payload. Instructions that hold for every call
 (format, tone, constraints) go in `--system-prompt`.
 
-| Flag | Description |
-|------|-------------|
-| `--provider openai\|openrouter` | Who answers. Literal; each provider takes a credential of its own kind. |
-| `--credential <id>` | The provider's credential (kind `openai` or `openrouter`). |
-| `--prompt "…"` / `-- …` | The prompt; `{{ input.query.rows }}` and friends resolve before the call. |
-| `--system-prompt "…"` | Standing instructions, e.g. "reply with strict JSON only". |
-| `--schema '{…}'` | JSON Schema the answer must satisfy; the parsed answer comes back as `text.data`. |
-| `--tool <name>` | A function pipeline the model may call, repeated. None here: each run is one call. |
-| `--answer-only` | Drop the step log, tool events and metrics. |
+Its flags, from the definition:
+
+<!-- node-flags:ai.text.generate -->
 
 The answer is `text: { value, verified, data? }`: `value` is the text, `data`
 the parsed JSON when `--schema` was given and passed. With `--schema` there is

@@ -29,7 +29,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Credential],
         title: "Create Auth Token".to_string(),
-        description: "Signs a JWT with a stored `jwt_signing_key` credential (HS256/384/512 or RS256/384/512, as the credential says), \
+        description: "Signs a JWT holding the `--claim` values. It is signed with a stored `jwt_signing_key` credential (HS256/384/512 or RS256/384/512, as the credential says), \
             valid for `--ttl` (a duration, default 15m). Adds `token: { access_token, token_type, expires_in, profile }` and keeps the \
             rest of the payload; `expires_in` is in seconds, as OAuth writes it. A claim whose name ends in `:public` \
             (`--claim \"name:public={{ input.fullname }}\"`) is the only kind exposed in the browser via `ctx.auth`; all others stay \

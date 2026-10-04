@@ -33,7 +33,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Increment".to_string(),
-        description: "Add `--amount` (a whole number, default 1, negative to count down) to the integer counter `--key` in the \
+        description: "Counts an integer counter in the project's key-value store up or down. Add `--amount` (a whole number, default 1, negative to count down) to the integer counter `--key` in the \
             project's key-value store (`--durable` for the disk-backed one); a missing key starts at 0. Adds `entry: { key, value }` — \
             the new count — and keeps the rest of the payload."
             .to_string(),

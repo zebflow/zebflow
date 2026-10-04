@@ -18,12 +18,15 @@ refuses the request before any node runs. Facts:
 
 | Piece | What it is |
 |---|---|
-| a `jwt_signing_key` credential | created by the owner in Studio → Credentials; holds the secret, `auth_redirect` (where a browser goes when refused), `auth_roles`. Its **id** is what the trigger's `--credential` and `auth.token.create --credential` take (`credential_list`). |
-| `auth.token.create` | mints the token from the payload: `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}" --claim "roles:public={{ input.roles }}"`; answers `token: { access_token, token_type, expires_in, profile }` — read `input.token.access_token` |
+| a `jwt_signing_key` credential | created by the owner in Studio → Credentials; holds the secret, `auth_redirect` (where a browser goes when refused), `auth_roles`. Its **id** (`credential_list`) is what `trigger.webhook --credential` and `auth.token.create --credential` take. |
+| `auth.token.create` | mints the token from `--claim` values (repeated `key=value`; a name ending in `:public` reaches the browser). It adds `token`, so the next node reads `input.token.access_token`. |
 | the cookie | `web.response.send --header "Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` — sent exactly as written, so the attributes are yours to write; behind HTTPS add `; Secure`. The verifier reads `Authorization: Bearer` first, then this cookie. |
-| `--role` (repeated) | matches one entry of the token's **`roles` array** claim. A scalar `role` never authorises. |
-| `:public` | only claims marked `:public` reach the browser as `input.auth`; everything else stays server-side (`$trigger.auth`, `ctx.trigger.auth`). A public array claim stays an array. |
-| `crypto.password.*` | `crypto.password.hash --from "{{ $trigger.body.password }}"` → payload plus `password: { hash, algorithm }` (`webhook.body` kept); `crypto.password.verify --from "{{ … }}" --hash "{{ input.query.rows[0]?.password_hash }}"` → `password: { valid }` on the `true`/`false` pins; an empty hash (no such user) goes to `:error` |
+| roles | `trigger.webhook --role admin` (repeat for several) matches one entry of the token's **`roles` array** claim. A scalar `role` never authorises. |
+| `:public` claims | only claims marked `:public` reach the browser, as a page's `input.auth`; everything else stays server-side (`$trigger.auth`, `ctx.trigger.auth`). A public array claim stays an array. |
+| `crypto.password.hash` / `crypto.password.verify` | hash on registration, verify on login; both take the password with `--from`, both add `password` and keep the payload, so `input.webhook.body` is still there. Verify routes on `true` / `false`; an empty `--hash` (no such user) goes to `:error`. |
+
+Every node above has its page: `help(topic="pipeline/nodes/auth.token.create")`,
+`pipeline/nodes/crypto.password.verify`.
 
 ## Build order
 
@@ -46,11 +49,27 @@ refuses the request before any node runs. Facts:
    "email is unique" is a `SELECT` before the `INSERT`, not a constraint
    (`zebflow-data`).
 3. **Login.** `POST /auth/login`: look the user up by `$trigger.body.email`,
-   `logic.if` one row, `crypto.password.verify` with `--from "{{ $trigger.body.password }}"`
-   and `--hash "{{ input.query.rows[0]?.password_hash }}"`, mint the token with
-   `roles` as an array, set the cookie, `--status 303 --header "Location=/home"`. The `false` pins
-   answer `401` — never a different message for "no such user" and "wrong
-   password".
+   `logic.if` one row, `crypto.password.verify --from "{{ $trigger.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"`,
+   mint the token with `roles` as an array, set the cookie,
+   `--status 303 --header "Location=/home"`. The `false` pins answer `401` —
+   never a different message for "no such user" and "wrong password":
+
+   ```
+   [a] trigger.webhook --route /auth/login --method POST
+   [b] sekejap.query.run --param "1={{ $trigger.body.email }}" -- "SELECT _key, password_hash, roles FROM users WHERE email = $1"
+   [c] logic.if --when "input.query.rows.length === 1"
+   [d] crypto.password.verify --from "{{ $trigger.body.password }}" --hash "{{ input.query.rows[0].password_hash }}"
+   [e] auth.token.create --credential jwt_main --ttl 1d --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}"
+   [f] web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+   [g] web.response.send --status 401 --body "{{ { error: 'wrong email or password' } }}"
+   [a] -> [b]
+   [b] -> [c]
+   [c]:true -> [d]
+   [d]:true -> [e]
+   [e] -> [f]
+   [c]:false -> [g]
+   [d]:false -> [g]
+   ```
 4. **Logout.** `web.response.send --status 302 --header "Location=/login" --header "Set-Cookie=zebflow_session=; Path=/; Max-Age=0"`
    (an empty value clears the cookie).
 5. **Protect.** Put `--auth jwt --credential <id>` on every route

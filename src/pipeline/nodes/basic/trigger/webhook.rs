@@ -173,7 +173,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Webhook Trigger".to_string(),
-        description: "Start pipeline run from inbound HTTP route + method. Answers one key, `webhook`: \
+        description: "Runs the pipeline for every HTTP request on `--route` and `--method`. Answers one key, `webhook`: \
             `webhook: { body, query, params, headers, files, method, path, auth }`, and the same envelope is `$trigger` for the whole run. \
             What the caller submitted is `webhook.body`: \
             application/json → the parsed value; \

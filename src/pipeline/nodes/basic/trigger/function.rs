@@ -71,7 +71,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Function Trigger".to_string(),
-        description: "Makes this pipeline a function other pipelines call with `function.result.call --function <slug>` — the slug is the file's \
+        description: "Makes this pipeline a function other pipelines call. They call it with `function.result.call --function <slug>`; the slug is the file's \
             stem (`jobs/send-welcome` → `send-welcome`). Answers one key, `function`: exactly the arguments the caller passed \
             (`input.function.<name>`, `$trigger.<name>`); the function's result is what its last node answered (a closing `javascript.script.run`'s `script`). Declare the contract with \
             `--parameter name:type! \"doc\"` / `--result name:type!` (or full `--schema` / `--result-schema` JSON) so callers and the \

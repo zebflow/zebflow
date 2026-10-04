@@ -93,7 +93,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "WebSocket Trigger".to_string(),
-        description: "Runs when a browser connected to this project's WebSocket sends an event — the server half of a chat, a live \
+        description: "Runs when a browser connected to this project's WebSocket sends an event. It is the server half of a chat, a live \
             board, a multiplayer scene. `--room` scopes it to one room (empty = any), `--event` to one event name (empty = any); the \
             same `--auth` / `--credential` / `--role` flags as `trigger.webhook` guard the connection. Answers one key, `room`: \
             `{ room_id, session_id, event, payload, auth? }` — what the client sent is `input.room.payload` (`$trigger.payload`). Answer with `ws.message.send` (to the room or one session) or \

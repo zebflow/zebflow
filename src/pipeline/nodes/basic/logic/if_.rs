@@ -30,7 +30,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "If".to_string(),
         description:
-            "Two-way branch. Evaluates `--when` (JavaScript over `input`, `$trigger`, `$nodes`) and sends the payload, unchanged, \
+            "Sends the payload down `true` or `false` by a condition. Evaluates `--when` (JavaScript over `input`, `$trigger`, `$nodes`) and sends the payload, unchanged, \
              down the `true` pin or the `false` pin. This is how a pipeline validates, guards and answers 404/400: wire \
              `[b]:true -> [c]` and `[b]:false -> [e]` in graph mode — in pipe mode only `true` continues and `false` ends the run silently. \
              The expression sees the payload as `input` (right after a webhook, `input.webhook.body.x`; anywhere, `$trigger.body.x`), not `$input`."

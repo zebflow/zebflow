@@ -87,7 +87,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "Archive Extract".to_string(),
-        description: "Open the tar.gz archive `--from` names — a FileRef, an upload or a store key — into `--folder` (default `extracted/<archive>`). \
+        description: "Unpacks a tar.gz archive into a folder of a project store. Open the tar.gz archive `--from` names — a FileRef, an upload or a store key — into `--folder` (default `extracted/<archive>`). \
             A member that climbs out of the folder or is a link refuses the whole archive before anything is written. A folder that is not empty is an \
             error unless `--on-conflict` says otherwise (`overwrite` replaces it). `--delete-source` removes the archive once every member is written. \
             Adds `archive: { folder, items, count, source_deleted }` — `items` a durable FileRef per file — and keeps the rest of the payload."

@@ -12,12 +12,12 @@
 //! | Intent | DSL |
 //! |---|---|
 //! | Serve pipeline output as JSON | `\| web.response.send` |
-//! | Serve specific field as JSON | `\| web.response.send --body "{{ input.rows }}"` |
+//! | Serve specific field as JSON | `\| web.response.send --body "{{ input.query.rows }}"` |
 //! | Render HTML page | `\| web.response.send --template pages/home.tsx` |
 //! | Redirect | `\| web.response.send --status 303 --header "Location=/somewhere"` |
 //! | Error with message | `\| web.response.send --status 403 --body "Access denied"` |
 //! | Error page | `\| web.response.send --template pages/404.tsx --status 404` |
-//! | Set session cookie | `\| web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` |
+//! | Set session cookie | `\| web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` |
 //! | Serve a project file (manifest, robots, icon) | `\| web.response.send --file pwa/manifest.webmanifest` |
 //! | Serve a service worker | `\| web.response.send --file pwa/site.sw.ts --header Service-Worker-Allowed=/` |
 //! | Serve one file out of a folder by URL parameter | `\| web.response.send --root pwa/icons --file "{{ $trigger.params.file }}"` |
@@ -92,7 +92,7 @@ pub fn definition() -> NodeDefinition {
              one file out of a folder, the name from the route, never outside it. `--status N`, `--header K=V` (repeat; a repeated name is sent twice). \
              A redirect is `--status 303 --header \"Location=/home\"` — a Location without a 3xx, or a 3xx without a Location, is refused. \
              Every header is sent exactly as written, `Set-Cookie` too: nothing is added, so a session cookie writes its own attributes — \
-             `--header \"Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly\"`, plus `; Secure` behind HTTPS. There is no `--route`; the route is the trigger's `--path`. \
+             `--header \"Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly\"`, plus `; Secure` behind HTTPS. There is no `--route`; the route is the trigger's `--route`. \
              A 404 or 400 is a `logic.if` whose `false` pin reaches a second `web.response.send` with that `--status` — a script cannot set one."
                 .to_string(),
         input_schema: json!({ "type": "object" }),
@@ -123,7 +123,7 @@ pub fn definition() -> NodeDefinition {
         fields: vec![
             field("status", "Status Code", NodeFieldType::Text, "200", "HTTP status code (default 200). A 3xx needs a Location header."),
             field("headers", "Headers", NodeFieldType::KeyValuePairs, "", "Response headers: Location for a redirect, Set-Cookie for a cookie, Content-Type, Cache-Control."),
-            field("body", "Body", NodeFieldType::Text, "{{ input.rows }}", "The answer: a string answers text, anything else JSON. Empty: the payload as JSON."),
+            field("body", "Body", NodeFieldType::Text, "{{ input.query.rows }}", "The answer: a string answers text, anything else JSON. Empty: the payload as JSON."),
             NodeFieldDef {
                 data_source: Some(NodeFieldDataSource::TemplatesPages),
                 ..field("template", "Template", NodeFieldType::Datalist, "pages/home.tsx", "A TSX page to render with the payload as its input.")
@@ -149,7 +149,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::NodeExample::dsl("Redirect after a form POST", r#"web.response.send --status 303 --header "Location=/admin/posts""#),
             crate::pipeline::model::NodeExample::dsl("JSON with a status", r#"web.response.send --status 400 --body "{{ { error: 'title is required' } }}""#),
             crate::pipeline::model::NodeExample::dsl("Plain text with a status", r#"web.response.send --status 401 --body "invalid credentials""#),
-            crate::pipeline::model::NodeExample::dsl("Set the session cookie and go home", r#"web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly""#)
+            crate::pipeline::model::NodeExample::dsl("Set the session cookie and go home", r#"web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly""#)
                 .note("The header is sent as written: the cookie carries the attributes it names and no others. Add `; Secure` behind HTTPS. Logout: `--header \"Set-Cookie=zebflow_session=; Path=/; Max-Age=0\"`."),
             crate::pipeline::model::NodeExample::dsl("The web-app manifest, a file in the project", "web.response.send --file pwa/manifest.webmanifest")
                 .note("Behind `trigger.webhook --route /manifest.webmanifest`; pages link it with `head.links: [{ rel: \"manifest\", href: \"/manifest.webmanifest\" }]`."),

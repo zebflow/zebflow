@@ -11,11 +11,12 @@ JSON REST API endpoints backed by PostgreSQL. Covers list, detail (path param), 
 Path params (`:id`), query strings (`?status=x`), and body fields all land in the webhook input payload. Bind them safely to SQL `$1`, `$2`, ... via:
 
 - `--param "1={{ input.webhook.params.id }}"` — one `--param` per placeholder, the key is its position → `$1`
-- `--param "1={{ input.name }}" --param "2={{ input.email }}"` — repeat the flag, one key each → `$1, $2, ...`
+- `--param "1={{ $trigger.body.name }}" --param "2={{ $trigger.body.email }}"` — repeat the flag, one key each → `$1, $2, ...`
 
 **Webhook input shape:** the trigger answers under one key, `webhook`, holding
 the whole request envelope; nothing is merged to the root — a JSON body field
-`name` is `input.webhook.body.name`, never `input.name` or `input.body.name`.
+`name` is `input.webhook.body.name` right after the trigger and
+`$trigger.body.name` anywhere in the run.
 
 | Location | Access | Example |
 |----------|--------|---------|

@@ -296,7 +296,7 @@ pub fn head_definition() -> NodeDefinition {
     object_definition(
         HEAD_NODE_KIND,
         "File Head",
-        "Read what is known about the file `--from` names — a FileRef, an upload or a store key — without reading its bytes. \
+        "Reads what is known about a file without reading its bytes. Read what is known about the file `--from` names — a FileRef, an upload or a store key — without reading its bytes. \
          Adds `file: { path, size, modified, kind, content_type }` and keeps the rest of the payload. A missing file fails the node; it does not answer null.",
         ("file", stat_schema("The file's stat.")),
         vec![from_flag("The file: a FileRef, an upload or a store key."), read_store_flag()],
@@ -343,7 +343,7 @@ pub fn delete_definition() -> NodeDefinition {
     object_definition(
         DELETE_NODE_KIND,
         "File Delete",
-        "Delete the file `--from` names — a FileRef from the store it names, or a store key — and forget its exposure rule, so a later file at that key starts private. \
+        "Deletes a file and forgets its exposure rule. Delete the file `--from` names — a FileRef from the store it names, or a store key — and forget its exposure rule, so a later file at that key starts private. \
          A store key naming a folder that holds files is refused (FW_NODE_FS_FILE_DELETE_FOLDER) unless `--recursive` is set, which removes the folder and everything \
          under it — no confirmation, no trash. A FileRef is always one file. A file that is already gone succeeds. \
          Adds `file: { ref, deleted: true }` (`recursive: true` beside them when a folder went) and keeps the rest of the payload.",
@@ -407,7 +407,7 @@ pub fn copy_definition() -> NodeDefinition {
     copy_like_definition(
         COPY_NODE_KIND,
         "File Copy",
-        "Copy the file `--from` names — a FileRef from any store, an upload, or a store key — to `--folder` (keeps the name), `--filename`, or an exact `--path`, \
+        "Copies a file to another key or store. Copy the file `--from` names — a FileRef from any store, an upload, or a store key — to `--folder` (keeps the name), `--filename`, or an exact `--path`, \
          in the node's `--store`. An existing destination is an error unless `--on-conflict` says otherwise. Adds `file`, the durable FileRef of the copy \
          (`origin: fs.file.copy`), and keeps the rest of the payload. A copy is private like any file until the owner exposes its folder in Studio → Files.",
         NodeExample::dsl("Keep a copy of an upload", "fs.file.copy --from \"{{ input.file }}\" --folder images")
@@ -420,7 +420,7 @@ pub fn move_definition() -> NodeDefinition {
     copy_like_definition(
         MOVE_NODE_KIND,
         "File Move",
-        "Move the file `--from` names: copy it to the destination (`--folder`, `--filename` or `--path`, in the node's `--store`), then delete the source and \
+        "Moves a file to another key or store. Move the file `--from` names: copy it to the destination (`--folder`, `--filename` or `--path`, in the node's `--store`), then delete the source and \
          forget its exposure rule. Adds `file`, the durable FileRef at the new key (`origin: fs.file.move`), and keeps the rest of the payload. \
          Any FileRef still pointing at the source is now dangling — update the row that stored it.",
         NodeExample::dsl("Archive a processed file", "fs.file.move --from \"{{ input.file }}\" --folder archive/inbox")

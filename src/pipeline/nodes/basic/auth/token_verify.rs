@@ -43,7 +43,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Verify Token".to_string(),
-        description: "Checks the JWT in `--from` — a password-reset or e-mail-confirmation link (`$trigger.query.token`), a token \
+        description: "Checks a JWT against a `jwt_signing_key` credential. It checks the JWT in `--from` — a password-reset or e-mail-confirmation link (`$trigger.query.token`), a token \
             posted by another system (`$trigger.body.token`) — against a `jwt_signing_key` credential. Adds `token: { valid, claims }` \
             on the `valid` pin, or `token: { valid: false, reason }` on `invalid`, and keeps the rest of the payload. The algorithm \
             comes from the credential, never from the token's header, so `alg: none` is refused; a token without `exp` is invalid. \

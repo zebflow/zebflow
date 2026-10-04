@@ -103,7 +103,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "PDF Convert".to_string(),
-        description: "Break the PDF `--from` names — a FileRef, an upload or a store key — into page-level files under `--folder` (default `pdf/<file stem>`). \
+        description: "Breaks a PDF into page-level files. The PDF is the one `--from` names — a FileRef, an upload or a store key — into page-level files under `--folder` (default `pdf/<file stem>`). \
             `--include text|image|raster` (repeat; default all three) picks what each page yields: `text.md`, its embedded images, a PNG at `--dpi` (default 144). \
             Every page also gets `page.json` and the folder a `manifest.json`. A folder that is not empty is an error unless `--on-conflict` says otherwise. \
             Adds `pdf: { folder, items, count, page_count, manifest_path, pages }` — `items` a durable FileRef per file written — and keeps the rest of the payload."

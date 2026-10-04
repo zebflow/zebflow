@@ -55,13 +55,18 @@ query nodes in `pipeline/nodes`.
 | postgres.query.run --credential pg_main --param "1={{ $trigger.auth.sub }}" -- "SELECT * FROM accounts WHERE id = $1"
 ```
 
-- SQL in the body, values in `--param` (repeated, one key each); a whole
-  `{{ }}` keeps its type. Never build SQL text from input.
-- The result is one key, `query: { columns, rows, row_count, truncated }`,
-  plus `rows_affected` for writes. The next node reads `input.query.rows`; a
-  page reads `input.query.rows` too. `--write` is required for any write.
-- Reads default to 200 rows (`--limit`); paginate with `LIMIT $1 OFFSET $2`
-  bound from `$trigger.query.page`.
+- SQL in the body, values in `--param` (repeated `key=value`: `1=` binds
+  `$1`, or `?1` in SQLite); a whole `{{ }}` keeps its type. Never build SQL
+  text from input.
+- A query node adds one key, `query`, and keeps the rest of the payload. The
+  next node reads `input.query.rows`; a page reads `input.query.rows` too.
+  What else `query` carries (counts, truncation, rows written) is on the
+  node's page — `help(topic="pipeline/nodes/sekejap.query.run")`.
+- `--write` is required for any statement that changes data; without it the
+  node runs read-only and refuses the write.
+- Reads are capped by `--limit` (the default is on the node's page);
+  paginate in SQL with `LIMIT $1 OFFSET $2` bound from `$trigger.query.page`
+  (keyset paging on Sekejap — `zebflow-sekejap`).
 - In PostgreSQL text, use `format()`/`concat()` rather than `||` inside a DSL
   body — the parser reads `|` as a node separator.
 - Never branch on the database kind inside a page; the pipeline decides
@@ -80,8 +85,8 @@ query nodes in `pipeline/nodes`.
 ## Large data
 
 Rows do not travel through MCP tool windows well. Aggregate
-(`string_agg(...)`), paginate, or write a file and pass its FileRef —
-`table.data.convert --from "{{ input.query.rows }}" --path exports/rows.csv`
-answers `data` (the file's FileRef), `table.query.run … --path exports/r.parquet`
-answers `query` (the same); never paste thousands of rows into a script node or
-a page payload.
+(`string_agg(...)`), paginate, or write a file and pass its FileRef:
+`table.data.convert --from "{{ input.query.rows }}" --format csv --path exports/rows.csv`
+adds `data`, the written file (`input.data.ref`); `table.query.run` with a
+destination writes its result the same way under `query`. Never paste
+thousands of rows into a script node or a page payload.

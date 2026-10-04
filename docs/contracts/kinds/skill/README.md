@@ -28,11 +28,16 @@ proves it worked. An agent loads one when a task matches its description.
 1. Tier 1 is cheap or it is useless: a listing entry is one line, and a body
    is read only when the task matches. Nothing puts every body in a prompt.
 2. A skill points into `help(topic=…)` for facts; it does not duplicate them.
+   It teaches the node grammar (`docs/contracts/node-conventions.md`) and
+   patterns, and carries no per-node flag table, flag list or answer shape —
+   those come from the definitions (`help(topic="pipeline/nodes/<kind>")`).
    When the two disagree, the help (generated or guarded) wins and the skill
    is wrong.
-3. Every DSL fence in a skill builds and every MCP tool it names exists
-   (`tests/framework/help_matches_implementation.rs` scans `blessed/skills/`
-   and `blessed/skill-extras/`).
+3. Every DSL example in a skill names real kinds, declared flags and listed
+   choice words, reads no retired `input.<key>`, and every MCP tool it names
+   exists (`src/platform/help/guide_lint.rs` over the help, every `SKILL.md`,
+   `skills/zebflow/references/` and the MCP texts;
+   `tests/framework/help_matches_implementation.rs` builds the fences).
 4. A skill carries no credential, token, URL of a private instance, or
    instruction to run a shell command against the host.
 5. Publish and install refuse the same malformed skill by the same check

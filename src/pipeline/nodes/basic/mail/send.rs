@@ -57,7 +57,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Credential],
         title: "Send Mail".to_string(),
-        description: "Sends one email through a stored smtp credential's relay to every `--recipient` (repeat, up to 50), with \
+        description: "Sends one email through a stored smtp credential's relay. It goes to every `--recipient` (repeat, up to 50), with \
             `--subject` and `--text` and/or `--html`; `--file` attaches a stored file (repeat; it arrives under the FileRef's filename, \
             or the key's last segment) and `--inline id=FILE` places a picture the HTML draws as `<img src=\"cid:id\">`. Every value \
             takes a literal or {{ expr }}. Adds `message: { sent, id, recipient, subject, attached }` and keeps the rest of the payload. \

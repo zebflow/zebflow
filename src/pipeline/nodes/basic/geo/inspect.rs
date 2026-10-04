@@ -48,7 +48,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
         title: "Geo Inspect".to_string(),
-        description: "Inspect a spatial dataset — .gdb, .shp, .parquet, .geojson — given as a store key or a FileRef (read from the store it \
+        description: "Inspects a spatial dataset (.gdb, .shp, .parquet, .geojson) and lists its layers. The dataset is given as a store key or a FileRef (read from the store it \
             names). Adds `dataset: { source, store, format, layers }`, keeping the rest of the payload; each layer is `{ name, feature_count, \
             geometry: { field_name, kind, has_z, has_m, declared_extent }, crs, fields: [{ name, type, nullable, width }] }`. `--layer` reports \
             that layer only. Read `input.dataset.layers[0].crs` before choosing `geo.dataset.convert --crs`."

@@ -18715,7 +18715,9 @@ async fn api_project_assistant_chat(
              - **Credentials**: `credential_list`\n\
              - **Git**: `git_command` — subcommands: status, log, diff, add, commit\n\
              - **UI Components**: `list_ui_catalog`, `install_ui_components`\n\
-             - **Knowledge**: `help_pipeline`, `help_web_engine`, `help_examples`, `help_nodes`, `help_search`, `skill_list`, `skill_read`\n\n\
+             - **Knowledge**: `help` (`topic=\"pipeline/dsl\"` the grammar, `topic=\"pipeline/nodes\"` every node kind, `topic=\"pipeline/nodes/<kind>\"` one node), `help_search`\n\n\
+             ## Pipelines\n\
+             A node is written as its kind, `family.noun.verb` (`fs.file.put`, `postgres.query.run`), and adds one key, its noun, keeping the rest of the payload: `input.webhook.body` after the trigger, `input.query.rows` after a query, `input.script` after a script; `$trigger.body` is the request anywhere in the run. Read a node's page before using its flags.\n\n\
              ## Workflow\n\
              1. Call `start_here` to orient yourself when starting a new task\n\
              2. Use `connection_describe` before writing any SQL queries\n\

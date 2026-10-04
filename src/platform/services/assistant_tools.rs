@@ -66,9 +66,9 @@ impl AssistantPlatformTools {
             // ── Orientation ────────────────────────────────────────────────────
             ToolDef {
                 name: "start_here".to_string(),
-                description: "Call this first. Returns project overview: git status, pipeline count, \
-                    docs list, DB connections, template tree, and AGENTS.md. \
-                    Use at the start of every session to orient yourself.".to_string(),
+                description: "Call this first. Returns the project (its documents, what exists, databases, \
+                    AGENTS.md and MEMORY.md), how a pipeline is written (kinds are family.noun.verb; each node \
+                    adds one key, its noun), how to find a node, and which skill each kind of task opens.".to_string(),
                 parameters: json!({ "type": "object", "properties": {} }),
             },
             // ── Help / Knowledge ───────────────────────────────────────────────
@@ -76,7 +76,7 @@ impl AssistantPlatformTools {
                 name: "help".to_string(),
                 description: "Hierarchical docs browser. No topic = full index with all available paths. \
                     Paths: 'pipeline' (DSL + web patterns), 'pipeline/dsl', 'pipeline/authoring', \
-                    'pipeline/web', 'pipeline/nodes' (live node catalog), 'pipeline/nodes/{kind}' (one node), \
+                    'pipeline/web', 'pipeline/nodes' (every kind, one line each), 'pipeline/nodes/{kind}' (one node: signature, answer, flags), \
                     'pipeline/examples' (index), 'pipeline/examples/{slug}' (full recipe), \
                     'web' (TSX pages + imports), 'web/hooks', 'web/tailwind', 'web/design-system', 'web/libraries', \
                     'tool' (Tool.time/arr/stat/geo globals), \
@@ -113,7 +113,7 @@ impl AssistantPlatformTools {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "Optional semantic filter across path, title, description, trigger kind, and trigger summary." },
-                        "glob": { "type": "string", "description": "Optional glob to filter pipeline files (e.g. 'pipelines/api/*.zf.json')." },
+                        "glob": { "type": "string", "description": "Optional glob to filter pipeline files (e.g. 'api/*.zf.json')." },
                         "status": { "type": "string", "description": "Optional status filter: active, draft, or all." },
                         "trigger_kind": { "type": "string", "description": "Optional trigger filter: webhook, schedule, function, or full trigger.* kind." },
                         "limit": { "type": "integer", "description": "Optional cap on returned rows." },
@@ -130,7 +130,7 @@ impl AssistantPlatformTools {
                     "required": ["pattern"],
                     "properties": {
                         "pattern": { "type": "string", "description": "Case-insensitive substring to search for." },
-                        "glob": { "type": "string", "description": "Optional glob to filter files (e.g. 'pipelines/api/*.zf.json')." },
+                        "glob": { "type": "string", "description": "Optional glob to filter files (e.g. 'api/*.zf.json')." },
                         "context": { "type": "integer", "description": "Lines of context before/after each match (default 0)." },
                         "head_limit": { "type": "integer", "description": "Limit output to first N entries." },
                         "output_mode": { "type": "string", "description": "'content' (default) or 'files_with_matches' for file paths only." }
@@ -145,21 +145,23 @@ impl AssistantPlatformTools {
                     "type": "object",
                     "required": ["file_rel_path"],
                     "properties": {
-                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline (e.g. 'pipelines/api/blog-home.zf.json')." },
+                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline (e.g. 'api/blog-home.zf.json')." },
                         "node_id": { "type": "string", "description": "Optional node ID to return just that node. Accepts opaque ID, kind, or kind[index]." }
                     }
                 }),
             },
             ToolDef {
                 name: "pipeline_register".to_string(),
-                description: "Register (create or update) a pipeline by pipe-chained node body. \
-                    Body format: '| trigger.webhook --route /x | postgres.query.run --credential db -- \"SQL\"'. \
+                description: "Register (create or update) a pipeline from a DSL body. \
+                    Body format: '| trigger.webhook --route /x --method GET | postgres.query.run --credential pg_main -- \"SQL\" | web.response.send --template pages/x.tsx'. \
+                    Each node is written as its kind (family.noun.verb) and adds one key, its noun — the rows are input.query.rows. \
+                    help('pipeline/dsl') is the grammar, help('pipeline/nodes/<kind>') one node. \
                     After registering, call pipeline_activate to make it live.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["body"],
                     "properties": {
-                        "file_rel_path": { "type": "string", "description": "File-relative path under repo/ (e.g. 'pipelines/api/blog-home'). Preferred over name+path." },
+                        "file_rel_path": { "type": "string", "description": "File-relative path under repo/ (e.g. 'api/blog-home'). Preferred over name+path." },
                         "name": { "type": "string", "description": "Pipeline name slug. Used when file_rel_path is not set." },
                         "path": { "type": "string", "description": "Virtual path for grouping (e.g. '/pages', '/api'). Defaults to '/'." },
                         "title": { "type": "string", "description": "Optional human-readable display title." },
@@ -191,8 +193,8 @@ impl AssistantPlatformTools {
                     "properties": {
                         "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline." },
                         "node_id": { "type": "string", "description": "Node ID, kind, or kind+index (e.g. 'n0', 'trigger.webhook', 'postgres.query.run[1]')." },
-                        "flags": { "type": "string", "description": "Space-separated --flag value pairs (e.g. '--credential new-db --path /updated')." },
-                        "body": { "type": "string", "description": "Body content for the node (SQL for postgres.query.run, JS for script nodes)." }
+                        "flags": { "type": "string", "description": "Space-separated --flag value pairs the node declares (e.g. '--limit 100 --timeout 30s')." },
+                        "body": { "type": "string", "description": "The node's body: the SQL of a query node, the code of a script node." }
                     }
                 }),
             },
@@ -200,12 +202,12 @@ impl AssistantPlatformTools {
                 name: "pipeline_activate".to_string(),
                 description: "Activate a pipeline or bulk-activate many pipelines. \
                     Must be called after pipeline_register or after patching. \
-                    Use glob to activate all matching pipelines at once (e.g. 'pipelines/modules/**').".to_string(),
+                    Use glob to activate all matching pipelines at once (e.g. 'modules/**').".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "file_rel_path": { "type": "string", "description": "File-relative path of a single pipeline to activate. Ignored when glob is set." },
-                        "glob": { "type": "string", "description": "Glob pattern to bulk-activate matching pipelines (e.g. 'pipelines/modules/manage/**')." }
+                        "glob": { "type": "string", "description": "Glob pattern to bulk-activate matching pipelines (e.g. 'modules/manage/**')." }
                     }
                 }),
             },
@@ -240,7 +242,7 @@ impl AssistantPlatformTools {
                 name: "pipeline_run".to_string(),
                 description: "Run a pipe-chained node body EPHEMERALLY — not saved, not logged, no hit recording. \
                     Use this to test queries, explore data, or prototype before registering. \
-                    Example body: '| postgres.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
+                    Example body: '| postgres.query.run --credential pg_main -- \"SELECT count(*) FROM users\"' — the rows come back at input.query.rows. \
                     Auto-prepends trigger.manual if no trigger node specified.".to_string(),
                 parameters: json!({
                     "type": "object",
@@ -261,7 +263,7 @@ impl AssistantPlatformTools {
                     "type": "object",
                     "required": ["file_rel_path"],
                     "properties": {
-                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline (e.g. 'pipelines/api/blog-home.zf.json')." }
+                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline (e.g. 'api/blog-home.zf.json')." }
                     }
                 }),
             },
@@ -415,7 +417,7 @@ impl AssistantPlatformTools {
                     "type": "object",
                     "required": ["from_path", "to_path"],
                     "properties": {
-                        "from_path": { "type": "string", "description": "Source path. Pipeline: file_rel_path e.g. 'pipelines/api/old.zf.json'. Template: rel_path e.g. 'pages/old.tsx'." },
+                        "from_path": { "type": "string", "description": "Source path. Pipeline: file_rel_path e.g. 'api/old.zf.json'. Template: rel_path e.g. 'pages/old.tsx'." },
                         "to_path": { "type": "string", "description": "Destination path. Same domain as from_path. Parent folders created automatically." }
                     }
                 }),
@@ -459,7 +461,8 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "connection_list".to_string(),
                 description: "List all DB connections for this project — returns slug, label, and kind \
-                    (postgres, mysql, sqlite). Use the slug with connection_describe and in --credential flags.".to_string(),
+                    (postgres, mysql, sqlite). Use the slug with connection_describe; a node's --credential takes \
+                    a credential id from credential_list, never a connection slug.".to_string(),
                 parameters: json!({ "type": "object", "properties": {} }),
             },
             ToolDef {

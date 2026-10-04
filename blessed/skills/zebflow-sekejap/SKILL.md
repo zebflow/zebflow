@@ -57,13 +57,12 @@ short form with examples; this skill is the order of work.
 
 ## 3. Wire it into a pipeline
 
-- Several queries feeding one script: chain them in a line
-  (`| q_a | q_b | merge`), reading each by literal id in the script
-  (`ctx.nodes.q_a.query.rows`). Plain edges from parallel nodes into one node do
-  **not** join — it runs once per edge, seeing one predecessor each time.
-  Use `logic.collect` if you truly need a fan-in.
-- A read answers `query: { columns, rows, row_count }`; each row is an object
+- A query node adds `query` and keeps the payload; each row is an object
   (`input.query.rows[0].title`). A write needs `--write`.
+- Several queries feeding one script: chain them in graph mode with ids and
+  read each by id — `$nodes.posts.query.rows` in a flag,
+  `ctx.nodes.posts.query.rows` in a script. Two edges into one ordinary node
+  run it once per edge; put `logic.collect` where branches must meet.
 
 ## 4. Prove it before you save it
 

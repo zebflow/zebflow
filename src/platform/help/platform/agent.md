@@ -122,13 +122,46 @@ tool of its own, named by the pipeline.
 
 ---
 
-## 3. Rules that save a session
+## 3. How a pipeline is written
+
+A pipeline is one line of nodes, `|` between them, each node written as its
+kind:
+
+```
+| trigger.webhook --route /posts/:slug --method GET
+| sekejap.query.run --param "1={{ $trigger.params.slug }}" -- "SELECT id, title, body_json FROM posts WHERE slug = $1"
+| web.response.send --template pages/post.tsx
+```
+
+- **Kinds are `family.noun.verb`** (`fs.file.put`, `postgres.query.run`,
+  `telegram.message.send`); entry nodes are `trigger.<source>`, inputs
+  `input.<type>`, control `logic.<verb>`, installed nodes
+  `x.<package>.<noun>.<verb>`.
+- **Each node adds one key — its noun — and keeps the rest.** The trigger
+  adds `webhook` (`input.webhook.body`), a query adds `query`
+  (`input.query.rows`), `fs.file.put` adds `file`, a script adds `script`.
+  `$trigger` is the request for the whole run (`$trigger.body.email`), and
+  `$nodes.<id>.<key>` is any earlier answer.
+- **Flags follow one grammar.** `--from` names the subject; other inputs
+  take typed roles (`--text`, `--file`, `--body`, `--value`); maps repeat
+  `key=value` (`--param "1=…"`, `--header "Location=/home"`); switches are
+  bare (`--write` to change data); units travel in values (`--timeout 30s`,
+  `--max-size 10MB`); choices are closed words. Headers are sent exactly as
+  written, `Set-Cookie` included.
+- **Find a node in three steps**: `help(topic="pipeline/nodes")` (one line
+  per kind) → `help(topic="pipeline/nodes/<kind>")` (signature, answer,
+  flags, examples) → `help_search query="…"`. The grammar in full:
+  `help(topic="pipeline/dsl")`.
+
+---
+
+## 4. Rules that save a session
 
 - **Read exact names; never guess them.** `--template` is a `rel_path` from `file_list` ending in `.tsx`; `--credential` is an id from `credential_list`; a table name comes from `connection_describe`. A guessed template is a 500 at request time; a guessed credential id is an auth failure.
-- **A node accepts only the flags it declares.** `help(topic="pipeline/nodes/<kind>")` before using an unfamiliar node.
-- **Webhook data is under `input.webhook.body`.** A form field is `input.webhook.body.email`; path params `input.webhook.params`, query `input.webhook.query`. In `{{ }}` use `$trigger.body`, `$trigger.params`, `$trigger.query`, `$trigger.auth`.
+- **A node accepts only the flags it declares.** Read `help(topic="pipeline/nodes/<kind>")` before using a node for the first time in a session.
+- **Webhook data is under `input.webhook.body`.** A form field is `input.webhook.body.email`; path params `input.webhook.params`, query `input.webhook.query`. In `{{ }}` anywhere later: `$trigger.body`, `$trigger.params`, `$trigger.query`, `$trigger.auth`.
 - **Quote any flag value with `{{ }}` or a space** as one argument.
-- **Draft is not live.** After `pipeline_register` or `pipeline_patch`, `pipeline_activate`. Then fetch the route (`/wh/{owner}/{project}{path}`) and look at what came back; `pipeline_get_invocations` shows the trace.
+- **Draft is not live.** After `pipeline_register` or `pipeline_patch`, `pipeline_activate`. Then `route_fetch` the route and read what came back; `pipeline_get_invocations` shows the trace.
 - **A 200 is not a rendered page.** A component that throws is replaced by `<!-- RWE component error: … -->` and the response is still 200. Search the body for it. A page whose hydration failed serves correct HTML and logs a browser console error — open it.
 - **Every file imports what it uses** from `"zeb/react"`, `"zeb/ui/<name>"` or `"@/…"`; nothing is inherited from the page.
 - **Locked resources** — an owner can lock a pipeline, a file or a folder. The lock holds at the service layer, so every write channel refuses (`PLATFORM_PIPELINE_LOCKED`, `PLATFORM_TEMPLATE_LOCKED`); MCP also refuses reads of locked items. `pipeline_list` and `file_list` still show they exist. You cannot unlock; tell the user.
@@ -136,20 +169,20 @@ tool of its own, named by the pipeline.
 
 ---
 
-## 4. A feature, end to end
+## 5. A feature, end to end
 
 ```
 connection_describe  slug=default-multimodel                       ← what tables exist
-pipeline_run  body="| trigger.function | sekejap.query.run --write -- \"CREATE TABLE posts (id TEXT, title TEXT, slug TEXT, body_json JSON, created_at TEXT)\""
+pipeline_run  body="| trigger.function | sekejap.query.run --write -- \"CREATE TABLE posts (title TEXT, slug TEXT, body_json JSONB, created_at TEXT)\""
 file_create   kind=page  name=blog-home  parent_rel_path=pages
-file_write    rel_path=pages/blog-home.tsx  content="…"           ← help(topic="web")
+file_write    rel_path=pages/blog-home.tsx  content="…"           ← help(topic="web"); the rows are input.query.rows
 pipeline_register  file_rel_path="pages/blog-home"  title="Blog home"
-                   body="| trigger.webhook --route /blog --method GET | sekejap.query.run -- \"SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20\" | web.response.send --template pages/blog-home.tsx"
+                   body="| trigger.webhook --route /blog --method GET | sekejap.query.run -- \"SELECT title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20\" | web.response.send --template pages/blog-home.tsx"
 pipeline_activate  file_rel_path="pages/blog-home"
+route_fetch   path="/blog"                                         ← status 200, no rwe_component_errors, the titles in the body
 ```
 
-Fetch `/wh/{owner}/{project}/blog`, check for `RWE component error`, open it.
-Then:
+Then open it in a browser, and:
 
 ```
 git_command  subcommand=add  args="."

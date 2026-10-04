@@ -17,28 +17,28 @@ and **rich text is a JSON document, HTML is derived from it**. Facts:
 
 1. A `<form method="post" enctype="multipart/form-data">` with
    `<input type="file" name="photo">`, or a `fetch` with `FormData`.
-2. The webhook delivers the file as `input.webhook.files.photo` — a FileRef
-   (`ref`, `filename`, `mime`, `kind`, `size`, `sha256`, `lifecycle: temporary`).
-   It is discarded after the run unless a node keeps it.
+2. The webhook delivers the file as `input.webhook.files.photo` (anywhere
+   later `$trigger.files.photo`) — a FileRef with `lifecycle: temporary`. It
+   is discarded after the run unless a node keeps it.
 3. Keep it: `fs.file.put --from "{{ input.webhook.files.photo }}" --folder uploads --accept image --max-size 10MB`
    checks the file by its content (the claimed type must agree, `--accept`
-   must allow it, the stored extension follows the detected type) and adds
-   `file` — a durable FileRef (`ref`, `store`, `filename`, `mime`, `kind`,
-   `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`, `trust`) —
-   to the payload; `input.webhook.body.caption` from the same form is still there.
+   must allow it) and adds `file` — a durable FileRef — to the payload; the
+   form's other fields (`input.webhook.body.caption`) are still there.
 4. Derive what you need: `fs.image.thumbnail --from "{{ input.file }}" --width 320 --height 320 --fit cover --format webp --folder thumbs`
-   reads the file `--from` names and adds `image` (a FileRef, `image.ref`) the same way.
-5. Store the **store path** (`file.ref`) in your table, not a URL — URLs
-   depend on owner, project and visibility.
+   reads the file `--from` names and adds `image`, another FileRef.
+5. Store the **store key** (`input.file.ref`) in your table, never a URL — a
+   URL depends on the host and on what the owner exposed.
 
 ```
 | trigger.webhook --route /api/upload --method POST --auth jwt --credential jwt_main
 | fs.file.put --from "{{ input.webhook.files.file }}" --folder uploads --accept image --max-size 10MB
+| web.response.send --body "{{ { ref: input.file.ref } }}"
 ```
 
-The response carries `file` (a FileRef). Store its **`ref`**; a page
-writes the URL as a root-relative path on the project's own host and the
-renderer makes it absolute (`docs/contracts/addressing.md`).
+Every `fs.*` node names its file with `--from` (a FileRef, an upload or a
+store key) and every writer takes the same destination flags (`--store`,
+`--folder`, `--filename`, `--path`, `--on-conflict`); each node's page has
+the rest (`help(topic="pipeline/nodes/fs.file.put")`).
 
 ## Where a file is reachable
 
@@ -48,7 +48,7 @@ renderer makes it absolute (`docs/contracts/addressing.md`).
 | a folder exposed `public_execute` | `/` on each address in its `serve` | anyone; served as a site, scripts running |
 | anything else | nowhere without sign-in; the Studio reads it at `files/object?ref=…` | a signed-in session with files access |
 
-No node answers a URL — `file` carries only `ref`. A folder name never
+No node answers a URL — a FileRef carries a store key, `ref`. A folder name never
 decides visibility, and no node can expose anything: the owner does, per
 folder, in Studio → Files. Never put `$trigger.files` or base64 into a payload, a script
 return, or a database column.
@@ -68,8 +68,8 @@ const [doc, setDoc] = useState(input.query?.rows?.[0]?.body_json ?? null);
 async function uploadImage(file) {                       // the page decides where images go
   const form = new FormData();
   form.append("file", file);
-  const { file: saved } = await (await fetch(`${input.base}/api/upload`, { method: "POST", body: form })).json();
-  return { src: `${input.files}/${saved.ref}`, ref: saved.ref, alt: file.name };
+  const { ref } = await (await fetch("/api/upload", { method: "POST", body: form })).json();
+  return { src: `/_files/${ref}`, ref, alt: file.name };   // a folder the owner exposed public_read
 }
 
 <Editor value={doc} onChange={setDoc} uploadImage={uploadImage} placeholder="Write…" />
@@ -91,8 +91,9 @@ async function uploadImage(file) {                       // the page decides whe
 ## Prove it
 
 1. Upload a real file through the form; `pipeline_get_invocations` shows
-   `fs.file.put` with the path; the URL loads (`curl -I` → 200, right `Content-Type`);
-   the private form returns 401 without a session.
+   `fs.file.put` and the `ref` it wrote; the file loads where the page points
+   (`curl -I` → 200, right `Content-Type`); the private form returns 401
+   without a session.
 2. An upload over `--max-size` or of the wrong kind is refused with a message
    the form shows.
 3. In the editor, type `/`, pick Image, choose a file: it appears in the

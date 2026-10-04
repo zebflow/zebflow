@@ -54,6 +54,12 @@ Map surfaces:
 - style DSL
 - MVT support in mapserver resolve code
 
+Nodes, by family (each node's page: `help(topic="pipeline/nodes/<kind>")`):
+`sekejap.*`, `sqlite.query.run`, `postgres.query.run` (rows at
+`input.query.rows`; `--write` to change data; values through `--param`);
+`fs.*` (the file `--from` names; a writer answers a FileRef under its noun);
+`table.*`, `geo.*`, `mapserver.layer.*`.
+
 Large data rule:
 
 - Store large bytes as files.

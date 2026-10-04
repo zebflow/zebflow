@@ -71,8 +71,8 @@ pub fn decode_definition() -> NodeDefinition {
         layout: vec![LayoutItem::Field("from".to_string())],
         examples: vec![
             NodeExample::dsl("Read an encoded field", r#"crypto.base64.decode --from "{{ $trigger.body.data }}""#)
-                .input(json!({ "body": { "data": "aGVsbG8=" } }))
-                .output(json!({ "body": { "data": "aGVsbG8=" }, "base64": { "text": "hello" } })),
+                .input(json!({ "webhook": { "body": { "data": "aGVsbG8=" } } }))
+                .output(json!({ "webhook": { "body": { "data": "aGVsbG8=" } }, "base64": { "text": "hello" } })),
         ],
         ..Default::default()
     }

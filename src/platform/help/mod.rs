@@ -96,8 +96,8 @@ fn official_nodes_markdown_reference_for_help() -> String {
     let mut s = String::from(
         "## Node kinds (live — native + embedded official composites)\n\n\
          This block matches the pipeline editor / project node API for platform-bundled nodes: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
-         - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
-         - **One kind:** `help_nodes` with `kind=\"javascript.script.run\"` (or `trigger.webhook`, composite kinds, etc.).\n\n\
+         - **The index:** `help(\"pipeline/nodes\")` — every kind on one line.\n\
+         - **One kind:** `help(\"pipeline/nodes/javascript.script.run\")` (any kind, native or composite).\n\n\
          ---\n\n",
     );
     for def in official_node_definitions_for_help() {
@@ -279,7 +279,7 @@ pub fn help_root_index() -> String {
 
     out.push_str(
         "\n`help_search(query)` — search across all help docs + node catalog (partial, scored)\n\n\
-         Tip: `help(\"pipeline/nodes\")` → full node catalog with all DSL flags and schemas.",
+         Tip: `help(\"pipeline/nodes\")` → every node kind, one line each; `help(\"pipeline/nodes/<kind>\")` → one node in full.",
     );
     out
 }
@@ -330,7 +330,7 @@ pub fn expand_definition_markers(content: &str) -> String {
 }
 
 /// The flag table of one node, from its definition: the same rows the
-/// pipeline editor and `help_nodes` show.
+/// pipeline editor and `help("pipeline/nodes/<kind>")` show.
 pub fn format_node_flags_markdown(def: &crate::pipeline::NodeDefinition) -> String {
     use crate::pipeline::model::DslFlagKind;
     let short = &def.kind;
@@ -443,7 +443,7 @@ fn format_children_index(parent: &str, children: &[&HelpNode]) -> String {
     }
     // Add pipeline/nodes special entry if parent is "pipeline"
     if parent == "pipeline" {
-        out.push_str("- `help(\"pipeline/nodes\")` — **Node Catalog** — All built-in nodes (live from Rust)\n");
+        out.push_str("- `help(\"pipeline/nodes\")` — **Node index** — every kind, one line each, from the definitions\n");
         out.push_str("- `help(\"pipeline/examples\")` — **Examples Index** — Full DSL recipes\n");
     }
     out
@@ -468,6 +468,11 @@ fn closest_paths(query: &str) -> Vec<&'static str> {
     }
     hits
 }
+
+/// Every hand-written guide an agent reads first — help pages, skills, MCP
+/// texts, `start_here` — parsed against the live catalogue.
+#[cfg(test)]
+mod guide_lint;
 
 /// The help is prose about a catalogue that changes. These tests refuse a
 /// build whose help names a node, an alias or a flag the catalogue no longer

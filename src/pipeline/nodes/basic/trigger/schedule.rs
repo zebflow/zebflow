@@ -19,7 +19,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Schedule Trigger".to_string(),
-        description: "Starts the pipeline on a cron schedule once it is active: `--cron` is five fields (`0 7 * * *` = 07:00 daily), \
+        description: "Starts the pipeline on a cron schedule once it is active. `--cron` is five fields (`0 7 * * *` = 07:00 daily), \
             `--timezone` an IANA name (default UTC). Answers one key, `schedule`: `{ trigger: \"schedule\", fired_at: <RFC 3339>, node_id }` \
             (`input.schedule.fired_at`, `$trigger.fired_at`) — there is no `body`, no request; anything the job needs it reads from the database or KV. A scheduled pipeline must not \
             end in a page (`web.response.send --template`); it ends in a write, a mail, or a bare `web.response.send` summary. Runs show under \

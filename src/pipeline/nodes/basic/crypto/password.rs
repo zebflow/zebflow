@@ -46,7 +46,7 @@ pub fn hash_definition() -> NodeDefinition {
     NodeDefinition {
         kind: HASH_KIND.to_string(),
         title: "Hash Password".to_string(),
-        description: "Hash the password in `--from` for storage: `--algorithm argon2` (default, argon2id) or `bcrypt` with `--cost` 4–31 \
+        description: "Hashes the password in `--from` for storage. Choose `--algorithm argon2` (default, argon2id) or `bcrypt` with `--cost` 4–31 \
             (default 12; argon2 refuses it). Adds `password: { hash, algorithm }` and keeps the rest of the payload. An empty `--from` is refused."
             .to_string(),
         input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `password` is added." }),

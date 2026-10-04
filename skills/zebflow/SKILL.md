@@ -32,6 +32,16 @@ Open only the reference that matches the task:
 - `references/distribution.md` for npm, pip, Docker, the embedded `blessed/` libraries, and deployable artifacts.
 - `references/quality-checks.md` for verification before reporting completion.
 
+## Pipeline Grammar (0.11)
+
+A node is written as its kind, `family.noun.verb` (`fs.file.put`,
+`postgres.query.run`, `javascript.script.run`); it adds one key, its noun
+(`input.query.rows`, `input.file`, `input.script`), and keeps the payload.
+`--from` names the subject, maps repeat `key=value`, units travel in values,
+`--write` allows a change. The frozen contract is
+`docs/contracts/node-conventions.md`; node facts come only from the
+definitions, through `help(topic="pipeline/nodes/<kind>")`.
+
 ## Working Rule
 
 Keep changes scoped to the requested surface. Prefer the existing Zebflow patterns over new abstractions. When a behavior is shared by several pages, nodes, or services, fix the shared implementation instead of patching one screen.

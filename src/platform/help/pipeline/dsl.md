@@ -1,13 +1,14 @@
 # Pipeline DSL
 
-The DSL is the text form of a pipeline: one line per node, `|` between them.
-It reaches the platform three ways, all equivalent:
+The DSL is the text form of a pipeline: one node per line, `|` between them.
+This page is the grammar every node follows. What one node takes and answers
+is generated from its definition: `help("pipeline/nodes/<kind>")`.
 
 | Channel | Form |
 |---|---|
-| MCP | `pipeline_register file_rel_path="api/posts" body="| trigger.webhook … | …"`, `pipeline_run body="…"` (unsaved) |
+| MCP | `pipeline_register file_rel_path="api/posts" body="| trigger.webhook … | …"`; `pipeline_run body="…"` runs a body once, unsaved |
 | Project console | `register api/posts --title "Posts" | trigger.webhook … | …`, then `activate pipeline api/posts` |
-| HTTP | `POST /api/projects/{o}/{p}/pipelines/dsl` with `{"dsl": "register …"}` (write the JSON to a file and `-d @file` — the flags do not survive shell quoting) |
+| HTTP | `POST /api/projects/{o}/{p}/pipelines/dsl` with `{"dsl": "register …"}` (write the JSON to a file and `-d @file` — flags do not survive shell quoting) |
 
 The parsed result is the JSON document described in `help("pipeline/authoring")`.
 
@@ -15,8 +16,8 @@ The parsed result is the JSON document described in `help("pipeline/authoring")`
 
 ## Two modes
 
-**Pipe mode** — a linear chain. The first node is the entry; each node
-receives the previous node's output as `input`. Node ids are `n0, n1, …`.
+**Pipe mode** — a straight chain. The first node is the entry; each node
+receives the previous node's payload as `input`. Node ids are `n0, n1, …`.
 
 ```
 | trigger.webhook --route /posts/:slug --method GET
@@ -24,14 +25,14 @@ receives the previous node's output as `input`. Node ids are `n0, n1, …`.
 | web.response.send --template pages/post.tsx
 ```
 
-**Graph mode** — label each node `[id]`, then wire edges. Needed for
-branching, fan-out, fan-in and loops.
+**Graph mode** — label each node `[id]`, then wire edges. Needed to branch,
+fan out, join and loop.
 
 ```
 [a] trigger.webhook --route /status --method GET
 [b] http.response.fetch --url https://example.com/health --method GET
 [c] logic.if --when "input.response.status >= 400"
-[d] http.response.fetch --url https://hooks.example.com/alert --method POST --body "{{ input }}"
+[d] http.response.fetch --url https://hooks.example.com/alert --method POST --body "{{ input.response }}"
 [e] web.response.send --body "{{ { ok: true } }}"
 [a] -> [b]
 [b] -> [c]
@@ -40,135 +41,222 @@ branching, fan-out, fan-in and loops.
 [d] -> [e]
 ```
 
-Edge syntax: `[from] -> [to]` (pin `out` to pin `in`), `[from]:pin -> [to]`,
-`[from]:pin -> [to]:pin`. A pin with no edge ends that branch silently. Every
-node needs a path from the single entry — a node with no incoming edge is a
-second entry and runs on every trigger. Any node's failure can be caught from
-the pin `:error`.
+Edges are `[from] -> [to]` (pin `out` to pin `in`), `[from]:pin -> [to]` or
+`[from]:pin -> [to]:pin`. A pin with no edge ends that branch. Every node
+needs a path from the one entry — a node with no incoming edge is a second
+entry and runs on every trigger. Every node has an `:error` pin.
 
 ---
 
-## Syntax
+## Kinds
+
+A node is written as its kind. Every kind has one of four shapes:
 
 ```
-<verb> [<resource>] [<name>] [--flag value]… [-- <body>]
+family.noun.verb       an acting node     fs.image.thumbnail   postgres.query.run   telegram.message.send
+trigger.<source>       starts a run       trigger.webhook      trigger.schedule
+input.<type>           declares an input  input.text           input.image
+logic.<verb>           control            logic.if             logic.foreach
 ```
 
-- **Flags** belong to the node that declares them; an undeclared flag is a
-  parse error (`unknown flag --x`). `help(topic="pipeline/nodes/<kind>")` lists them.
-- **Body** — `-- "…"` — is the node's main text: SQL for query nodes, code for
-  `script`, JSON for `execute --input`.
-- **Quoting** — a value containing a space or `{{ }}` is one double-quoted
-  argument. `--header Location={{ input.url }}` unquoted is cut at the first space
-  and refused with a message that says so.
-- **Multiline** — end a line with `\` to continue; in a console, `&&` chains
-  commands and stops at the first failure.
-- **Kinds** — a kind is written as itself: `sekejap.query.run`. Installed
-  third-party nodes are `x.<package>.<noun>.<verb>`.
+- The **family** is the word you would search for — a domain (`fs`, `kv`,
+  `http`, `ai`), an engine (`postgres`, `sqlite`, `sekejap`), a language
+  (`javascript`, `typescript`) or a brand (`telegram`).
+- The **noun** is what the node makes or acts on, and it is the node's
+  answer key (below). The **verb** says what happens to it: `get` `list`
+  `put` `create` `delete` `run` `send` `generate` `render` `convert` ….
+- A node installed from the Hub or built in the project is
+  `x.<package>.<noun>.<verb>`; everything after the package follows the same
+  rules.
 
-Flag value kinds, as each node declares them:
+Find a node in three steps: `help("pipeline/nodes")` (every kind on one
+line, by family) → `help("pipeline/nodes/<kind>")` (its signature, flags,
+answer and examples) → `help_search query="…"` when you only know the task.
 
-| Kind | Example | Config value |
+---
+
+## One answer key
+
+Every node adds **one key** to the payload — its noun — and keeps the rest.
+Everything about its result is inside that key:
+
+```
+| trigger.webhook --route /photos --method POST
+| fs.file.put --from "{{ input.webhook.files.photo }}" --accept image
+| fs.image.thumbnail --from "{{ input.file }}" --width 320 --height 320 --fit cover
+| sekejap.query.run --write --param "1={{ input.file.ref }}" --param "2={{ input.image.ref }}" -- "INSERT INTO photos (original, thumb) VALUES ($1, $2)"
+| web.response.send --status 201 --body "{{ { original: input.file.ref, thumb: input.image.ref } }}"
+```
+
+After the trigger the payload is `{ webhook }`; after `fs.file.put` it is
+`{ webhook, file }`; after the thumbnail `{ webhook, file, image }`; after the
+query `{ webhook, file, image, query }`. Nothing is replaced, so the last node
+still reads `input.file.ref` two nodes later.
+
+- A trigger answers under its source: `input.webhook.body` right after
+  `trigger.webhook`, `input.schedule` after `trigger.schedule`. The same
+  envelope is `$trigger` for the whole run, so a later node writes
+  `$trigger.body`, `$trigger.params`, `$trigger.query`, `$trigger.files`,
+  `$trigger.auth` — the request does not move when the payload grows.
+- An input node answers under its `--name`: after `input.text prompt` the
+  value is `input.prompt`.
+- Any upstream node's answer stays at `$nodes.<id>.<key>`
+  (`$nodes.n1.query.rows`, `$nodes.thumb.image.ref`).
+- A node that routes its own failures answers the same key as
+  `{ ok: false, error: { code, message } }` on its error pin; its page says
+  when it does.
+
+The shape inside each key is on the node's page; read it there rather than
+guessing from a neighbour.
+
+---
+
+## Flags
+
+`--kebab-case`, declared per node; an undeclared flag is a parse error
+(`unknown flag --x`). The words mean the same thing on every node:
+
+- **`--from` names the subject** — the thing of the node's own noun it reads:
+  `fs.image.thumbnail --from "{{ input.file }}"`, `crypto.password.verify
+  --from "{{ $trigger.body.password }}"`, `logic.foreach --from "input.query.rows"`.
+  No node reads a payload key on its own; every source is a flag.
+- **Other inputs take typed roles** — `--text`, `--image`, `--file`,
+  `--body` (what goes over a wire), `--value` (what a store write holds),
+  `--argument` (what a callable receives), `--prompt`. A role is a singular
+  noun; repeat it for several (`--recipient a@example.com --recipient
+  b@example.com`).
+- **A map is repeated `key=value`**, split at the first `=`:
+  `--param "1={{ $trigger.params.id }}" --param "2=draft"`,
+  `--header "Accept=application/json"`, `--claim "sub={{ input.query.rows[0]._key }}"`.
+- **A switch is a bare flag** for the behaviour it turns on — `--write`,
+  `--durable`, `--optional`. There is no `--no-x`.
+- **Units travel in the value**: durations `ms` `s` `m` `h` `d`
+  (`--timeout 30s`, `--ttl 1h`, `--delay 250ms`), sizes `B` `KB` `MB` `GB`
+  or `KiB` `MiB` `GiB` (`--max-size 10MB`). A bare number for a duration or
+  a size is refused.
+- **A choice is closed**: `--method POST`, `--fit cover`, `--on-conflict
+  overwrite`. A word the node does not list is refused, never mapped to a
+  default; the signature shows the words (`--fit cover|contain|fill`).
+- **A file writer names its destination** with `--store`, `--folder`,
+  `--filename`, `--path` (an exact store key — the only flag that is a path)
+  and `--on-conflict`.
+- **Every node takes** `--title "…"` (the canvas label), `--timeout <duration>`
+  (1s to 1h; default the project's node timeout), `--preview` and
+  `--preview-in` (below).
+
+How each kind of value is written:
+
+| Value | Example | Stored config |
 |---|---|---|
-| scalar | `--template pages/post.tsx` | `"pages/post.tsx"` |
-| bool | `--durable` | `true` — no value consumed |
-| repeated | `--case create --case update` | `["create","update"]` — one value per flag; a comma stays inside its value (`--case "a,b"` is one case) |
-| key-value-pairs | `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}"` | `{ sub: …, name: … }` — repeat the flag, one key each |
+| one | `--template pages/post.tsx` | `"pages/post.tsx"` |
+| switch | `--write` | `true` — consumes no value |
+| repeated | `--case create --case update` | `["create","update"]`; a comma stays inside its value |
+| key=value | `--param "1={{ $trigger.body.id }}" --param 2=draft` | `{ "1": …, "2": "draft" }` |
 
-Two flags exist on every node: `--timeout <duration>` (engine timeout for this
-node, e.g. `--timeout 30s`, `2m`; 1s to 1h, default the project's node
-timeout; a bare number is refused) and `--title "…"` (the label shown in the
-editor).
+A **body** after a standalone `--` is the node's main text — the SQL of a
+query node, the code of a script node, the prompt of `ai.text.generate`:
 
 ```
-| postgres.query.run --credential pg_main --timeout 2m -- "SELECT * FROM big_report_view"
+| sqlite.query.run --param "1={{ $trigger.query.q }}" -- "SELECT id, title FROM notes WHERE instr(title, ?1) > 0"
 ```
+
+**Quoting.** A value with a space or `{{ }}` is one double-quoted argument.
+`--header Location={{ input.url }}` unquoted is cut at the first space and
+refused with a message that says so. End a line with `\` to continue it.
 
 ---
 
-## `{{ expr }}` — dynamic config
+## Data, headers and providers
 
-Any flag value may hold `{{ js_expression }}`, resolved right before the node
-runs in a sandbox with no I/O (no `fetch`, no timers, no `n.*`, a bounded op
-budget).
+Three conventions hold on every node that has them:
+
+- **Values never go into statement text.** SQL is the body; values bind
+  through `--param` (`1=` is `$1`, or `?1` in SQLite; `name=` is `:name`).
+  A whole `{{ }}` keeps its JSON type. A query node is read-only unless it
+  has `--write`:
+
+  ```
+  | trigger.webhook --route /api/notes --method POST
+  | sekejap.query.run --write --param "1={{ $trigger.body.title }}" --param "2={{ new Date().toISOString() }}" -- "INSERT INTO notes (title, created_at) VALUES ($1, $2)"
+  | web.response.send --status 303 --header "Location=/notes"
+  ```
+
+- **Headers are sent as written.** `--header "K=V"`, repeated; nothing is
+  added or rewritten, `Set-Cookie` included, so a cookie writes its own
+  attributes:
+
+  ```
+  | web.response.send --status 303 --header "Location=/home" --header "Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+  ```
+
+- **Secrets are credentials, named by id.** `--credential <id>` takes an id
+  from `credential_list`; no value is ever written in a pipeline. A task
+  several vendors offer is one kind with `--provider` (literal), and the
+  provider's own settings go through `--option key=value`. The node's page
+  prints one signature per provider:
+
+  ```
+  | trigger.manual
+  | input.text question
+  | ai.text.generate --provider openrouter --credential openrouter_main --prompt "{{ input.question }}"
+  ```
+
+---
+
+## `{{ expr }}` — values computed at run time
+
+Any flag value may hold `{{ js_expression }}`, resolved just before the node
+runs, in a sandbox with no I/O and a bounded op budget.
 
 | Name | Meaning |
 |---|---|
-| `input`, `$input` | the payload flowing into this node |
-| `$trigger` | the trigger's envelope for the whole run — for a webhook: `body`, `query`, `params`, `files`, `method`, `path`, `auth`, `headers` (`host`, `x-forwarded-proto`, `content-type`, `user-agent`, `referer`, `origin`, …), plus `search` and `pathname` |
-| `$nodes.<id>` | the output of an upstream node by its id (in pipe mode `n0`, `n1`, …). The trigger node's own output — `{ webhook: { … } }`, `{ manual: { … } }`, … — is `$nodes.<trigger id>`; reach its body as `$nodes.<trigger id>.webhook.body` |
+| `input`, `$input` | the payload arriving at this node |
+| `$trigger` | the trigger's envelope for the whole run — for a webhook `body`, `query`, `params`, `headers`, `files`, `method`, `path`, `auth`, plus `search` and `pathname` |
+| `$nodes.<id>` | an upstream node's payload by id (`n0`, `n1`, … in pipe mode); its answer is `$nodes.<id>.<key>` |
 | `$item`, `$index`, `$count` | inside a `logic.foreach` branch |
 
-A value that is **only** an expression keeps its JSON type; an expression
-inside a longer string is stringified. There is no `ctx`, `$ctx` or `env` in
-`{{ }}` (a script has `ctx.trigger.*` and `ctx.request_id`). An undefined
-name throws and fails the node instead of silently writing `null`.
-
-**Size.** The sandbox does not cap what an expression or a `script` returns
-(a 4 MB string goes through both); its one byte limit, `max_output_bytes` —
-256 KB by default, clamped to 256 B–1 MB (`deno_sandbox/config.rs`) — is
-the ceiling for a local `fetch('/path')` read inside a script. Bytes still
-do not belong in a payload: whatever a node returns is carried in `$nodes`,
-the run record and every downstream payload. Pass files as FileRefs, shrink
-an image with `fs.image.thumbnail` before anything reads it, and read bytes inline
-only for a provider that needs them: `fs.file.get --from <file> --encoding base64`
-answers the bytes at `input.file.base64`, which a `{{ }}` body can prefix with
-`data:image/jpeg;base64,` — the story pipeline sends its reference photo as
-a 640 px thumbnail (~120 KB as a data URI) rather than the 1200 px original.
+A value that is **only** an expression keeps its JSON type (`"{{ [1, 2] }}"`
+is an array); an expression inside a longer string is stringified. There is
+no `ctx`, `$ctx` or `env` in `{{ }}` — a script has `ctx.trigger.*` and
+`ctx.nodes.*` instead. An undefined name fails the node rather than writing
+`null`. JavaScript's `??` and `?.` work: `{{ $nodes.big.text ?? $nodes.small.text }}`.
 
 ```
 | sekejap.query.run --param "1={{ $trigger.params.id }}" -- "SELECT * FROM users WHERE id = $1"
-| http.response.fetch --url "https://api.example.com/{{ $nodes.n1.query.rows[0].slug }}"
-| http.response.fetch --url https://notify.example.com/send --method POST --body "{{ { userId: $trigger.auth.sub, data: input } }}"
+| http.response.fetch --url "https://api.example.com/users/{{ input.query.rows[0].slug }}"
 | web.response.send --status 302 --header "Location={{ $trigger.query.next || '/dashboard' }}"
 ```
 
-(`http.response.fetch` adds `response: { status, ok, headers, content_type, body, request }`.)
-
----
-
-## Commands
-
-| Command | Effect |
-|---|---|
-| `register <path> [--title t] [--description d] [--as-json] | …` | save (or replace) the file as a draft; with `--as-json` print the JSON and save nothing |
-| `activate pipeline <path>` | promote the file to live traffic (validates node config, node availability, libraries) |
-| `deactivate pipeline <path>` | stop serving; the file stays |
-| `execute pipeline <path> --input '{"k":"v"}'` | run the live version once with that payload |
-| `run | trigger.function | javascript.script.run -- "return 1"` | run a body once, unsaved and unlogged; `run --dry-run` only parses |
-| `patch pipeline <path> node <id> [--flag v]… [-- body]` | change one node's config; the pipeline becomes `stale` until activated |
-| `patch pipeline <path> note <id> [--text t] [--at x,y] [--size WxH] [--color c] [-- text]` | create or change one canvas note; `--remove` deletes it (see Notes) |
-| `get pipelines | nodes | connections | credentials | templates | docs` | list |
-| `describe pipeline <path> [--compact]` | status, hash, hits, the DSL, and the node ids for `patch` |
-| `describe connection <slug>`, `describe node <kind>`, `node help <kind>` | one resource |
-| `git status | log --max-count=10 | diff | add <path> | commit -m "…"` | the project repository |
-
-`<path>` is the `file_rel_path`; `.zf.json` may be omitted. Status is `draft`,
-`active`, or `stale` (live but changed since activation). There is no
-`delete` verb (deletion goes through the pipelines API or Studio), no
-`--help`, no `read`/`write` of files or docs from the console — those are the
-MCP file tools.
-
-Over MCP the same verbs are `pipeline_register`, `pipeline_activate`,
-`pipeline_deactivate`, `pipeline_execute`, `pipeline_run`, `pipeline_patch`,
-`pipeline_list`, `pipeline_describe`, `pipeline_get`, `pipeline_get_invocations`,
-`pipeline_search`, `git_command`; there is no MCP tool that takes a raw DSL
-string.
+**Size.** Whatever a node answers is carried in `$nodes`, the run record and
+every later payload, so bytes do not belong there. Pass files as FileRefs,
+shrink an image with `fs.image.thumbnail` before anything reads it, and read
+bytes inline only for a provider that needs them (`fs.file.get --encoding base64`).
 
 ---
 
 ## Control flow
 
-| Node | Pins | Flags |
-|---|---|---|
-| `logic.if` | `true`, `false` | `--when "input.count > 0"` |
-| `logic.match` | one per case + `--default` | `--from "input.webhook.body.type" --case create --case update --default other` |
-| `logic.foreach` | `item` | `--from "input.rows" [--batch-size N] [--keep-input]` |
-| `logic.collect` | `out` | none — fires once every wired input has arrived; answers `collect: { items, count }` (the delivered payloads in DSL text order) over those payloads merged |
-| `logic.reduce` | `out` | `--initial "{ total: 0 }" --step "{ total: $acc.total + $input.item.amount }"`; answers `reduce: <final $acc>` |
-| `logic.retry` | `retry`, `failed`, `done` | `--max-attempts 3 [--delay 250ms] [--backoff 2] [--max-delay 8s] [--max-elapsed 30s] [--when "<expr>"]`, wired from an `:error` pin or fed a verdict (`retry: true`) |
+`logic.*` nodes route the payload; they pass it on rather than answer.
+Their pins and flags are on their pages (`help("pipeline/nodes/logic.match")`).
 
-**Fan-out** is any node with several outgoing edges; **fan-in** is `logic.collect`:
+**Branch** — `logic.if` on `true`/`false`, `logic.match` on one pin per case:
+
+```
+[a] trigger.webhook --route /ingest --method POST
+[b] logic.match --from "input.webhook.body.type" --case normal --case urgent --default other
+[c] sekejap.query.run --write --param "1={{ $trigger.body }}" -- "INSERT INTO normal_queue (data) VALUES ($1)"
+[d] http.response.fetch --url https://alert.example.com/send --method POST --body "{{ $trigger.body }}"
+[e] sekejap.query.run --write --param "1={{ $trigger.body }}" -- "INSERT INTO other_queue (data) VALUES ($1)"
+[a] -> [b]
+[b]:normal -> [c]
+[b]:urgent -> [d]
+[b]:other -> [e]
+```
+
+**Fan out and join.** A node with several outgoing edges fans out. A node
+with several incoming edges runs once per delivery; to wait for every branch
+and continue once, put `logic.collect` where they meet — it answers
+`collect` and each branch's answer stays at `$nodes.<id>`:
 
 ```
 [a] trigger.manual
@@ -183,239 +271,70 @@ string.
 [d] -> [e]
 ```
 
-**foreach** emits `{ item, index, count }` per element (add `--keep-input` to
-carry the whole upstream payload — off by default so a large table is not
-copied per row); **reduce** folds the series and answers the final `$acc` as
-`input.reduce` (`input.reduce.total` below). It may sit further down the
-branch — after a query or a script — and still waits for every run, and
-`$item` names the run's element in any node between:
+**Loop over a list** — `logic.foreach` runs the nodes on its `item` pin once
+per element (`input.item`, or `$item` anywhere down the branch);
+`logic.reduce` folds the runs into one answer, `input.reduce`:
 
 ```
 [a] trigger.manual
-[b] logic.foreach --from "input.rows"
-[c] logic.reduce --initial "{ total: 0 }" --step "{ total: $acc.total + $input.item.amount }"
-[a] -> [b]
-[b]:item -> [c]
-```
-
-**retry** listens on `:error` and re-enters the failing node:
-
-```
-[a] trigger.manual
-[b] http.response.fetch --url https://api.example.com/work --method POST
-[r] logic.retry --max-attempts 3 --delay 250ms
-[c] javascript.script.run -- "return input"
-[d] javascript.script.run -- "return { failed: true }"
+[b] sekejap.query.run -- "SELECT amount FROM orders"
+[c] logic.foreach --from "input.query.rows"
+[d] logic.reduce --initial "{ total: 0 }" --step "{ total: $acc.total + $input.item.amount }"
+[e] web.response.send --body "{{ input.reduce }}"
 [a] -> [b]
 [b] -> [c]
-[b]:error -> [r]
-[r]:retry -> [b]
-[r]:failed -> [d]
+[c]:item -> [d]
+[d] -> [e]
 ```
 
-A failure an `:error` edge consumes is not the run failing: the record marks
-the attempt `retry` (or `error_routed` when the edge reaches something other
-than `logic.retry`), the canvas draws an orange ring with the count, and the
-run's status is untouched. Red is for a failure nothing consumed.
-
-**Back-off and a time cap.** `--backoff 2` doubles `--delay` each attempt
-and `--max-delay` holds the grown wait (`--max-attempts 6 --delay 500ms
---backoff 2 --max-delay 8s` waits 500ms, 1s, 2s, 4s, 8s; every time is a
-duration);
-`--max-elapsed` is a wall-time budget from the first attempt — when it is
-spent, or the next wait would overrun it, `failed` fires with attempts left,
-and `__zf_retry.reason` (`max_attempts` | `max_elapsed`) and
-`__zf_retry.message` on the payload say which budget ran out.
-
-**Polling** is a wait, not an error, so it need not throw. `logic.retry` also
-takes a **verdict** on an ordinary edge: `retry: true` on the payload (or
-`--when "<expr>"` true — JavaScript over `input`, as `logic.if --when`) fires
-`retry` with that payload; false passes it through on `done`; the budget
-spent fires `failed`. The node counts its own attempts
-(`$nodes.<r>.__zf_retry.attempt`), so a poll that reshapes the payload each
-round still counts 1, 2, 3; each round is a `retry` entry on the retry node
-(`node_retry` on the stream: "waiting 2/40"), and nothing is ever red:
+**Retry and poll** — `logic.retry` listens on a node's `:error` pin, or takes
+a verdict on an ordinary edge, and sends the payload round again on `retry`
+until its budget is spent (`failed`) or the verdict says done (`done`):
 
 ```
 [t] trigger.manual
 [poll] http.response.fetch --url https://api.example.com/jobs/42 --method GET
-[check] javascript.script.run -- "const d = (input.response.body.data || [])[0] || {}; return { retry: d.status !== 'success', url: d.videoURL }"
-[wait] logic.retry --max-attempts 40 --delay 5s --when "input.script.retry"
-[download] http.response.fetch --url "{{ input.script.url }}" --parse bytes
-[gaveup] javascript.script.run -- "return { gaveup: true, attempts: input.__zf_retry.attempt }"
+[wait] logic.retry --max-attempts 40 --delay 5s --when "input.response.body.status !== 'done'"
+[next] javascript.script.run -- "return { result: input.response.body.result }"
+[gaveup] web.response.send --status 504 --body "{{ { error: 'job did not finish' } }}"
 [t] -> [poll]
-[poll] -> [check]
-[check] -> [wait]
+[poll] -> [wait]
 [wait]:retry -> [poll]
-[wait]:done -> [download]
+[wait]:done -> [next]
 [wait]:failed -> [gaveup]
 ```
 
-**Loops** are back-edges; bound them with a counter in the payload:
-
-```
-[a] trigger.manual
-[b] javascript.script.run -- "const n = (input.script?.attempts || 0) + 1; return { attempts: n, status: n < 3 ? 'retry' : 'done' }"
-[c] logic.match --from "input.script.status" --case done --default retry
-[d] javascript.script.run -- "return input"
-[e] logic.if --when "input.script.attempts < 5"
-[f] javascript.script.run -- "return { gave_up: true }"
-[a] -> [b]
-[b] -> [c]
-[c]:done -> [d]
-[c]:retry -> [e]
-[e]:true -> [b]
-[e]:false -> [f]
-```
+**Failure.** A node that fails delivers to its `:error` pin when one is
+wired, and the run goes on; otherwise the run fails there. A failure an
+edge consumed is drawn orange on the canvas with a count, never red.
 
 ---
-
-## Notes on the canvas
-
-A note is a sticky note drawn on the pipeline canvas: text for the next
-reader, never executed, never reached by an edge. Use one to say which
-credential to create, why a branch exists, or what is still missing. `note`
-is a reserved word in both modes:
-
-```
-[t] trigger.webhook --route /signup
-[m] mail.message.send --credential smtp-main --recipient "{{ input.webhook.body.email }}"
-[t] -> [m]
-[why] note --text "Create the `smtp-main` credential before activating." --at 120,-80 --size 320x90 --color amber
-
-| trigger.webhook --route /signup | mail.message.send --credential smtp-main | note --id why --text "Create the smtp-main credential first."
-```
-
-Flags: `--text` (markdown: headings, bullets, **bold**, `code`), `--at x,y`
-(canvas position, the space node positions use), `--size WxH`, `--color`
-(`amber`, `blue`, `green`, `rose`, `violet`, `teal`, `orange`, `slate`; anything
-else draws grey — the dot at a note's top-right on the canvas picks from the
-same eight, and Save Draft keeps it), `--id`
-(pipe mode only; graph mode takes the `[label]`). A `-- body` after the flags
-is the text too, for anything long.
-
-`register` replaces the nodes and edges and **keeps every existing note** the
-body did not redeclare, so a note a person left on the canvas survives an
-agent's re-register. To change or delete one: `patch pipeline <path> note
-<id> …` / `--remove`. `describe pipeline` lists note ids next to the node ids.
-
-## Previews under a node
-
-A preview draws one value from the node's latest run under its box on the
-canvas. Off by default, presentation only, **never read by the engine** — it
-lives in `config.preview` beside `config.ui`, and removing it changes nothing
-about what the pipeline does.
-
-```
-| trigger.manual | javascript.script.run --preview table:rows -- return { rows: await db.all() } | web.response.send --preview-in json:body
-```
-
-`--preview <as>[:<path>]` previews the node's **output**; `--preview-in
-<as>[:<path>]` previews its **input**. `as` is one of `image`, `video`,
-`audio`, `pdf`, `json`, `text`, `table`, `html`. `path` is optional: a dot path
-into that payload (`response.file`, `clip`, `rows`); leave it off and the
-editor picks the first value in the payload that fits the kind. A file
-reference renders as the file, a `http(s)://` or `/` string as that URL.
-
-Both flags take `off` to remove that half: `patch pipeline
-pipelines/reports/daily node render --preview off`.
-
-A panel is 220 px wide by default, with a height by kind. `@WxH` after the
-value sets its size on the canvas, in canvas pixels — `--preview
-image@360x240`, `--preview table:rows@420x180`, `--preview-in json@300x90` —
-between 160×60 and 1200×900. The panel stays centred under its node whatever
-the width. The value is the whole cell: `--preview image@400x260` means kind
-image, no path, that size, and `--preview image` puts it back at the default.
-The same thing by hand: drag the corner on the canvas; Save Draft keeps it,
-and `describe pipeline` prints the suffix only when a size is stored.
-
-A declared preview records that payload in the run's trace even at the
-default `on-error` capture level, so it has something to draw; a pipeline at
-level `none` records nothing and the cell says "capture off".
-
-Every node kind takes both flags, and no node keeps a sample of its own for
-them: a table node previews the rows it answers.
-
-```
-| table.query.run --from "datasets/orders.csv as o" --limit 20 --preview table:query.rows -- "SELECT * FROM o"
-```
 
 ## Inputs
 
 A trigger delivers one envelope: `body` (fields) and `files` (FileRefs). A
-file that arrives at a trigger is `lifecycle: temporary` — it lives for the run
-and is deleted after, unless a node such as `fs.file.put` makes it durable. The
-webhook already does this for a multipart post; a **manual run** delivers the
-same envelope (the Studio's Run form, or `pipelines/execute` as JSON or
-multipart), and **input nodes** declare and check one field of that envelope
-each, so the Studio can build a Run form from the graph and an agent can read
-what a pipeline expects.
-
-An input node names one field, checks it, and passes the envelope through
-**unchanged** (a missing field with a `--default` is filled in, below). It
-fetches nothing and stores nothing. The set of input nodes
-reachable from a trigger *is* that trigger's declaration. The same nodes work
-after `trigger.manual` and after `trigger.webhook`.
-
-| kind | value | checks |
-|---|---|---|
-| `input.text` | string | non-empty unless optional; `--max` length |
-| `input.number` | number | `--min`, `--max` |
-| `input.boolean` | bool | — |
-| `input.json` | any JSON | parses (a JSON string in `body` is parsed) |
-| `input.file` | one FileRef | `--accept` (comma list of FileRef kinds, mimes or extensions) |
-| `input.files` | array of FileRef | `--accept`, `--max` count |
-| `input.image` / `input.audio` / `input.video` | one FileRef | `input.file` with `--accept` preset to that kind |
-
-The field name is the first bare token (also `--name`). Every kind takes
-`--optional`, `--label "…"` (the form label), and `--default <v>` (text,
-number, boolean, json). Body fields are read at `$trigger.body.<name>`, files
-at `$trigger.files.<name>` — the node checks the trigger's own envelope, not
-`input`. It then **answers at its `--name`**: after `input.text prompt`, the
-next node reads `input.prompt` and any later node `$nodes.<id>.prompt` (a
-dotted name nests: `page.size` → `input.page.size`); the rest of the payload
-is kept. A `--default` is the answer when nothing was sent — it is **not**
-written back into the envelope, so `$trigger.body.<name>` stays absent and
-only `input.<name>` / `$nodes.<id>.<name>` carry the default, whether the run
-came from the Run form, `execute pipeline`, MCP or a webhook. An `--optional`
-field that was not sent answers `null` the same way.
-
-**Required by default.** A missing or invalid value fails the node with
-`FW_NODE_INPUT_MISSING` / `FW_NODE_INPUT_INVALID` (both *refused*), naming the
-field and what was expected. `--optional` allows absence; the node's value is
-then `null`. After `trigger.schedule` a required input is refused at
-activation (`FW_NODE_INPUT_UNREACHABLE`): a tick delivers an empty envelope,
-so give it `--default` or `--optional` — a schedule pipeline run by hand
-still receives the real envelope and checks it as usual.
-
-A manual run with an image and a caption — the Studio draws a text field and a
-drop zone under the two nodes, and Run posts them as multipart:
+file that arrives is `lifecycle: temporary` — it lives for the run unless a
+node such as `fs.file.put` keeps it. **Input nodes** (`input.text`,
+`input.number`, `input.image`, … — the `input` family in the index) each
+declare and check one field of that envelope and answer it under their
+`--name`. The input nodes reachable from a trigger *are* its declaration:
+the Studio builds the Run form from them, and an agent reads them to know
+what to send. They work after `trigger.manual` and after `trigger.webhook`.
 
 ```
 | trigger.manual
-| input.text prompt --label "Caption" --max 200
+| input.text caption --label "Caption" --max 200
 | input.image photo
 | fs.image.thumbnail --from "{{ input.photo }}" --width 200 --height 200 --preview image
-| javascript.script.run --preview json -- return { caption: input.prompt, thumb: input.image }
+| javascript.script.run --preview json -- "return { caption: input.caption, thumb: input.image.ref }"
 ```
 
-A webhook form that takes a CV — a browser posts the same multipart, and the
-same Run button tries the route from the canvas:
+A missing required field refuses the run, naming the field. Over MCP,
+`pipeline_execute` takes the envelope:
+`input: { body: { caption: "x" }, files: { photo: "uploads/cat.png" } }` —
+a `files` value is a store path that becomes the FileRef of that object.
 
-```
-| trigger.webhook --route /apply --method POST
-| input.text name --label "Full name"
-| input.file cv --accept pdf
-| fs.file.put --from "{{ input.cv }}" --accept pdf --folder applications
-| web.response.send --status 200 --body "{{ { received: input.file.ref } }}"
-```
-
-Over MCP: `pipeline_execute` with
-`input: { body: { prompt: "x" }, files: { photo: "uploads/cat.png" } }` — a
-`files` value is a **store path** (project files, private or public) that
-becomes the durable FileRef of that object, `origin: manual`; a path that does
-not exist is refused, naming it, before the run starts. The JSON form of
-`pipelines/execute` takes the same spelling.
+---
 
 ## Webhooks: auth and streaming
 
@@ -423,46 +342,29 @@ not exist is refused, naming it, before the run starts. The JSON form of
 | trigger.webhook --route /admin/posts --method POST --auth jwt --credential jwt_main --role admin --role editor
 ```
 
-`--auth` is `none`, `jwt`, `hmac` or `api_key`; `--credential` is
-the credential id; `--role` (repeated) matches one entry of the token's
-`roles` array. Payload shape (`input.webhook.body`, `input.webhook.params`,
-`input.webhook.query`, `input.webhook.files`, `input.webhook.auth`):
-`help("pipeline/authoring")`.
+The trigger refuses an unauthenticated request before any node runs. The
+envelope's shape (`input.webhook.body`, `.params`, `.query`, `.files`,
+`.auth`) is in `help("pipeline/authoring")`; the recipe for sessions is
+`help("pipeline/examples/cookie-jwt-auth")`.
 
 Any webhook pipeline streams when the client asks: a request with
 `Accept: text/event-stream` receives `event: signal` messages while nodes
-run, then `event: done` with the result or `event: error`. The pipeline
-definition is the same either way. A signal is anything a node emits on the
-execution bus (`ai.text.generate` thinking and tool calls, a script's `emit`) —
-and, since 2026-09-20, the engine's own lifecycle: `run_start`, then per
-node `node_start` and exactly one of `node_ok` / `node_skip` / `node_fail`
-(`data: { duration_ms, error_code?, error_class? }`, the node in `node_id`),
-then `run_done` (`data: { run_id, status, duration_ms }`). Since 2026-09-21
-a failure an `:error` edge consumed is not `node_fail`: it is `node_retry`
-(`data: { attempt, max_attempts, duration_ms, error_code, message }`) when
-the edge reaches `logic.retry`, or `node_error_routed` (`data: {
-duration_ms, error_code, message, to_node }`) for any other consumer;
-`node_fail` is the unrouted failure that ends the run. A `logic.retry` that
-sends a verdict round again announces `node_retry` for itself (`message:
-"next attempt in 5000 ms"` when it has a delay). A client that only cared for a node's own signals now sees
-these too; filter on `kind`.
-
-`POST /api/projects/{o}/{p}/pipelines/execute` streams the same way with
-the same header (JSON or multipart body, as without it): every signal as
-`event: signal`, then one `event: result` carrying what the JSON answer
-would have been — `{ ok, run_id, output }` or `{ ok: false, run_id, error }`.
-The Studio's Run button uses this to light each node's badge as it runs.
-Without the header the route answers JSON once the run is over, exactly as
-before.
+run, then `event: done` with the result or `event: error`. A signal is
+anything a node emits (`ai.text.generate` thinking and tool calls, a
+script's `emit`) and the engine's own lifecycle: `run_start`; per node
+`node_start` and one of `node_ok`, `node_skip`, `node_fail`; `node_retry`
+or `node_error_routed` for a failure an `:error` edge consumed; then
+`run_done`. Filter on `kind`. `POST /api/projects/{o}/{p}/pipelines/execute`
+streams the same way with the same header and ends with `event: result`.
 
 ---
 
-## Files and FileRefs
+## Files
 
-Bytes never travel inline. A file is a **FileRef** —
-`{ "__zf_type": "file_ref", "ref": "…", "filename", "mime", "kind", "size", "sha256", "lifecycle", "origin", "trust" }` —
-produced by an upload (`$trigger.files.<field>`), by `http.response.fetch --parse bytes`,
-or by any `fs.*` node. `fs.file.put` keeps an uploaded file:
+Bytes never travel inline. A file is a **FileRef** (`help("pipeline/authoring")`
+shows one) — from an upload (`$trigger.files.<field>`), from
+`http.response.fetch --parse bytes`, or from any `fs.*` node. Every `fs.*`
+node names its file with `--from`: a FileRef, an upload or a store key.
 
 ```
 | trigger.webhook --route /upload --method POST
@@ -470,150 +372,104 @@ or by any `fs.*` node. `fs.file.put` keeps an uploaded file:
 | fs.image.thumbnail --from "{{ input.file }}" --width 320 --height 320 --fit cover --format webp --folder thumbs
 ```
 
-`fs.file.put` takes exactly one source — `--from` a file (checked by its
-content: the claimed type must agree, `--accept` must allow it, and the stored
-extension follows the detected type), `--text` (with `--encoding base64` for
-bytes) or `--value` (any JSON value, written as JSON) — and adds `file`: a
-durable FileRef (`__zf_type`, `backend`, `store`, `ref`, `filename`, `mime`,
-`kind`, `size`, `sha256`, `lifecycle: durable`, `origin: fs.file.put`,
-`trust`); the store path is `file.ref`, and there is no `path`, `url` or
-`content_type` beside it — and `fs.image.thumbnail --from "{{ input.file }}"` adds
-`image` (a FileRef with `width`, `height`, `format`); the form's other fields
-(`input.webhook.body.caption`) stay beside them. Every `fs.*` node names its
-subject with `--from` — a FileRef, an upload or a store key; none reads a
-default payload key. `fs.file.copy` and `fs.file.move` (`file`) and
-`fs.archive.create` (`archive`) answer a stored file the same way: a FileRef.
-`fs.folder.list --from <folder>` answers `folder: { path, items, count }`;
-`fs.archive.extract` and `fs.pdf.convert`, which write a tree, answer
-`{ folder, items, count, … }` under `archive` and `pdf`. Store `ref` in a row;
-a URL is not a node's business.
+Store `input.file.ref` in a row — a store key, never a URL. No node answers a
+URL and no node exposes a file: every object is private until the owner
+exposes its folder in Studio → Files (`help("platform")`).
 
-**Every file is private** until the owner exposes its folder in Studio →
-Files (`PUT /api/projects/{owner}/{project}/files/access`); no folder name and
-no node can do it. `public_read` makes a folder readable on the project's file
-host (`<project>.<owner>.fs.localhost/<path>` on a dev machine; in production
-a host given one `files` route at `/` in Settings → Addressing), always inert:
-scripts in it never run as a page there. `public_execute` serves a folder as a
-site — a generated static site, say — with scripts running, only on the
-addresses listed in its `serve`. The Studio (a preview cell, an input widget,
-the Files page) and an MCP session read any object, private or exposed, at
-`GET /api/projects/{owner}/{project}/files/object?ref=<path>` with the
-session. Table files (`table.data.convert`, `table.query.run`) and map layers (`mapserver.*`)
-follow the same rules.
-
-**Provider APIs.** An image, video or speech provider (Runware, fal,
-Replicate, ElevenLabs) is called with a **Secure Request** credential. The
-owner creates the profile in Studio → Credentials: method, URL template,
-header templates such as `Authorization: Bearer <API_KEY>`, and the secret
-behind the placeholder; the node names it with `--credential <id>` and needs
-neither `--url` nor `--method`. A profile whose Body Template is blank sends
-the node's own `--body "{{ expr }}"`, so the payload's shape stays in the
-pipeline and only the key lives in the credential. Send a FileRef to the
-provider with `--format form-data` and a FileRef as one field of the body;
-receive one with `--parse bytes`, which stores the reply as a
-temporary FileRef at `response.body`; then
-`fs.file.put --from "{{ input.response.body }}"` keeps it. The key is redacted from the
-run's record at every capture level. On the canvas, the download node's
-`--preview image` can only ever say "temporary file — gone after the run":
-the bytes were deleted with the run, by design. The `fs.file.put` node's preview
-is the one that shows the picture, from the durable file it wrote.
+**Provider APIs over HTTP.** An outside API whose key must stay secret is
+called with `http.response.fetch --credential <id>`, where the credential is
+a Secure Request profile the owner created (method, URL, headers with the key
+behind a placeholder). The pipeline keeps the body's shape; the credential
+keeps the key, and the run record redacts it:
 
 ```
 | trigger.manual
 | input.text prompt --label "Describe the image"
-| javascript.script.run -- "return { body: $trigger.body, taskUUID: crypto.randomUUID() }"
-| http.response.fetch --credential runware --body "{{ [ { taskType: 'imageInference', taskUUID: input.script.taskUUID, positivePrompt: input.script.body.prompt, model: 'runware:101@1', width: 1024, height: 1024, numberResults: 1, outputType: 'URL', outputFormat: 'JPG' } ] }}" --preview json:response.body
-| javascript.script.run -- "return { url: input.response.body.data[0].imageURL }"
-| http.response.fetch --url "{{ input.script.url }}" --parse bytes --preview image
-| fs.file.put --from "{{ input.response.body }}" --folder generated/runware --preview image
+| http.response.fetch --credential image_api --body "{{ [ { taskType: 'imageInference', positivePrompt: input.prompt, width: 1024, height: 1024 } ] }}"
+| http.response.fetch --url "{{ input.response.body.data[0].imageURL }}" --parse bytes
+| fs.file.put --from "{{ input.response.body }}" --folder generated --preview image
 ```
 
-The profile `runware` is `POST https://api.runware.ai/v1` with
-`Authorization: Bearer <API_KEY>` and `Content-Type: application/json`, no
-variables. Each run spends the provider's credits.
-
-## Posters and SVG pictures
-
-A poster is an SVG. Whoever writes it — a model, a script, a stored file —
-`fs.image.render` draws it as a PNG, JPG or WebP with resvg, no browser.
-Text is shaped with a family the project has: the bundled Inter
-(400/500/600/800) or any `.ttf`/`.otf` under the repository's
-`static/fonts/`, named by family, never by file; a family nobody has is
-refused with the list. `<text inline-size="918">` (SVG 2) wraps a headline
-into lines measured by the shaper — one `<tspan>` per line. Pictures come
-from the project only: `<image href="sandbox/posters/photos/venue.jpg">`
-is a store path, `repo://static/brand/logo.svg` a repository file; a URL or
-a `data:` URI is refused — fetch with `http.response.fetch --parse bytes`,
-`fs.file.put` it, then name the path.
+**Pictures from SVG.** `fs.image.render` draws an SVG — written by a model,
+a script or a stored template — as PNG, JPG, WebP or PDF, no browser;
+`fs.barcode.render` draws a QR or Code 128 code to place inside it;
+`fs.image.chromakey` cuts a green screen out of a generated picture. Their
+pages carry the details:
 
 ```
 | trigger.manual
 | input.text brief --label "What the poster is for"
-| ai.text.generate --provider openrouter --credential openrouter --answer-only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.brief }}
-| fs.image.render --text "{{ input.text.data.svg }}" --folder sandbox/posters/out --preview image
+| ai.text.generate --provider openrouter --credential openrouter_main --answer-only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- "Write one 1080x1350 SVG poster with font-family Inter for: {{ input.brief }}"
+| fs.image.render --text "{{ input.text.data.svg }}" --folder posters --preview image
 ```
-
-The SVG is exactly one of `--from` (a stored `.svg`: a FileRef, an upload or
-a store key) and `--text` (the markup). The other flags are
-`fs.image.thumbnail`'s. With no `--width`/`--height` the
-canvas is the SVG's own size; one side scales the other in proportion; both
-go through `--fit cover|contain|fill`. `--format png|jpg|webp` (default
-png), `--quality` for jpg, `--folder` (default `images/`), `--filename`,
-`--delete-source` (for a `--from` file). The answer adds `image` — a durable FileRef
-(`origin: fs.image.render`) with `width`, `height`, `format` and `layout` —
-and keeps the rest of the payload, so `data.svg` is still there for the next
-node. `image.layout` holds every text and picture with its box, the pairs
-that overlap, what leaves the canvas, and `ok`. A `script` turns that into a
-verdict — `retry: !input.image.layout.ok` with the overlaps as notes — and `logic.retry`
-sends the agent round again with the notes, so a composition is corrected
-without anyone looking at pixels; the picture nodes stay upstream of the
-loop and are not paid for twice.
-
-`--format pdf` writes the same SVG as one PDF page: vector shapes stay
-vector and text stays text with the font subset embedded, so a name is
-selectable. `data-fit="shrink"` beside `inline-size` shrinks a `<text>` until
-it fits `data-max-lines` (default 1) — a certificate is a stored template
-`.svg`, a `fs.file.get`, a `script` that fills the placeholders, then
-`fs.image.render --text "{{ input.svg }}" --format pdf --folder certificates --filename cert-<number>`.
-Effects — shadow, blur, glow, grain, colour grading — are SVG filters
-(`feDropShadow`, `feGaussianBlur`, `feColorMatrix`, `feTurbulence`); resvg
-draws them and the PDF keeps them.
-
-**A code on the certificate.** `fs.barcode.render --text "{{ 'https://example.com/c/' + input.number }}" --folder certificates/qr --filename "{{ input.number }}"`
-draws a QR Code (`--ecc L|M|Q|H`, default M); `--symbology code128` draws a
-linear barcode for printable ASCII instead, with `--height` its bar height.
-`--format svg|png` (default svg), `--width` in px, `--margin` in modules. The
-answer adds `barcode` — a durable FileRef (`origin: fs.barcode.render`) with
-`symbology`, `format`, `width` and `height` — and the poster places it with
-`<image href="{{ input.barcode.ref }}" …/>`.
-
-**A generated picture inside the poster.** Ask the image model for the
-subject "on a solid flat #00ff00 green screen background", `fs.file.put` it,
-then `fs.image.chromakey --from "{{ input.file }}" --folder sandbox/posters/cutouts` turns the screen
-transparent (plain pixel maths, no model; the default key is broadcast
-green `#00b140`, which is what the models paint) and answers
-`image`, a PNG with alpha. The agent places it with
-`<image href="{{ input.image.ref }}" x="…" y="…" width="…" height="…"/>`
-and `fs.image.render` composites it over the background.
-
-**Temporary previews.** The bytes of a temporary FileRef (an
-`http.response.fetch --parse bytes` answer, a Run-form upload) are deleted
-with the run, so a preview of one used to say only "temporary file — gone".
-Since 2026-09-21 a node whose `--preview image` (or `--preview-in image`)
-points at a temporary image gets a small JPEG snapshot (longest side 540 px,
-≤ 64 KB) written into the run's record beside the payload, and the canvas
-draws that with the caption "temporary — not saved".
 
 ---
 
-## The node catalog
+## Notes on the canvas
 
-`help(topic="pipeline/nodes")` is generated from the node definitions: one
-line per kind, by family, so you can find the name before reading the flags.
-`help(topic="pipeline/nodes/<kind>")` is one node in full;
-`help(topic="pipeline/nodes/all")` is every node in full. Families:
+A note is a sticky note on the pipeline canvas: text for the next reader,
+never executed, never reached by an edge. `note` is a reserved word in both
+modes:
 
-Every kind, by family, from the live catalogue (`help("pipeline/nodes")` for one line each, `help("pipeline/nodes/<kind>")` for the flags):
+```
+[t] trigger.webhook --route /signup --method POST
+[m] mail.message.send --credential smtp_main --recipient "{{ input.webhook.body.email }}" --subject "Welcome" --text "Thanks for signing up."
+[t] -> [m]
+[why] note --text "Create the `smtp_main` credential before activating." --at 120,-80 --size 320x90 --color amber
+```
+
+In pipe mode a note is `| note --id why --text "…"`. Flags: `--text`
+(markdown), `--at x,y`, `--size WxH`, `--color` (`amber` `blue` `green`
+`rose` `violet` `teal` `orange` `slate`), `--id` (pipe mode; graph mode takes
+the `[label]`); a `-- body` is the text too. `register` keeps every existing
+note the body did not redeclare; `patch pipeline <path> note <id> …` changes
+one and `--remove` deletes it.
+
+## Previews under a node
+
+`--preview <as>[:<path>][@WxH]` draws one value of the node's latest answer
+under its box on the canvas; `--preview-in` draws its input. `as` is `image`
+`video` `audio` `pdf` `json` `text` `table` `html`; `path` is a dot path
+into the payload (`file`, `query.rows`), or left off for the first value
+that fits; `@WxH` sets the panel size (160×60 to 1200×900); `off` removes
+it. Presentation only — the engine never reads it, and a declared preview
+records its value even at the default capture level.
+
+```
+| table.query.run --from "datasets/orders.csv as o" --limit 20 --preview table:query.rows -- "SELECT * FROM o"
+```
+
+---
+
+## Commands
+
+| Command | Effect |
+|---|---|
+| `register <path> [--title t] [--description d] [--as-json] | …` | save (or replace) the file as a draft; `--as-json` prints the JSON and saves nothing |
+| `activate pipeline <path>` | promote to live traffic (checks node config, node availability, libraries) |
+| `deactivate pipeline <path>` | stop serving; the file stays |
+| `execute pipeline <path> --input '{"k":"v"}'` | run the live version once with that payload |
+| `run | trigger.function | javascript.script.run -- "return 1"` | run a body once, unsaved and unlogged; `run --dry-run` only parses |
+| `patch pipeline <path> node <id> [--flag v]… [-- body]` | change one node; the pipeline is `stale` until activated |
+| `patch pipeline <path> note <id> …` | create, change or `--remove` one canvas note |
+| `get pipelines | nodes | connections | credentials | templates | docs` | list |
+| `describe pipeline <path> [--compact]` | status, hash, hits, the DSL, and the node ids for `patch` |
+| `describe connection <slug>`, `describe node <kind>`, `node help <kind>` | one resource |
+| `git status | log --max-count=10 | diff | add <path> | commit -m "…"` | the project repository |
+
+`<path>` is the `file_rel_path`; `.zf.json` may be omitted. There is no
+`delete` verb (deletion goes through the pipelines API or Studio). Over MCP
+the same verbs are `pipeline_register`, `pipeline_activate`,
+`pipeline_deactivate`, `pipeline_execute`, `pipeline_run`, `pipeline_patch`,
+`pipeline_list`, `pipeline_describe`, `pipeline_get`,
+`pipeline_get_invocations`, `pipeline_search` and `git_command`.
+
+---
+
+## The node catalogue
+
+Every kind, by family, from the live catalogue — `help("pipeline/nodes")`
+for one line each, `help("pipeline/nodes/<kind>")` for one in full:
 
 <!-- node-families -->
 

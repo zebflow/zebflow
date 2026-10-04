@@ -74,7 +74,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Filesystem, NodeCapability::Database, NodeCapability::Process],
         title: "Table Query".to_string(),
-        description: "Run SQL across files — CSV, JSON, NDJSON, Parquet objects in a project store — as if they were tables, with the \
+        description: "Runs SQL across CSV, JSON, NDJSON and Parquet files in a project store as if they were tables. It has the \
             GeoDataFusion `ST_*` functions. Each `--from \"<source> as <name>\"` binds one table: a store key, or `$expr` giving a FileRef or rows. \
             The SQL is the body after `--` (or `--query`), SELECT or WITH only; `--param 1=…` binds `$1` (a whole `{{ expr }}` keeps its type). \
             Without a destination it adds `query: { rows, columns, row_count, truncated }`, as the db nodes do — `--limit` caps the rows (default 200, \

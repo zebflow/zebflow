@@ -115,7 +115,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Credential],
         title: "AI Text".to_string(),
-        description: "One model loop: the prompt goes to the model with the named tools; each tool call the model \
+        description: "Asks a language model for text, optionally letting it call the project's function pipelines as tools. One model loop: the prompt goes to the model with the named tools; each tool call the model \
             makes is run and fed back; it stops when the model answers with text or the budget is spent. \
             With no --tool it is one call — classify, extract, summarise, draft. With --schema the answer is \
             parsed as JSON, checked, repaired once on failure and returned as `text.data`. Tools are the project's \
@@ -303,16 +303,16 @@ pub fn definition() -> NodeDefinition {
         ],
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("One call: summarise a submission", r#"ai.text.generate --provider openai --credential openai_main --system-prompt "You write one plain sentence." --prompt "Summarise: {{ $trigger.body.text }}""#)
-                .input(json!({ "body": { "text": "Our clinic moved to 12 High St and now opens Saturdays 9–1." } }))
-                .output(json!({ "body": { "text": "Our clinic moved to 12 High St and now opens Saturdays 9–1." }, "text": { "value": "The clinic has moved to 12 High St and now opens on Saturday mornings.", "verified": true, "tools_called": [], "iterations": 1, "budget_exhausted": false } }))
+                .input(json!({ "webhook": { "body": { "text": "Our clinic moved to 12 High St and now opens Saturdays 9–1." } } }))
+                .output(json!({ "webhook": { "body": { "text": "Our clinic moved to 12 High St and now opens Saturdays 9–1." } }, "text": { "value": "The clinic has moved to 12 High St and now opens on Saturday mornings.", "verified": true, "tools_called": [], "iterations": 1, "budget_exhausted": false } }))
                 .note("No --tool, so one round trip. The answer is added under `text` and the rest of the payload is kept. The credential is created by the owner in Studio → Credentials."),
             crate::pipeline::model::NodeExample::dsl("One call: classify to JSON", r#"ai.text.generate --provider openai --credential openai_main --answer-only --schema '{"type":"object","required":["sentiment"],"properties":{"sentiment":{"enum":["positive","neutral","negative"]}}}' -- Classify this review: {{ $trigger.body.review }}"#)
-                .input(json!({ "body": { "review": "Booking was easy but the wait was long." } }))
-                .output(json!({ "body": { "review": "Booking was easy but the wait was long." }, "text": { "value": "{\"sentiment\":\"neutral\"}", "data": { "sentiment": "neutral" }, "verified": true } }))
+                .input(json!({ "webhook": { "body": { "review": "Booking was easy but the wait was long." } } }))
+                .output(json!({ "webhook": { "body": { "review": "Booking was easy but the wait was long." } }, "text": { "value": "{\"sentiment\":\"neutral\"}", "data": { "sentiment": "neutral" }, "verified": true } }))
                 .note("`text.data` is the parsed, checked answer; branch on it with `logic.if --when \"$nodes.a.text.data.sentiment == 'negative'\"`. A failed check is fed back once (--max-repairs)."),
             crate::pipeline::model::NodeExample::dsl("Tools: answer from the project's data", r#"ai.text.generate --provider openrouter --credential router_main --tool lookup-order --budget 6 --system-prompt "You answer questions about orders. Use the tools; never guess." --prompt "{{ $trigger.body.message }}""#)
-                .input(json!({ "body": { "message": "Where is order o_91?" } }))
-                .output(json!({ "body": { "message": "Where is order o_91?" }, "text": { "value": "Order o_91 shipped yesterday and arrives Friday.", "verified": true, "tools_called": ["lookup-order"], "iterations": 2, "budget_exhausted": false } }))
+                .input(json!({ "webhook": { "body": { "message": "Where is order o_91?" } } }))
+                .output(json!({ "webhook": { "body": { "message": "Where is order o_91?" } }, "text": { "value": "Order o_91 shipped yesterday and arrives Friday.", "verified": true, "tools_called": ["lookup-order"], "iterations": 2, "budget_exhausted": false } }))
                 .note("`lookup-order` is a function pipeline (trigger.function) in this project; the model calls it with the arguments its input schema declares."),
         ],
         ..Default::default()

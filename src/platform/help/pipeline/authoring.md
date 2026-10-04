@@ -8,8 +8,7 @@ The DSL itself: `help("pipeline/dsl")`.
 
 > Before a node references something by name, read the real value:
 > - `web.response.send --template <path>` — an exact `rel_path` from `file_list`, ending in `.tsx`. A wrong path is a 500 at request time.
-> - `--credential <id>` — an exact id from `credential_list`. Connection slugs (`connection_list`) are for `connection_describe`, not for `--credential`.
-> - `--credential <id>` — the `jwt_signing_key` (or hmac / api_key) credential id.
+> - `--credential <id>` — an exact id from `credential_list`, on every node that takes one (a database, a JWT signing key, an smtp relay, a provider). Connection slugs from `connection_list` are for `connection_describe`, never for `--credential`.
 
 `pipeline_list` and `file_list` are indexes; `pipeline_search` / `file_search`
 grep contents; `pipeline_get` / `file_read` / `file_outline` open one file.
@@ -77,9 +76,9 @@ zebflow:
 | `metadata.name`, `spec.id` | the pipeline's identity — the same value, equal to `file_rel_path` without the extension |
 | `spec.entry_nodes` | nodes with no incoming edge; computed by the DSL |
 | `spec.nodes[].id` | `n0, n1, …` in pipe mode; the `[label]` you wrote in graph mode |
-| `spec.nodes[].kind` | the full kind, always `n.…` |
+| `spec.nodes[].kind` | the kind exactly as the DSL writes it: `family.noun.verb`, `trigger.<source>`, `input.<type>`, `logic.<verb>`, or `x.<package>.<noun>.<verb>` |
 | `spec.nodes[].input_pins` / `output_pins` | `[]`/`["out"]` for triggers, `["in"]`/`["out"]` for most nodes; logic nodes declare named output pins (`true`/`false`, one per `--case`, `item`) |
-| `spec.nodes[].config` | the node's config keys — each DSL flag maps to one (`--credential` → `credential_id`); the `-- "body"` maps to `query` for query nodes and `source` for `script` |
+| `spec.nodes[].config` | the node's config keys — each DSL flag maps to one, named on the node's page (`--credential` → `credential_id`, `--on-conflict` → `on_conflict`); the `-- "body"` maps to the node's main text (`query` on a query node, `source` on a script node) |
 | `spec.edges[]` | `from_node:from_pin → to_node:to_pin`; `from_pin` names a pin (`out`, `true`, a case). Any node's failure may also be routed from the pin `error`. |
 
 `pipeline_get` returns this document; `pipeline_describe` renders it back as DSL
@@ -157,12 +156,11 @@ payload.
 ## Flags and bodies
 
 A node's flags are declared in its definition and the parser refuses any it
-does not know, so `help(topic="pipeline/nodes/<kind>")` is the reference.
-Three conventions hold everywhere:
+does not know, so `help("pipeline/nodes/<kind>")` is the reference. The
+grammar every node follows — `--from` for the subject, typed roles, repeated
+`key=value` maps, bare switches, units in values, closed choices — is
+`help("pipeline/dsl")`. Three things to remember while writing:
 
-- **Query nodes take SQL in the body**: `sekejap.query.run --param "1={{ $trigger.body.id }}" -- "SELECT … WHERE id = $1"`. `--query "…"` is the same thing as a flag. `sqlite.*` binds `?1, ?2`.
-- **`script` takes code in the body**: `script -- "return { ok: true }"`. `input` and `ctx` are in scope; the return value is the next payload.
-- **Any value with `{{ }}` or a space is one quoted argument.** A whole-value expression keeps its JSON type; an interpolated one stringifies.
-
-Node kinds and short aliases: the DSL accepts `sekejap.query.run` for
-`sekejap.query.run`; the stored JSON always holds the full kind.
+- **Statements in the body, values in `--param`**: `sekejap.query.run --param "1={{ $trigger.body.id }}" -- "SELECT … WHERE id = $1"`; `sqlite.query.run` binds `?1`. A write needs `--write`.
+- **Code in the body**: `javascript.script.run -- "return { ok: true }"`. `input` and `ctx` are in scope; what it returns is added as `script` (`input.script.ok` downstream) and the rest of the payload is kept.
+- **Any value with `{{ }}` or a space is one quoted argument.** A whole-value expression keeps its JSON type; an interpolated one is stringified.

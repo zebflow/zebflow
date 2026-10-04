@@ -1,7 +1,7 @@
 # Pipelines
 
-A pipeline is a function: a trigger produces an input, a chain of nodes
-transforms it, the last node answers.
+A pipeline is a function: a trigger starts a run, a chain of nodes adds to
+the payload, the last node answers.
 
 ```
 | trigger.webhook --route /posts/:slug --method GET
@@ -9,42 +9,39 @@ transforms it, the last node answers.
 | web.response.send --template pages/post.tsx
 ```
 
-Every node receives the previous node's output as **`input`** and returns the
-next payload. `sekejap.query.run` replaces it with `{ query: { columns, rows, … } }`; a
-`javascript.script.run`/`typescript.script.run` node adds `script` and keeps the rest; `web.response.send`
-turns it into an HTTP response or a page. Nothing flows unless a node passes it on.
+Every node receives the payload as **`input`**, adds **one key** named for
+what it made — its noun — and passes the rest on. Above, the trigger adds
+`webhook`, the query adds `query` (the rows are `input.query.rows`), and
+`web.response.send` renders the page with that payload as the page's `input`.
+A node is written as its kind, `family.noun.verb`: `sekejap.query.run`,
+`fs.file.put`, `javascript.script.run`. The grammar is `help("pipeline/dsl")`.
 
 ## The two envelopes
 
 | | What it is | Where |
 |---|---|---|
-| **`input`** | The business payload flowing along the edges. Each node transforms it. | `input` in scripts; `input`/`$input` in `{{ }}` |
-| **request context** | The triggering event, frozen at entry: its whole envelope — body/files, path params, query, headers, verified identity. Never changed by any node. | `ctx.trigger.*` in scripts; `$trigger.*` in `{{ }}` |
-
-So when `sekejap.query.run` has replaced the payload, the caller's identity is
-still `ctx.trigger.auth.sub` in a script and `$trigger.auth.sub` in a flag.
-`ctx.request_id` and `ctx.pipeline` are there too.
+| **`input`** | The payload flowing along the edges. Each node adds its key to it. | `input` in scripts; `input`/`$input` in `{{ }}` |
+| **request context** | The triggering event, frozen at entry: its whole envelope — body, files, path params, query, headers, verified identity. No node changes it. | `ctx.trigger.*` in scripts; `$trigger.*` in `{{ }}` |
 
 ### What a webhook puts in `input`
 
-The trigger adds exactly one key, **`webhook`**, holding the whole request
-envelope. Nothing is merged to the root.
+The trigger adds one key, **`webhook`**, holding the whole request; nothing
+is merged to the root.
 
 | Key | Content |
 |---|---|
-| `input.webhook.body` | JSON body as parsed; form fields for `application/x-www-form-urlencoded`; text fields of a multipart form. `null` on GET. |
-| `input.webhook.files.<field>` | Uploaded files as FileRef objects (`ref`, `filename`, `mime`, `size`, `sha256`, …) |
-| `input.webhook.params` | Path parameters: `/posts/:slug` → `input.webhook.params.slug` |
-| `input.webhook.query` | Parsed query string |
-| `input.webhook.path`, `input.webhook.method` | The request line |
-| `input.webhook.auth` | Verified token claims, when the trigger has `--auth` |
+| `input.webhook.body` | the JSON body; the fields of a form (urlencoded or multipart); `null` on GET |
+| `input.webhook.files.<field>` | uploaded files, as FileRefs |
+| `input.webhook.params` | path parameters: `/posts/:slug` → `input.webhook.params.slug` |
+| `input.webhook.query` | the parsed query string |
+| `input.webhook.path`, `input.webhook.method` | the request line |
+| `input.webhook.auth` | the verified token's claims, when the trigger has `--auth` |
 
-A login form is therefore `input.webhook.body.email` and
-`input.webhook.body.password` right after the trigger. `$trigger` is this
-same envelope for the whole run, so deeper in a chain the same fields read as
+A login form is `input.webhook.body.email` right after the trigger. `$trigger`
+is the same envelope for the whole run, so anywhere later the fields read
 `$trigger.body.email`, `$trigger.params`, `$trigger.query`, `$trigger.auth`,
-`$trigger.headers` — plus `$trigger.search` and `$trigger.pathname`, which
-only a webhook trigger adds.
+`$trigger.headers` — plus `$trigger.search` and `$trigger.pathname`, which a
+webhook adds.
 
 ### JWT on a route
 
@@ -53,124 +50,31 @@ only a webhook trigger adds.
 ```
 
 The token comes from `Authorization: Bearer …` or, for browsers, the
-`zebflow_session` cookie. Its `roles` **array** claim must contain one of the
-required roles. A browser navigation that fails is redirected (303) to the
-credential's `auth_redirect`; a `fetch` gets 401/403 JSON. Verified claims
-appear as `input.webhook.auth` right after the trigger, or `ctx.trigger.auth`
-and `$trigger.auth` anywhere in the run; only claims minted with `:public`
-reach the browser as `input.auth` in a page.
-Full recipe: `help(topic="pipeline/examples/cookie-jwt-auth")`.
+`zebflow_session` cookie; its `roles` **array** must contain one of the
+required roles. A browser that fails is redirected (303) to the credential's
+`auth_redirect`; a `fetch` gets 401/403 JSON. Claims minted with `:public`
+reach a page as `input.auth`. Recipe: `help("pipeline/examples/cookie-jwt-auth")`.
 
 ---
 
 ## Two modes
 
-**Pipe mode** — a straight chain, one node per `|`. Most pipelines.
+**Pipe mode** — a straight chain, one node per `|`:
 
 ```
 | trigger.webhook --route /api/notes --method GET
 | sekejap.query.run -- "SELECT id, title FROM notes ORDER BY created_at DESC LIMIT 50"
-| javascript.script.run -- "return { notes: input.query.rows }"
+| web.response.send --body "{{ input.query.rows }}"
 ```
 
-**Graph mode** — label nodes `[id]`, wire edges with `->`, name pins with `:pin`.
-For branching, fan-out and loops.
+**Graph mode** — `[id]` labels, `->` edges, `:pin` for branches; for
+branching, fan-out, joins and loops:
 
 ```
-[a] trigger.webhook --route /ingest --method POST
-[b] logic.match --from "input.webhook.body.type" --case normal --case urgent --default other
-[c] sekejap.query.run --param "1={{ $trigger.body.id }}" --param "2={{ $trigger.body }}" --write -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)"
-[d] http.response.fetch --url https://alert.example.com/send --method POST --body "{{ $trigger.body }}"
-[e] sekejap.query.run --param "1={{ $trigger.body.id }}" --param "2={{ $trigger.body }}" --write -- "INSERT INTO other_queue (id, data) VALUES ($1, $2)"
-[a] -> [b]
-[b]:normal -> [c]
-[b]:urgent -> [d]
-[b]:other -> [e]
-```
-
-Every node must be reachable from the one entry node; a node with no incoming
-edge is a second entry and runs on every request.
-
----
-
-## Nodes
-
-- **Triggers** start a run: `trigger.webhook`, `trigger.schedule`, `trigger.function`, `trigger.manual`, `trigger.room`, `trigger.socket`, `trigger.topic`, `trigger.mcp`, `trigger.error`.
-- **Middle nodes** read, transform or decide: `sekejap.query.run`, `sekejap.record.create`, `postgres.query.run`, `sqlite.query.run`, `javascript.script.run`, `typescript.script.run`, `http.response.fetch`, `kv.entry.get`, `kv.entry.put`, `kv.entry.increment`, `logic.if`, `logic.match`, `logic.foreach`, `logic.collect`, `logic.reduce`, `logic.retry`, `crypto.*`, `auth.token.create`, `auth.token.verify`, `fs.file.put`, `fs.image.thumbnail`, `fs.*`, `table.query.run`, `table.data.convert`, `geo.*`, `mail.message.send`, `ai.text.generate`, `ai.embedding.generate`, `ai.audio.generate`, `browser.page.run`, …
-- **Last nodes** answer: `web.response.send` (JSON, page, redirect, cookie — `help(topic="pipeline/web")`), or push: `ws.message.send`, `ws.state.update`, `kv.message.publish`, `telegram.message.send`, `mapserver.layer.publish`.
-
-Flags are declared per node and an undeclared flag is a parse error, so read
-the node before guessing:
-
-| Call | What you get |
-|---|---|
-| `help(topic="pipeline/nodes")` | the index: every kind on one line, by family — find the name first |
-| `help(topic="pipeline/nodes/all")` | the whole catalogue with every flag table and schema (large) |
-| `help(topic="pipeline/nodes/fs.file.put")` | one node: description, pins, every flag with its config key, required or not |
-| `help_search query="thumbnail"` | search across the help files **and** every node's description and flags |
-
-The DSL writes a kind as itself (`trigger.webhook`, `sekejap.query.run`).
-Installed third-party nodes are `x.<package>.<noun>.<verb>`.
-
----
-
-## Registering and activating
-
-A pipeline is identified by its **`file_rel_path`** — the `.zf.json` path
-inside the project's source root. The source root is the repository root
-unless `zebflow.yaml` sets `spec.layout.source`; it is never part of the
-identifier. The extension may be omitted:
-
-```
-api/posts        →  api/posts.zf.json
-pages/blog-home  →  pages/blog-home.zf.json
-```
-
-**Register** saves a draft; **activate** promotes it to live traffic.
-
-```
-pipeline_register  file_rel_path="api/posts"  title="Posts"  body="| trigger.webhook --route /api/posts --method GET | sekejap.query.run -- \"SELECT * FROM posts\""
-pipeline_activate  file_rel_path="api/posts"
-```
-
-Or in the project console: `register api/posts --title "Posts" | trigger.webhook … | …`
-then `activate pipeline api/posts`.
-
-Status is one of **`active`** (live and current), **`stale`** (live, but the
-file changed since activation — re-registering or patching does not promote;
-run `pipeline_activate`), **`draft`** (never activated). `pipeline_list`
-shows it; `pipeline_get_invocations` shows what a live pipeline actually did.
-
-To change one node without rewriting the graph:
-
-```
-pipeline_describe  file_rel_path="api/posts"                      ← node ids: n0, n1, …
-pipeline_patch     file_rel_path="api/posts"  node_id="n1"  flags="--limit 100"
-pipeline_activate  file_rel_path="api/posts"
-```
-
-To try a body without saving anything: `pipeline_run body="| trigger.function | javascript.script.run -- \"return 1\""`
-(`input` gives it a payload).
-
----
-
-## Common web patterns
-
-**GET page from the database**
-
-```
-| trigger.webhook --route /blog --method GET
-| sekejap.query.run -- "SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
-| web.response.send --template pages/blog-home.tsx
-```
-
-**POST JSON API — validate, insert, answer**
-
-```
-[a] trigger.webhook --route /api/posts --method POST
+[a] trigger.webhook --route /api/notes --method POST
 [b] logic.if --when "typeof input.webhook.body?.title === 'string' && input.webhook.body.title.length > 0"
-[c] sekejap.query.run --param "1={{ $trigger.body.title }}" --param "2={{ $trigger.body.title.toLowerCase().replace(/\s+/g, '-') }}" --write -- "INSERT INTO posts (title, slug) VALUES ($1, $2)"
-[d] javascript.script.run -- "return { ok: true }"
+[c] sekejap.query.run --write --param "1={{ $trigger.body.title }}" -- "INSERT INTO notes (title) VALUES ($1)"
+[d] web.response.send --status 201 --body "{{ { ok: true } }}"
 [e] web.response.send --status 400 --body "{{ { error: 'title is required' } }}"
 [a] -> [b]
 [b]:true -> [c]
@@ -178,7 +82,65 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 [b]:false -> [e]
 ```
 
-**Authenticated route**
+Every node must be reachable from the one entry; a node with no incoming
+edge is a second entry and runs on every request.
+
+---
+
+## Finding the node you need
+
+| Call | What you get |
+|---|---|
+| `help("pipeline/nodes")` | every kind on one line, by family — find the name first |
+| `help("pipeline/nodes/fs.file.put")` | one node: its signature, what it answers, every flag, examples; one signature per `--provider` |
+| `help_search query="thumbnail"` | the help **and** every node's description and flags |
+| `help("pipeline/nodes/all")` | the whole catalogue (large) |
+
+A node accepts only the flags it declares; an undeclared flag is a parse
+error. Read the node's page before the first use in a session.
+
+---
+
+## Registering and activating
+
+A pipeline is identified by its **`file_rel_path`** — the `.zf.json` path
+inside the project's source root (the repository root unless `zebflow.yaml`
+sets `spec.layout.source`). The extension may be omitted:
+
+```
+api/posts        →  api/posts.zf.json
+pages/blog-home  →  pages/blog-home.zf.json
+```
+
+**Register** saves a draft; **activate** promotes it to live traffic:
+
+```
+pipeline_register  file_rel_path="api/posts"  title="Posts"  body="| trigger.webhook --route /api/posts --method GET | sekejap.query.run -- \"SELECT * FROM posts\" | web.response.send --body \"{{ input.query.rows }}\""
+pipeline_activate  file_rel_path="api/posts"
+```
+
+Status is **`active`** (live and current), **`stale`** (live, but changed
+since activation — run `pipeline_activate`) or **`draft`** (never
+activated). `pipeline_get_invocations` shows what a live pipeline did.
+
+To change one node: `pipeline_describe` (node ids `n0, n1, …`) →
+`pipeline_patch node_id="n1" flags="--limit 100"` → `pipeline_activate`. To
+try a body without saving: `pipeline_run body="| trigger.function | javascript.script.run -- \"return 1\""`
+(`input` gives it a payload).
+
+---
+
+## Common web patterns
+
+**A page from the database**
+
+```
+| trigger.webhook --route /blog --method GET
+| sekejap.query.run -- "SELECT id, title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
+| web.response.send --template pages/blog-home.tsx
+```
+
+**A route for signed-in users**
 
 ```
 | trigger.webhook --route /dashboard --method GET --auth jwt --credential jwt_main
@@ -186,14 +148,14 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 | web.response.send --template pages/dashboard.tsx
 ```
 
-**Redirect**
+**A redirect**
 
 ```
 | trigger.webhook --route /go/signup --method GET
 | web.response.send --status 302 --header "Location=/auth/register?source=landing"
 ```
 
-**Scheduled job**
+**A scheduled job**
 
 ```
 | trigger.schedule --cron "0 * * * *" --timezone UTC
@@ -202,32 +164,27 @@ To try a body without saving anything: `pipeline_run body="| trigger.function | 
 | kv.entry.put --key feed:latest --value "{{ input.script.items }}" --ttl 1h
 ```
 
-A script cannot set the HTTP status or headers. Branch with `logic.if` and
-let `web.response.send` answer with `--status`, `--header` or `--body`. A
-script's return is added as `script`; the rest of the payload is kept —
-returning `null` just sets `input.script` to `null` without touching anything
-else.
+A script's return is added as `script` and the rest of the payload is kept.
+A script cannot set a status or a header: branch with `logic.if` and answer
+with `web.response.send --status`, `--header` or `--body`.
 
 ---
 
-## `{{ expr }}` — dynamic config
+## `{{ expr }}`
 
 Any flag value may contain `{{ js_expression }}`, resolved right before the
-node runs. A value that is **only** an expression keeps its JSON type
-(`"{{ [input.id] }}"` is a real array); an expression inside a longer
-string is stringified.
+node runs. A value that is only an expression keeps its JSON type; one
+inside a longer string is stringified.
 
 | Name | Meaning |
 |---|---|
-| `input`, `$input` | the payload flowing into this node |
-| `$trigger` | the trigger's envelope for the whole run — for a webhook: `body`, `query`, `params`, `headers`, `files`, `method`, `path`, `auth`, plus `search` and `pathname` |
-| `$nodes.<id>` | the output of an upstream node by graph id |
+| `input`, `$input` | the payload arriving at this node |
+| `$trigger` | the trigger's envelope for the whole run |
+| `$nodes.<id>` | an upstream node's payload; its answer is `$nodes.<id>.<key>` |
 | `$item`, `$index`, `$count` | inside `logic.foreach` |
 
-There is no `ctx`, `$ctx` or `env` in `{{ }}`; an undefined name throws and
-fails the node rather than silently inserting `null`. Always quote a value
-that contains `{{ }}` or a space as one argument.
+Always quote a value that contains `{{ }}` or a space as one argument.
 
-Full DSL: `help(topic="pipeline/dsl")`. Pages: `help(topic="web")`. Responses,
-cookies, redirects: `help(topic="pipeline/web")`. Complete recipes:
-`help(topic="pipeline/examples")`.
+Full grammar: `help("pipeline/dsl")`. The JSON model: `help("pipeline/authoring")`.
+Responses, cookies, redirects: `help("pipeline/web")`. Pages: `help("web")`.
+Complete recipes: `help("pipeline/examples")`.

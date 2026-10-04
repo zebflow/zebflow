@@ -52,7 +52,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Credential, NodeCapability::Process],
         title: "Browser Run".to_string(),
-        description: "Runs a Playwright script in a headless browser reached through a `browser_*` credential (a Browserless-compatible \
+        description: "Runs a Playwright script in a remote headless browser — screenshots, PDFs, scraping. The browser is reached through a `browser_*` credential (a Browserless-compatible \
             endpoint the owner configured) — screenshots, PDF of a live page, scraping a page that needs JavaScript. The body after \
             `--` is the script, an ESM `export default async ({ page }) => { … }`; put payload values into it with `{{ expr }}`. \
             Whatever it returns is added to the payload as `page`, and the rest is kept. The engine's `--timeout` bounds the run \

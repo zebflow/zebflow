@@ -39,7 +39,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Reduce".to_string(),
-        description: "Fold. Placed after `logic.foreach` (directly or further down the branch), it runs `--initial` once and \
+        description: "Folds the per-item answers of a `logic.foreach` into one value. Placed after `logic.foreach` (directly or further down the branch), it runs `--initial` once and \
              `--step` for every emission, with `$acc` the accumulator so far and `$input` the arriving payload, then fires \
              `out` once when the series is complete. Expressions are JavaScript values without `{{ }}`. \
              Answers one key, `reduce`: the final `$acc` (`input.reduce.total`)."

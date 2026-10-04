@@ -108,6 +108,54 @@ fn official_node_count() -> usize {
 
 // ── Orientation ───────────────────────────────────────────────────────────────
 
+/// What `start_here` teaches after the project's own state: how a pipeline
+/// is written (the 0.11 grammar in a few lines), how to find a node (index →
+/// one node → search), then which skill or topic each kind of task opens.
+/// Static apart from the node count, so the guide lint
+/// (`help::guide_lint`) parses every example in it against the catalogue.
+pub fn start_here_way_in(node_count: usize) -> String {
+    format!(
+        "\n## Step 2 — how a pipeline is written\n\
+         A pipeline is a line of nodes, each written as its kind:\n\n\
+         ```\n\
+         | trigger.webhook --route /posts/:slug --method GET\n\
+         | sekejap.query.run --param \"1={{{{ $trigger.params.slug }}}}\" -- \"SELECT title, body FROM posts WHERE slug = $1\"\n\
+         | web.response.send --template pages/post.tsx\n\
+         ```\n\n\
+         - A kind is `family.noun.verb` (`fs.file.put`, `postgres.query.run`, `javascript.script.run`); entry nodes are `trigger.<source>`, inputs `input.<type>`, control `logic.<verb>`.\n\
+         - Each node adds **one key — its noun** — and keeps the rest: `input.webhook.body` after the trigger, `input.query.rows` after a query, `input.file` after `fs.file.put`, `input.script` after a script. `$trigger.body` is the request anywhere in the run; `$nodes.<id>.<key>` any earlier answer.\n\
+         - `--from` names a node's subject; maps repeat `key=value` (`--param \"1=…\"`, `--header \"Location=/home\"`, sent as written); `--write` lets a query change data; units are in values (`--timeout 30s`, `--max-size 10MB`); choices are closed words.\n\
+         \n## Step 3 — find the node\n\
+         1. `help topic=\"pipeline/nodes\"` — all {node_count} kinds, one line each, by family.\n\
+         2. `help topic=\"pipeline/nodes/<kind>\"` — one node: its signature, what it answers, its flags and examples (one signature per `--provider`).\n\
+         3. `help_search query=\"…\"` — when you only know the task.\n\
+         The whole grammar is `help topic=\"pipeline/dsl\"`.\n\
+         \n## Step 4 — the skill for the task\n\
+         | If the task is… | open |\n|---|---|\n\
+         | any task, first time this session | `skill_read name=\"zebflow-basic\"` |\n\
+         | creating a new file or module | `skill_read name=\"zebflow-engineering\"` |\n\
+         | a route, an API, a form POST, a job | `skill_read name=\"zebflow-pipeline\"` |\n\
+         | a page or component | `help topic=\"web\"` then `skill_read name=\"zebflow-rwe\"` |\n\
+         | a screen with forms, tables, dialogs | `skill_read name=\"zebflow-ui\"` |\n\
+         | a query, a table, a migration | `connection_describe` then `skill_read name=\"zebflow-data\"` |\n\
+         | SQL on the built-in database (sekejap, graph walks) | `skill_read name=\"zebflow-sekejap\"` — the grammar for this engine version |\n\
+         | sign-in, roles, a protected route | `skill_read name=\"zebflow-auth\"` |\n\
+         | uploads, images, rich text | `skill_read name=\"zebflow-files-editor\"` |\n\
+         | where a file or URL lives, hosts, surfaces | `help topic=\"platform\"` |\n\
+         | proving a route or page works | `skill_read name=\"zebflow-verify\"` |\n\
+         | adding a Hub package | `skill_read name=\"zebflow-hub\"` |\n\
+         | anything else | `help_search query=\"…\"` |\n"
+    )
+}
+
+/// The closing loop of `start_here`.
+pub const START_HERE_LOOP: &str = "\n## Step 5 — the loop\n\
+     Orient (`pipeline_describe … compact=true`, `file_outline`, `connection_describe`) → \
+     Build through the tools only (`pipeline_register` for DSL, `file_write` for TSX, then `pipeline_activate`; never the filesystem, never a direct edit of a live route) → \
+     Verify (`route_fetch path=\"…\"`: status, `rwe_component_errors`, body — a 200 with a component error is not done) → \
+     Record (`docs_agent_write name=\"MEMORY.md\"` with durable, non-obvious facts; never commit for the user).\n";
+
+
 impl PlatformOps {
     pub fn help_dialog_sections(&self) -> Vec<ProjectHelpSection> {
         let owner = &self.owner;
@@ -118,27 +166,22 @@ impl PlatformOps {
             .filter(|n| n.path.starts_with("pipeline/examples/"))
             .count();
 
-        let start_here = format!(
+        let mut start_here = format!(
             "# Start Here\n\n\
              Zebflow turns pipeline triggers into APIs, pages, and automations.\n\n\
              - Project: `{owner}/{project}`\n\
              - Site: `http://{project}.{owner}.localhost:<port>/` (every route you build, links and redirects written as `/path`); neutral form `/wh/{owner}/{project}{{path}}`. Fetch any route with `route_fetch path=\"{{path}}\"`\n\
-             - Official nodes: `{node_count}`\n\
-             - Pipeline examples: `{example_count}`\n\n\
-             ## Core References\n\n\
-             - Node catalog: `help(\"pipeline/nodes\")`\n\
-             - Pipeline DSL: `help(\"pipeline/dsl\")`\n\
-             - TSX templates: `help(\"web\")`\n\
-             - Pipeline examples: `help(\"pipeline/examples\")`\n\
-             - Search docs: `help_search(\"query\")`\n\n\
-             ## Efficient Development\n\n\
-             - Debug a pipeline immediately with `pipeline_execute file_rel_path=\"...\" input={{...}}`.\n\
-             - Inspect the full graph first with `pipeline_describe file_rel_path=\"...\"`.\n\
+             - Pipeline examples: `{example_count}` — `help(\"pipeline/examples\")`\n"
+        );
+        start_here.push_str(&start_here_way_in(node_count));
+        start_here.push_str(
+            "\n## Efficient development\n\n\
+             - Debug a pipeline at once with `pipeline_execute file_rel_path=\"...\" input={...}`.\n\
+             - Inspect the graph first with `pipeline_describe file_rel_path=\"...\"`.\n\
              - Patch one node with `pipeline_patch`, then `pipeline_activate` to make it live.\n\
-             - Use `pipeline_get_invocations file_rel_path=\"...\"` for webhook or scheduled runs.\n\
-             - Search before creating: `pipeline_search` and `file_search`.\n\n\
-             ## Template Cache Note\n\n\
-             If template changes do not show after agent-side edits, clear the RWE template cache. UI saves already do this automatically.\n"
+             - `pipeline_get_invocations file_rel_path=\"...\"` shows webhook and scheduled runs.\n\
+             - Search before creating: `pipeline_search` and `file_search`.\n\
+             - A template change that does not show after an agent-side edit: clear the RWE template cache (UI saves do it already).\n",
         );
 
         fn doc(path: &str) -> String {
@@ -436,40 +479,14 @@ impl PlatformOps {
                     .collect()
             })
             .unwrap_or_default();
-        let node_count = official_node_count();
-        out.push_str(&format!(
-            "\n## Step 2 — Zebflow, only what this task needs\n\
-             | If the task is… | open |\n|---|---|\n\
-             | any task, first time this session | `skill_read name=\"zebflow-basic\"` |\n\
-             | creating a new file or module | `skill_read name=\"zebflow-engineering\"` |\n\
-             | a route, an API, a form POST, a job | `help topic=\"pipeline/dsl\"` then `skill_read name=\"zebflow-pipeline\"` |\n\
-             | a page or component | `help topic=\"web\"` then `skill_read name=\"zebflow-rwe\"` |\n\
-             | a screen with forms, tables, dialogs | `skill_read name=\"zebflow-ui\"` |\n\
-             | a query, a table, a migration | `connection_describe` then `skill_read name=\"zebflow-data\"` |\n\
-             | SQL on the built-in database (sekejap, graph walks) | `skill_read name=\"zebflow-sekejap\"` — the grammar for this engine version |\n\
-             | sign-in, roles, a protected route | `skill_read name=\"zebflow-auth\"` |\n\
-             | uploads, images, rich text | `skill_read name=\"zebflow-files-editor\"` |\n\
-             | which node does X ({node_count} kinds, one line each) | `help topic=\"pipeline/nodes\"` |\n\
-             | one node's flags | `help topic=\"pipeline/nodes/<short name>\"` |\n\
-             | where a file or URL lives, hosts, surfaces | `help topic=\"platform\"` |\n\
-             | proving a route or page works | `skill_read name=\"zebflow-verify\"` |\n\
-             | adding a Hub package | `skill_read name=\"zebflow-hub\"` |\n\
-             | anything else | `help_search query=\"…\"` |\n"
-        ));
+        out.push_str(&start_here_way_in(official_node_count()));
         if !project_skills.is_empty() {
             out.push_str("\nThis project's own skills override the blessed ones:\n");
             for s in &project_skills {
                 out.push_str(&format!("- {s}\n"));
             }
         }
-
-        out.push_str(
-            "\n## Step 3 — the loop\n\
-             Orient (`pipeline_describe … compact=true`, `file_outline`, `connection_describe`) → \
-             Build through the tools only (`pipeline_register` for DSL, `file_write` for TSX, then `pipeline_activate`; never the filesystem, never a direct edit of a live route) → \
-             Verify (`route_fetch path=\"…\"`: status, `rwe_component_errors`, body — a 200 with a component error is not done) → \
-             Record (`docs_agent_write name=\"MEMORY.md\"` with durable, non-obvious facts; never commit for the user).\n",
-        );
+        out.push_str(START_HERE_LOOP);
 
         out.push_str("\n---\n\n## AGENTS.md\n");
         match self.platform.projects.read_agent_doc(owner, project, "AGENTS.md") {

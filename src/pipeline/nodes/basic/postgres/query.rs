@@ -52,7 +52,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Network, NodeCapability::Database, NodeCapability::Credential, NodeCapability::Process],
         title: "Postgres Query".to_string(),
-        description: "Run SQL on a PostgreSQL database named by `--credential <credential id>` (from `credential_list`, kind postgres — an id, \
+        description: "Runs SQL on a PostgreSQL database. The database is named by `--credential <credential id>` (from `credential_list`, kind postgres — an id, \
              not a connection slug). SQL goes in the body after `--` (or `--query`); values bind as `$1, $2, …` from `--param 1=… --param 2=…` — \
              a literal is text, a whole `{{ expr }}` keeps its type. The statement runs in a read-only transaction unless `--write` is set, so \
              an INSERT/UPDATE/DELETE/DDL without it is refused. Adds `query: { rows, columns, row_count, truncated }` (`input.query.rows[0].id`), \

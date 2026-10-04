@@ -59,7 +59,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Retry".to_string(),
-        description: "Retry a node, fed either way. **From an `:error` pin** (`[b]:error -> [r]`): it receives the failure \
+        description: "Runs a failed or not-yet-ready node again, with a delay and a budget. It is fed either way. **From an `:error` pin** (`[b]:error -> [r]`): it receives the failure \
              envelope and fires `retry` with the original input (wire `[r]:retry -> [b]`) until `--max-attempts` is spent, \
              then `failed` with the last error; a `refused`-class error goes straight to `failed`. **From an ordinary edge** \
              (`[check] -> [r]`): the payload is a verdict — `retry: true` on it, or `--when \"<expr>\"` true (JavaScript over \

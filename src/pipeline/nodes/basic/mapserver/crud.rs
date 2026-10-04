@@ -433,7 +433,7 @@ pub fn publish_definition() -> NodeDefinition {
     NodeDefinition {
         kind: PUBLISH_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
-        title: "MS Publish".to_string(),
+        title: "Map Layer Publish".to_string(),
         description: "Publish or update a map layer, by `--name`, in the project's layer registry. It answers on `/ms/{owner}/{project}/{route}` \
             while the project's `ms` surface is on (off by default; `layer.serving` says which). `--from` is a GeoJSON or GeoParquet store key \
             or FileRef (`--parse geojson|geoparquet`, else from its extension); it is served from an optimized GeoParquet copy unless \
@@ -556,8 +556,8 @@ pub fn unpublish_definition() -> NodeDefinition {
     NodeDefinition {
         kind: UNPUBLISH_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
-        title: "MS Unpublish".to_string(),
-        description: "Take a published map layer offline: removes `--name` from the project's layer registry so its route stops answering, \
+        title: "Map Layer Unpublish".to_string(),
+        description: "Takes a published map layer offline. It removes `--name` from the project's layer registry so its route stops answering, \
             and deletes its optimized copy and artifact; the source file is left where it is. Adds `layer: { name, removed }`; a name that \
             is not published answers `removed: false` rather than failing."
             .to_string(),
@@ -585,8 +585,8 @@ pub fn get_definition() -> NodeDefinition {
     NodeDefinition {
         kind: GET_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
-        title: "MS Get".to_string(),
-        description: "Read one published map layer's registry record by `--name`: its route, source, zoom range, fields, style and cache. Adds \
+        title: "Map Layer Get".to_string(),
+        description: "Read one published map layer's registry record by `--name`. The record holds its route, source, zoom range, fields, style and cache. Adds \
             `layer: { found: true, name, route, store, source, source_kind, … }`, or `layer: { found: false, name }` when the name is not \
             published — branch on `input.layer.found` before `mapserver.layer.publish` to tell a create from an update."
             .to_string(),
@@ -613,7 +613,7 @@ pub fn list_definition() -> NodeDefinition {
     NodeDefinition {
         kind: LIST_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem],
-        title: "MS List".to_string(),
+        title: "Map Layer List".to_string(),
         description: "List every map layer this project has published, each with the record `mapserver.layer.get` answers for one. No flags. Adds \
             `layer: { items, count }` — a page reads `input.layer.items`. This is the registry, not the file store: a GeoParquet file \
             nobody published is not in it."

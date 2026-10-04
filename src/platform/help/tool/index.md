@@ -176,7 +176,7 @@ Simple polygon ring arrays like `[[lon, lat], ...]` are also accepted for backwa
 
 ```tsx
 export default function PostList(input) {
-  const grouped = Tool.arr.groupBy(input.rows ?? [], 'category');
+  const grouped = Tool.arr.groupBy(input.query?.rows ?? [], 'category');
   return (
     <div>
       {Object.entries(grouped).map(([cat, posts]) => (
@@ -200,7 +200,7 @@ export default function PostList(input) {
 
 ```js
 // Node body
-const formatted = input.rows.map(r => ({
+const formatted = input.query.rows.map(r => ({
   ...r,
   date_label: Tool.time.format(r.created_at, 'DD MMMM YYYY', 'id'),
   amount_display: new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(r.amount),

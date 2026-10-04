@@ -28,7 +28,7 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Process],
         title: "Match".to_string(),
         description:
-            "Many-way branch. Evaluates `--from` (JavaScript over `input`) to a string and sends the payload, unchanged, down the pin \
+            "Sends the payload down the pin of the case it matches. Evaluates `--from` (JavaScript over `input`) to a string and sends the payload, unchanged, down the pin \
              of the matching `--case` (repeat it, one value each), or down the `--default` pin (`default` unless named) when nothing \
              matches. Each case is an output pin you wire in graph mode (`[b]:create -> [c]`). For a yes/no decision use `logic.if`."
                 .to_string(),

@@ -272,7 +272,7 @@ pub fn definition() -> NodeDefinition {
             .collect(),
         ai_tool: Default::default(),
         examples: vec![
-            NodeExample::dsl("Render one post to a static page", r#"web.site.generate --template pages/post.tsx --path "posts/{{ input.rows[0].slug }}.html" --route "/posts/{{ input.rows[0].slug }}""#)
+            NodeExample::dsl("Render one post to a static page", r#"web.site.generate --template pages/post.tsx --path "posts/{{ input.query.rows[0].slug }}.html" --route "/posts/{{ input.query.rows[0].slug }}""#)
                 .output(json!({ "site": { "mode": "page", "status": "written", "path": "site/posts/hello.html", "route": "/posts/hello", "template": "pages/post.tsx", "folder": "site", "store": "local", "manifest_path": "site/.zebflow-static-site.json", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "site/posts/hello.html", "filename": "hello.html", "mime": "text/html", "kind": "binary", "size": 5120, "sha256": "sha256:…", "lifecycle": "durable", "origin": "web.site.generate", "trust": "generated" } } })),
             NodeExample::dsl("Build the docs site nightly", r#"web.site.generate --from handbook --folder handbook-site --name "Example Handbook""#)
                 .output(json!({ "site": { "mode": "docs", "status": "ok", "name": "Example Handbook", "template": "docs.template.tsx", "from": "handbook", "folder": "handbook-site", "store": "local", "page_count": 12, "search_index_path": "handbook-site/search-index.json" } }))

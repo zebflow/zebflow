@@ -775,7 +775,7 @@ pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
         s.push_str("\n");
     }
     s.push_str(&format!(
-        "**MCP:** `help_nodes` with `kind=\"{}\"` for this section only.\n\n",
+        "**MCP:** `help topic=\"pipeline/nodes/{}\"` for this section only.\n\n",
         def.kind
     ));
     s
@@ -797,13 +797,13 @@ pub fn node_markdown_by_kind_query(query: &str) -> Option<String> {
         .map(|d| format_node_definition_markdown(&d))
 }
 
-/// Full catalog for `help_pipeline` / `help_nodes` — generated from Rust `definition()`, not hand-written markdown.
+/// The native nodes' catalogue — generated from Rust `definition()`, not hand-written markdown.
 pub fn builtin_nodes_markdown_reference() -> String {
     let mut s = String::from(
         "## Node kinds (live — from `builtin_node_definitions()`)\n\n\
          This block matches the pipeline editor / node API: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
-         - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
-         - **One kind:** `help_nodes` with `kind=\"javascript.script.run\"` (or `trigger.webhook`, etc.).\n\n\
+         - **The index:** `help(\"pipeline/nodes\")` — every kind on one line.\n\
+         - **One kind:** `help(\"pipeline/nodes/javascript.script.run\")` (or `trigger.webhook`, etc.).\n\n\
          ---\n\n",
     );
     for def in basic::builtin_node_definitions() {

@@ -33,7 +33,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Database],
         title: "KV Publish".to_string(),
-        description: "Send `--body` on `--topic` to every active pipeline that starts with `trigger.topic --topic <same>` — the \
+        description: "Publishes `--body` to the pipelines listening on `--topic`. It reaches every active pipeline that starts with `trigger.topic --topic <same>` — the \
             project's in-process pub/sub, for work that should happen after the request is answered. Adds \
             `message: { topic, delivered }` (how many listeners received it) and keeps the rest of the payload. Messages are not \
             stored; an empty `--body` is refused."

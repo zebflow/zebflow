@@ -32,13 +32,14 @@ SQL goes in the body; values go in `--param`:
 | table.query.run --from "datasets/orders.parquet as o" --param "1={{ $trigger.params.region }}" -- "SELECT * FROM o WHERE region = $1"
 ```
 
-Query nodes answer one key, `query: { rows, columns, row_count, truncated }`,
-plus `rows_affected` when run with `--write` — the rows are `input.query.rows`,
-never `input.rows`. `table.query.run` only reads; with `--folder`, `--filename`
-or `--path` it writes the whole result as `--format csv|json|ndjson|parquet`
-and `query` is that file's FileRef with `row_count`, `columns` and `format`
-(`--rows` adds the first `--limit` rows). There is no MySQL node; a MySQL connection can be stored
-but nothing queries it from a pipeline.
+A query node adds one key, `query`, and keeps the rest of the payload: the
+rows are `input.query.rows`, objects keyed by column
+(`input.query.rows[0].title`), in the next node and in a page. A node that
+changes data needs `--write`. What else `query` holds — counts, columns, the
+FileRef `table.query.run` writes when given a destination — is on each
+node's page (`help("pipeline/nodes/sekejap.query.run")`). There is no MySQL
+node; a MySQL connection can be stored but nothing queries it from a
+pipeline.
 
 ## Trying a query
 

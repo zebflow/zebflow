@@ -6,3 +6,5 @@
 mod handler;
 
 pub use handler::build_mcp_service;
+#[cfg(test)]
+pub(crate) use handler::agent_texts;

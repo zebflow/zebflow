@@ -233,17 +233,15 @@ struct PipelineRegisterParams {
     #[serde(default)]
     #[schemars(with = "String")]
     description: Option<String>,
-    /// Pipeline body: pipe-chained nodes starting with |.
-    /// Example: "| trigger.webhook --route /blog --method GET | postgres.query.run --credential main-db -- \"SELECT * FROM posts\""
-    /// Use help("pipeline/dsl") for the full node catalog and syntax.
+    /// Pipeline body: nodes written as their kinds (`family.noun.verb`), pipe mode or graph mode.
+    /// Example: "| trigger.webhook --route /blog --method GET | postgres.query.run --credential pg_main -- \"SELECT * FROM posts\" | web.response.send --template pages/blog.tsx"
+    /// Each node adds one key, its noun (the rows are `input.query.rows`). help("pipeline/dsl") is the grammar; help("pipeline/nodes/<kind>") one node.
     body: String,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineDescribeParams {
     /// Source-relative path of the pipeline (e.g. "api/blog-home.zf.json").
-    /// Also accepted as "name" for backward compatibility.
-    #[serde(alias = "name")]
     file_rel_path: String,
     /// When true, shows one compact line per node (id | kind | key flags) without body content.
     /// Use for orientation when pipelines have long SQL or script bodies.
@@ -254,21 +252,19 @@ struct PipelineDescribeParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelinePatchParams {
     /// Source-relative path of the pipeline (e.g. "api/blog-home.zf.json").
-    /// Also accepted as "name" for backward compatibility.
-    #[serde(alias = "name")]
     file_rel_path: String,
     /// Node ID to patch — get IDs from pipeline_describe output (e.g. "n0", "b", "trigger").
     /// With target "note" this is the note id (created when it does not exist yet).
     node_id: String,
     /// What to patch: "node" (default) or "note" — a canvas note. Note flags:
-    /// --text, --at x,y, --size WxH, --color amber|blue|green|rose|violet|slate, --remove.
+    /// --text, --at x,y, --size WxH, --color amber|blue|green|rose|violet|teal|orange|slate, --remove.
     #[schemars(with = "String")]
     target: Option<String>,
-    /// Space-separated --flag value pairs to update in the node config.
-    /// Example: "--credential new-db --path /updated"
+    /// Space-separated --flag value pairs to update in the node config — flags the node declares
+    /// (help("pipeline/nodes/<kind>")). Example: "--limit 100 --timeout 30s"
     #[schemars(with = "String")]
     flags: Option<String>,
-    /// Body content for the node (SQL for postgres.query.run, JS source for script nodes).
+    /// The node's body: the SQL of a query node, the code of a script node.
     #[schemars(with = "String")]
     body: Option<String>,
 }
@@ -276,9 +272,8 @@ struct PipelinePatchParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineActivateParams {
     /// Source-relative path of the pipeline to activate (e.g. "api/blog-home.zf.json").
-    /// Also accepted as "name" for backward compatibility.
     /// Ignored when glob is set.
-    #[serde(alias = "name", default)]
+    #[serde(default)]
     file_rel_path: String,
     /// Glob pattern to bulk-activate matching pipelines (e.g. "modules/manage/**").
     /// When set, activates all pipelines whose file_rel_path matches. file_rel_path is ignored.
@@ -290,16 +285,12 @@ struct PipelineActivateParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineDeactivateParams {
     /// Source-relative path of the pipeline to deactivate (e.g. "api/blog-home.zf.json").
-    /// Also accepted as "name" for backward compatibility.
-    #[serde(alias = "name")]
     file_rel_path: String,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineExecuteParams {
     /// Source-relative path of the registered active pipeline to execute (e.g. "api/blog-home.zf.json").
-    /// Also accepted as "name" for backward compatibility.
-    #[serde(alias = "name")]
     file_rel_path: String,
     /// Optional JSON input payload (object or string). For a pipeline with `input.*` nodes:
     /// `{"body": {"<field>": …}, "files": {"<field>": "<store path>"}}` — a store path becomes the FileRef.
@@ -310,7 +301,7 @@ struct PipelineExecuteParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineRunParams {
     /// Pipe-chained node body to execute inline — NOT saved, NOT logged.
-    /// Starts with | followed by nodes: "| postgres.query.run --credential main-db -- \"SELECT count(*) FROM users\""
+    /// Starts with | followed by nodes: "| postgres.query.run --credential pg_main -- \"SELECT count(*) FROM users\""
     /// Auto-prepends trigger.manual if no trigger node is specified.
     /// Use this for testing queries, one-off scripts, or data exploration.
     body: String,
@@ -485,9 +476,10 @@ impl ZebflowMcpHandler {
     // ── Orientation ──────────────────────────────────────────────────────────
 
     #[tool(
-        description = "Call this first. Returns Zebflow platform overview, project name, \
-        project docs list, AGENTS.md/MEMORY.md content, DB connections, template tree, \
-        and the next MCP tools to call. Your orientation before building anything."
+        description = "Call this first. Returns the project (its documents, what exists, databases, \
+        AGENTS.md and MEMORY.md), how a pipeline is written (kinds are family.noun.verb; each node \
+        adds one key, its noun), how to find a node (help pipeline/nodes, then pipeline/nodes/<kind>, \
+        then help_search), and which skill each kind of task opens."
     )]
     async fn start_here(
         &self,
@@ -513,7 +505,7 @@ impl ZebflowMcpHandler {
 
     #[tool(description = "Hierarchical docs browser. No topic = full index. \
         Paths: 'pipeline' (DSL + web patterns), 'pipeline/dsl', 'pipeline/authoring', 'pipeline/web', \
-        'pipeline/nodes' (live catalog), 'pipeline/nodes/{kind}' (one node), \
+        'pipeline/nodes' (every kind, one line each), 'pipeline/nodes/{kind}' (one node: signature, answer, flags, examples), \
         'pipeline/examples' (index), 'pipeline/examples/{slug}' (full recipe), \
         'web' (TSX pages), 'web/hooks', 'web/tailwind', 'web/design-system', 'web/libraries', \
         'tool' (Tool.time/arr/stat/geo), 'db', \
@@ -663,7 +655,8 @@ impl ZebflowMcpHandler {
                        The body is the nodes only — pipe mode '| trigger.webhook --route /x | sekejap.query.run -- \"SQL\" | web.response.send --template pages/x.tsx' \
                        or graph mode '[a] trigger.webhook … [b] … [a] -> [b]' — with no leading 'register …' line (that is the console form). \
                        It is saved as a draft; call pipeline_activate to make it live. Re-registering a live pipeline makes it stale until activated. \
-                       help(\"pipeline/dsl\") for the syntax, help(\"pipeline/nodes/<kind>\") for a node's flags."
+                       Each node is written as its kind (family.noun.verb) and adds one key, its noun. \
+                       help(\"pipeline/dsl\") for the grammar, help(\"pipeline/nodes/<kind>\") for a node's flags and answer."
     )]
     async fn pipeline_register(
         &self,
@@ -848,7 +841,7 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Run a pipe-chained node body EPHEMERALLY — not saved, not logged, no hit recording. \
                        Use this to test queries, explore data, or prototype before registering. \
-                       Example body: '| postgres.query.run --credential main-db -- \"SELECT count(*) FROM users\"'. \
+                       Example body: '| postgres.query.run --credential pg_main -- \"SELECT count(*) FROM users\"' — the rows come back at input.query.rows. \
                        Auto-prepends trigger.manual if no trigger node specified."
     )]
     async fn pipeline_run(
@@ -1686,13 +1679,42 @@ impl ZebflowMcpHandler {
     }
 }
 
+/// Every text this server hands an agent besides `start_here`: the
+/// instructions, and each tool's description and every description inside
+/// its input schema — what the guide lint (`help::guide_lint`) parses.
+#[cfg(test)]
+pub(crate) fn agent_texts() -> Vec<(String, String)> {
+    fn descriptions(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, v) in map {
+                    match (key.as_str(), v) {
+                        ("description", serde_json::Value::String(text)) => out.push(text.clone()),
+                        _ => descriptions(v, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| descriptions(v, out)),
+            _ => {}
+        }
+    }
+    let mut texts = vec![("MCP_INSTRUCTIONS".to_string(), MCP_INSTRUCTIONS.to_string())];
+    for tool in ZebflowMcpHandler::tool_router().list_all() {
+        let mut parts: Vec<String> = tool.description.iter().map(|d| d.to_string()).collect();
+        descriptions(&serde_json::Value::Object((*tool.input_schema).clone()), &mut parts);
+        texts.push((format!("mcp tool {}", tool.name), parts.join("\n")));
+    }
+    texts
+}
+
 /// The MCP `initialize` instructions. Kept under 1 KB on purpose.
 pub const MCP_INSTRUCTIONS: &str = "\
 Zebflow is a unified full-stack runtime: one running instance, many projects. \
 This MCP server is scoped to ONE project — its repository, store, databases, credentials and hosts. \
 Project knowledge lives in the project's files (docs/, AGENTS.md, MEMORY.md); Zebflow knowledge lives in `help` and the skills. Do not confuse the two.\n\n\
-Call `start_here` first. It names the project, lists what to read in order, and maps each kind of task to the one help topic or skill to open — open one thing at a time, per need, not the whole catalogue.\n\n\
-Work only through the tools: `pipeline_register` then `pipeline_activate` for routes and jobs, `file_write` for pages, `route_fetch` to prove a route works (a 200 with a component error is not done), `docs_agent_write name=\"MEMORY.md\"` to record what you learned. \
+Call `start_here` first: the project, how a pipeline is written, how to find a node, and the one topic or skill each task opens — one at a time, per need.\n\n\
+A node is written as its kind, `family.noun.verb`, and adds one key, its noun (`input.webhook.body`, `input.query.rows`); `help topic=\"pipeline/dsl\"` is the grammar.\n\n\
+Work only through the tools: `pipeline_register` then `pipeline_activate`, `file_write` for pages, `route_fetch` to prove a route (a 200 with a component error is not done), `docs_agent_write name=\"MEMORY.md\"` to record what you learned. \
 Never write to the filesystem behind the tools, never commit or push unless the user asks (`git_command`).";
 
 impl ServerHandler for ZebflowMcpHandler {

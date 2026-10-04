@@ -58,8 +58,8 @@ pub fn definition() -> NodeDefinition {
         ],
         examples: vec![
             NodeExample::dsl("Read a cached value with a fallback", r#"kv.entry.get --key "settings:{{ $trigger.params.site }}" --default "{{ { theme: 'light' } }}""#)
-                .input(json!({ "rows": [] }))
-                .output(json!({ "rows": [], "entry": { "key": "settings:site-a", "value": { "theme": "dark" }, "found": true } }))
+                .input(json!({ "webhook": { "params": { "site": "site-a" } } }))
+                .output(json!({ "webhook": { "params": { "site": "site-a" } }, "entry": { "key": "settings:site-a", "value": { "theme": "dark" }, "found": true } }))
                 .note("Read it downstream as `input.entry.value`; the rest of the payload stays."),
         ],
         ..Default::default()
