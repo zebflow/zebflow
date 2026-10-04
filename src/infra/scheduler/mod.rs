@@ -190,7 +190,6 @@ impl PipelineScheduler {
                     request_id: format!("schedule-{}", Uuid::new_v4()),
                     route: String::new(),
                     input: serde_json::json!({
-                        "trigger": "schedule",
                         "fired_at": fired_at.to_rfc3339(),
                         "node_id": node_id,
                     }),

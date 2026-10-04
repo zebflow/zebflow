@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::NodesAccess;
 use crate::pipeline::model::{PipelineError, PipelineGraph};
 use crate::pipeline::nodes::basic::logic;
+use crate::pipeline::nodes::check::suggest::did_you_mean;
 
 /// The pin every node has, where a failure goes when it is wired.
 pub(super) const ERROR_PIN: &str = "error";
@@ -408,41 +409,6 @@ fn refuse_cycles(graph: &PipelineGraph, edges: &[Edge]) -> Result<(), PipelineEr
         }
     }
     Ok(())
-}
-
-/// The closest name within a small edit distance, if any.
-fn did_you_mean<'a>(wanted: &str, names: &[&'a str]) -> Option<&'a str> {
-    let limit = (wanted.chars().count() / 3).max(1);
-    names
-        .iter()
-        .map(|name| (edit_distance(wanted, name), *name))
-        .filter(|(d, _)| *d <= limit)
-        .min_by_key(|(d, _)| *d)
-        .map(|(_, name)| name)
-}
-
-/// Edits between two names, a swap of two neighbours counting as one
-/// (`fecth` is one edit from `fetch`).
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for j in 0..=b.len() {
-        d[0][j] = j;
-    }
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
-            }
-        }
-    }
-    d[a.len()][b.len()]
 }
 
 #[cfg(test)]

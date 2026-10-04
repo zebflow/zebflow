@@ -139,17 +139,10 @@ pub fn get_help(path: &str) -> Result<String, String> {
 
     // Dynamic: single node
     if let Some(kind) = path.strip_prefix("pipeline/nodes/") {
-        return match official_node_definitions_for_help()
-            .into_iter()
-            .find(|def| crate::pipeline::nodes::kind_query_matches_def(def, kind))
-        {
-            Some(def) => Ok(crate::pipeline::nodes::format_node_definition_markdown(
-                &def,
-            )),
-            None => Err(format!(
-                "Node '{}' not found. Call help(\"pipeline/nodes\") for the full catalog.",
-                kind
-            )),
+        let defs = official_node_definitions_for_help();
+        return match defs.iter().find(|def| crate::pipeline::nodes::kind_query_matches_def(def, kind)) {
+            Some(def) => Ok(crate::pipeline::nodes::format_node_definition_markdown(def)),
+            None => Err(node_not_found(kind, &defs)),
         };
     }
 
@@ -449,6 +442,24 @@ fn format_children_index(parent: &str, children: &[&HelpNode]) -> String {
     out
 }
 
+/// A kind the catalogue does not have, with up to three it most likely
+/// meant — a near spelling, or the kind whose words it uses.
+fn node_not_found(kind: &str, defs: &[crate::pipeline::NodeDefinition]) -> String {
+    let near = crate::pipeline::nodes::check::suggest::suggest_kinds(kind, defs, 3);
+    let mut out = format!("Node '{kind}' not found.");
+    if !near.is_empty() {
+        out.push_str(" Did you mean:\n");
+        for found in &near {
+            let title = defs.iter().find(|d| &d.kind == found).map(|d| d.title.as_str()).unwrap_or("");
+            out.push_str(&format!("- `{found}` — {title}: help(\"pipeline/nodes/{found}\")\n"));
+        }
+    } else {
+        out.push(' ');
+    }
+    out.push_str("Call help(\"pipeline/nodes\") for the full catalog.");
+    out
+}
+
 fn closest_paths(query: &str) -> Vec<&'static str> {
     let q = query.to_lowercase();
     let mut hits: Vec<&'static str> = HELP
@@ -616,6 +627,25 @@ mod help_lint {
         }
         let one = get_help("pipeline/nodes/web.response.send").expect("one node");
         assert!(one.contains("| `--file` |"));
+    }
+
+    /// A kind that does not exist answers not found and the kinds it most
+    /// likely meant: a typo by spelling, an invented kind by its words.
+    #[test]
+    fn an_unknown_node_suggests_the_kinds_it_likely_meant() {
+        for (asked, meant) in [
+            ("static.page.generate", "web.site.generate"),
+            ("web.page.build", "web.site.generate"),
+            ("fs.image.thumbnial", "fs.image.thumbnail"),
+            ("n.fs.save", "fs.file.put"),
+        ] {
+            let err = get_help(&format!("pipeline/nodes/{asked}")).expect_err("not a kind");
+            assert!(err.starts_with(&format!("Node '{asked}' not found. Did you mean:")), "{err}");
+            assert!(err.contains(&format!("- `{meant}` — ")), "{asked}: {err}");
+            assert!(err.matches("\n- `").count() <= 3, "at most three: {err}");
+        }
+        let err = get_help("pipeline/nodes/zzzz").expect_err("nothing near");
+        assert!(err.contains("Call help(\"pipeline/nodes\")"), "{err}");
     }
 
     #[test]

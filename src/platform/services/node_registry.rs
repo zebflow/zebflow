@@ -324,6 +324,18 @@ impl NodeRegistryService {
     }
 
     /// Returns merged node definitions: builtin + embedded composites + installed, sorted by kind.
+    /// Every kind a project's pipelines may name: [`Self::merged_definitions`]
+    /// plus the kinds the project describes but cannot run, so a pipeline
+    /// naming one reports that its package is missing rather than that the
+    /// kind is unknown.
+    pub fn project_definitions(&self, owner: &str, project: &str) -> Vec<NodeDefinition> {
+        let mut definitions = self.merged_definitions(owner, project);
+        definitions.extend(self.unavailable_interface_definitions(owner, project));
+        definitions.sort_by(|a, b| a.kind.cmp(&b.kind));
+        definitions.dedup_by(|a, b| a.kind == b.kind);
+        definitions
+    }
+
     pub fn merged_definitions(&self, owner: &str, project: &str) -> Vec<NodeDefinition> {
         let mut defs = crate::pipeline::nodes::builtin_node_definitions();
         let builtin_kinds: HashSet<String> = defs.iter().map(|d| d.kind.clone()).collect();
@@ -1715,5 +1727,11 @@ impl NodeRegistryService {
         }
         definitions.sort_by(|a, b| a.kind.cmp(&b.kind));
         definitions
+    }
+}
+
+impl crate::platform::services::project::NodeCatalog for NodeRegistryService {
+    fn project_definitions(&self, owner: &str, project: &str) -> Vec<NodeDefinition> {
+        NodeRegistryService::project_definitions(self, owner, project)
     }
 }

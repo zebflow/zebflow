@@ -10,7 +10,6 @@
 //! ```json
 //! {
 //!   "socket": {
-//!     "trigger": "ws_client",
 //!     "node_id": "<node-id>",
 //!     "url": "wss://...",
 //!     "message": { ... }
@@ -78,7 +77,7 @@ pub fn definition() -> NodeDefinition {
             for every message it receives — price feeds, a broker, another Zebflow. `--url` is `ws://` or `wss://`; `--credential` \
             supplies auth if the server needs it. A socket reconnects with backoff starting at `--delay` (default 5s); `--max-attempts` \
             bounds it (omitted = unlimited, 0 = never reconnect, N = at most N reconnects). Answers one key, `socket`: \
-            `{ trigger: \"ws_client\", url, node_id, message }` — the message is `input.socket.message` (`$trigger.message`), parsed \
+            `{ url, message, node_id }` — the message is `input.socket.message` (`$trigger.message`), parsed \
             JSON with `--parse json` (default), a string with `text`. To send back on the same connection use \
             `ws.message.send --connection <this node id>`. Not for browsers: that is `trigger.room`."
             .to_string(),
@@ -89,7 +88,6 @@ pub fn definition() -> NodeDefinition {
                 "socket": {
                     "type": "object",
                     "properties": {
-                        "trigger": { "type": "string", "enum": ["ws_client"] },
                         "url": { "type": "string" },
                         "node_id": { "type": "string" },
                         "message": { "description": "Received WebSocket message payload." }
@@ -175,7 +173,7 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Follow a price feed", r#"trigger.socket --url wss://feed.example.com/ticks --parse json --delay 2s --max-attempts 10"#)
-                .output(serde_json::json!({ "socket": { "trigger": "ws_client", "url": "wss://feed.example.com/ticks", "node_id": "n0", "message": { "symbol": "AUDUSD", "bid": 0.6512 } } })),
+                .output(serde_json::json!({ "socket": { "url": "wss://feed.example.com/ticks", "message": { "symbol": "AUDUSD", "bid": 0.6512 }, "node_id": "n0" } })),
         ],
         ..Default::default()
     }

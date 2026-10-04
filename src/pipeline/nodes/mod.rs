@@ -367,6 +367,7 @@
 //! ```
 
 pub mod basic;
+pub mod check;
 mod conventions;
 mod interface;
 pub mod shared;

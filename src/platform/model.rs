@@ -4472,6 +4472,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "pipeline_get" => Some(ProjectCapability::PipelinesRead),
         "pipeline_register" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_describe" => Some(ProjectCapability::PipelinesRead),
+        "pipeline_check" => Some(ProjectCapability::PipelinesRead),
         "pipeline_patch" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_activate" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_deactivate" => Some(ProjectCapability::PipelinesWrite),

@@ -72,7 +72,8 @@ Read the help topic before writing in a domain you have not used this session:
 | `pipeline_list` | index rows `file_rel_path | trigger | status | description`; filters `query`, `glob`, `status` (`active`, `stale`, `draft`, `all`), `trigger_kind`, `limit`; `format="json"` or `"tree"` |
 | `pipeline_get` | the pipeline document (JSON) |
 | `pipeline_describe` | the DSL with node ids (`n0`, `n1`, …); `compact=true` for one line per node |
-| `pipeline_register` | save a DSL body as a draft at `file_rel_path` (`title`, `description` optional). Re-registering a live pipeline makes it `stale` |
+| `pipeline_check` | what a save of `body` (or of the saved `file_rel_path`) would refuse — unknown kind or flag, missing required flag, a word outside a closed choice, a duration or size without its unit, a cycle — and, as warnings, every `input.<key>` / `$nodes.<id>.<key>` no upstream node answers, with the key it likely meant. Saves nothing; run it before `pipeline_register` |
+| `pipeline_register` | save a DSL body as a draft at `file_rel_path` (`title`, `description` optional); refused, with every problem listed, when `pipeline_check` would refuse it. Re-registering a live pipeline makes it `stale` |
 | `pipeline_patch` | change one node's flags or body by `node_id`; the pipeline becomes `stale` |
 | `pipeline_activate` / `pipeline_deactivate` | promote to live / stop serving; `glob="api/**"` activates many |
 | `pipeline_execute` | run the live version with `input` |
@@ -93,7 +94,7 @@ scripts, CSS, docs, pipelines); paths are relative to that root.
 | `file_outline` | imports, exports, functions of a `.tsx`/`.ts` — cheaper than reading it |
 | `file_deps` | what a file imports and what imports it |
 | `file_create` | scaffold: `kind` = page · component · script · style · doc · folder; the file lands at `parent_rel_path/name.<ext>` — pass `parent_rel_path="pages"` for `pages/<name>.tsx` |
-| `file_write` | write the whole file (`rel_path`, `content`) |
+| `file_write` | write the whole file (`rel_path`, `content`); a `.tsx` / `.ts` answers `template_problems` — parse errors, names used but never imported, a local `h` — each with its line |
 | `file_edit` / `file_batch_edit` | exact `old_string` → `new_string` replacement, one file or many |
 | `file_search` | grep across files |
 | `move_resource` | rename or move a pipeline or file; a live pipeline is deactivated, moved and re-activated |
@@ -111,7 +112,7 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 | `credential_list` | credential ids, titles and kinds — values are never returned. `--credential` (trigger auth, `postgres.query.run`, `mail.message.send`, …) takes an **id from here**, not a connection slug |
 | `list_ui_catalog` / `install_ui_components` | the clone-to-own component catalog (`shared/ui/`); pages import `zeb/ui/*` without installing anything |
 | `theme_generate` | a complete contrast-checked theme from a seed colour and a mood: tokens, `globals.css` blocks, fonts, geometry, contrast table (skill `brand-system`) |
-| `route_fetch` | fetch one of the project's routes through the real ingress — status, `location`, `set_cookie`, `rwe_component_errors`, body; `method`, `form`, `body`, `cookie`, `headers`; the verification step |
+| `route_fetch` | fetch one of the project's routes through the real ingress — status, `location`, `set_cookie`, `rwe_component_errors`, body; `method`, `form`, `body`, `files` (an upload: field → a store key or `{name, content_type, base64}`, sent as multipart/form-data), `cookie`, `headers`; the verification step |
 | `hub_search` / `hub_review` / `hub_add` | the Hub shelf: what the project can add (optional skills, libraries, bundles), what an add would write, and the add itself — review before add, always |
 | `git_command` | `subcommand` = status · log · diff · add · commit (`args`, `message`; the author is the user's profile) — and the remote verbs `state` · `fetch` · `sync` · `push` · `resolve <path> mine\|theirs` · `continue` · `abort`. A commit is local; `sync` rebases on the remote and, on a conflict, keeps it and lists the files; settle each with `resolve`, then `continue`; `push` refuses while behind, so sync first |
 | `skill_list` / `skill_read` | the skills: the list, one body, one reference file |
@@ -161,6 +162,7 @@ kind:
 - **A node accepts only the flags it declares.** Read `help(topic="pipeline/nodes/<kind>")` before using a node for the first time in a session.
 - **Webhook data is under `input.webhook.body`.** A form field is `input.webhook.body.email`; path params `input.webhook.params`, query `input.webhook.query`. In `{{ }}` anywhere later: `$trigger.body`, `$trigger.params`, `$trigger.query`, `$trigger.auth`.
 - **Quote any flag value with `{{ }}` or a space** as one argument.
+- **Check, register, run, fetch.** `pipeline_check` the body until it reports no problem, then `pipeline_register`; a `file_write` of a page answers its `template_problems` (line by line) — fix them before fetching.
 - **Draft is not live.** After `pipeline_register` or `pipeline_patch`, `pipeline_activate`. Then `route_fetch` the route and read what came back; `pipeline_get_invocations` shows the trace.
 - **A 200 is not a rendered page.** A component that throws is replaced by `<!-- RWE component error: … -->` and the response is still 200. Search the body for it. A page whose hydration failed serves correct HTML and logs a browser console error — open it.
 - **Every file imports what it uses** from `"zeb/react"`, `"zeb/ui/<name>"` or `"@/…"`; nothing is inherited from the page.
@@ -176,6 +178,7 @@ connection_describe  slug=default-multimodel                       ← what tabl
 pipeline_run  body="| trigger.function | sekejap.query.run --write -- \"CREATE TABLE posts (title TEXT, slug TEXT, body_json JSONB, created_at TEXT)\""
 file_create   kind=page  name=blog-home  parent_rel_path=pages
 file_write    rel_path=pages/blog-home.tsx  content="…"           ← help(topic="web"); the rows are input.query.rows
+pipeline_check     body="…the body below…"                         ← no problems, or each one to fix
 pipeline_register  file_rel_path="pages/blog-home"  title="Blog home"
                    body="| trigger.webhook --route /blog --method GET | sekejap.query.run -- \"SELECT title, slug, created_at FROM posts ORDER BY created_at DESC LIMIT 20\" | web.response.send --template pages/blog-home.tsx"
 pipeline_activate  file_rel_path="pages/blog-home"

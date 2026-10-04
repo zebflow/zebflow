@@ -364,6 +364,27 @@ pub fn validate_flow(graph: &PipelineGraph) -> Result<(), PipelineError> {
     flow::FlowPlan::build(graph, &retention.consumer_access).map(|_| ())
 }
 
+/// The loops of a graph as the flow reads them (§4), by node id: the
+/// `logic.foreach` each loop body node runs under (its own level), and the
+/// foreach each `logic.reduce` / `logic.collect` closes. Refused like
+/// [`validate_flow`].
+pub fn flow_loops(graph: &PipelineGraph) -> Result<FlowLoops, PipelineError> {
+    let retention = build_nodes_retention_plan(graph)?;
+    let plan = flow::FlowPlan::build(graph, &retention.consumer_access)?;
+    let id = |i: usize| graph.nodes[i].id.clone();
+    let by_id = |list: &[Option<usize>]| -> HashMap<String, String> {
+        list.iter().enumerate().filter_map(|(i, f)| f.map(|f| (id(i), id(f)))).collect()
+    };
+    Ok(FlowLoops { owner: by_id(&plan.owner), closes: by_id(&plan.closes) })
+}
+
+/// See [`flow_loops`].
+#[derive(Debug, Clone, Default)]
+pub struct FlowLoops {
+    pub owner: HashMap<String, String>,
+    pub closes: HashMap<String, String>,
+}
+
 /// `$trigger` for the run: the snapshot the ingress set, else the envelope
 /// the run started with (`ctx.input`, what the trigger answers under its
 /// source key) — so `$trigger` is the envelope for every trigger, not only

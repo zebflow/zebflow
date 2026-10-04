@@ -203,6 +203,12 @@ impl PlatformService {
             projects.clone(),
             dependency_lock.clone(),
         ));
+        // A save is checked against every kind the project can use, which
+        // only the registry knows; it holds the project service, so the
+        // project service holds it weakly.
+        let catalog: std::sync::Weak<dyn crate::platform::services::project::NodeCatalog> =
+            Arc::downgrade(&node_registry) as std::sync::Weak<NodeRegistryService>;
+        projects.attach_node_catalog(catalog);
         let hub = Arc::new(HubService::new(
             data.clone(),
             hub_data,

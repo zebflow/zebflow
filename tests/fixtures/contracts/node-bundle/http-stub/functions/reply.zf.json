@@ -10,7 +10,9 @@
       {
         "id": "trigger",
         "kind": "trigger.function",
-        "config": {},
+        "config": {
+          "description": "Answers a fixed reply, for the bundle contract tests."
+        },
         "input_pins": [],
         "output_pins": [
           "out"

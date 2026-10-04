@@ -10,7 +10,9 @@
       {
         "id": "trigger",
         "kind": "trigger.function",
-        "config": {},
+        "config": {
+          "description": "Sends a Telegram message to a chat."
+        },
         "input_pins": [],
         "output_pins": [
           "out"

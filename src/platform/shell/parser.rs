@@ -66,6 +66,10 @@ pub enum DslVerb {
     },
     /// `run [--dry-run] [| ...]`
     Run { body: String, dry_run: bool },
+    /// `check | …` (a body) or `check pipeline <file_rel_path>` (a saved
+    /// pipeline): what a save would refuse and what it would warn about,
+    /// saving nothing.
+    Check { file_rel_path: String, body: String },
     /// `git <subcommand> [args...] [-- <body>]`
     Git {
         subcommand: String,
@@ -210,6 +214,13 @@ fn resolve_catalog_kind(raw_kind: &str, definitions: &[NodeDefinition]) -> Optio
         return Some(raw_kind.to_string());
     }
     None
+}
+
+/// An unknown kind, with the kinds it most likely meant.
+fn unknown_kind_message(raw_kind: &str, definitions: &[NodeDefinition]) -> String {
+    use crate::pipeline::nodes::check::suggest::{did_you_mean_phrase, suggest_kinds};
+    let hint = did_you_mean_phrase(&suggest_kinds(raw_kind, definitions, 3));
+    format!("Unknown node kind: '{raw_kind}'{hint} — help(\"pipeline/nodes\") lists every kind")
 }
 
 /// Shape-only check used before a catalog is available.
@@ -718,7 +729,11 @@ pub fn parse_node_config_with_positional(
                 .iter()
                 .find(|f| f.flag == flag_str)
                 .ok_or_else(|| {
-                    format!("unknown flag `--{key}` — not declared in this node's dsl_flags")
+                    let names: Vec<&str> = dsl_flags.iter().map(|f| f.flag.as_str()).collect();
+                    let hint = crate::pipeline::nodes::check::suggest::did_you_mean(&flag_str, &names)
+                        .map(|near| format!("; did you mean {near}?"))
+                        .unwrap_or_default();
+                    format!("unknown flag `--{key}` — not declared in this node's dsl_flags{hint} — it takes {}", names.join(" "))
                 })?;
 
             match dsl_flag.kind {
@@ -1133,6 +1148,16 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
             DslVerb::Execute { file_rel_path, input }
         }
         "register" | "reg" => parse_register(&tokens, cmd),
+        "check" => {
+            let body = extract_pipeline_body(cmd);
+            let at = if tokens.get(1).map(String::as_str) == Some("pipeline") { 2 } else { 1 };
+            let file_rel_path = tokens
+                .get(at)
+                .filter(|t| body.is_empty() && !t.starts_with('|') && !t.starts_with('['))
+                .cloned()
+                .unwrap_or_default();
+            DslVerb::Check { file_rel_path, body }
+        }
         "patch" => parse_patch(&tokens, cmd),
         "run" => {
             let dry_run = tokens.iter().any(|t| t == "--dry-run");
@@ -2222,7 +2247,7 @@ fn parse_graph_node(
             custom_kind = kind;
             custom_kind.as_str()
         }
-        None => return Err(format!("Unknown node kind: '{raw_kind}'")),
+        None => return Err(unknown_kind_message(raw_kind, definitions)),
     };
     let (input_pins, mut output_pins) = default_pins(full_kind);
     let definition = definitions.iter().find(|d| d.kind == full_kind);
@@ -2707,7 +2732,7 @@ fn build_pipe_mode(
                 custom_kind = kind;
                 custom_kind.as_str()
             }
-            None => return Err(format!("Unknown node kind: '{raw_kind}'")),
+            None => return Err(unknown_kind_message(raw_kind, definitions)),
         };
 
         let node_id = format!("n{idx}");

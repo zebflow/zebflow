@@ -387,7 +387,24 @@ pub(super) fn check_example(example: &Example, defs: &[NodeDefinition]) -> Vec<S
         }
     }
     if problems.is_empty() && example.whole && !is_sketch(&example.text) {
-        match build_pipeline_graph_with_definitions("guide-lint", &example.text, defs) {
+        let built = build_pipeline_graph_with_definitions("guide-lint", &example.text, defs);
+        // The save's own node checks (`pipeline::nodes::check`): a whole
+        // example has to register, so every value it writes down holds.
+        if let Ok(graph) = &built {
+            use crate::pipeline::nodes::check::{Catalogue, check_graph_nodes, no_credentials};
+            // A bare `| trigger.function | …` is the ephemeral run body
+            // (`pipeline_run`) — and the wrapper put before a one-node
+            // definition example — never a registration, so its trigger's
+            // required `--description` is not asked of it.
+            let run_body = example.text.starts_with(DEFINITION_WRAPPER);
+            for problem in check_graph_nodes(graph, defs, Catalogue::Official, &no_credentials) {
+                let bare_trigger = problem.kind == "trigger.function" && problem.flag.as_deref() == Some("--description");
+                if !(run_body && bare_trigger) {
+                    problems.push(format!("would be refused at save: {problem}"));
+                }
+            }
+        }
+        match built {
             Err(err) => problems.push(format!("does not build: {err}")),
             // The flow activation refuses (`node-conventions.md` §4): a
             // stray cycle, a loop wired across its boundary, a `$nodes`

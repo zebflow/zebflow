@@ -16,12 +16,23 @@ and asserting the state an action should produce.
 
 ## 1. The route
 
+The loop is check → register → run → fetch: `pipeline_check` before
+`pipeline_register` (it answers every problem the save would refuse, and the
+keys no upstream node answers), then activate, then fetch.
+
 ```
 pipeline_list status=all                     → the pipeline is active, not draft or stale
 route_fetch path="/posts"                    → status, location, set_cookie, rwe_component_errors, seo, body
 route_fetch path="/posts" method=POST form={"title":"Hi","slug":"hi"}
 route_fetch path="/admin" cookie="zebflow_session=eyJ…"      (the value a login's set_cookie gave you)
+route_fetch path="/photos" method=POST files={"photo":"uploads/sample.png"} form={"caption":"Hi"}
 ```
+
+`files` makes the request `multipart/form-data`, as a browser's upload form
+sends it: each field is a key in the project's default store, or
+`{"name":"a.png","content_type":"image/png","base64":"iVBOR…"}` for bytes you
+have; `form` fields go beside them. The webhook reads the file as
+`input.webhook.files.photo` (`fs.file.put --from "{{ input.webhook.files.photo }}"`).
 
 (`route_fetch` requests the project's own host, `<project>.<owner>.localhost`,
 so `location: /admin` and `href="/book"` mean what they will mean in
@@ -90,6 +101,11 @@ Rules of evidence:
 - Check 375 px width and the dark theme for anything user-facing.
 
 ## 3. Forms, uploads, editors
+
+Before the browser: a page or component written with `file_write` comes back
+with `template_problems` — each parse error, each name used but never
+imported, each local `h`, with its line. Fix those first; the page would
+answer 200 with a component error.
 
 - A form: submit it and follow the redirect; the target page shows the new
   row. Submit it wrong and the error is shown next to the field.

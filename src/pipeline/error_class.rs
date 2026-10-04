@@ -443,6 +443,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_WS_STATE_UPDATE_VALUE", ErrorClass::Refused),
     ("FW_NODES_SCOPE_DYNAMIC", ErrorClass::Failed),
     ("FW_NODES_SCOPE_UPSTREAM", ErrorClass::Refused),
+    ("FW_PIPELINE_CHECK", ErrorClass::Refused),
     ("FW_PIPELINE_CONTRACT", ErrorClass::Failed),
     ("FW_PIPELINE_CYCLE", ErrorClass::Refused),
     ("FW_PIPELINE_ID", ErrorClass::Failed),

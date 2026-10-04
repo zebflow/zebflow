@@ -490,7 +490,8 @@ records its value even at the default capture level.
 
 | Command | Effect |
 |---|---|
-| `register <path> [--title t] [--description d] [--as-json] | …` | save (or replace) the file as a draft; `--as-json` prints the JSON and saves nothing |
+| `check | …` or `check pipeline <path>` | what a save would refuse (unknown kind or flag, missing required flag, a word outside a closed choice, a duration or size without its unit, the flow rules) and, as warnings, keys no upstream node answers; saves nothing — `pipeline_check` over MCP |
+| `register <path> [--title t] [--description d] [--as-json] | …` | save (or replace) the file as a draft, refused with every problem `check` names; `--as-json` prints the JSON and saves nothing |
 | `activate pipeline <path>` | promote to live traffic (checks node config, node availability, libraries) |
 | `deactivate pipeline <path>` | stop serving; the file stays |
 | `execute pipeline <path> --input '{"k":"v"}'` | run the live version once with that payload |

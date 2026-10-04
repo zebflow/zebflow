@@ -10,7 +10,9 @@
       {
         "id": "trigger",
         "kind": "trigger.function",
-        "config": {},
+        "config": {
+          "description": "Turns an incoming Telegram update into the bundle's message answer."
+        },
         "input_pins": [],
         "output_pins": [
           "out"

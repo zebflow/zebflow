@@ -20,7 +20,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Schedule Trigger".to_string(),
         description: "Starts the pipeline on a cron schedule once it is active. `--cron` is five fields (`0 7 * * *` = 07:00 daily), \
-            `--timezone` an IANA name (default UTC). Answers one key, `schedule`: `{ trigger: \"schedule\", fired_at: <RFC 3339>, node_id }` \
+            `--timezone` an IANA name (default UTC). Answers one key, `schedule`: `{ fired_at: <RFC 3339>, node_id }` \
             (`input.schedule.fired_at`, `$trigger.fired_at`) — there is no `body`, no request; anything the job needs it reads from the database or KV. A scheduled pipeline must not \
             end in a page (`web.response.send --template`); it ends in a write, a mail, or a bare `web.response.send` summary. Runs show under \
             `pipeline_get_invocations` with trigger `schedule`; the Studio's Schedules tab lists them."
@@ -32,7 +32,7 @@ pub fn definition() -> NodeDefinition {
         output_schema: serde_json::json!({
             "type":"object",
             "description":"The tick, under `schedule`.",
-            "properties": { "schedule": { "type": "object", "properties": { "trigger": { "type": "string" }, "fired_at": { "type": "string" }, "node_id": { "type": "string" } } } }
+            "properties": { "schedule": { "type": "object", "properties": { "fired_at": { "type": "string" }, "node_id": { "type": "string" } } } }
         }),
         input_pins: vec![],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -88,7 +88,7 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Daily digest at 07:00 Melbourne time", r#"trigger.schedule --cron "0 7 * * *" --timezone Australia/Melbourne"#)
-                .output(serde_json::json!({ "schedule": { "trigger": "schedule", "fired_at": "2026-09-13T21:00:00+00:00", "node_id": "n0" } })),
+                .output(serde_json::json!({ "schedule": { "fired_at": "2026-09-13T21:00:00+00:00", "node_id": "n0" } })),
             crate::pipeline::model::NodeExample::dsl("Every 15 minutes", r#"trigger.schedule --cron "*/15 * * * *""#),
         ],
         ..Default::default()

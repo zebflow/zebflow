@@ -6,6 +6,7 @@ pub mod js_masker;
 pub mod model;
 pub mod render;
 pub mod security;
+pub mod source_check;
 pub mod zeb_react;
 
 pub use config::{CompileOptions, RuntimeMode, SecurityPolicy};

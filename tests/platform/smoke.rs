@@ -2869,8 +2869,8 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
   "entry_nodes":["wh"],
   "nodes":[
     {"id":"wh","kind":"trigger.webhook","config":{"route":"/unsafe-public-hook"}},
-    {"id":"http","kind":"http.response.fetch","config":{"url":"https://api.example.com/v1/items","credential":"secure-egress"}},
-    {"id":"pg","kind":"postgres.query.run","config":{"credential":"pg-main"}},
+    {"id":"http","kind":"http.response.fetch","config":{"url":"https://api.example.com/v1/items","credential_id":"secure-egress"}},
+    {"id":"pg","kind":"postgres.query.run","config":{"credential_id":"pg-main"}},
     {"id":"fs","kind":"fs.file.put","config":{"path":"exports/out.json"}}
   ],
   "edges":[]}
@@ -4164,7 +4164,7 @@ async fn import_reports_unresolved_function_targets_without_refusing() {
                                 "entry_nodes": ["t"],
                                 "nodes": [
                                     {"id": "t", "kind": "trigger.webhook",
-                                     "output_pins": ["out"]},
+                                     "output_pins": ["out"], "config": {"route": "/caller"}},
                                     {"id": "a", "kind": "function.result.call",
                                      "input_pins": ["in"], "output_pins": ["out", "error"],
                                      "config": {"function": "absent-fn"}}
@@ -7941,4 +7941,80 @@ async fn a_bundle_webhook_trigger_refuses_an_update_without_its_secret() {
     assert_eq!(body["type"], json!("message"), "{body}");
     assert_eq!(body["chat_id"], json!(1001));
     assert_eq!(body["text"], json!("hi"));
+}
+
+/// `route_fetch files=` sends an upload the way a browser form does
+/// (`multipart/form-data`), so an agent proves an upload route itself: the
+/// file reaches `fs.file.put --from "{{ input.webhook.files.photo }}"`, the
+/// form fields travel beside it, and a store key works as well as bytes.
+#[tokio::test]
+async fn route_fetch_uploads_a_file_to_an_upload_route() {
+    use zebflow::platform::services::PlatformOps;
+    use zebflow::platform::services::ops::RouteFetchRequest;
+
+    let mut config = PlatformConfig::default();
+    let root = temp_test_dir("route-fetch-upload");
+    config.data_root = root.to_path_buf();
+    config.default_password = "test-pass".to_string();
+    let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
+    let app = zebflow::platform::web::router(platform.clone()).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let ops = PlatformOps::new(platform.clone(), "superadmin", "default");
+    let body = "| trigger.webhook --route /photo --method POST \
+                | fs.file.put --from \"{{ input.webhook.files.photo }}\" --accept image --folder test-uploads \
+                | web.response.send --body \"{{ { file: input.file, caption: input.webhook.body.caption } }}\"";
+    let checked = ops.pipeline_check(Some(body), None).await;
+    assert!(checked.text.contains("No problems"), "{}", checked.text);
+    let registered = ops.pipeline_register(body, Some("api/photo"), None, None, None, None).await;
+    assert!(registered.text.contains("registered"), "{}", registered.text);
+    let activated = ops.pipeline_activate("api/photo").await;
+    assert!(!activated.text.contains("Error"), "{}", activated.text);
+
+    let base = format!("http://{addr}");
+    let host = zebflow::platform::services::addressing::AddressingService::dev_host("superadmin", "default");
+    // A 1x1 PNG, as bytes the agent holds.
+    let png = base64::engine::general_purpose::STANDARD.decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    ).expect("png");
+    let upload = |files: Value| RouteFetchRequest {
+        path: "/photo".to_string(),
+        method: Some("POST".to_string()),
+        form: json!({ "caption": "A red dot" }).as_object().cloned(),
+        files: files.as_object().cloned(),
+        ..Default::default()
+    };
+    let answer = |text: &str| -> Value {
+        let report: Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {text}"));
+        assert_eq!(report["status"], 200, "{report}");
+        serde_json::from_str(report["body"].as_str().expect("body")).expect("json body")
+    };
+
+    let sent = ops
+        .route_fetch_via(&base, &host, upload(json!({ "photo": {
+            "name": "dot.png", "content_type": "image/png",
+            "base64": base64::engine::general_purpose::STANDARD.encode(&png)
+        } })))
+        .await;
+    let first = answer(&sent.text);
+    assert_eq!(first["caption"], "A red dot", "{first}");
+    assert_eq!(first["file"]["kind"], "image", "{first}");
+    assert_eq!(first["file"]["size"], png.len(), "{first}");
+    let stored = first["file"]["ref"].as_str().expect("stored key").to_string();
+    assert!(stored.starts_with("test-uploads/"), "{first}");
+
+    // The same file again, named by its key in the project's store.
+    let again = ops.route_fetch_via(&base, &host, upload(json!({ "photo": stored }))).await;
+    let second = answer(&again.text);
+    assert_eq!(second["file"]["size"], png.len(), "{second}");
+    assert_ne!(second["file"]["ref"], first["file"]["ref"], "a second object: {second}");
+
+    let missing = ops.route_fetch_via(&base, &host, upload(json!({ "photo": { "name": "x.png" } }))).await;
+    assert!(missing.text.contains("files.photo needs base64"), "{}", missing.text);
+
+    server.abort();
 }

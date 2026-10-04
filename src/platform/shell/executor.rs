@@ -1,6 +1,6 @@
 //! Pipeline DSL executor — executes parsed verbs using platform services.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use crate::platform::model::RepoTreeScope;
 use std::sync::Arc;
 
@@ -30,22 +30,7 @@ impl DslExecutor {
     }
 
     fn node_definitions(&self) -> Vec<crate::pipeline::NodeDefinition> {
-        let mut definitions = self
-            .platform
-            .node_registry
-            .merged_definitions(&self.owner, &self.project);
-        // Nodes the project describes but cannot run still resolve here, so a
-        // pipeline referencing one reports that its package is missing rather
-        // than that the kind is unknown. The kind is not unknown; the
-        // implementation is absent, and those need different answers.
-        definitions.extend(
-            self.platform
-                .node_registry
-                .unavailable_interface_definitions(&self.owner, &self.project),
-        );
-        definitions.sort_by(|a, b| a.kind.cmp(&b.kind));
-        definitions.dedup_by(|a, b| a.kind == b.kind);
-        definitions
+        self.platform.node_registry.project_definitions(&self.owner, &self.project)
     }
 
     /// Execute a run body with an optional initial JSON payload.
@@ -149,6 +134,7 @@ impl DslExecutor {
                 )),
             },
             DslVerb::Run { body, dry_run } => self.cmd_run(&body, dry_run, None).await,
+            DslVerb::Check { file_rel_path, body } => self.cmd_check(&file_rel_path, &body),
             DslVerb::Delete { kind, name } => self.cmd_delete(&kind, &name).await,
             DslVerb::Git {
                 subcommand,
@@ -488,6 +474,77 @@ impl DslExecutor {
         out
     }
 
+    /// `check`: what registering a body (or re-saving a stored pipeline)
+    /// would refuse, and the reference warnings, saving nothing.
+    fn cmd_check(&self, file_rel_path: &str, body: &str) -> DslOutput {
+        let graph = if !body.trim().is_empty() {
+            match build_pipeline_graph_with_definitions("check", body, &self.node_definitions()) {
+                Ok(graph) => graph,
+                Err(e) => {
+                    let mut out = DslOutput::new_ok();
+                    out.ok = false;
+                    out.push(DslLine::error(format!("✗ refused: Parse error: {e}")));
+                    return out;
+                }
+            }
+        } else if !file_rel_path.is_empty() {
+            let source = match self
+                .platform
+                .projects
+                .get_pipeline_meta_by_file_id(&self.owner, &self.project, file_rel_path)
+            {
+                Ok(Some(meta)) => self.platform.projects.read_pipeline_source(&self.owner, &self.project, &meta.file_rel_path),
+                Ok(None) => return DslOutput::err(format!("Pipeline '{file_rel_path}' not found")),
+                Err(e) => Err(e),
+            };
+            match source.map_err(|e| e.message).and_then(|source| {
+                decode_pipeline_graph(source.as_bytes()).map(|d| d.spec).map_err(|e| e.to_string())
+            }) {
+                Ok(graph) => graph,
+                Err(e) => return DslOutput::err(format!("Error reading pipeline: {e}")),
+            }
+        } else {
+            return DslOutput::err("check: give a body (`check | trigger.webhook …`) or a saved pipeline (`check pipeline <file_rel_path>`)");
+        };
+        let found = self.platform.projects.check_pipeline_graph(&self.owner, &self.project, &graph);
+        let mut out = DslOutput::new_ok();
+        out.ok = found.refusals.is_empty();
+        for problem in &found.refusals {
+            out.push(DslLine::error(format!("✗ refused: {problem}")));
+        }
+        for problem in &found.warnings {
+            out.push(DslLine::muted(format!("⚠ warning: {problem}")));
+        }
+        out.push(if found.is_clean() {
+            DslLine::success(format!("No problems: {} nodes would register as written.", graph.nodes.len()))
+        } else if found.refusals.is_empty() {
+            DslLine::success(format!(
+                "It would register ({} warning{}). Fix the warnings before running it.",
+                found.warnings.len(),
+                if found.warnings.len() == 1 { "" } else { "s" }
+            ))
+        } else {
+            DslLine::error(format!(
+                "A save would refuse it: {} problem{}. Fix every one, then check again.",
+                found.refusals.len(),
+                if found.refusals.len() == 1 { "" } else { "s" }
+            ))
+        });
+        out
+    }
+
+    /// The reference warnings of a pipeline just saved: `⚠` lines, no refusal.
+    fn reference_warnings(&self, source: &str) -> Vec<DslLine> {
+        let Ok(document) = decode_pipeline_graph(source.as_bytes()) else { return Vec::new() };
+        self.platform
+            .projects
+            .check_pipeline_graph(&self.owner, &self.project, &document.spec)
+            .warnings
+            .iter()
+            .map(|problem| DslLine::muted(format!("⚠ warning: {problem}")))
+            .collect()
+    }
+
     async fn cmd_register(
         &self,
         file_rel_path: &str,
@@ -612,10 +669,7 @@ impl DslExecutor {
                     graph.nodes.len(),
                     meta.file_rel_path
                 )));
-                // Emit non-fatal warnings for unknown config keys (likely flag typos).
-                for w in validate_graph_flags(&graph, &node_definitions) {
-                    out.push(DslLine::muted(format!("⚠ {}", w)));
-                }
+                out.extend(self.reference_warnings(&graph_source));
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
@@ -1027,6 +1081,7 @@ impl DslExecutor {
                 out.push(DslLine::success(format!(
                     "Node '{node_id}' in pipeline '{file_rel_path}' updated."
                 )));
+                out.extend(self.reference_warnings(&new_source));
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
@@ -1628,78 +1683,6 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!("{}…", &s[..max.saturating_sub(1)])
     }
-}
-
-/// Config keys that are valid on any node and should not trigger unknown-key warnings.
-const GLOBAL_CONFIG_KEYS: &[&str] = &[
-    "title",
-    "path",
-    "method",
-    "route",
-    "credential_id",
-    "sql",
-    "query",
-    "source",
-    "body",
-    "markup",
-    "template_path",
-    "template_id",
-    "credential_id_expr",
-    "query_expr",
-    "params_path",
-    "params_expr",
-    "room",
-    "event",
-    // Canvas presentation the engine never reads. `preview` is the nested
-    // object `--preview` / `--preview-in` write to, so it never matches a flat
-    // flag key and has to be named here beside `ui`.
-    "ui",
-    "preview",
-];
-
-/// Validate node config keys against declared DSL flags for each node kind.
-/// Returns a list of warning strings for unknown config keys (likely typos).
-fn validate_graph_flags(
-    graph: &crate::pipeline::PipelineGraph,
-    definitions: &[crate::pipeline::NodeDefinition],
-) -> Vec<String> {
-    let defs: HashMap<String, &crate::pipeline::NodeDefinition> =
-        definitions.iter().map(|d| (d.kind.clone(), d)).collect();
-    let mut warnings = vec![];
-    for node in &graph.nodes {
-        let Some(def) = defs.get(&node.kind) else {
-            continue;
-        };
-        // Only check nodes that have declared flags; skip nodes with empty flag list.
-        if def.dsl_flags.is_empty() {
-            continue;
-        }
-        let known_keys: HashSet<&str> = def
-            .dsl_flags
-            .iter()
-            .map(|f| f.config_key.as_str())
-            .collect();
-
-        let global_keys: HashSet<&str> = GLOBAL_CONFIG_KEYS.iter().copied().collect();
-
-        if let Some(obj) = node.config.as_object() {
-            for key in obj.keys() {
-                if global_keys.contains(key.as_str()) {
-                    continue;
-                }
-                if !known_keys.contains(key.as_str()) {
-                    warnings.push(format!(
-                        "node {} ({}): unknown config key '{}' — check flag spelling. Known: {}",
-                        node.id,
-                        node.kind,
-                        key,
-                        known_keys.iter().cloned().collect::<Vec<_>>().join(", ")
-                    ));
-                }
-            }
-        }
-    }
-    warnings
 }
 
 #[allow(dead_code)]

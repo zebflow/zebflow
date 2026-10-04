@@ -240,6 +240,18 @@ struct PipelineRegisterParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct PipelineCheckParams {
+    /// The pipeline body you would give pipeline_register: pipe mode starting with `|` or graph mode starting with `[label]`.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    body: Option<String>,
+    /// A saved pipeline to check instead of a body (e.g. "api/blog-home.zf.json").
+    #[serde(default)]
+    #[schemars(with = "String")]
+    file_rel_path: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct PipelineDescribeParams {
     /// Source-relative path of the pipeline (e.g. "api/blog-home.zf.json").
     file_rel_path: String,
@@ -385,8 +397,15 @@ struct RouteFetchParams {
     #[serde(default)]
     body: Option<serde_json::Value>,
     /// Fields to post as application/x-www-form-urlencoded, like a browser <form>.
+    /// With `files`, they go as text parts of the multipart body instead.
     #[serde(default)]
     form: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Files to upload, by form field: a store key in the project's default store
+    /// (`{"photo": "uploads/cat.png"}`) or `{"name": "cat.png", "content_type": "image/png", "base64": "iVBOR…"}`.
+    /// With `files` the request is multipart/form-data, like a browser <form enctype="multipart/form-data">;
+    /// a webhook reads them as `input.webhook.files.<field>`.
+    #[serde(default)]
+    files: Option<serde_json::Map<String, serde_json::Value>>,
     /// Extra request headers.
     #[serde(default)]
     headers: Option<serde_json::Map<String, serde_json::Value>>,
@@ -695,6 +714,34 @@ impl ZebflowMcpHandler {
     }
 
     #[tool(
+        description = "Check a pipeline before you save it — the first step of check → register → run → fetch. \
+                       Lists every problem pipeline_register would refuse (an unknown kind or flag, a missing required flag, \
+                       a word outside a closed choice such as `--format jpeg`, a duration or size that does not parse, a cycle) \
+                       and, as warnings, every `input.<key>` or `$nodes.<id>.<key>` no upstream node answers, with the key it \
+                       likely meant (`input.result` after a script → `input.script`). Saves nothing. Give `body` (the DSL you \
+                       would register) or `file_rel_path` (a saved pipeline)."
+    )]
+    async fn pipeline_check(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PipelineCheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "pipeline_check")?;
+        if let Some(frp) = params.file_rel_path.as_deref().filter(|p| !p.trim().is_empty())
+            && self.pipeline_locked(&session.owner, &session.project, frp)
+        {
+            return Err(McpError::invalid_params(
+                "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let result = ops.pipeline_check(params.body.as_deref(), params.file_rel_path.as_deref()).await;
+        Ok(CallToolResult::success(vec![Content::text(result.text)]))
+    }
+
+    #[tool(
         description = "Inspect a pipeline — returns its nodes, edges, status, and hit stats. \
                        Node IDs from this output are required for pipeline_patch. \
                        Set compact=true to show one line per node (id | kind | key flags) \
@@ -953,7 +1000,9 @@ impl ZebflowMcpHandler {
     #[tool(description = "Write (create or overwrite) a template file. \
                        Use file_create first to scaffold with boilerplate, then file_write to fill in content. \
                        Path is relative to templates/ (e.g. 'pages/blog-home.tsx', 'components/ui/card.tsx', 'scripts/format-address.ts'). \
-                       Use help(\"web\") for TSX conventions or help(\"web/custom-scripts\") for TypeScript module rules before writing.")]
+                       Use help(\"web\") for TSX conventions or help(\"web/custom-scripts\") for TypeScript module rules before writing. \
+                       A .tsx / .ts file is checked as it is written: the answer's template_problems lists each parse error, each name used \
+                       but never imported and each local `h` with path:line:column — the file is saved anyway; fix them before route_fetch.")]
     async fn file_write(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1334,7 +1383,8 @@ impl ZebflowMcpHandler {
         `seo` object (title, description_chars, canonical, h1_count, og completeness and whether og:image is \
         absolute, twitter_card, jsonld_types, hreflang, images_without_alt, robots, lang — compare these against \
         the growth-rules skill instead of reading HTML) and the body (capped, `max_body_chars`). `method` GET|POST|PUT|DELETE; `form` posts url-encoded fields like a <form>; \
-        `body` sends JSON (an object) or raw text (a string); `cookie` is a Cookie header value — copy it from a \
+        `body` sends JSON (an object) or raw text (a string); `files` uploads files as multipart/form-data (field → a store key, \
+        or `{name, content_type, base64}`; `form` fields go beside them) — a webhook reads them as `input.webhook.files.<field>`; `cookie` is a Cookie header value — copy it from a \
         login's set_cookie (`name=value`) to reach protected routes; `follow_redirects` is off by default so you \
         see the 302/303 and its location. Fetch every route you built, and every failure path, before saying done."
     )]
@@ -1347,16 +1397,17 @@ impl ZebflowMcpHandler {
         self.check_tool_capability(&session, "route_fetch")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         ok_or_err(
-            ops.route_fetch(
-                params.path,
-                params.method,
-                params.body,
-                params.form,
-                params.headers,
-                params.cookie,
-                params.follow_redirects,
-                params.max_body_chars,
-            )
+            ops.route_fetch(crate::platform::services::ops::RouteFetchRequest {
+                path: params.path,
+                method: params.method,
+                body: params.body,
+                form: params.form,
+                files: params.files,
+                headers: params.headers,
+                cookie: params.cookie,
+                follow_redirects: params.follow_redirects,
+                max_body_chars: params.max_body_chars,
+            })
             .await,
         )
     }
@@ -1714,7 +1765,7 @@ This MCP server is scoped to ONE project — its repository, store, databases, c
 Project knowledge lives in the project's files (docs/, AGENTS.md, MEMORY.md); Zebflow knowledge lives in `help` and the skills. Do not confuse the two.\n\n\
 Call `start_here` first: the project, how a pipeline is written, how to find a node, and the one topic or skill each task opens — one at a time, per need.\n\n\
 A node is written as its kind, `family.noun.verb`, and adds one key, its noun (`input.webhook.body`, `input.query.rows`); `help topic=\"pipeline/dsl\"` is the grammar.\n\n\
-Work only through the tools: `pipeline_register` then `pipeline_activate`, `file_write` for pages, `route_fetch` to prove a route (a 200 with a component error is not done), `docs_agent_write name=\"MEMORY.md\"` to record what you learned. \
+Work only through the tools: `pipeline_check`, then `pipeline_register`, then `pipeline_activate`, `file_write` for pages, `route_fetch` to prove a route (a 200 with a component error is not done), `docs_agent_write name=\"MEMORY.md\"` to record what you learned. \
 Never write to the filesystem behind the tools, never commit or push unless the user asks (`git_command`).";
 
 impl ServerHandler for ZebflowMcpHandler {

@@ -98,12 +98,25 @@ skill is the order of work.
 [b]:false -> [e]
 ```
 
-## Register, activate, prove
+## Check, register, run, fetch
+
+Move bit by bit: each step answers before the next one is taken.
 
 ```
+pipeline_check     body="…"                                      → every problem, or "No problems"
 pipeline_register  file_rel_path="api/posts/create"  body="…"     → draft
 pipeline_activate  file_rel_path="api/posts/create"              → active
+route_fetch        path="/api/posts"  method=POST  form={…}      → what the route answers
 ```
+
+`pipeline_check` saves nothing. It lists everything `pipeline_register` would
+refuse — an unknown kind or flag (with the one it likely meant), a missing
+required flag, a word outside a closed choice (`--format jpeg` → jpg, png,
+webp), a duration or size without its unit, a cycle — and, as warnings, every
+`input.<key>` or `$nodes.<id>.<key>` no upstream node answers, with the key it
+meant (`input.result` after a script → `input.script`). Registration refuses
+the first kind with all of them listed; fix every one, check again, then
+register. A value still written as `{{ }}` is judged when it resolves, at run.
 
 `file_rel_path` is relative to the source root (the repository root unless
 `zebflow.yaml` says otherwise) and is the pipeline's place in the project's
@@ -117,8 +130,8 @@ is `stale` and traffic runs the old snapshot.
 **The gate — none of these may be skipped:**
 
 1. `pipeline_list status=all` shows the pipeline as `active`.
-2. `route_fetch path=…` (POST with `form=`, protected routes with `cookie=`)
-   and read what came back:
+2. `route_fetch path=…` (POST with `form=`, an upload with `files=`,
+   protected routes with `cookie=`) and read what came back:
    - a page: the body has no `RWE component error` and shows the data;
    - JSON: the shape you documented, with the status you meant;
    - a redirect: `303`/`302` to the right place, with the cookie if you set one;
@@ -133,8 +146,11 @@ To try a body without saving: `pipeline_run body="| trigger.function | …" inpu
 
 ## When it fails
 
-- `unknown flag --x` — the node does not declare it; read
-  `help(topic="pipeline/nodes/<kind>")` and use the word it lists.
+- `unknown flag --x` — the node does not declare it; the refusal names the
+  flags it takes (and the one you likely meant); `help(topic="pipeline/nodes/<kind>")`
+  is the whole node.
+- `Unknown node kind` — the refusal lists the kinds you likely meant;
+  `help(topic="pipeline/nodes")` is the index.
 - a word refused for a choice (`--method`, `--fit`, `--on-conflict` …) — use one
   the node's signature lists; nothing is mapped to a default.
 - a duration or size refused — write the unit (`30s`, `10MB`).

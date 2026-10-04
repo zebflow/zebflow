@@ -170,6 +170,20 @@ impl AssistantPlatformTools {
                 }),
             },
             ToolDef {
+                name: "pipeline_check".to_string(),
+                description: "Check a pipeline before saving it: every problem pipeline_register would refuse (an unknown kind or flag, \
+                    a missing required flag, a word outside a closed choice, a duration or size that does not parse, the flow rules) \
+                    and, as warnings, every input.<key> or $nodes.<id>.<key> no upstream node answers, with the key it likely meant. \
+                    Saves nothing. Give body (the DSL you would register) or file_rel_path (a saved pipeline). Check, then register, then run.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "body": { "type": "string", "description": "Pipeline body as pipeline_register takes it, starting with | or [label]." },
+                        "file_rel_path": { "type": "string", "description": "A saved pipeline to check instead of a body." }
+                    }
+                }),
+            },
+            ToolDef {
                 name: "pipeline_describe".to_string(),
                 description: "Inspect a pipeline — returns its nodes, edges, status, and hit stats. \
                     Node IDs from this output are required for pipeline_patch.".to_string(),
@@ -569,6 +583,13 @@ impl AssistantPlatformTools {
                     args.get("path").and_then(|v| v.as_str()),
                     args.get("title").and_then(|v| v.as_str()),
                     args.get("description").and_then(|v| v.as_str()),
+                )
+                .await
+            }
+            "pipeline_check" => {
+                ops.pipeline_check(
+                    args.get("body").and_then(|v| v.as_str()),
+                    args.get("file_rel_path").and_then(|v| v.as_str()),
                 )
                 .await
             }

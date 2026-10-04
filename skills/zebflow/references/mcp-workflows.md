@@ -42,7 +42,7 @@ Core tools by surface:
 | Surface | Tools |
 |---|---|
 | Orientation | `start_here`, `version`, `help`, `help_search` |
-| Pipelines | `pipeline_list`, `pipeline_search`, `pipeline_get`, `pipeline_register`, `pipeline_describe`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `pipeline_execute`, `pipeline_run`, `pipeline_get_invocations` |
+| Pipelines | `pipeline_list`, `pipeline_search`, `pipeline_get`, `pipeline_check`, `pipeline_register`, `pipeline_describe`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `pipeline_execute`, `pipeline_run`, `pipeline_get_invocations` |
 | Files (pages, components, scripts, CSS, docs) | `file_list`, `file_read`, `file_search`, `file_outline`, `file_deps`, `file_create`, `file_write`, `file_edit`, `file_batch_edit`, `move_resource` |
 | Agent docs (AGENTS.md, SOUL.md, MEMORY.md) | `docs_agent_list`, `docs_agent_read`, `docs_agent_write` |
 | Data | `connection_list`, `connection_describe`, `credential_list` — queries run through `pipeline_run` |
@@ -54,6 +54,7 @@ Pipeline rule:
 - The DSL grammar is `help(topic="pipeline/dsl")`: kinds `family.noun.verb`,
   one answer key per node, `--from` for the subject. A node's flags and
   answer are on `help(topic="pipeline/nodes/<kind>")`.
+- `pipeline_check` the body first: it answers every problem `pipeline_register` would refuse, and every key no upstream node answers, saving nothing.
 - Use `pipeline_register` for full pipeline creation or replacement.
 - Use `pipeline_patch` only after `pipeline_describe`, and only for one node at a time.
 - Long script/SQL bodies go in the DSL body (`-- "…"`); `pipeline_register` takes the whole DSL as `body`.

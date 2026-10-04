@@ -180,6 +180,10 @@ pub fn first_webhook_trigger_from_source(source: &str) -> Option<(String, String
         .map(|trigger| (trigger.path, trigger.method))
 }
 
+/// A save or an activation the pipeline checks refuse; the message lists
+/// every problem.
+pub const PIPELINE_CHECK_CODE: &str = "PLATFORM_PIPELINE_CHECK";
+
 fn parse_and_validate_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
     let graph = parse_pipeline_source(source)?;
     validate_pipeline_activation(&graph)
@@ -318,8 +322,28 @@ pub struct ProjectService {
     project_data: Arc<dyn ProjectDataFactory>,
     zebflow_cfg: Arc<ProjectConfigurationService>,
     dependency_lock: Arc<DependencyLockService>,
+    /// The project's node catalogue, attached once the registry exists (it
+    /// is built from this service). Unattached, a save is checked against
+    /// the official kinds.
+    node_catalog: std::sync::OnceLock<std::sync::Weak<dyn NodeCatalog>>,
     #[cfg(test)]
     fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool,
+}
+
+/// Every node kind a project can use — official, bundled and installed —
+/// for the save-time checks (`pipeline::nodes::check`).
+pub trait NodeCatalog: Send + Sync {
+    fn project_definitions(&self, owner: &str, project: &str) -> Vec<crate::pipeline::NodeDefinition>;
+}
+
+/// The official kinds: the native nodes and the composites shipped in the binary.
+fn official_definitions() -> &'static [crate::pipeline::NodeDefinition] {
+    static OFFICIAL: std::sync::LazyLock<Vec<crate::pipeline::NodeDefinition>> = std::sync::LazyLock::new(|| {
+        let mut defs = crate::pipeline::nodes::builtin_node_definitions();
+        defs.extend(crate::platform::services::node_registry::NodeRegistryService::embedded_official_definitions());
+        defs
+    });
+    &OFFICIAL
 }
 
 impl ProjectService {
@@ -341,6 +365,7 @@ impl ProjectService {
             project_data,
             zebflow_cfg,
             dependency_lock,
+            node_catalog: std::sync::OnceLock::new(),
             #[cfg(test)]
             fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool::new(false),
         }
@@ -818,6 +843,64 @@ impl ProjectService {
         Ok(())
     }
 
+    /// Attaches the registry that knows every kind a project can use; the
+    /// first attachment holds.
+    pub fn attach_node_catalog(&self, catalog: std::sync::Weak<dyn NodeCatalog>) {
+        let _ = self.node_catalog.set(catalog);
+    }
+
+    /// The kinds a project's pipelines are checked against, and whether
+    /// that is every kind it can use.
+    pub fn node_catalogue(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> (Vec<crate::pipeline::NodeDefinition>, crate::pipeline::nodes::check::Catalogue) {
+        use crate::pipeline::nodes::check::Catalogue;
+        match self.node_catalog.get().and_then(std::sync::Weak::upgrade) {
+            Some(catalog) => (catalog.project_definitions(owner, project), Catalogue::Complete),
+            None => (official_definitions().to_vec(), Catalogue::Official),
+        }
+    }
+
+    /// Everything a save of `graph` would refuse — each node against its
+    /// definition, unknown kinds, a provider's credential of the wrong
+    /// kind, the flow rules — and the reference warnings
+    /// (`docs/contracts/node-conventions.md` §3, §4, §11). Saves nothing.
+    pub fn check_pipeline_graph(
+        &self,
+        owner: &str,
+        project: &str,
+        graph: &PipelineGraph,
+    ) -> crate::pipeline::nodes::check::PipelineCheck {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let (defs, catalogue) = self.node_catalogue(&owner, &project);
+        let credential_kind = |id: &str| {
+            self.data
+                .get_project_credential(&owner, &project, &slug_segment(id))
+                .ok()
+                .flatten()
+                .map(|credential| credential.kind)
+        };
+        crate::pipeline::nodes::check::check_pipeline(graph, &defs, catalogue, &credential_kind)
+    }
+
+    /// Refuses a graph whose save-time check finds anything to refuse.
+    fn refuse_unchecked_graph(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+        graph: &PipelineGraph,
+    ) -> Result<(), PlatformError> {
+        let check = self.check_pipeline_graph(owner, project, graph);
+        if check.refusals.is_empty() {
+            return Ok(());
+        }
+        Err(PlatformError::new(PIPELINE_CHECK_CODE, check.refusal_message(file_rel_path)))
+    }
+
     /// Upserts one pipeline source file + metadata catalog entry.
     ///
     /// `file_rel_path` is the canonical identifier, e.g. `"api/my-hook.zf.json"`,
@@ -853,6 +936,9 @@ impl ProjectService {
         self.ensure_pipeline_editable(&owner, &project, &file_rel_path, "edited")?;
         let mut graph = parse_and_validate_pipeline_source_for_save(source)?;
         pin_file_stores(&mut graph, layout.store_id());
+        // A wrong word, a missing flag, a flow that can never run: refused
+        // now, every problem at once, rather than when the run reaches it.
+        self.refuse_unchecked_graph(&owner, &project, &file_rel_path, &graph)?;
         let canonical_source = encode_pipeline_graph(graph)
             .and_then(|bytes| {
                 String::from_utf8(bytes)
@@ -1073,11 +1159,11 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
         let graph = parse_and_validate_pipeline_source(&source)?;
-        // A cycle, a loop wired across its boundary, a `$nodes` reference to
-        // a node not upstream: each would wait or read nothing at run time,
-        // so each is refused here (`node-conventions.md` §4).
-        crate::pipeline::engines::basic::validate_flow(&graph)
-            .map_err(|err| PlatformError::new(err.code, err.message))?;
+        // The save's checks again, against the catalogue as it is now: a
+        // cycle, a loop wired across its boundary, a `$nodes` reference to
+        // a node not upstream, a config its kind refuses
+        // (`node-conventions.md` §3, §4).
+        self.refuse_unchecked_graph(&owner, &project, &meta.file_rel_path, &graph)?;
         // A required input after a schedule would refuse every tick; that is
         // an activation refusal, not a run-time one.
         crate::pipeline::nodes::basic::input::ensure_inputs_reachable_from_empty_triggers(&graph)
@@ -3923,13 +4009,48 @@ mod tests {
     {"from_node":"b","from_pin":"out","to_node":"a","to_pin":"in"}
   ]}
 }"#;
-        svc.upsert_pipeline_definition("superadmin", "default", file_rel_path, "Cycle", "", "manual", source)
-            .expect("a draft may hold a cycle");
+        // A pipeline that can never activate does not save either.
         let err = svc
-            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .upsert_pipeline_definition("superadmin", "default", file_rel_path, "Cycle", "", "manual", source)
             .expect_err("a cycle never runs as written");
-        assert_eq!(err.code, "FW_PIPELINE_CYCLE");
+        assert_eq!(err.code, PIPELINE_CHECK_CODE);
         assert!(err.message.contains("a → b → a"), "{}", err.message);
+        assert!(svc.get_pipeline_meta_by_file_id("superadmin", "default", file_rel_path).expect("meta read").is_none());
+    }
+
+    /// A wrong word is refused when the pipeline is saved, every problem
+    /// listed with its node and flag, and nothing is written.
+    #[test]
+    fn a_save_refuses_what_the_definitions_refuse_listing_every_problem() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        let file_rel_path = "pipelines/api/thumb.zf.json";
+        let source = r#"{
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"thumb"},
+  "spec":{
+  "id":"thumb",
+  "entry_nodes":["t"],
+  "nodes":[
+    {"id":"t","kind":"trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"route":"/thumb","method":"POST"}},
+    {"id":"thumb","kind":"fs.image.thumbnail","input_pins":["in"],"output_pins":["out"],"config":{"from":"{{ input.webhook.files.photo }}","format":"jpeg","source_key":"files.photo"}}
+  ],
+  "edges":[{"from_node":"t","from_pin":"out","to_node":"thumb","to_pin":"in"}]}
+}"#;
+        let err = svc
+            .upsert_pipeline_definition("superadmin", "default", file_rel_path, "Thumb", "", "webhook", source)
+            .expect_err("jpeg is not a format thumbnail writes");
+        assert_eq!(err.code, PIPELINE_CHECK_CODE);
+        assert!(err.message.starts_with("pipeline 'pipelines/api/thumb.zf.json' is refused — 2 problems:"), "{}", err.message);
+        assert!(err.message.contains("- node `thumb`: fs.image.thumbnail --format 'jpeg' must be one of jpg, png, webp"), "{}", err.message);
+        assert!(err.message.contains("- node `thumb`: fs.image.thumbnail takes no --source-key"), "{}", err.message);
+        assert!(svc.get_pipeline_meta_by_file_id("superadmin", "default", file_rel_path).expect("meta read").is_none());
+
+        let fixed = source.replace(r#""format":"jpeg","source_key":"files.photo""#, r#""format":"jpg""#);
+        svc.upsert_pipeline_definition("superadmin", "default", file_rel_path, "Thumb", "", "webhook", &fixed)
+            .expect("the fixed pipeline saves");
     }
 
     #[test]
@@ -4133,8 +4254,10 @@ mod tests {
         assert!(!candidate_snapshot.exists());
     }
 
+    /// A pipeline file changed behind the save (a pull, a hand edit) is
+    /// held to the same checks when it is activated, before any snapshot.
     #[test]
-    fn activation_preflight_rejects_missing_required_node_config_before_snapshot_write() {
+    fn activation_rechecks_a_source_changed_behind_the_save_before_snapshot_write() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let svc = make_service(tmp.path());
         create_default_project(&svc);
@@ -4147,36 +4270,39 @@ mod tests {
             "id":"invalid-query",
             "entry_nodes":["function"],
             "nodes":[
-              {"id":"function","kind":"trigger.function","input_pins":[],"output_pins":["out"],"config":{}}
+              {"id":"function","kind":"trigger.function","input_pins":[],"output_pins":["out"],"config":{"description":"Looks one thing up."}}
             ],
             "edges":[]
           }
         }"#;
-        svc.upsert_pipeline_definition(
-            "superadmin",
-            "default",
-            file_rel_path,
-            "Invalid query",
-            "",
-            "manual",
-            source,
-        )
-        .expect("structurally valid draft");
+        let err = svc
+            .upsert_pipeline_definition("superadmin", "default", file_rel_path, "Invalid query", "", "manual", &source.replace(r#""description":"Looks one thing up.""#, ""))
+            .expect_err("a function without its description is refused at save");
+        assert!(err.message.contains("trigger.function needs --description"), "{}", err.message);
+        svc.upsert_pipeline_definition("superadmin", "default", file_rel_path, "Invalid query", "", "manual", source)
+            .expect("a valid draft");
+
+        let layout = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let stored = svc.pipeline_abs_path(&layout, file_rel_path).expect("stored path");
+        let changed = fs::read_to_string(&stored).expect("stored source").replace(r#""description": "Looks one thing up.""#, r#""description": "", "colour": "blue""#);
+        assert!(changed.contains("colour"), "the stored source changed: {changed}");
+        fs::write(&stored, changed).expect("change behind the save");
 
         let error = svc
             .activate_pipeline_definition("superadmin", "default", file_rel_path)
-            .expect_err("invalid node config must fail preflight");
-        assert_eq!(error.code, "PIPELINE_NODE_CONFIG_VIOLATION");
+            .expect_err("invalid node config must fail before the snapshot");
+        assert_eq!(error.code, PIPELINE_CHECK_CODE);
+        assert!(error.message.contains("trigger.function needs --description"), "{}", error.message);
+        assert!(error.message.contains("trigger.function takes no --colour"), "{}", error.message);
 
         let meta = svc
             .get_pipeline_meta_by_file_id("superadmin", "default", file_rel_path)
             .expect("metadata read")
             .expect("metadata");
         assert!(meta.active_hash.is_none());
-        let layout = svc
-            .file
-            .ensure_project_layout("superadmin", "default")
-            .expect("layout");
         assert!(!layout.data_cache_pipelines_dir().join("functions").exists());
     }
 

@@ -10,7 +10,9 @@
       {
         "id": "trigger",
         "kind": "trigger.function",
-        "config": {},
+        "config": {
+          "description": "Edits a message the bot already sent."
+        },
         "input_pins": [],
         "output_pins": [
           "out"

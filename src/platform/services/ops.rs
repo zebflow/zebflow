@@ -106,6 +106,20 @@ fn official_node_count() -> usize {
         + crate::platform::services::node_registry::NodeRegistryService::embedded_official_definitions().len()
 }
 
+/// A template's parse errors, borrowed bindings and shadowed `h`, as
+/// `path:line:column: message` (`rwe::core::source_check`); nothing for a
+/// file that is not a `.tsx` / `.ts` template.
+pub fn template_problems(rel_path: &str, content: &str) -> Vec<String> {
+    use crate::rwe::core::source_check::{check_template_source, is_template_path};
+    if !is_template_path(rel_path) {
+        return Vec::new();
+    }
+    check_template_source(content, rel_path.ends_with(".tsx"))
+        .into_iter()
+        .map(|problem| format!("{rel_path}:{problem}"))
+        .collect()
+}
+
 // ── Orientation ───────────────────────────────────────────────────────────────
 
 /// What `start_here` teaches after the project's own state: how a pipeline
@@ -152,7 +166,7 @@ pub fn start_here_way_in(node_count: usize) -> String {
 /// The closing loop of `start_here`.
 pub const START_HERE_LOOP: &str = "\n## Step 5 — the loop\n\
      Orient (`pipeline_describe … compact=true`, `file_outline`, `connection_describe`) → \
-     Build through the tools only (`pipeline_register` for DSL, `file_write` for TSX, then `pipeline_activate`; never the filesystem, never a direct edit of a live route) → \
+     Build bit by bit through the tools only — check → register → run → fetch: `pipeline_check body=\"…\"` until it reports no problem, `pipeline_register`, `pipeline_activate`, then `route_fetch` (for an upload route, `files={\"photo\": \"<store key>\"}`); `file_write` for TSX, whose answer lists any parse error or borrowed binding with its line — fix those before fetching the page; never the filesystem, never a direct edit of a live route → \
      Verify (`route_fetch path=\"…\"`: status, `rwe_component_errors`, body — a 200 with a component error is not done) → \
      Record (`docs_agent_write name=\"MEMORY.md\"` with durable, non-obvious facts; never commit for the user).\n";
 
@@ -515,6 +529,7 @@ impl PlatformOps {
 
         out.push_str(
             "\n\n## Operational rules\n\
+             - Before registering or patching a pipeline, `pipeline_check` it: every problem a save would refuse, and every key no upstream node answers.\n\
              - Before patching a pipeline, `pipeline_describe` and use the returned node ids.\n\
              - After `pipeline_register` or `pipeline_patch`, `pipeline_activate` before expecting traffic.\n\
              - When testing function pipelines, pass an explicit `input` object.\n\
@@ -853,6 +868,27 @@ impl PlatformOps {
             &frp,
         );
         OpsResult::ok_nav(text, nav)
+    }
+
+    /// What registering `body` (or re-saving the pipeline at
+    /// `file_rel_path`) would refuse, and the reference warnings — the
+    /// first step of check → register → run → fetch. Saves nothing.
+    pub async fn pipeline_check(&self, body: Option<&str>, file_rel_path: Option<&str>) -> OpsResult {
+        let body = body.map(str::trim).filter(|b| !b.is_empty());
+        let file_rel_path = file_rel_path.map(str::trim).filter(|p| !p.is_empty());
+        let dsl = match (body, file_rel_path) {
+            (Some(body), _) if body.starts_with('|') || body.starts_with('[') => format!("check {body}"),
+            (Some(body), _) => format!("check | {body}"),
+            (None, Some(path)) => format!("check pipeline {path}"),
+            (None, None) => return OpsResult::err("pipeline_check takes a body (the DSL you would register) or a file_rel_path (a saved pipeline)"),
+        };
+        let executor = crate::platform::shell::executor::DslExecutor::new(
+            self.platform.clone(),
+            &self.owner,
+            &self.project,
+        );
+        let output = executor.execute_dsl(&dsl).await;
+        OpsResult::ok(output.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n"))
     }
 
     pub async fn pipeline_describe(&self, file_rel_path: &str, compact: bool) -> OpsResult {
@@ -1508,10 +1544,19 @@ impl PlatformOps {
         ) {
             Ok(payload) => {
                 let nav = format!("/projects/{}/{}/files", self.owner, self.project);
-                OpsResult::ok_nav(
-                    serde_json::to_string_pretty(&payload).unwrap_or_default(),
-                    nav,
-                )
+                let mut answer = serde_json::to_value(&payload).unwrap_or_default();
+                // A page or component is checked as it lands: the file is
+                // written either way, and the problems come back with their
+                // lines so they are fixed before the page is fetched.
+                let problems = template_problems(rel_path, content);
+                if !problems.is_empty() && let Some(map) = answer.as_object_mut() {
+                    map.insert("template_problems".to_string(), json!(problems));
+                    map.insert(
+                        "next".to_string(),
+                        json!("The file is written, but these will break the page: fix each one, then route_fetch the page and check rwe_component_errors."),
+                    );
+                }
+                OpsResult::ok_nav(serde_json::to_string_pretty(&answer).unwrap_or_default(), nav)
             }
             Err(e) => OpsResult::err(e.to_string()),
         }
@@ -2254,22 +2299,9 @@ impl PlatformOps {
     ///
     /// This exists because an agent that only has MCP had no way to fetch
     /// what it built; every rung of the model ladder stopped at "cannot verify".
-    pub async fn route_fetch(
-        &self,
-        path: String,
-        method: Option<String>,
-        body: Option<Value>,
-        form: Option<serde_json::Map<String, Value>>,
-        headers: Option<serde_json::Map<String, Value>>,
-        cookie: Option<String>,
-        follow_redirects: Option<bool>,
-        max_body_chars: Option<usize>,
-    ) -> OpsResult {
-        let path = path.trim();
-        if path.starts_with("http://") || path.starts_with("https://") {
-            return OpsResult::err("route_fetch takes a project path such as /book or /api/slots?date=…, not a full URL — it only reaches this project's own routes");
-        }
-        let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+    /// Fetches one of the project's own routes through the real ingress,
+    /// on this instance's own address with the project's dev host.
+    pub async fn route_fetch(&self, request: RouteFetchRequest) -> OpsResult {
         // The request goes to loopback with the project's dev host as `Host`,
         // so it is routed exactly as a browser on that host would be — root-
         // relative links and `Location: /admin` included (`addressing.md` §4).
@@ -2280,7 +2312,19 @@ impl PlatformOps {
             crate::platform::services::addressing::AddressingService::dev_host(&self.owner, &self.project),
             crate::platform::boot::configured_port()
         );
-        let url = format!("{}{}", crate::platform::boot::local_instance_url(), path);
+        self.route_fetch_via(&crate::platform::boot::local_instance_url(), &dev_host, request).await
+    }
+
+    /// [`Self::route_fetch`] against the instance at `base_url`, with `dev_host` as `Host`.
+    pub async fn route_fetch_via(&self, base_url: &str, dev_host: &str, request: RouteFetchRequest) -> OpsResult {
+        let RouteFetchRequest { path, method, body, form, files, headers, cookie, follow_redirects, max_body_chars } = request;
+        let dev_host = dev_host.to_string();
+        let path = path.trim();
+        if path.starts_with("http://") || path.starts_with("https://") {
+            return OpsResult::err("route_fetch takes a project path such as /book or /api/slots?date=…, not a full URL — it only reaches this project's own routes");
+        }
+        let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+        let url = format!("{base_url}{path}");
         let method = method.unwrap_or_else(|| "GET".to_string()).to_ascii_uppercase();
         let method = match reqwest::Method::from_bytes(method.as_bytes()) {
             Ok(m) => m,
@@ -2312,12 +2356,36 @@ impl PlatformOps {
         if let Some(cookie) = cookie.filter(|c| !c.trim().is_empty()) {
             request = request.header(reqwest::header::COOKIE, cookie.trim().to_string());
         }
-        if let Some(form) = form {
-            let pairs: Vec<(String, String)> = form
+        let text_pairs = |form: Option<serde_json::Map<String, Value>>| -> Vec<(String, String)> {
+            form.unwrap_or_default()
                 .into_iter()
                 .map(|(k, v)| (k, match v { Value::String(s) => s, other => other.to_string() }))
-                .collect();
-            request = request.form(&pairs);
+                .collect()
+        };
+        if let Some(files) = files.filter(|f| !f.is_empty()) {
+            // An upload, as a browser's <form enctype="multipart/form-data">
+            // sends it: the text fields, then one part per file.
+            let mut multipart = reqwest::multipart::Form::new();
+            for (k, v) in text_pairs(form) {
+                multipart = multipart.text(k, v);
+            }
+            for (field, value) in files {
+                let upload = match self.route_fetch_upload(&field, &value) {
+                    Ok(upload) => upload,
+                    Err(message) => return OpsResult::err(message),
+                };
+                let part = match reqwest::multipart::Part::bytes(upload.bytes)
+                    .file_name(upload.name)
+                    .mime_str(&upload.content_type)
+                {
+                    Ok(part) => part,
+                    Err(e) => return OpsResult::err(format!("files.{field}: content_type '{}': {e}", upload.content_type)),
+                };
+                multipart = multipart.part(field, part);
+            }
+            request = request.multipart(multipart);
+        } else if let Some(form) = form {
+            request = request.form(&text_pairs(Some(form)));
         } else if let Some(body) = body {
             request = match body {
                 Value::String(s) => request.body(s),
@@ -2415,6 +2483,66 @@ impl PlatformOps {
         };
         OpsResult::ok(serde_json::to_string_pretty(&report).unwrap_or_default())
     }
+
+    /// One `files` entry of a `route_fetch`: a key in the project's default
+    /// store (read through the store door, capped), or
+    /// `{ "name", "content_type", "base64" }`.
+    fn route_fetch_upload(&self, field: &str, value: &Value) -> Result<RouteFetchUpload, String> {
+        use base64::Engine as _;
+        use crate::pipeline::nodes::shared::{file_ref::mime_for_filename, project_store};
+        const CODE: &str = "PLATFORM_ROUTE_FETCH_FILE";
+        match value {
+            Value::String(key) => {
+                let key = crate::zebfs::normalize_object_path(key.trim())
+                    .map_err(|e| format!("files.{field} '{key}': {}", e.message))?;
+                let store = project_store::open_store(&self.platform, &self.owner, &self.project, None)
+                    .map_err(|e| format!("files.{field}: {}", e.message))?;
+                let bytes = store.read_capped(&key, CODE).map_err(|e| format!("files.{field}: {}", e.message))?;
+                let name = key.rsplit('/').next().unwrap_or(&key).to_string();
+                let content_type = mime_for_filename(&name).to_string();
+                Ok(RouteFetchUpload { name, content_type, bytes })
+            }
+            Value::Object(map) => {
+                let text = |k: &str| map.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+                let name = text("name").ok_or_else(|| format!("files.{field} needs a name, e.g. \"photo.png\""))?.to_string();
+                let encoded = text("base64").ok_or_else(|| format!("files.{field} needs base64: the file's bytes"))?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|e| format!("files.{field}.base64 is not base64: {e}"))?;
+                if bytes.len() as u64 > project_store::MAX_NODE_OBJECT_BYTES {
+                    return Err(format!("files.{field} is {} bytes, over the {} one request carries", bytes.len(), project_store::MAX_NODE_OBJECT_BYTES));
+                }
+                let content_type = text("content_type").map(str::to_string).unwrap_or_else(|| mime_for_filename(&name).to_string());
+                Ok(RouteFetchUpload { name, content_type, bytes })
+            }
+            _ => Err(format!(
+                "files.{field} is a store key (\"uploads/photo.png\") or {{ \"name\", \"content_type\", \"base64\" }}"
+            )),
+        }
+    }
+}
+
+/// What `route_fetch` sends: the route, and the request a browser would make.
+#[derive(Debug, Clone, Default)]
+pub struct RouteFetchRequest {
+    pub path: String,
+    pub method: Option<String>,
+    pub body: Option<Value>,
+    pub form: Option<serde_json::Map<String, Value>>,
+    /// Form field → a store key in the project's default store, or
+    /// `{ "name", "content_type", "base64" }`; makes the request
+    /// `multipart/form-data`, with `form`'s fields beside the files.
+    pub files: Option<serde_json::Map<String, Value>>,
+    pub headers: Option<serde_json::Map<String, Value>>,
+    pub cookie: Option<String>,
+    pub follow_redirects: Option<bool>,
+    pub max_body_chars: Option<usize>,
+}
+
+struct RouteFetchUpload {
+    name: String,
+    content_type: String,
+    bytes: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -3241,5 +3369,90 @@ impl PlatformOps {
                 ))
             }
         }
+    }
+}
+
+/// Feedback at every step: `pipeline_check` before a save, the save's own
+/// refusal, and `file_write`'s template check.
+#[cfg(test)]
+mod save_check_tests {
+    use super::*;
+    use crate::pipeline::nodes::shared::test_platform::test_platform;
+
+    const UPLOAD: &str = "| trigger.webhook --route /photo --method POST";
+
+    #[tokio::test]
+    async fn pipeline_check_answers_every_problem_and_saves_nothing() {
+        let platform = test_platform();
+        let ops = PlatformOps::new((*platform).clone(), "superadmin", "default");
+        let before = platform.projects.list_pipeline_meta_rows("superadmin", "default").expect("rows").len();
+
+        let clean = ops.pipeline_check(Some(&format!("{UPLOAD} | fs.file.put --from \"{{{{ input.webhook.files.photo }}}}\" --accept image")), None).await;
+        assert!(clean.text.contains("No problems: 2 nodes would register as written."), "{}", clean.text);
+
+        let wrong = ops.pipeline_check(Some(&format!("{UPLOAD} | fs.image.thumbnail --from \"{{{{ input.webhook.files.photo }}}}\" --format jpeg --timeout 2h")), None).await;
+        assert!(wrong.text.contains("✗ refused: node `n1`: fs.image.thumbnail --format 'jpeg' must be one of jpg, png, webp"), "{}", wrong.text);
+        assert!(wrong.text.contains("✗ refused: node `n1`: fs.image.thumbnail --timeout '2h' must be a duration from 1s to 1h"), "{}", wrong.text);
+        assert!(wrong.text.contains("A save would refuse it: 2 problems."), "{}", wrong.text);
+
+        let mistyped = ops.pipeline_check(Some(&format!("{UPLOAD} | javascript.script.run -- \"return 1\" | web.response.send --body \"{{{{ input.result }}}}\"")), None).await;
+        assert!(mistyped.text.contains("⚠ warning: node `n2`: `input.result` — no node upstream of `n2` answers `result`; did you mean `input.script`?"), "{}", mistyped.text);
+        assert!(mistyped.text.contains("It would register (1 warning)."), "{}", mistyped.text);
+
+        let unknown = ops.pipeline_check(Some(&format!("{UPLOAD} | static.page.generate --template pages/x.tsx")), None).await;
+        assert!(unknown.text.contains("Unknown node kind: 'static.page.generate'; did you mean"), "{}", unknown.text);
+        assert!(unknown.text.contains("`web.site.generate`"), "{}", unknown.text);
+
+        assert_eq!(platform.projects.list_pipeline_meta_rows("superadmin", "default").expect("rows").len(), before, "check saved nothing");
+    }
+
+    #[tokio::test]
+    async fn a_register_is_refused_with_the_problems_check_names() {
+        let platform = test_platform();
+        let ops = PlatformOps::new((*platform).clone(), "superadmin", "default");
+        let refused = ops
+            .pipeline_register(&format!("{UPLOAD} | fs.image.thumbnail --from \"{{{{ input.webhook.files.photo }}}}\" --format jpeg"), Some("api/photo"), None, None, None, None)
+            .await;
+        assert!(refused.text.contains("is refused — 1 problem:\n- node `n1`: fs.image.thumbnail --format 'jpeg' must be one of jpg, png, webp"), "{}", refused.text);
+        assert!(platform.projects.get_pipeline_meta_by_file_id("superadmin", "default", "api/photo").expect("meta").is_none());
+
+        // Saved with a reference warning: registered, and the warning said.
+        let saved = ops
+            .pipeline_register(&format!("{UPLOAD} | fs.image.thumbnail --from \"{{{{ input.webhook.files.photo }}}}\" --format jpg | web.response.send --body \"{{{{ input.thumbnail }}}}\""), Some("api/photo"), None, None, None, None)
+            .await;
+        assert!(saved.text.contains("registered"), "{}", saved.text);
+        assert!(saved.text.contains("⚠ warning: node `n2`: `input.thumbnail` — no node upstream of `n2` answers `thumbnail`; did you mean `input.image`?"), "{}", saved.text);
+
+        // A saved pipeline is checked by its path.
+        let stored = ops.pipeline_check(None, Some("api/photo")).await;
+        assert!(stored.text.contains("did you mean `input.image`?"), "{}", stored.text);
+        // And patched into a wrong word, it is refused again.
+        let patched = ops.pipeline_patch("api/photo", "node", "n1", Some("--fit stretch"), None).await;
+        assert!(patched.text.contains("fs.image.thumbnail --fit 'stretch' must be one of cover, contain, fill"), "{}", patched.text);
+    }
+
+    #[test]
+    fn file_write_reports_a_broken_template_with_its_line() {
+        let platform = test_platform();
+        platform.file.ensure_project_layout("superadmin", "default").expect("layout");
+        let ops = PlatformOps::new((*platform).clone(), "superadmin", "default");
+        let broken = ops.file_write("pages/broken.tsx", "export default function Page() {\n  return <div>{cx(\"a\")}</div>;\n}\n");
+        assert!(!broken.text.starts_with("Error"), "{}", broken.text);
+        let answer: Value = serde_json::from_str(&broken.text).expect("json answer");
+        let problems = answer["template_problems"].as_array().expect("problems");
+        assert_eq!(problems.len(), 1, "{answer}");
+        assert!(problems[0].as_str().unwrap().starts_with("pages/broken.tsx:2:"), "{answer}");
+        assert!(problems[0].as_str().unwrap().contains("`cx` is used but never declared or imported"), "{answer}");
+
+        let unparsed = ops.file_write("pages/unparsed.tsx", "export default function Page() {\n  return <div>\n}\n");
+        let answer: Value = serde_json::from_str(&unparsed.text).expect("json answer");
+        assert!(answer["template_problems"][0].as_str().unwrap().contains("does not parse"), "{answer}");
+
+        let clean = ops.file_write("pages/clean.tsx", "export default function Page() {\n  return <div>ok</div>;\n}\n");
+        let answer: Value = serde_json::from_str(&clean.text).expect("json answer");
+        assert!(answer.get("template_problems").is_none(), "{answer}");
+        // Not a template: nothing to check.
+        let doc = ops.file_write("docs/notes.md", "# {{ not code }}\n");
+        assert!(!doc.text.contains("template_problems"), "{}", doc.text);
     }
 }

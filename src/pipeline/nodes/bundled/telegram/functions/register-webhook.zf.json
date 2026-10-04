@@ -10,7 +10,9 @@
       {
         "id": "trigger",
         "kind": "trigger.function",
-        "config": {},
+        "config": {
+          "description": "Points the bot's Telegram webhook at this project."
+        },
         "input_pins": [],
         "output_pins": [
           "out"
