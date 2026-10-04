@@ -3240,6 +3240,17 @@ pub const ALWAYS_ALLOWED_FILE_NAMES: &[&str] = &[
 ];
 /// Filename suffix that marks a pipeline definition.
 pub const PIPELINE_DEFINITION_EXTENSION: &str = ".zf.json";
+
+/// The repository folder a version migration keeps its originals in
+/// (`archive/0.10/<path>`). Nothing under it is a pipeline: it is never
+/// registered, listed, loaded or activated.
+pub const MIGRATION_ARCHIVE_DIR: &str = "archive";
+
+/// Whether a repository-relative path lies under [`MIGRATION_ARCHIVE_DIR`].
+pub fn is_migration_archive_path(repo_rel: &str) -> bool {
+    let rel = repo_rel.trim_start_matches("./").trim_start_matches('/');
+    rel == MIGRATION_ARCHIVE_DIR || rel.starts_with(&format!("{MIGRATION_ARCHIVE_DIR}/"))
+}
 /// The source root every persisted pipeline id carried before identity became
 /// source-relative. It is the one prefix the migration knows how to remove.
 pub const LEGACY_PIPELINE_IDENTITY_ROOT: &str = "pipelines";
@@ -3432,7 +3443,7 @@ impl ResolvedProjectLayout {
     /// they agree by construction: a path the review skips can never be a path
     /// the install still writes and registers.
     pub fn is_pipeline_rel_path(&self, rel: &str) -> bool {
-        self.is_in_source(rel) && rel.ends_with(PIPELINE_DEFINITION_EXTENSION)
+        self.is_in_source(rel) && rel.ends_with(PIPELINE_DEFINITION_EXTENSION) && !is_migration_archive_path(rel)
     }
 
     /// Whether `rel` is part of the exported database schema document tree.
@@ -4392,6 +4403,12 @@ pub struct McpSession {
     /// Whether this session is active. Token persists even when disabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// The user who created the session (or last granted it capabilities).
+    /// A session's capabilities are whatever its creator listed, so an act
+    /// reserved to the project's owner also asks whether this user may do
+    /// it. Empty for a session created before this was recorded.
+    #[serde(default)]
+    pub granted_by: String,
 }
 
 /// Request to create an MCP session for a project.
@@ -4476,6 +4493,13 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "pipeline_patch" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_activate" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_deactivate" => Some(ProjectCapability::PipelinesWrite),
+        // The 0.10 → 0.11 migration. The session needs the pipeline
+        // capability, and the tool also asks whether the session's creator
+        // holds `ProjectDelete` (the owner, or a superadmin), as the HTTP
+        // route asks of the signed-in user: a session's capabilities are what
+        // its creator listed, and `project.delete` is not grantable to one.
+        "migration_plan" => Some(ProjectCapability::PipelinesRead),
+        "migration_apply" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_execute" => Some(ProjectCapability::PipelinesExecute),
         "pipeline_run" => Some(ProjectCapability::PipelinesExecute),
         "pipeline_get_invocations" => Some(ProjectCapability::PipelinesRead),

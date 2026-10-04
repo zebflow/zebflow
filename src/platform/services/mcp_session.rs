@@ -92,6 +92,7 @@ impl McpSessionService {
         capabilities: Vec<ProjectCapability>,
         base_url: &str,
         auto_reset_seconds: Option<u64>,
+        granted_by: &str,
     ) -> Result<McpSessionResponse, PlatformError> {
         let key = (owner.to_string(), project.to_string());
 
@@ -106,6 +107,7 @@ impl McpSessionService {
             if let Some(existing) = sessions.get_mut(&existing_token) {
                 existing.capabilities = capabilities.clone();
                 existing.enabled = true;
+                existing.granted_by = granted_by.to_string();
                 if auto_reset_seconds.is_some() {
                     existing.auto_reset_seconds = auto_reset_seconds;
                 }
@@ -135,6 +137,7 @@ impl McpSessionService {
             created_at: now_ts(),
             auto_reset_seconds,
             enabled: true,
+            granted_by: granted_by.to_string(),
         };
 
         sessions.insert(token.clone(), session.clone());

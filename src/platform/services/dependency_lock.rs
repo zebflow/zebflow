@@ -1519,6 +1519,10 @@ fn collect_project_pipeline_requirements(
             )
         })?;
         if file_type.is_dir() {
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            if crate::platform::model::is_migration_archive_path(&relative) {
+                continue;
+            }
             collect_project_pipeline_requirements(root, &path, required, functions, items)?;
             continue;
         }

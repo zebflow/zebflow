@@ -131,7 +131,7 @@ pub fn definition() -> NodeDefinition {
                     .to_string(),
             kind: DslFlagKind::Scalar,
             required: false,
-            value: "number".to_string(),
+            value: "text".to_string(),
             ..Default::default()
         }],
         fields: vec![NodeFieldDef {

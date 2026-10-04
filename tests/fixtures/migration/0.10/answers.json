@@ -1,0 +1,142 @@
+[
+  {
+    "name": "hello",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "greeting": "Hello Ada",
+      "method": "GET"
+    }
+  },
+  {
+    "name": "hello-default",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "greeting": "Hello world",
+      "method": "GET"
+    }
+  },
+  {
+    "name": "echo",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "name": "Ada",
+      "seen": true,
+      "path": "/echo"
+    }
+  },
+  {
+    "name": "login-ok",
+    "status": 302,
+    "content_type": "text/plain",
+    "set_cookie": "session=demo; Path=/; Max-Age=60; SameSite=Lax; HttpOnly",
+    "location": "/home",
+    "body": ""
+  },
+  {
+    "name": "login-no",
+    "status": 401,
+    "content_type": "text/plain",
+    "set_cookie": null,
+    "location": null,
+    "body": "no entry"
+  },
+  {
+    "name": "digest",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "b64": "MmNmMjRkYmE1ZmIwYTMwZTI2ZTgzYjJhYzViOWUyOWUxYjE2MWU1YzFmYTc0MjVlNzMwNDMzNjI5MzhiOTgyNA==",
+      "text": "hello"
+    }
+  },
+  {
+    "name": "count",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "stored": 7,
+      "k": "a"
+    }
+  },
+  {
+    "name": "shout",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "said": "HEY!"
+    }
+  },
+  {
+    "name": "items",
+    "status": 200,
+    "content_type": "text/html",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "t": "Items",
+      "who": "ada",
+      "list": "one,two"
+    }
+  },
+  {
+    "name": "total",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "total": 10
+    }
+  },
+  {
+    "name": "whole",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "a": 1,
+      "b": [
+        2,
+        3
+      ]
+    }
+  },
+  {
+    "name": "form",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "title": "Report",
+      "again": "Report"
+    }
+  },
+  {
+    "name": "form-default",
+    "status": 200,
+    "content_type": "application/json",
+    "set_cookie": null,
+    "location": null,
+    "body": {
+      "title": "Untitled",
+      "again": "Untitled"
+    }
+  }
+]

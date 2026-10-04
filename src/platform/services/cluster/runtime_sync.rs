@@ -101,7 +101,7 @@ fn reindex_project_sources(
                 Ok(value) => value.to_string_lossy().replace('\\', "/"),
                 Err(_) => continue,
             };
-            if !rel.ends_with(".zf.json") {
+            if !rel.ends_with(".zf.json") || crate::platform::model::is_migration_archive_path(&rel) {
                 continue;
             }
             let source = fs::read_to_string(&path)?;

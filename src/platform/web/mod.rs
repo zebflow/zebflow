@@ -10,6 +10,7 @@
 
 pub(crate) mod embedded;
 mod file_host;
+mod migration;
 mod webhook_url;
 mod ws_room;
 
@@ -307,6 +308,9 @@ struct PlatformWebSession {
 pub struct PlatformAppState {
     /// Platform service graph.
     pub platform: Arc<PlatformService>,
+    /// Keeps the pipeline switch attached to the project service alive.
+    #[allow(dead_code)]
+    pipeline_switch: Arc<dyn crate::platform::services::migration::PipelineSwitch>,
     /// Shared outbound HTTP client for cluster/runtime proxy flows.
     http_client: reqwest::Client,
     frontend: PlatformFrontend,
@@ -803,6 +807,15 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/pipelines/deactivate",
             post(api_deactivate_pipeline_definition),
+        )
+        // The 0.10 → 0.11 migration: owner only (`web/migration.rs`).
+        .route(
+            "/api/projects/{owner}/{project}/migration/0.11/plan",
+            get(migration::api_migration_plan),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/migration/0.11/apply",
+            post(migration::api_migration_apply),
         )
         // A manual run may carry files as multipart, so it takes the same
         // ceiling as the files upload route rather than the 2 MB default.
@@ -1304,8 +1317,21 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/preview/{owner}/{project}", get(preview_page))
         .route("/ws/preview/{owner}/{project}", get(ws_preview_handler));
 
+    // The full pipeline switch, for services that turn pipelines on and
+    // off outside a request (the 0.11 migration): the same steps as the
+    // activate and deactivate routes.
+    let pipeline_switch: Arc<dyn crate::platform::services::migration::PipelineSwitch> =
+        Arc::new(migration::WebSwitch {
+            platform: platform.clone(),
+            scheduler: scheduler.clone(),
+            kv_subscriber: kv_subscriber.clone(),
+            ws_client_manager: ws_client_manager.clone(),
+        });
+    platform.projects.attach_pipeline_switch(Arc::downgrade(&pipeline_switch));
+
     let app_state = PlatformAppState {
         platform,
+        pipeline_switch,
         http_client: reqwest::Client::new(),
         frontend,
         render_script_cache,
@@ -13381,7 +13407,7 @@ async fn api_deactivate_pipeline_definition(
 /// Failures are logged and never block activation, matching the composite hook
 /// behavior.
 async fn run_wasm_lifecycle_hook(
-    state: &PlatformAppState,
+    state: &PlatformHooks<'_>,
     owner: &str,
     project: &str,
     file_rel_path: &str,
@@ -13467,6 +13493,23 @@ async fn run_composite_lifecycle_hooks(
     file_rel_path: &str,
     hook: &str, // "on_activate" or "on_deactivate"
 ) {
+    run_lifecycle_hooks(&state.platform, owner, project, file_rel_path, hook).await;
+}
+
+/// What the lifecycle hooks read: the platform alone, so a pipeline switch
+/// outside a request can run them too.
+struct PlatformHooks<'a> {
+    platform: &'a Arc<PlatformService>,
+}
+
+async fn run_lifecycle_hooks(
+    platform: &Arc<PlatformService>,
+    owner: &str,
+    project: &str,
+    file_rel_path: &str,
+    hook: &str, // "on_activate" or "on_deactivate"
+) {
+    let state = &PlatformHooks { platform };
     // Read the pipeline source to get the graph.
     let source = match state
         .platform
@@ -27161,15 +27204,16 @@ async fn api_create_mcp_session(
     headers: HeaderMap,
     Json(req): Json<McpSessionCreateRequest>,
 ) -> Response {
-    if let Err(resp) = require_project_api_capability(
+    let creator = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::McpSessionCreate,
     ) {
-        return resp;
-    }
+        Ok(subject) => subject,
+        Err(resp) => return resp,
+    };
 
     let capabilities: Vec<ProjectCapability> = req
         .capabilities
@@ -27196,6 +27240,7 @@ async fn api_create_mcp_session(
         capabilities,
         &base_url,
         req.auto_reset_seconds,
+        &creator.id,
     ) {
         Ok(response) => Json(json!({"ok": true, "session": response})).into_response(),
         Err(err) => internal_error(err),

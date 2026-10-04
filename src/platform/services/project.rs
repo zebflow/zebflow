@@ -326,6 +326,12 @@ pub struct ProjectService {
     /// is built from this service). Unattached, a save is checked against
     /// the official kinds.
     node_catalog: std::sync::OnceLock<std::sync::Weak<dyn NodeCatalog>>,
+    /// How a pipeline is turned on and off with everything that goes with
+    /// it (the runtime registry, schedules, subscriptions, socket clients,
+    /// lifecycle hooks): attached by the web layer that owns those, so a
+    /// service that switches pipelines does it exactly as the pipeline API
+    /// does. The latest attachment holds.
+    pipeline_switch: std::sync::RwLock<Option<std::sync::Weak<dyn crate::platform::services::migration::PipelineSwitch>>>,
     #[cfg(test)]
     fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool,
 }
@@ -366,6 +372,7 @@ impl ProjectService {
             zebflow_cfg,
             dependency_lock,
             node_catalog: std::sync::OnceLock::new(),
+            pipeline_switch: std::sync::RwLock::new(None),
             #[cfg(test)]
             fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool::new(false),
         }
@@ -849,6 +856,16 @@ impl ProjectService {
         let _ = self.node_catalog.set(catalog);
     }
 
+    /// Attaches the full pipeline switch (see the field).
+    pub fn attach_pipeline_switch(&self, switch: std::sync::Weak<dyn crate::platform::services::migration::PipelineSwitch>) {
+        *self.pipeline_switch.write().unwrap_or_else(|e| e.into_inner()) = Some(switch);
+    }
+
+    /// The full pipeline switch, when a web layer is running.
+    pub fn pipeline_switch(&self) -> Option<std::sync::Arc<dyn crate::platform::services::migration::PipelineSwitch>> {
+        self.pipeline_switch.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(std::sync::Weak::upgrade)
+    }
+
     /// The kinds a project's pipelines are checked against, and whether
     /// that is every kind it can use.
     pub fn node_catalogue(
@@ -901,6 +918,30 @@ impl ProjectService {
         Err(PlatformError::new(PIPELINE_CHECK_CODE, check.refusal_message(file_rel_path)))
     }
 
+    /// What saving `source` at `file_rel_path` would write and check, with
+    /// nothing written: the canonical source (stores pinned, as the save
+    /// pins them) and the save-time check with its reference warnings.
+    pub fn preview_pipeline_save(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+        source: &str,
+    ) -> Result<(String, crate::pipeline::nodes::check::PipelineCheck), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let _ = normalize_pipeline_file_rel_path(&layout.repo_layout, file_rel_path);
+        let mut graph = parse_and_validate_pipeline_source_for_save(source)?;
+        pin_file_stores(&mut graph, layout.store_id());
+        let check = self.check_pipeline_graph(&owner, &project, &graph);
+        let canonical = encode_pipeline_graph(graph)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .ok_or_else(|| PlatformError::new("PLATFORM_PIPELINE_SERIALIZE", "failed serializing canonical pipeline source"))?;
+        Ok((canonical, check))
+    }
+
     /// Upserts one pipeline source file + metadata catalog entry.
     ///
     /// `file_rel_path` is the canonical identifier, e.g. `"api/my-hook.zf.json"`,
@@ -920,6 +961,12 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let file_rel_path = normalize_pipeline_file_rel_path(&layout.repo_layout, file_rel_path);
+        if crate::platform::model::is_migration_archive_path(&layout.repo_layout.source_rel(&file_rel_path)) {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_ARCHIVED",
+                format!("'{file_rel_path}' is under archive/, which holds originals, never pipelines"),
+            ));
+        }
         let name = name_from_file_rel_path(&file_rel_path);
         if owner.is_empty() || project.is_empty() || name.is_empty() {
             return Err(PlatformError::new(
@@ -1094,6 +1141,7 @@ impl ProjectService {
             .into_iter()
             .map(|m| adopt_pipeline_meta(&layout.repo_layout, m))
             .filter(|m| source_dir.join(&m.file_rel_path).is_file())
+            .filter(|m| !crate::platform::model::is_migration_archive_path(&layout.repo_layout.source_rel(&m.file_rel_path)))
             .collect();
         rows.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
         Ok(rows)
@@ -2260,7 +2308,9 @@ impl ProjectService {
         collect_all_files(root, root, &mut all_files);
 
         for (rel, abs) in &all_files {
-            if !rel.ends_with(".zf.json") {
+            if !rel.ends_with(".zf.json")
+                || crate::platform::model::is_migration_archive_path(&layout.repo_layout.source_rel(rel))
+            {
                 continue;
             }
             if let Some(g) = glob {
@@ -3047,7 +3097,7 @@ fn repo_file_kind(layout: &ResolvedProjectLayout, rel: &str) -> String {
         "css" => "style".to_string(),
         "md" | "txt" => "doc".to_string(),
         "json" | "yaml" | "yml" | "xml" => {
-            if rel.ends_with(PIPELINE_DEFINITION_EXTENSION) {
+            if rel.ends_with(PIPELINE_DEFINITION_EXTENSION) && !crate::platform::model::is_migration_archive_path(rel) {
                 "pipeline".to_string()
             } else {
                 "data".to_string()

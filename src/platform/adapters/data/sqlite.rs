@@ -860,7 +860,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 22] {
+    fn migrations() -> [MigrationDef; 23] {
         [
             MigrationDef {
                 version: 1,
@@ -971,6 +971,11 @@ impl SqliteDataAdapter {
                 version: 22,
                 name: "worker_registry_office_projects",
                 apply: Self::apply_migration_0022_worker_registry_office_projects,
+            },
+            MigrationDef {
+                version: 23,
+                name: "mcp_session_granted_by",
+                apply: Self::apply_migration_0023_mcp_session_granted_by,
             },
         ]
     }
@@ -2953,6 +2958,12 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
         Self::ensure_table_column(tx, "worker_registry", "projects_json", "TEXT NOT NULL DEFAULT '[]'")
+    }
+
+    /// Who created an MCP session: an owner-only tool asks whether that user
+    /// may do what the session's capabilities claim.
+    fn apply_migration_0023_mcp_session_granted_by(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        Self::ensure_table_column(tx, "mcp_sessions", "granted_by", "TEXT NOT NULL DEFAULT ''")
     }
 
     fn apply_migration_0021_member_provenance_is_history_not_reference(
@@ -7134,7 +7145,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT token, owner, project, capabilities_json, created_at, auto_reset_seconds, enabled
+                "SELECT token, owner, project, capabilities_json, created_at, auto_reset_seconds, enabled, granted_by
                  FROM mcp_sessions",
             )
             .map_err(Self::qe)?;
@@ -7148,12 +7159,13 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, i64>(4)?,
                     row.get::<_, Option<i64>>(5)?,
                     row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
-                |(token, owner, project, caps_json, created_at, auto_reset_seconds, enabled)| {
+                |(token, owner, project, caps_json, created_at, auto_reset_seconds, enabled, granted_by)| {
                     let capabilities: Vec<ProjectCapability> =
                         serde_json::from_str(&caps_json).unwrap_or_default();
                     Some(McpSession {
@@ -7164,6 +7176,7 @@ impl DataAdapter for SqliteDataAdapter {
                         created_at,
                         auto_reset_seconds: auto_reset_seconds.map(|s| s as u64),
                         enabled: enabled != 0,
+                        granted_by,
                     })
                 },
             )
@@ -7176,8 +7189,8 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO mcp_sessions
-             (token, owner, project, capabilities_json, created_at, auto_reset_seconds, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (token, owner, project, capabilities_json, created_at, auto_reset_seconds, enabled, granted_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 &session.token,
                 &session.owner,
@@ -7186,6 +7199,7 @@ impl DataAdapter for SqliteDataAdapter {
                 session.created_at,
                 session.auto_reset_seconds.map(|s| s as i64),
                 session.enabled as i64,
+                &session.granted_by,
             ],
         )
         .map_err(Self::qe)?;

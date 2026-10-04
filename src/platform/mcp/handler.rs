@@ -295,6 +295,20 @@ struct PipelineActivateParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct MigrationPlanParams {
+    /// "markdown" for the readable report alone; omit for the whole plan as JSON.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    format: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct MigrationApplyParams {
+    /// The fingerprint of the plan being applied, as migration_plan answered it.
+    fingerprint: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct PipelineDeactivateParams {
     /// Source-relative path of the pipeline to deactivate (e.g. "api/blog-home.zf.json").
     file_rel_path: String,
@@ -831,6 +845,57 @@ impl ZebflowMcpHandler {
         let result = ops.pipeline_activate(&params.file_rel_path).await;
         // navigate is ignored for MCP
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
+    }
+
+    #[tool(
+        description = "Plan moving this project from 0.10 to 0.11 — reads only. Every 0.10 pipeline rewritten for the 0.11 \
+                       kinds, flags and answers and put through the save-time check, and every page a 0.10 pipeline renders \
+                       rewritten for the payload it now receives: per file the changes, a diff, the check, behaviour notes \
+                       and what could not be mapped. Answers a fingerprint for migration_apply. Only for a session the \
+                       project's owner created."
+    )]
+    async fn migration_plan(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<MigrationPlanParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "migration_plan")?;
+        self.check_owner_grant(&session)?;
+        let service = crate::platform::services::MigrationService::new(self.platform.clone());
+        let plan = service
+            .plan_project(&session.owner, &session.project)
+            .map_err(|e| McpError::internal_error(e.message, None))?;
+        let text = if params.format.as_deref() == Some("markdown") {
+            plan.report
+        } else {
+            serde_json::to_string_pretty(&plan).unwrap_or_default()
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        description = "Apply the 0.11 migration plan whose fingerprint is given: each rewritten pipeline is deactivated, its \
+                       0.10 original copied to archive/0.10/<same path>, the rewrite registered at the same path and activated \
+                       again if it was active; each rewritten page is archived and written. Refused when the plan has unresolved \
+                       items or refused checks, or the project changed since the plan. Running it again changes nothing. Only for \
+                       a session the project's owner created."
+    )]
+    async fn migration_apply(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<MigrationApplyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "migration_apply")?;
+        self.check_owner_grant(&session)?;
+        let service = crate::platform::services::MigrationService::new(self.platform.clone());
+        match service.apply_plan(&session.owner, &session.project, &params.fingerprint).await {
+            Ok(report) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&report).unwrap_or_default(),
+            )])),
+            Err(e) => Err(McpError::invalid_params(format!("{}: {}", e.code, e.message), None)),
+        }
     }
 
     #[tool(
@@ -1711,6 +1776,34 @@ impl ZebflowMcpHandler {
                 ))
             }
         }
+    }
+
+    /// An owner-only tool: a session's capabilities are whatever its creator
+    /// listed, so the creator must hold the capability itself, as the HTTP
+    /// route asks of the signed-in user (`ProjectDelete`: the owner, or a
+    /// superadmin).
+    fn check_owner_grant(&self, session: &McpSession) -> Result<(), McpError> {
+        if session.granted_by.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "This session does not record who created it; create the MCP session again as the project owner to use this tool.",
+                None,
+            ));
+        }
+        let subject = crate::platform::model::ProjectAccessSubject::user(&session.granted_by);
+        self.platform
+            .authz
+            .ensure_project_capability(
+                &subject,
+                &session.owner,
+                &session.project,
+                crate::platform::model::ProjectCapability::ProjectDelete,
+            )
+            .map_err(|_| {
+                McpError::invalid_params(
+                    "This tool is the project owner's: the user who created this MCP session is not the owner of the project.",
+                    None,
+                )
+            })
     }
 
     fn check_tool_capability(&self, session: &McpSession, tool_name: &str) -> Result<(), McpError> {

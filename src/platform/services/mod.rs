@@ -30,6 +30,7 @@ pub mod hub;
 pub mod hub_repository;
 pub mod library;
 pub mod mcp_session;
+pub mod migration;
 pub mod node_registry;
 pub mod ops;
 pub mod pipeline_hits;
@@ -64,6 +65,7 @@ pub use dependency_lock::{
 pub use hub::HubService;
 pub use library::LibraryService;
 pub use mcp_session::McpSessionService;
+pub use migration::MigrationService;
 pub use node_registry::NodeRegistryService;
 pub use ops::PlatformOps;
 pub use pipeline_hits::PipelineHitsService;

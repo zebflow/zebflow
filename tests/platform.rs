@@ -4,3 +4,5 @@ mod credential_encryption;
 mod path_containment;
 #[path = "platform/smoke.rs"]
 mod smoke;
+#[path = "platform/migration.rs"]
+mod migration;

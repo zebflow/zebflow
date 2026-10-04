@@ -1,0 +1,103 @@
+[
+  {
+    "name": "hello",
+    "method": "GET",
+    "path": "/hello?name=Ada"
+  },
+  {
+    "name": "hello-default",
+    "method": "GET",
+    "path": "/hello"
+  },
+  {
+    "name": "echo",
+    "method": "POST",
+    "path": "/echo",
+    "json": {
+      "name": "Ada"
+    }
+  },
+  {
+    "name": "login-ok",
+    "method": "POST",
+    "path": "/login",
+    "json": {
+      "user": "demo"
+    }
+  },
+  {
+    "name": "login-no",
+    "method": "POST",
+    "path": "/login",
+    "json": {
+      "user": "someone"
+    }
+  },
+  {
+    "name": "digest",
+    "method": "POST",
+    "path": "/digest",
+    "json": {
+      "text": "hello"
+    }
+  },
+  {
+    "name": "count",
+    "method": "POST",
+    "path": "/count",
+    "json": {
+      "k": "a",
+      "v": 7
+    }
+  },
+  {
+    "name": "shout",
+    "method": "POST",
+    "path": "/shout",
+    "json": {
+      "word": "hey"
+    }
+  },
+  {
+    "name": "items",
+    "method": "GET",
+    "path": "/items/ada",
+    "html": [
+      "t",
+      "who",
+      "list"
+    ]
+  },
+  {
+    "name": "total",
+    "method": "POST",
+    "path": "/total",
+    "json": {
+      "nums": [
+        1,
+        2,
+        3,
+        4
+      ]
+    }
+  },
+  {
+    "name": "whole",
+    "method": "GET",
+    "path": "/whole"
+  },
+  {
+    "name": "form",
+    "method": "POST",
+    "path": "/form",
+    "json": {
+      "title": "Report"
+    }
+  },
+  {
+    "name": "form-default",
+    "method": "POST",
+    "path": "/form",
+    "json": {}
+  }
+]

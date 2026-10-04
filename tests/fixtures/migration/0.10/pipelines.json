@@ -1,0 +1,1008 @@
+[
+  {
+    "file_rel_path": "api/hello.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "hello"
+      },
+      "spec": {
+        "id": "hello",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/hello",
+              "method": "GET",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { greeting: 'Hello ' + (input.query.name || 'world'), method: input.method };",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/echo.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "echo"
+      },
+      "spec": {
+        "id": "echo",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/echo",
+              "method": "POST",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { ...input, seen: true };",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n2",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "body": "{{ { name: input.body.name, seen: input.seen, path: input.path } }}",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n1",
+            "from_pin": "out",
+            "to_node": "n2",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/login.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "login"
+      },
+      "spec": {
+        "id": "login",
+        "entry_nodes": [
+          "hook"
+        ],
+        "nodes": [
+          {
+            "id": "hook",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/login",
+              "method": "POST",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "gate",
+            "kind": "n.logic.if",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "true",
+              "false"
+            ],
+            "config": {
+              "expression": "input.body.user === 'demo'",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "home",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "location": "/home",
+              "set_cookie": "name=session,value={{ input.body.user }},max-age=60",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "deny",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "status": 401,
+              "message": "no entry",
+              "ui": {
+                "x": 840,
+                "y": 300
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "hook",
+            "from_pin": "out",
+            "to_node": "gate",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "gate",
+            "from_pin": "true",
+            "to_node": "home",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "gate",
+            "from_pin": "false",
+            "to_node": "deny",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/digest.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "digest"
+      },
+      "spec": {
+        "id": "digest",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/digest",
+              "method": "POST",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.crypto",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out",
+              "true",
+              "false"
+            ],
+            "config": {
+              "op": "sha256",
+              "input": "{{ input.body.text }}",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n2",
+            "kind": "n.crypto",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out",
+              "true",
+              "false"
+            ],
+            "config": {
+              "op": "base64_encode",
+              "input": "{{ input.result }}",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n3",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "body": "{{ { b64: input.result, text: input.body.text } }}",
+              "ui": {
+                "x": 1200,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n1",
+            "from_pin": "out",
+            "to_node": "n2",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n2",
+            "from_pin": "out",
+            "to_node": "n3",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/count.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "count"
+      },
+      "spec": {
+        "id": "count",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/count",
+              "method": "POST",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.kv.set",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "key": "counter:{{ input.body.k }}",
+              "value": "{{ input.body.v }}",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n2",
+            "kind": "n.kv.get",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "key": "counter:{{ input.body.k }}",
+              "out_key": "stored",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n3",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "body": "{{ { stored: input.stored, k: input.body.k } }}",
+              "ui": {
+                "x": 1200,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n1",
+            "from_pin": "out",
+            "to_node": "n2",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n2",
+            "from_pin": "out",
+            "to_node": "n3",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "fn/shout.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "shout"
+      },
+      "spec": {
+        "id": "shout",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.function",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "description": "Shouts a word.",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { loud: String(input.word).toUpperCase() + '!' };",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/shout.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "shout"
+      },
+      "spec": {
+        "id": "shout",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/shout",
+              "method": "POST",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { word: input.body.word };",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n2",
+            "kind": "n.function.call",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out",
+              "error"
+            ],
+            "config": {
+              "function": "shout",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n3",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "body": "{{ { said: input.loud } }}",
+              "ui": {
+                "x": 1200,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n1",
+            "from_pin": "out",
+            "to_node": "n2",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n2",
+            "from_pin": "out",
+            "to_node": "n3",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "pages/items.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "items"
+      },
+      "spec": {
+        "id": "items",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/items/:who",
+              "method": "GET",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { title: 'Items', items: ['one', 'two'] };",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n2",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "template": "pages/items.tsx",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n1",
+            "from_pin": "out",
+            "to_node": "n2",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/total.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "total"
+      },
+      "spec": {
+        "id": "total",
+        "entry_nodes": [
+          "hook"
+        ],
+        "nodes": [
+          {
+            "id": "hook",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/total",
+              "method": "POST",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "each",
+            "kind": "n.logic.foreach",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "item"
+            ],
+            "config": {
+              "items_expr": "input.body.nums",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "sum",
+            "kind": "n.logic.reduce",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "init_expr": "Number(0)",
+              "step_expr": "$acc + $input.item",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "wrap",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { total: input };",
+              "ui": {
+                "x": 1200,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "hook",
+            "from_pin": "out",
+            "to_node": "each",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "each",
+            "from_pin": "item",
+            "to_node": "sum",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "sum",
+            "from_pin": "out",
+            "to_node": "wrap",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/whole.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "whole"
+      },
+      "spec": {
+        "id": "whole",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/whole",
+              "method": "GET",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { a: 1, b: [2, 3] };",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n2",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n1",
+            "from_pin": "out",
+            "to_node": "n2",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "file_rel_path": "api/form.zf.json",
+    "source": {
+      "apiVersion": "zebflow.com/v1",
+      "kind": "Pipeline",
+      "metadata": {
+        "name": "form"
+      },
+      "spec": {
+        "id": "form",
+        "entry_nodes": [
+          "n0"
+        ],
+        "nodes": [
+          {
+            "id": "n0",
+            "kind": "n.trigger.webhook",
+            "input_pins": [],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "path": "/form",
+              "method": "POST",
+              "ui": {
+                "x": 120,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n1",
+            "kind": "n.input.text",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "name": "title",
+              "default": "Untitled",
+              "ui": {
+                "x": 480,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n2",
+            "kind": "n.script",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "source": "return { title: input.body.title, again: ctx.nodes.n1 };",
+              "ui": {
+                "x": 840,
+                "y": 120
+              }
+            }
+          },
+          {
+            "id": "n3",
+            "kind": "n.web.response",
+            "input_pins": [
+              "in"
+            ],
+            "output_pins": [
+              "out"
+            ],
+            "config": {
+              "body": "{{ { title: input.title, again: input.again } }}",
+              "ui": {
+                "x": 1200,
+                "y": 120
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "from_node": "n0",
+            "from_pin": "out",
+            "to_node": "n1",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n1",
+            "from_pin": "out",
+            "to_node": "n2",
+            "to_pin": "in"
+          },
+          {
+            "from_node": "n2",
+            "from_pin": "out",
+            "to_node": "n3",
+            "to_pin": "in"
+          }
+        ]
+      }
+    }
+  }
+]
