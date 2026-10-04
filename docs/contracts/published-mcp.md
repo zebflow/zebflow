@@ -44,6 +44,14 @@ A project has two MCPs, and they are never mixed:
 
 ## Rules
 
+- **A published MCP never uses Zebflow's own auth** — no platform account,
+  Studio session, dev MCP session or project member role is ever accepted on,
+  required by or consulted for a published route. It authenticates only with
+  the **app's** mechanism, as the app's webhooks do: `api_key` checks a key the
+  app keeps in its credentials; `jwt` checks a token the app signed
+  (`auth.token.create`) and `--role` reads that token's roles; the later
+  `oauth` signs people in through the app's own login and users, and its
+  tokens are the app's tokens.
 - A published route serves the MCP protocol for its own tools only: no project
   tool, resource, prompt or skill is ever listed or callable on it, and it
   reaches the project only through what its pipelines do.
