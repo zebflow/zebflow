@@ -22868,8 +22868,9 @@ fn signal_event_data(signal: &Signal) -> String {
 }
 
 /// The events of one streamed run, in order: every [`Signal`] the bus
-/// carries as `("signal", json)`, then the one closing event `finish` names,
-/// built from the run's result.
+/// carries as `("signal", json)` — with `("response", envelope)` the moment a
+/// `web.response.send` answers, when the run has a responder — then the one
+/// closing event `finish` names, built from the run's result.
 ///
 /// `finish` is where a caller records the invocation, so it runs exactly
 /// once — on whichever comes first, the result or the bus closing. (An
@@ -22880,6 +22881,7 @@ fn signal_event_data(signal: &Signal) -> String {
 /// answers, so it is never lost.
 fn pipeline_run_events<T, F>(
     mut signal_rx: tokio::sync::broadcast::Receiver<Signal>,
+    response_rx: Option<tokio::sync::oneshot::Receiver<Value>>,
     mut result_rx: tokio::sync::oneshot::Receiver<T>,
     finish: F,
 ) -> impl futures::Stream<Item = (&'static str, String)>
@@ -22889,9 +22891,22 @@ where
 {
     async_stream::stream! {
         let mut result = None;
+        let mut response = std::pin::pin!(async move {
+            match response_rx {
+                Some(rx) => rx.await.ok(),
+                None => None,
+            }
+        });
+        let mut response_seen = false;
         loop {
             tokio::select! {
                 biased;
+                envelope = &mut response, if !response_seen => {
+                    response_seen = true;
+                    if let Some(envelope) = envelope {
+                        yield ("response", envelope.to_string());
+                    }
+                }
                 sig = signal_rx.recv() => {
                     match sig {
                         Ok(signal) => {
@@ -22948,7 +22963,10 @@ where
     use futures::StreamExt as _;
     let bus = std::sync::Arc::new(ExecutionBus::new(256));
     let signal_rx = bus.subscribe();
-    let options = ExecuteOptions { bus: Some(bus) };
+    // `web.response.send` answers at once (`node-conventions.md` §4): the
+    // stream carries it as `event: response` while the run goes on.
+    let (responder, response_rx) = crate::pipeline::model::Responder::channel();
+    let options = ExecuteOptions { bus: Some(bus), responder: Some(responder) };
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let result = engine
@@ -22957,7 +22975,7 @@ where
         after_run();
         let _ = result_tx.send(result);
     });
-    let stream = pipeline_run_events(signal_rx, result_rx, finish).map(|(event, data)| {
+    let stream = pipeline_run_events(signal_rx, Some(response_rx), result_rx, finish).map(|(event, data)| {
         Ok::<_, Infallible>(Event::default().event(event).data(data))
     });
     Sse::new(stream)
@@ -24013,61 +24031,98 @@ async fn public_webhook_ingress_run(
         return pipeline_run_sse_response(engine, graph_for_run, ctx, after_run, finish);
     }
 
-    let run = engine.execute_async(&graph_for_run, &ctx).await;
-    // `lifecycle: temporary` — the upload lived for the run. What `fs.file.put`
-    // made durable is elsewhere by now; what nothing kept is gone.
-    crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
-        &state.platform, &owner, &project, &request_id,
-    );
+    // `web.response.send` answers the caller the moment it runs
+    // (`node-conventions.md` §4). The run goes on to its end on its own task
+    // and is recorded there, so a later failure is in the record and never
+    // in the answer the caller already has. With no response node the
+    // caller waits for the run, as before.
+    let (responder, early_response) = crate::pipeline::model::Responder::channel();
+    let options = ExecuteOptions { responder: Some(responder), ..Default::default() };
+    let record_platform = state.platform.clone();
+    let record_scope = (owner.clone(), project.clone(), file_rel_path.clone(), request_id.clone());
+    let error_bounds = project_cfg.configs.pipelines.logging.error_group_bounds();
+    let mut run_task = tokio::spawn(async move {
+        let run = engine.execute_with_options_async(&graph_for_run, &ctx, &options).await;
+        let (owner, project, file_rel_path, request_id) = &record_scope;
+        // `lifecycle: temporary` — the upload lived for the run. What
+        // `fs.file.put` made durable is elsewhere by now; what nothing kept
+        // is gone.
+        crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
+            &record_platform, owner, project, request_id,
+        );
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let duration_ms = exec_start.elapsed().as_millis() as u64;
+        match &run {
+            Ok(output) => {
+                record_platform.pipeline_hits.record_success(owner, project, file_rel_path);
+                let _ = record_platform.data.log_pipeline_invocation(
+                    owner,
+                    project,
+                    file_rel_path,
+                    &PipelineInvocationEntry {
+                        run_id: request_id.clone(),
+                        at,
+                        duration_ms,
+                        status: "ok".to_string(),
+                        trigger: "webhook".to_string(),
+                        error: None,
+                        trace: output.node_trace.clone(),
+                    },
+                    retention.max_invocations,
+                    retention.max_age_secs,
+                );
+            }
+            Err(err) => {
+                record_platform.pipeline_hits.record_failure(
+                    owner,
+                    project,
+                    file_rel_path,
+                    "webhook.ingress",
+                    err.code,
+                    &err.message,
+                );
+                let entry = PipelineInvocationEntry {
+                    run_id: request_id.clone(),
+                    at,
+                    duration_ms,
+                    status: "error".to_string(),
+                    trigger: "webhook".to_string(),
+                    error: Some(err.message.clone()),
+                    trace: err.node_trace.clone(),
+                };
+                let _ = record_platform.data.log_pipeline_invocation(
+                    owner,
+                    project,
+                    file_rel_path,
+                    &entry,
+                    retention.max_invocations,
+                    retention.max_age_secs,
+                );
+                // The same failure, counted: one group per distinct error,
+                // this run in its occurrence ring (`kinds/invocation-record`,
+                // Error group).
+                if let Err(e) = record_platform.data.record_pipeline_error(owner, project, file_rel_path, &entry, error_bounds) {
+                    eprintln!("warning: error group not recorded for {owner}/{project}: {}", e.message);
+                }
+            }
+        }
+        run
+    });
+    let run = tokio::select! {
+        biased;
+        Ok(envelope) = early_response => {
+            return zf_envelope_response(&state, &owner, &project, &envelope);
+        }
+        joined = &mut run_task => joined.unwrap_or_else(|join_error| {
+            Err(PipelineError::new("FW_ENGINE_RUNTIME", format!("the run's task ended early: {join_error}")))
+        }),
+    };
     let output = match run {
         Ok(output) => output,
         Err(err) => {
-            state.platform.pipeline_hits.record_failure(
-                &owner,
-                &project,
-                &file_rel_path,
-                "webhook.ingress",
-                err.code,
-                &err.message,
-            );
-            let _ = state.platform.data.log_pipeline_invocation(
-                &owner,
-                &project,
-                &file_rel_path,
-                &PipelineInvocationEntry {
-                    run_id: request_id.clone(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
-                    duration_ms: exec_start.elapsed().as_millis() as u64,
-                    status: "error".to_string(),
-                    trigger: "webhook".to_string(),
-                    error: Some(err.message.clone()),
-                    trace: err.node_trace.clone(),
-                },
-                retention.max_invocations,
-                retention.max_age_secs,
-            );
-            // The same failure, counted: one group per distinct error, this run
-            // in its occurrence ring (`kinds/invocation-record`, Error group).
-            if let Err(e) = state.platform.data.record_pipeline_error(
-                &owner,
-                &project,
-                &file_rel_path,
-                &PipelineInvocationEntry {
-                    run_id: request_id.clone(),
-                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
-                    duration_ms: exec_start.elapsed().as_millis() as u64,
-                    status: "error".to_string(),
-                    trigger: "webhook".to_string(),
-                    error: Some(err.message.clone()),
-                    trace: err.node_trace.clone(),
-                },
-                project_cfg.configs.pipelines.logging.error_group_bounds(),
-            ) {
-                eprintln!("warning: error group not recorded for {owner}/{project}: {}", e.message);
-            }
             // What the caller learns about an uncaught failure is a switch,
             // never the host: the route's `--errors`, else the project's
             // `errors` (`addressing.md` §2a). The status is 500 either way,
@@ -24112,30 +24167,6 @@ async fn public_webhook_ingress_run(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response();
         }
     };
-    state
-        .platform
-        .pipeline_hits
-        .record_success(&owner, &project, &file_rel_path);
-    let _ = state.platform.data.log_pipeline_invocation(
-        &owner,
-        &project,
-        &file_rel_path,
-        &PipelineInvocationEntry {
-            run_id: request_id.clone(),
-            at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
-            duration_ms: exec_start.elapsed().as_millis() as u64,
-            status: "ok".to_string(),
-            trigger: "webhook".to_string(),
-            error: None,
-            trace: output.node_trace.clone(),
-        },
-        retention.max_invocations,
-        retention.max_age_secs,
-    );
-
     // ── web.response.send — explicit response envelope ───────────────────────────
     // When web.response.send ran, the run carries what it answered beside the
     // payload; the envelope fully controls the HTTP response.
@@ -29061,7 +29092,7 @@ mod webhook_sse_tests {
         drop(bus); // no more senders
         let _ = result_tx.send(Ok(serde_json::json!({"html": "<h1>hi</h1>"})));
 
-        let collected = collect(pipeline_run_events(signal_rx, result_rx, |result| match result {
+        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, |result| match result {
             Ok(value) => ("done", serde_json::json!({"ok": true, "value": value})),
             Err(message) => ("error", serde_json::json!({"ok": false, "error": message})),
         }))
@@ -29087,7 +29118,7 @@ mod webhook_sse_tests {
         drop(bus);
         let _ = result_tx.send(Err("connection refused".to_string()));
 
-        let collected = collect(pipeline_run_events(signal_rx, result_rx, |result| match result {
+        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, |result| match result {
             Ok(value) => ("done", serde_json::json!({"ok": true, "value": value})),
             Err(message) => ("error", serde_json::json!({"ok": false, "error": message})),
         }))
@@ -29115,7 +29146,7 @@ mod webhook_sse_tests {
         // `bus` is deliberately alive for the whole read.
         let finished = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = finished.clone();
-        let collected = collect(pipeline_run_events(signal_rx, result_rx, move |result| {
+        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, move |result| {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             ("result", serde_json::json!({"ok": result.is_ok(), "value": result.ok()}))
         }))

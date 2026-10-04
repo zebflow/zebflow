@@ -9,18 +9,21 @@ import { latestInvocation } from "@/pages/project-studio/pipelines/registry/comp
  * trace entry's `status` / `duration_ms` / `error` becomes a settled badge,
  * so a reloaded page shows the last run's outcome. When Run is pressed, the
  * execute route's SSE stream: every node goes `pending`, the engine's
- * `node_start` / `node_ok` / `node_skip` / `node_fail` / `node_retry` /
- * `node_error_routed` signals move them, and the closing `result` event is
+ * `node_start` / `node_ok` / `node_empty` / `node_skipped` / `node_fail` /
+ * `node_retry` / `node_error_routed` signals move them, and the closing
+ * `result` event is
  * the JSON answer the route would otherwise have sent. Webhook-triggered
  * runs that happen while the page is open are not watched; the record
  * catches up on the next fetch.
  *
  * A retry is a wait, not a failure: a failure an `:error` edge consumed is
  * `retry` (orange ring with the count) or `error_routed` (orange), and red
- * is for the unrouted `fail` only.
+ * is for the unrouted `fail` only. `empty` is a node that ran and emitted
+ * nothing; `skipped` one that never ran — every edge into it was skipped,
+ * a branch not taken.
  */
 
-export type NodeRunState = "pending" | "running" | "ok" | "skip" | "fail" | "retry" | "error_routed";
+export type NodeRunState = "pending" | "running" | "ok" | "empty" | "skipped" | "fail" | "retry" | "error_routed";
 
 export type NodeRunStatus = {
   state: NodeRunState;
@@ -53,7 +56,8 @@ export type RunSignal = {
  */
 export function stateOfTraceEntry(entry: any): NodeRunState {
   const word = String(entry?.status || "").trim().toLowerCase();
-  if (word === "skip") return "skip";
+  if (word === "empty") return "empty";
+  if (word === "skipped") return "skipped";
   if (word === "retry") return "retry";
   if (word === "error_routed") return "error_routed";
   if (word === "refused" || word === "failed") return "fail";
@@ -101,7 +105,8 @@ export function pendingFor(graph: any): NodeStatusMap {
 const SIGNAL_STATES: Record<string, NodeRunState> = {
   node_start: "running",
   node_ok: "ok",
-  node_skip: "skip",
+  node_empty: "empty",
+  node_skipped: "skipped",
   node_fail: "fail",
   node_retry: "retry",
   node_error_routed: "error_routed",

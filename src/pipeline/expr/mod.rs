@@ -17,7 +17,7 @@
 //! | `$trigger.auth`  | Verified JWT claims from the original request           |
 //! | `$trigger.params`| URL path params (`:id`, `:slug`, etc.)                  |
 //! | `$trigger.query` | Query string params (`?page=2` etc.)                    |
-//! | `$nodes.id`      | Output of a completed upstream node by its graph ID     |
+//! | `$nodes.id`      | The answer of an upstream node by its graph ID; `null` when it was skipped |
 //! | `$nodes.id.field`| Specific field from that node's output                  |
 //! # Examples
 //!
@@ -40,4 +40,6 @@
 pub mod resolver;
 pub mod scanner;
 
-pub use resolver::{FOREACH_METADATA_KEY, build_expression_scope_input, resolve_config_expressions};
+pub use resolver::{
+    FOREACH_METADATA_KEY, build_expression_scope_input, optional_nodes_paths, resolve_config_expressions,
+};

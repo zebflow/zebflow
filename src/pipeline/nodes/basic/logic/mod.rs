@@ -12,6 +12,12 @@ pub mod match_;
 pub mod reduce;
 pub mod retry;
 
+/// Metadata key the engine sets on the `logic.reduce` or `logic.collect`
+/// that closes a `logic.foreach` loop: the items the loop's runs delivered
+/// into it, in item order (`node-conventions.md` §4, Loops). The close runs
+/// once, over all of them; its payload is the one the foreach received.
+pub const LOOP_ITEMS_METADATA_KEY: &str = "loop_items";
+
 pub fn definitions() -> Vec<NodeDefinition> {
     vec![
         if_::definition(),

@@ -21,7 +21,7 @@ engine that never reads the body.
 
 ```
 NodeOutput
-├── status      "ok" | "skip" | "refused" | "failed"     closed — four words, forever
+├── status      "ok" | "empty" | "refused" | "failed"    closed — four words, forever
 ├── pins        ["out"]                                  where the payload flows next
 ├── payload     { ... }                                  THE BODY — bare JSON, the author's, opaque to the engine
 ├── error?      { class, code, message }                 present exactly when status is refused/failed
@@ -39,8 +39,8 @@ metadata riding outside it; so does this one's.
 
 | Slot | Rule |
 | --- | --- |
-| `status` | `ok`: output on pins. `skip`: ran and deliberately emitted nothing — a false `logic.if` branch, a match with no case; not an error, invisible to retry and weberror, grey in a run view (HTTP's 204, Comfy's bypass). `refused`: the caller's fault — bad config, bad input, wrong credential kind; retrying is useless (4xx). `failed`: the world's fault — relay down, timeout, disk full; retrying may help (5xx). No fifth word inside v1. |
-| `pins` | non-empty on `ok`, empty on `skip`; names must exist in the node definition's `output_pins` |
+| `status` | `ok`: output on pins. `empty`: ran and deliberately emitted nothing — a match with no case, a loop over an empty list; not an error, invisible to retry and weberror, grey in a run view (HTTP's 204, Comfy's bypass). A node that never ran — every edge into it skipped, a branch not taken (`node-conventions.md` §4) — has no `NodeOutput`; the run record writes `skipped` for it. `refused`: the caller's fault — bad config, bad input, wrong credential kind; retrying is useless (4xx). `failed`: the world's fault — relay down, timeout, disk full; retrying may help (5xx). No fifth word inside v1. |
+| `pins` | non-empty on `ok`, empty on `empty`; names must exist in the node definition's `output_pins` |
 | `payload` | one bare JSON object; see Payload rules |
 | `error` | `class` repeats the status word; `code` comes from the registry; `message` is for a person and carries no secret |
 | `meta` | string → string, flat. `zf.*` is the engine's; a node's own keys use its kind as prefix (`mail.relay_host`). Keys are append-only — a shipped key never changes meaning |
@@ -186,6 +186,7 @@ do not move.
 | Date | Change | Why it was safe |
 | --- | --- | --- |
 | 2026-09-21 | An `input.*` node writes its `--default` at `body.<name>` when the field was not sent. | The Run form already posted defaults; the DSL, MCP and webhook paths now leave the same envelope, and a sent value is never touched. |
+| 2026-10-04 | `skip` is spelled `empty`, and the run record gains the engine's `skipped` for a node that never ran (`node-conventions.md` §4: skip propagates). | Before 0.11's freeze; the word meant "ran, emitted nothing" and kept that meaning — the rename frees `skipped` for the node a branch never reached. Every reader (Studio badges, bus signals `node_empty` / `node_skipped`) moved with it. |
 | 2026-10-04 | A trigger's envelope moved under one key, its source (`webhook`, `manual`, …), instead of sitting at the payload root; an `input.*` node now answers at its own `--name` instead of writing into `body.<name>`. | Part of the 0.11 node-grammar decision (`node-conventions.md` §1, §6); no slot changed, only where callers find the same fields. |
 
 ## Enforcement

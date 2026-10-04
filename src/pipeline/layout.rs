@@ -128,8 +128,9 @@ pub fn auto_tidy_pipeline_graph(graph: &mut PipelineGraph) {
         }
     }
 
-    // Cycles are valid at runtime.  For layout, place any nodes not reached by
-    // the acyclic walk after their ranked parents where possible.
+    // A `logic.retry` edge back (and a draft's cycle, refused only at
+    // activation) leaves nodes the acyclic walk did not reach: place them
+    // after their ranked parents where possible.
     for id in &ids {
         if ranks.contains_key(id) {
             continue;

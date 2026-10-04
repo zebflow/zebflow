@@ -84,7 +84,9 @@ pub fn definition() -> NodeDefinition {
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Process],
         title: "Web Response".to_string(),
         description:
-            "Answers the request — the last node of a webhook pipeline — and passes its payload on unchanged. No source: the payload as JSON, \
+            "Answers the request — the caller receives it the moment this node runs — and passes its payload on unchanged: nodes after it keep \
+             running, and a failure after it is recorded on the run without changing the answer. The first response of a run wins; a second one \
+             sends nothing (recorded `empty`). No source: the payload as JSON, \
              200. At most one source: `--body VALUE` (a string answers text/plain, anything else JSON, unless a `Content-Type` header says otherwise); \
              `--template pages/x.tsx` (exact `file_list` path, `.tsx` required): render the page with the payload as its `input`; \
              `--file pwa/manifest.webmanifest`: a project file, content type by extension, a `.ts` compiled to JavaScript \

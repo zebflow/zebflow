@@ -400,6 +400,7 @@ fn compile_when(
     expression: &str,
     language: &dyn LanguageEngine,
 ) -> Result<CompiledProgram, PipelineError> {
+    let expression = &crate::pipeline::expr::optional_nodes_paths(expression);
     let source = format!(
         "var __scope = input;\n\
          var input = __scope.$input;\n\

@@ -3,16 +3,18 @@
 //! The node evaluates:
 //!
 //! - `--initial` once to create the initial accumulator
-//! - `--step` for each arrival to produce the next accumulator
+//! - `--step` for each delivered item to produce the next accumulator
 //!
 //! Scope inside both expressions:
 //!
-//! - `$input` = current arriving payload
+//! - `$input` = the item (for `--initial`: the payload the loop started from)
 //! - `$acc`   = current accumulator (`null` for init)
 //!
-//! It answers one key, `reduce`: the accumulator, added to the arriving
-//! payload. The engine carries the accumulator between arrivals by reading
-//! that key back ([`accumulator`]).
+//! It runs once, when the loop it closes has run every item
+//! (`node-conventions.md` §4, Loops): the engine hands it the delivered items
+//! under [`super::LOOP_ITEMS_METADATA_KEY`] and the payload the loop started
+//! from. It answers one key, `reduce`: the folded accumulator, added to that
+//! payload. An empty or all-skipped series answers `--initial`.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -39,10 +41,10 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Process],
         title: "Reduce".to_string(),
-        description: "Folds the per-item answers of a `logic.foreach` into one value. Placed after `logic.foreach` (directly or further down the branch), it runs `--initial` once and \
-             `--step` for every emission, with `$acc` the accumulator so far and `$input` the arriving payload, then fires \
-             `out` once when the series is complete. Expressions are JavaScript values without `{{ }}`. \
-             Answers one key, `reduce`: the final `$acc` (`input.reduce.total`)."
+        description: "Folds the per-item answers of a `logic.foreach` into one value. It closes the loop: placed after `logic.foreach` (directly or further down the item branch), it runs once, after every item has run — `--initial` once, then \
+             `--step` for every item that reached it, in item order, with `$acc` the accumulator so far and `$input` that item's payload (an item whose branch was skipped is left out). \
+             An empty list, or a series where every item was skipped, answers `--initial`. Expressions are JavaScript values without `{{ }}`. \
+             Answers one key, `reduce`: the final `$acc` (`input.reduce.total`), on top of the payload the foreach received; the loop's own nodes are not in `$nodes` after it."
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -100,8 +102,8 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Sum a column", r#"logic.reduce --initial "{ total: 0, n: 0 }" --step "{ total: $acc.total + $input.item.amount, n: $acc.n + 1 }""#)
-                .output(serde_json::json!({ "item": { "amount": 12.5 }, "index": 2, "count": 3, "reduce": { "total": 42.5, "n": 3 } }))
-                .note("After `logic.foreach --from \"input.query.rows\"` over three rows: the last arrival, with the sum under `reduce`."),
+                .output(serde_json::json!({ "query": { "rows": [{ "amount": 10 }, { "amount": 20 }, { "amount": 12.5 }] }, "reduce": { "total": 42.5, "n": 3 } }))
+                .note("After `logic.foreach --from \"input.query.rows\"` over three rows: the payload the loop started from, with the sum under `reduce`."),
         ],
         ..Default::default()
     }
@@ -118,12 +120,6 @@ pub struct Config {
     /// `--step`: the next accumulator from `$acc` and `$input`.
     #[serde(deserialize_with = "super::expression_text")]
     pub step: String,
-}
-
-/// The accumulator a reduce answered: what the engine hands back as `$acc`
-/// on the next arrival.
-pub fn accumulator(payload: &Value) -> Value {
-    payload.get(ANSWER_KEY).cloned().unwrap_or(Value::Null)
 }
 
 pub struct Node {
@@ -187,6 +183,21 @@ fn compile_expr(
         })
 }
 
+impl Node {
+    fn run(
+        &self,
+        program: &CompiledProgram,
+        input: Value,
+        acc: Value,
+        ctx: &crate::language::ExecutionContext,
+    ) -> Result<Value, PipelineError> {
+        self.language
+            .run(program, json!({ "$input": input, "$acc": acc }), ctx)
+            .map(|out| out.value)
+            .map_err(|e| PipelineError::new("FW_NODE_LOGIC_REDUCE_RUN", format!("node '{}': {}", self.node_id, e)))
+    }
+}
+
 #[async_trait]
 impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
@@ -199,100 +210,33 @@ impl NodeHandler for Node {
         &[OUTPUT_PIN_OUT]
     }
 
+    /// One run folds the whole series: `--initial` once (with `$input` the
+    /// payload the loop started from), then `--step` per delivered item in
+    /// item order. Outside a loop the payload is the one item.
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        let acc = input
-            .metadata
-            .get("reduce_acc")
-            .cloned()
-            .unwrap_or(Value::Null);
+        let meta = |key: &str| input.metadata.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
         let exec_ctx = crate::language::ExecutionContext {
-            project: input
-                .metadata
-                .get("project")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            pipeline: input
-                .metadata
-                .get("pipeline")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            request_id: input
-                .metadata
-                .get("request_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            trigger: input
-                .metadata
-                .get("trigger")
-                .cloned()
-                .unwrap_or(Value::Null),
+            project: meta("project"),
+            pipeline: meta("pipeline"),
+            request_id: meta("request_id"),
+            trigger: input.metadata.get("trigger").cloned().unwrap_or(Value::Null),
             metadata: input.metadata.clone(),
         };
-
-        let arriving = input.payload.clone();
-        let out = if acc.is_null() {
-            let init_out = self
-                .language
-                .run(
-                    &self.init_compiled,
-                    json!({
-                        "$input": input.payload.clone(),
-                        "$acc": Value::Null,
-                    }),
-                    &exec_ctx,
-                )
-                .map_err(|e| {
-                    PipelineError::new(
-                        "FW_NODE_LOGIC_REDUCE_RUN",
-                        format!("node '{}': {}", self.node_id, e),
-                    )
-                })?;
-            self.language
-                .run(
-                    &self.step_compiled,
-                    json!({
-                        "$input": input.payload,
-                        "$acc": init_out.value,
-                    }),
-                    &exec_ctx,
-                )
-                .map_err(|e| {
-                    PipelineError::new(
-                        "FW_NODE_LOGIC_REDUCE_RUN",
-                        format!("node '{}': {}", self.node_id, e),
-                    )
-                })?
-        } else {
-            self.language
-                .run(
-                    &self.step_compiled,
-                    json!({
-                        "$input": input.payload,
-                        "$acc": acc,
-                    }),
-                    &exec_ctx,
-                )
-                .map_err(|e| {
-                    PipelineError::new(
-                        "FW_NODE_LOGIC_REDUCE_RUN",
-                        format!("node '{}': {}", self.node_id, e),
-                    )
-                })?
+        let items = match input.metadata.get(super::LOOP_ITEMS_METADATA_KEY) {
+            Some(Value::Array(items)) => items.clone(),
+            _ => vec![input.payload.clone()],
         };
-
+        let mut acc = self.run(&self.init_compiled, input.payload.clone(), Value::Null, &exec_ctx)?;
+        for item in &items {
+            acc = self.run(&self.step_compiled, item.clone(), acc, &exec_ctx)?;
+        }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&arriving, json!({ ANSWER_KEY: out.value })),
-            trace: vec![
-                format!("node_kind={NODE_KIND}"),
-                format!("phase={}", if acc.is_null() { "init+step" } else { "step" }),
-            ],
+            payload: with_answer(&input.payload, json!({ ANSWER_KEY: acc })),
+            trace: vec![format!("node_kind={NODE_KIND}"), format!("items={}", items.len())],
         })
     }
 }
@@ -332,17 +276,21 @@ mod tests {
         assert_eq!(flags, [("--initial", "expression"), ("--step", "expression")]);
     }
 
-    /// The accumulator is answered under `reduce`, the arriving payload kept,
-    /// and read back as the next `$acc`.
+    /// One run folds every item the loop delivered, in order, over the
+    /// payload the loop started from; outside a loop the payload is one item.
     #[test]
-    fn the_accumulator_is_answered_under_reduce() {
-        let node = node("{ total: 0 }", "{ total: $acc.total + $input.item }").expect("node");
-        let first = run(&node, json!({ "item": 10, "index": 0, "count": 2 }), json!({}));
-        assert_eq!(first.payload["reduce"], json!({ "total": 10 }));
-        assert_eq!(first.payload["item"], 10, "the arriving payload is kept");
-        let acc = accumulator(&first.payload);
-        let second = run(&node, json!({ "item": 5, "index": 1, "count": 2 }), json!({ "reduce_acc": acc }));
-        assert_eq!(second.payload["reduce"], json!({ "total": 15 }));
+    fn the_series_is_folded_once_under_reduce() {
+        let node = node("{ total: 0, from: $input.start }", "{ total: $acc.total + $input.item, from: $acc.from }").expect("node");
+        let items = json!({ "loop_items": [{ "item": 10 }, { "item": 5 }] });
+        let out = run(&node, json!({ "start": "s" }), items);
+        assert_eq!(out.payload["reduce"], json!({ "total": 15, "from": "s" }));
+        assert_eq!(out.payload["start"], "s", "the loop's own payload is kept");
+
+        let empty = run(&node, json!({ "start": "s" }), json!({ "loop_items": [] }));
+        assert_eq!(empty.payload["reduce"], json!({ "total": 0, "from": "s" }), "an empty series answers --initial");
+
+        let alone = run(&node, json!({ "item": 3, "start": "x" }), json!({}));
+        assert_eq!(alone.payload["reduce"], json!({ "total": 3, "from": "x" }));
     }
 
     /// Empty is not a value: either expression empty is refused at build.

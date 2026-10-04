@@ -26,8 +26,8 @@
         "entry": "0.1/runtime/graphui.bundle.mjs",
         "source": "offline",
         "package_version": "0.1",
-        "size_bytes": 166729,
-        "integrity": "sha256:35375ea4fea07f6b6ae91006770d54bf8213f270c871e6d4ae9ea6df9c652497"
+        "size_bytes": 167076,
+        "integrity": "sha256:3ed8ab399760066692db039eb2cd8c972f51510b4b25ca2eae22f97fd71c2267"
       }
     },
     "license": {

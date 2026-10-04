@@ -168,18 +168,33 @@ node has an `:error` pin. On top of that:
   is `null` — `{{ $nodes.big.text ?? $nodes.small.text }}` joins two branches.
 - **`input` at a join** is the delivered payloads merged in DSL text order: a
   key from a later line wins. "Later" always means later in the text, never
-  later in time. Every answer stays at `$nodes.<id>.<key>`.
+  later in time. Every answer outside a loop stays at `$nodes.<id>.<key>`.
 - **References** — `{{ $nodes.<id>.<key> }}`, `{{ input.<key> }}`,
   `{{ $trigger.<key> }}` — must point upstream; a reference to a node no edge
-  path leads from is refused at save, so waiting never deadlocks.
-- **Loops**: the nodes between `logic.foreach`'s `:item` and the
-  `logic.reduce` or `logic.collect` that closes it run per item, and their
-  answers are per item; after the close, only its answer is visible.
-  `logic.retry` re-enters the node that failed.
-- **Failure**: a node that fails delivers to its `:error` pin if one is wired;
+  path leads from is refused when the pipeline is checked or activated, so
+  waiting never deadlocks. A path through a skipped node is `null`, never an
+  error.
+- **Loops**: the body of a `logic.foreach` is every node reachable from its
+  `:item` edge before the first `logic.reduce` or `logic.collect` reached
+  from it, which closes the loop. Each item runs the body as its own frame,
+  in order; the close runs **once**, on the payload the foreach received,
+  over the items that reached it (none for an empty or all-filtered list).
+  After the close only its answer is visible. An edge into or out of the body
+  other than through the foreach and the close is refused; a body node's
+  `:error` handler is part of the body.
+- **Re-entry**: an edge from a `logic.retry` pin back to a node that reaches
+  the retry re-runs that node and everything after it in the same frame; it
+  is the only cycle allowed — any other cycle is refused.
+- **Failure**: a node that fails — while resolving its values, being built,
+  running or timing out — delivers to its `:error` pin if one is wired;
   otherwise the run fails there.
-- **A run ends** when every node has answered or been skipped.
-  `web.response.send` answers the caller at once and later nodes keep running.
+- **A run ends** when every node has answered or been skipped. Its value is
+  the answer of the last sink (a node with no outgoing edge) that ran, in DSL
+  text order. A run record marks a node `skipped` (on a branch not taken) or
+  `empty` (ran and emitted nothing). `web.response.send` answers the caller at
+  once and later nodes keep running; a later failure is recorded on the run
+  and does not change what the caller received; only the first response
+  answers.
 
 The definition declares every role — flag, type (`text` `json`
 `file:image` …), `one` `repeat` or `map`, required, a ceiling on repeats. At

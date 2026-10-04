@@ -1073,6 +1073,11 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
         let graph = parse_and_validate_pipeline_source(&source)?;
+        // A cycle, a loop wired across its boundary, a `$nodes` reference to
+        // a node not upstream: each would wait or read nothing at run time,
+        // so each is refused here (`node-conventions.md` §4).
+        crate::pipeline::engines::basic::validate_flow(&graph)
+            .map_err(|err| PlatformError::new(err.code, err.message))?;
         // A required input after a schedule would refuse every tick; that is
         // an activation refusal, not a run-time one.
         crate::pipeline::nodes::basic::input::ensure_inputs_reachable_from_empty_triggers(&graph)
@@ -3889,6 +3894,42 @@ mod tests {
         .expect("upsert with a default");
         svc.activate_pipeline_definition("superadmin", "default", file_rel_path)
             .expect("--default lets the tick run");
+    }
+
+    /// The flow is checked at activation (`node-conventions.md` §4): a
+    /// cycle that is not a `logic.retry` re-entry is refused, naming it.
+    /// Saving the draft is fine.
+    #[test]
+    fn activate_refuses_a_cycle_naming_it() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        let file_rel_path = "pipelines/jobs/cycle.zf.json";
+        let source = r#"{
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"cycle"},
+  "spec":{
+  "id":"cycle",
+  "entry_nodes":["t"],
+  "nodes":[
+    {"id":"t","kind":"trigger.manual","input_pins":[],"output_pins":["out"],"config":{}},
+    {"id":"a","kind":"logic.concept","input_pins":["in"],"output_pins":["out"],"config":{}},
+    {"id":"b","kind":"logic.concept","input_pins":["in"],"output_pins":["out"],"config":{}}
+  ],
+  "edges":[
+    {"from_node":"t","from_pin":"out","to_node":"a","to_pin":"in"},
+    {"from_node":"a","from_pin":"out","to_node":"b","to_pin":"in"},
+    {"from_node":"b","from_pin":"out","to_node":"a","to_pin":"in"}
+  ]}
+}"#;
+        svc.upsert_pipeline_definition("superadmin", "default", file_rel_path, "Cycle", "", "manual", source)
+            .expect("a draft may hold a cycle");
+        let err = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect_err("a cycle never runs as written");
+        assert_eq!(err.code, "FW_PIPELINE_CYCLE");
+        assert!(err.message.contains("a → b → a"), "{}", err.message);
     }
 
     #[test]

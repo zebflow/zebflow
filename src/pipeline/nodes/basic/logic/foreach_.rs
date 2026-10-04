@@ -39,9 +39,11 @@ pub fn definition() -> NodeDefinition {
         description: "Runs the nodes wired to its `item` pin once per element of an array. Evaluates `--from` (JavaScript over `input`) to an array and runs everything wired to its `item` pin once per element, in order. \
              Each run receives `{ item, index, count }` — the element is `input.item`, not `input`; the upstream payload is \
              not carried unless `--keep-input` (then it is merged in beside `item`). `$item`, `$index` and `$count` name the \
-             run's element anywhere down the branch, even after a node replaced the payload. Emissions are sequential; to \
-             fold the results back into one value, end the branch in `logic.reduce`. `--batch-size N` emits arrays of up to N elements \
-             instead of single elements. A non-array expression fails the node."
+             run's element anywhere down the branch, even after a node replaced the payload. Each element runs on its own — its own skips and \
+             `$nodes` — and finishes before the next starts. The body ends at the `logic.reduce` (fold) or `logic.collect` (list) that \
+             closes it, which runs once after the last element, on the payload this node received; an empty list closes too. After the \
+             close the body's nodes are not in `$nodes`, and an edge from the body to anywhere but its close is refused. `--batch-size N` \
+             emits arrays of up to N elements instead of single elements. A non-array expression fails the node."
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -219,6 +221,7 @@ fn compile_from(
     language: &dyn LanguageEngine,
     expr: &str,
 ) -> Result<CompiledProgram, PipelineError> {
+    let expr = &crate::pipeline::expr::optional_nodes_paths(expr);
     let source = format!(
         // `input` is the payload here, as it is in every `{{ }}` block, in
             // javascript.script.run, and in every document that teaches either. Binding only

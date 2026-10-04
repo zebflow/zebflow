@@ -212,14 +212,17 @@ runs, in a sandbox with no I/O and a bounded op budget.
 |---|---|
 | `input`, `$input` | the payload arriving at this node |
 | `$trigger` | the trigger's envelope for the whole run — for a webhook `body`, `query`, `params`, `headers`, `files`, `method`, `path`, `auth`, plus `search` and `pathname` |
-| `$nodes.<id>` | an upstream node's payload by id (`n0`, `n1`, … in pipe mode); its answer is `$nodes.<id>.<key>` |
+| `$nodes.<id>` | an upstream node's payload by id (`n0`, `n1`, … in pipe mode); its answer is `$nodes.<id>.<key>`. Only a node an edge path leads from can be named — any other is refused when the pipeline is activated, with "did you mean" — and one that was skipped is `null` |
 | `$item`, `$index`, `$count` | inside a `logic.foreach` branch |
 
 A value that is **only** an expression keeps its JSON type (`"{{ [1, 2] }}"`
 is an array); an expression inside a longer string is stringified. There is
 no `ctx`, `$ctx` or `env` in `{{ }}` — a script has `ctx.trigger.*` and
 `ctx.nodes.*` instead. An undefined name fails the node rather than writing
-`null`. JavaScript's `??` and `?.` work: `{{ $nodes.big.text ?? $nodes.small.text }}`.
+`null` — except a path through `$nodes`: a skipped node is `null` and
+`$nodes.big.text` reads as `$nodes.big?.text`, so a path through it is `null`
+too. JavaScript's `??` and `?.` work: `{{ $nodes.big.text ?? $nodes.small.text }}`
+joins two branches.
 
 ```
 | sekejap.query.run --param "1={{ $trigger.params.id }}" -- "SELECT * FROM users WHERE id = $1"
@@ -254,9 +257,28 @@ Their pins and flags are on their pages (`help("pipeline/nodes/logic.match")`).
 ```
 
 **Fan out and join.** A node with several outgoing edges fans out. A node
-with several incoming edges runs once per delivery; to wait for every branch
-and continue once, put `logic.collect` where they meet — it answers
-`collect` and each branch's answer stays at `$nodes.<id>`:
+runs **once**, when every edge into it has delivered or been skipped — two
+branches meeting is a join, not two runs. Its `input` is the delivered
+payloads merged in DSL text order: a key from a node written later wins,
+whichever finished first. A branch not taken is **skipped**, and so is every
+node only it feeds; a reference to a skipped node is `null`:
+
+```
+[a] trigger.webhook --route /greet --method POST
+[b] logic.if --when "input.webhook.body.formal"
+[c] javascript.script.run -- "return { text: 'Good morning' };"
+[d] javascript.script.run -- "return { text: 'Hi' };"
+[e] web.response.send --body "{{ $nodes.c.script.text ?? $nodes.d.script.text }}"
+[a] -> [b]
+[b]:true -> [c]
+[b]:false -> [d]
+[c] -> [e]
+[d] -> [e]
+```
+
+`logic.collect` where branches meet also lists what arrived —
+`input.collect.items` in text order, a skipped branch missing — and each
+branch's answer stays at `$nodes.<id>`:
 
 ```
 [a] trigger.manual
@@ -271,9 +293,17 @@ and continue once, put `logic.collect` where they meet — it answers
 [d] -> [e]
 ```
 
-**Loop over a list** — `logic.foreach` runs the nodes on its `item` pin once
-per element (`input.item`, or `$item` anywhere down the branch);
-`logic.reduce` folds the runs into one answer, `input.reduce`:
+**Loop over a list** — `logic.foreach` runs the nodes after its `item` pin
+once per element (`input.item`, or `$item` anywhere in the body), each element
+on its own — its own skips, its own `$nodes` — and one finished before the
+next starts. The body ends at the `logic.reduce` or `logic.collect` that
+closes it, which runs **once**, after the last element: `logic.reduce` folds
+what reached it into `input.reduce`, `logic.collect` lists it in
+`input.collect.items`. An element whose branch was skipped is left out, and an
+empty list closes too (`--initial`; `{ items: [], count: 0 }`). After the
+close the payload is the one the foreach received plus the close's answer,
+and the body's nodes are no longer in `$nodes`. An edge from the body to
+anywhere but its close is refused:
 
 ```
 [a] trigger.manual
@@ -289,7 +319,11 @@ per element (`input.item`, or `$item` anywhere down the branch);
 
 **Retry and poll** — `logic.retry` listens on a node's `:error` pin, or takes
 a verdict on an ordinary edge, and sends the payload round again on `retry`
-until its budget is spent (`failed`) or the verdict says done (`done`):
+until its budget is spent (`failed`) or the verdict says done (`done`). The
+`retry` edge back is the one edge that may point backwards: it does not count
+as an input of the node it reaches, and delivering it runs that node again,
+with everything after it. Any other cycle is refused when the pipeline is
+activated, naming it:
 
 ```
 [t] trigger.manual
@@ -304,9 +338,18 @@ until its budget is spent (`failed`) or the verdict says done (`done`):
 [wait]:failed -> [gaveup]
 ```
 
-**Failure.** A node that fails delivers to its `:error` pin when one is
-wired, and the run goes on; otherwise the run fails there. A failure an
-edge consumed is drawn orange on the canvas with a count, never red.
+**Failure.** A node that fails — running, timing out, or resolving its
+`{{ }}` flags — delivers `{ input, error: { code, message } }` to its
+`:error` pin when one is wired, its other edges are skipped, and the run goes
+on; otherwise the run fails there. A failure an edge consumed is drawn orange
+on the canvas with a count, never red.
+
+**The end of a run.** A run ends when every node has answered or been
+skipped. Its result is the answer of the last node with no outgoing edge
+that ran, in text order. `web.response.send` answers the caller the moment it
+runs; the nodes after it keep running, and a failure after it is recorded on
+the run without changing what the caller received. The first response wins:
+a second `web.response.send` in the same run sends nothing.
 
 ---
 
@@ -349,12 +392,14 @@ envelope's shape (`input.webhook.body`, `.params`, `.query`, `.files`,
 
 Any webhook pipeline streams when the client asks: a request with
 `Accept: text/event-stream` receives `event: signal` messages while nodes
-run, then `event: done` with the result or `event: error`. A signal is
+run, `event: response` with what `web.response.send` answered the moment it
+runs, then `event: done` with the result or `event: error`. A signal is
 anything a node emits (`ai.text.generate` thinking and tool calls, a
 script's `emit`) and the engine's own lifecycle: `run_start`; per node
-`node_start` and one of `node_ok`, `node_skip`, `node_fail`; `node_retry`
-or `node_error_routed` for a failure an `:error` edge consumed; then
-`run_done`. Filter on `kind`. `POST /api/projects/{o}/{p}/pipelines/execute`
+`node_start` and one of `node_ok`, `node_empty` (ran, emitted nothing),
+`node_fail`; `node_retry` or `node_error_routed` for a failure an `:error`
+edge consumed; `node_skipped`, with no `node_start`, for a node on a branch
+not taken; then `run_done`. Filter on `kind`. `POST /api/projects/{o}/{p}/pipelines/execute`
 streams the same way with the same header and ends with `event: result`.
 
 ---

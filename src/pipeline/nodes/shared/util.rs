@@ -97,6 +97,7 @@ pub fn eval_deno_expr(
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     expr.hash(&mut hasher);
+    let expr = &crate::pipeline::expr::optional_nodes_paths(expr);
     let source = format!(
         "var __scope = input;\n\
          var $input = __scope.$input;\n\

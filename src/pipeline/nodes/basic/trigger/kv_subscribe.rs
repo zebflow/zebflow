@@ -11,10 +11,9 @@
 //! ```json
 //! {
 //!   "topic": {
-//!     "trigger": "kv.subscribe",
-//!     "channel": "<topic-name>",
-//!     "node_id": "<node-id>",
-//!     "message": { ... }
+//!     "topic": "<the --topic it listens on>",
+//!     "message": { ... },
+//!     "node_id": "<node-id>"
 //!   }
 //! }
 //! ```
@@ -52,8 +51,8 @@ pub fn definition() -> NodeDefinition {
         title: "Topic Trigger".to_string(),
         description: "Runs every time `kv.message.publish` sends a message on `--topic` (the publisher's channel). It is the project's in-process pub/sub, for work that \
             should happen after a request answered (send the mail, resize the image, recompute a total) without making the request \
-            wait. Answers one key, `topic`: `{ trigger: \"kv.subscribe\", channel, node_id, message }` — what was published is \
-            `input.topic.message` (`$trigger.message`). Messages are not stored: a subscriber that is not active when the publish happens never sees it."
+            wait. Answers one key, `topic`: `{ topic, message, node_id }` — `topic` the `--topic` it listens on, `message` what was \
+            published (`input.topic.message`, `$trigger.message`). Messages are not stored: a subscriber that is not active when the publish happens never sees it."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
@@ -62,10 +61,9 @@ pub fn definition() -> NodeDefinition {
                 "topic": {
                     "type": "object",
                     "properties": {
-                        "trigger": { "type": "string", "enum": ["kv.subscribe"] },
-                        "channel": { "type": "string" },
-                        "node_id": { "type": "string" },
-                        "message": { "description": "Published message payload." }
+                        "topic": { "type": "string", "description": "The `--topic` this trigger listens on." },
+                        "message": { "description": "Published message payload." },
+                        "node_id": { "type": "string" }
                     }
                 }
             }
@@ -101,11 +99,17 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Do the slow part after the request", "trigger.topic --topic order.placed")
-                .output(serde_json::json!({ "topic": { "trigger": "kv.subscribe", "channel": "order.placed", "node_id": "n0", "message": { "order_id": "o_91", "email": "a@example.com" } } }))
+                .output(serde_json::json!({ "topic": { "topic": "order.placed", "message": { "order_id": "o_91", "email": "a@example.com" }, "node_id": "n0" } }))
                 .note("The publisher: `| kv.message.publish --topic order.placed --body \"{{ { order_id: input.query.rows[0]._key, email: $trigger.body.email } }}\"`."),
         ],
         ..Default::default()
     }
+}
+
+/// The envelope the subscriber starts a run with: the topic the message came
+/// on (the word `--topic` uses), the message, and the trigger node.
+pub fn envelope(topic: &str, node_id: &str, message: serde_json::Value) -> serde_json::Value {
+    json!({ "topic": topic, "message": message, "node_id": node_id })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -147,5 +151,32 @@ impl NodeHandler for Node {
             payload: super::answer_under(ANSWER_KEY, input.payload),
             trace: vec![format!("trigger.topic: topic={}", self.config.topic)],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::nodes::NodeExecutionInput;
+
+    /// `topic: { topic, message, node_id }` — the word `--topic` uses, no
+    /// trigger name or channel left over from the old vocabulary.
+    #[tokio::test]
+    async fn the_answer_is_topic_message_and_node_id() {
+        let node = Node::new(Config { topic: "order.placed".into() });
+        let out = node
+            .execute_async(NodeExecutionInput {
+                node_id: "t".into(),
+                input_pin: String::new(),
+                payload: envelope("order.placed", "t", json!({ "order_id": "o_1" })),
+                metadata: json!({}),
+                bus: None,
+            })
+            .await
+            .expect("answer");
+        assert_eq!(
+            out.payload,
+            json!({ "topic": { "topic": "order.placed", "message": { "order_id": "o_1" }, "node_id": "t" } })
+        );
     }
 }

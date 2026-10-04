@@ -30,7 +30,8 @@ pub fn definition() -> NodeDefinition {
         description:
             "Sends the payload down the pin of the case it matches. Evaluates `--from` (JavaScript over `input`) to a string and sends the payload, unchanged, down the pin \
              of the matching `--case` (repeat it, one value each), or down the `--default` pin (`default` unless named) when nothing \
-             matches. Each case is an output pin you wire in graph mode (`[b]:create -> [c]`). For a yes/no decision use `logic.if`."
+             matches. Each case is an output pin you wire in graph mode (`[b]:create -> [c]`); the pins not taken are skipped, with every \
+             node only they feed. For a yes/no decision use `logic.if`."
                 .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -307,7 +308,7 @@ impl Node {
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        let from = super::required_expression(&config.from, "--from", "FW_NODE_LOGIC_MATCH_CONFIG")?.to_string();
+        let from = crate::pipeline::expr::optional_nodes_paths(super::required_expression(&config.from, "--from", "FW_NODE_LOGIC_MATCH_CONFIG")?);
         let source = format!(
             // `input` is the payload here, as it is in every `{{ }}` block, in
             // javascript.script.run, and in every document that teaches either. Binding only

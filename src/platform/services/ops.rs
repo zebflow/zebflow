@@ -123,7 +123,8 @@ pub fn start_here_way_in(node_count: usize) -> String {
          | web.response.send --template pages/post.tsx\n\
          ```\n\n\
          - A kind is `family.noun.verb` (`fs.file.put`, `postgres.query.run`, `javascript.script.run`); entry nodes are `trigger.<source>`, inputs `input.<type>`, control `logic.<verb>`.\n\
-         - Each node adds **one key — its noun** — and keeps the rest: `input.webhook.body` after the trigger, `input.query.rows` after a query, `input.file` after `fs.file.put`, `input.script` after a script. `$trigger.body` is the request anywhere in the run; `$nodes.<id>.<key>` any earlier answer.\n\
+         - Each node adds **one key — its noun** — and keeps the rest: `input.webhook.body` after the trigger, `input.query.rows` after a query, `input.file` after `fs.file.put`, `input.script` after a script. `$trigger.body` is the request anywhere in the run; `$nodes.<id>.<key>` any upstream answer.\n\
+         - A node runs once, when every edge into it has delivered or been skipped: branches meeting is a join, a branch not taken is skipped (its `$nodes` is `null`), no cycles but a `logic.retry` going round. `web.response.send` answers the caller at once and the run goes on.\n\
          - `--from` names a node's subject; maps repeat `key=value` (`--param \"1=…\"`, `--header \"Location=/home\"`, sent as written); `--write` lets a query change data; units are in values (`--timeout 30s`, `--max-size 10MB`); choices are closed words.\n\
          \n## Step 3 — find the node\n\
          1. `help topic=\"pipeline/nodes\"` — all {node_count} kinds, one line each, by family.\n\

@@ -33,6 +33,7 @@ pub fn definition() -> NodeDefinition {
             "Sends the payload down `true` or `false` by a condition. Evaluates `--when` (JavaScript over `input`, `$trigger`, `$nodes`) and sends the payload, unchanged, \
              down the `true` pin or the `false` pin. This is how a pipeline validates, guards and answers 404/400: wire \
              `[b]:true -> [c]` and `[b]:false -> [e]` in graph mode — in pipe mode only `true` continues and `false` ends the run silently. \
+             The pin not taken is skipped, and so is every node only it feeds (`$nodes` of a skipped node is `null`). \
              The expression sees the payload as `input` (right after a webhook, `input.webhook.body.x`; anywhere, `$trigger.body.x`), not `$input`."
                 .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
@@ -102,7 +103,7 @@ impl Node {
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        let when = super::required_expression(&config.when, "--when", "FW_NODE_LOGIC_IF_CONFIG")?;
+        let when = &crate::pipeline::expr::optional_nodes_paths(super::required_expression(&config.when, "--when", "FW_NODE_LOGIC_IF_CONFIG")?);
         let source = format!(
             // `input` is the payload here, as it is in every `{{ }}` block, in
             // javascript.script.run, and in every document that teaches either. Binding only

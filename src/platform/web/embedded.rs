@@ -5,7 +5,8 @@
 //! under `src/` changes too. (Touched 2026-09-20: note colour picker, resizable
 //! input widgets, undeclared `:error` pins kept through a save. Touched
 //! 2026-09-21: `retry` / `error_routed` run badges — an orange ring with the
-//! attempt count, never red.)
+//! attempt count, never red. Touched 2026-10-04: `skip` is `empty`, and
+//! `skipped` — a node on a branch not taken — is a hollow grey ring.)
 
 /// One embedded file shipped inside the binary.
 pub struct EmbeddedAsset {

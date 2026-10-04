@@ -19,7 +19,7 @@
 //! | `$index`       | Current foreach index (`input.index` when present)         |
 //! | `$count`       | Current foreach count (`input.count` when present)         |
 //! | `$trigger`     | Immutable trigger snapshot (`body`, `files`, `auth`, `params`, `query`, `headers`) |
-//! | `$nodes`       | Map of completed node IDs → their output payloads          |
+//! | `$nodes`       | The answers of this node's ancestors by id; a skipped one is `null`, and a path through it is `null` (`$nodes.a.b` is read as `$nodes.a?.b`) |
 //! | `$placeholder` | Opaque credential references for composite/WASM nodes. Values are placeholder strings resolved only by platform consumers (HTTP client, script sandbox), never in traces or logs. |
 //!
 //! # Type preservation
@@ -41,10 +41,10 @@ use crate::language::{
 use crate::pipeline::PipelineError;
 
 /// Build the flat DSL expression scope used by config expressions and logic nodes.
-/// Metadata key: `{ item, index, count }` of the nearest `logic.foreach` run a
-/// node belongs to. The engine carries it hop to hop in the metadata, not the
-/// payload, so a node between the loop and a later `$item` or `logic.reduce`
-/// may replace the payload without cutting the run off from its loop.
+/// Metadata key: `{ item, index, count }` of the `logic.foreach` frame a node
+/// runs in. The engine sets it on every node of the frame, in the metadata,
+/// not the payload, so a node in the loop body may replace the payload
+/// without cutting a later `$item` off from its element.
 pub const FOREACH_METADATA_KEY: &str = "foreach";
 
 /// `$item`, `$index` and `$count` come from the loop run the engine carries in
@@ -67,6 +67,124 @@ pub fn build_expression_scope_input(input: &Value, metadata: &Value) -> Value {
         "$nodes":       metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
         "$placeholder": metadata.get("placeholder").cloned().unwrap_or_else(|| json!({})),
     })
+}
+
+/// `$nodes.a.b.c` → `$nodes.a?.b?.c` (and `$nodes["a"].b` → `$nodes["a"]?.b`).
+///
+/// A node that was skipped — a branch not taken — or has not run is `null`
+/// in `$nodes` (`node-conventions.md` §4), and a path through it is `null`,
+/// never an error: `{{ $nodes.big.text ?? $nodes.small.text }}` joins two
+/// branches. Only the member accesses after the node's name are made
+/// optional; text inside string literals is left alone.
+pub fn optional_nodes_paths(expr: &str) -> String {
+    const MARKER: &str = "$nodes";
+    let bytes = expr.as_bytes();
+    let ident = |b: u8| b == b'_' || b == b'$' || b.is_ascii_alphanumeric();
+    let mut out = String::with_capacity(expr.len() + 8);
+    let mut i = 0;
+    // The end of a `[ … ]` group starting at `start`, quotes respected.
+    let bracket_end = |start: usize| -> usize {
+        let mut depth = 0usize;
+        let mut j = start;
+        let mut quote: Option<u8> = None;
+        while j < bytes.len() {
+            let b = bytes[j];
+            match quote {
+                Some(_) if b == b'\\' => j += 1,
+                Some(q) if b == q => quote = None,
+                Some(_) => {}
+                None if b == b'\'' || b == b'"' || b == b'`' => quote = Some(b),
+                None if b == b'[' => depth += 1,
+                None if b == b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return j + 1;
+                    }
+                }
+                None => {}
+            }
+            j += 1;
+        }
+        bytes.len()
+    };
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\'' || b == b'"' || b == b'`' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i] != b {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i = (i + 1).min(bytes.len());
+            out.push_str(&expr[start..i]);
+            continue;
+        }
+        let at_marker = expr[i..].starts_with(MARKER)
+            && (i == 0 || !(ident(bytes[i - 1]) || bytes[i - 1] == b'.'))
+            && !bytes.get(i + MARKER.len()).is_some_and(|&n| ident(n));
+        if !at_marker {
+            let ch = expr[i..].chars().next().unwrap_or_default();
+            out.push(ch);
+            i += ch.len_utf8().max(1);
+            continue;
+        }
+        out.push_str(MARKER);
+        i += MARKER.len();
+        // The node's own name stays as written.
+        if bytes.get(i) == Some(&b'.') {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && ident(bytes[i]) {
+                i += 1;
+            }
+            out.push_str(&expr[start..i]);
+        } else if bytes.get(i) == Some(&b'[') {
+            let end = bracket_end(i);
+            out.push_str(&expr[i..end]);
+            i = end;
+        } else {
+            continue;
+        }
+        // Every access after it is optional.
+        loop {
+            if expr[i..].starts_with("?.") {
+                out.push_str("?.");
+                i += 2;
+                continue;
+            }
+            match bytes.get(i) {
+                Some(b'.') if bytes.get(i + 1).is_some_and(|&n| ident(n)) => {
+                    out.push_str("?.");
+                    i += 1;
+                    let start = i;
+                    while i < bytes.len() && ident(bytes[i]) {
+                        i += 1;
+                    }
+                    out.push_str(&expr[start..i]);
+                }
+                Some(b'[') => {
+                    let end = bracket_end(i);
+                    if !out.ends_with("?.") {
+                        out.push_str("?.");
+                    }
+                    out.push_str(&expr[i..end]);
+                    i = end;
+                }
+                Some(&n) if ident(n) && out.ends_with("?.") => {
+                    let start = i;
+                    while i < bytes.len() && ident(bytes[i]) {
+                        i += 1;
+                    }
+                    out.push_str(&expr[start..i]);
+                }
+                _ => break,
+            }
+        }
+    }
+    out
 }
 
 /// Resolve all `{{ expr }}` expressions in `config` and return the mutated copy.
@@ -121,6 +239,7 @@ pub fn resolve_config_expressions(
     // wrote onward as if it were the author's intended value: a typo in
     // `{{ input.custmer.id }}` inserted null and reported success.
     for (i, expr) in exprs.iter().enumerate() {
+        let expr = optional_nodes_paths(expr);
         body.push_str(&format!("var _e{i} = null; var _x{i} = null;\n"));
         body.push_str(&format!(
             "try {{ _e{i} = ({expr}); }} catch (_zfe) {{ _x{i} = String((_zfe && _zfe.message) || _zfe); }}\n"
@@ -337,4 +456,28 @@ fn hash_str(s: &str) -> String {
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
     format!("{:x}", h.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::optional_nodes_paths;
+
+    /// Every access after the node's name becomes optional; the name, other
+    /// scopes and string literals are left as written.
+    #[test]
+    fn a_path_through_nodes_is_optional_after_the_node_name() {
+        for (expr, want) in [
+            ("$nodes.big.text ?? $nodes.small.text", "$nodes.big?.text ?? $nodes.small?.text"),
+            ("$nodes.a.b.c", "$nodes.a?.b?.c"),
+            ("$nodes['geo-convert'].ref", "$nodes['geo-convert']?.ref"),
+            ("$nodes.q.query.rows[0].id", "$nodes.q?.query?.rows?.[0]?.id"),
+            ("$nodes.a?.b.c", "$nodes.a?.b?.c"),
+            ("$nodes.a", "$nodes.a"),
+            ("$nodes.q.query.rows.map(r => r.id)", "$nodes.q?.query?.rows?.map(r => r.id)"),
+            ("input.a.b + '$nodes.x.y'", "input.a.b + '$nodes.x.y'"),
+            ("my$nodes.a.b", "my$nodes.a.b"),
+        ] {
+            assert_eq!(optional_nodes_paths(expr), want, "{expr}");
+        }
+    }
 }

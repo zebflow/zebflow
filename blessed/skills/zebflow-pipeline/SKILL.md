@@ -23,7 +23,7 @@ skill is the order of work.
 2. Every node adds **one key — its noun** — and keeps the rest of the payload:
    the trigger adds `webhook`, a query `query`, `fs.file.put` `file`, a script
    `script`. `$trigger` is the request for the whole run; `$nodes.<id>.<key>`
-   is any earlier answer.
+   is any upstream answer (`null` when that node was on a branch not taken).
 3. `--from` names the subject; other inputs are typed roles (`--text`,
    `--file`, `--body`, `--value`, `--argument`); maps are repeated
    `key=value` (`--param "1=…"`, `--header "K=V"`); switches are bare
@@ -51,6 +51,12 @@ skill is the order of work.
 - **Pipe mode** for a chain; **graph mode** (`[id]` and `->`) the moment you
   branch, fan out or loop. Every node must be reachable from the one entry —
   an unwired node is a second entry that fires on every request.
+- **A node runs once,** when every edge into it has delivered or been
+  skipped: branches meeting is a join, a branch not taken is skipped with
+  everything only it feeds, and a loop's body runs per item until the
+  `logic.reduce` / `logic.collect` that closes it. No cycles but a
+  `logic.retry` going round. `web.response.send` answers at once; the rest
+  of the run keeps going (`help("pipeline/dsl")`, Control flow).
 - **Read the request where it is.** Right after `trigger.webhook` it is
   `input.webhook` — the body (`input.webhook.body.email`, `null` on GET),
   `.params`, `.query`, `.files.<field>` (FileRefs), `.auth` when the trigger

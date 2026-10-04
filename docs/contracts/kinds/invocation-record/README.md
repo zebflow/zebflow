@@ -53,16 +53,19 @@ group and a count, never a thousand payloads.
 
 A trace entry carries `node_id`, `node_kind`, the effective `config` after
 expressions resolved, `duration_ms`, `input`, `output` (null on error),
-`error`, and `status`: the node's NodeIO word (`ok`, `skip`, `refused`,
-`failed`) or, since 2026-09-21, one of two engine words. `retry` is a wait:
+`error`, and `status`: the node's NodeIO word (`ok`, `empty`, `refused`,
+`failed`) or one of three engine words. `skipped` (since 2026-10-04) is a
+node that never ran: every edge into it was skipped, a branch not taken
+(`node-conventions.md` §4); its entry has no input, output or duration.
+The other two date from 2026-09-21. `retry` is a wait:
 a failure an `:error` edge handed to `logic.retry` (the entry keeps `error`
 and `error_code` so the log says why), or a `logic.retry` that sent a
 verdict round again (no error at all); the attempt is the count of that
 node's `retry` entries so far. `error_routed` is a failure an `:error` edge
 handed to anything else. Neither failed the run: the run's `status` is
 unaffected, and an error group's key is the last entry whose failure nothing
-consumed. The NodeIO record itself still has four words; these are the
-record's account of what the engine did, not a fifth outcome a node can
+consumed. The NodeIO record itself still has four words; these three are
+the record's account of what the engine did, not a fifth outcome a node can
 produce.
 
 An entry may carry `preview_snapshot`, since 2026-09-21. It is written when

@@ -12,7 +12,7 @@
 //! | `timeout`  | `--timeout` | How long the node may run: a duration from 1s to 1h (`30s`, `2m`). Omitted: the project's node timeout. A value outside that is refused, not clamped. |
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
@@ -91,13 +91,6 @@ pub fn evict_template_cache_by_path(cache: &TemplateCache, abs_path: &str) {
         .retain(|_, entry| !entry.dependencies.contains(abs_path));
 }
 
-#[derive(Debug, Clone, Default)]
-struct ReducePendingState {
-    acc: Option<Value>,
-    received: usize,
-    expected: Option<usize>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NodesAccess {
     None,
@@ -116,6 +109,8 @@ struct NodesRetentionPlan {
     retained_nodes: HashSet<String>,
 }
 
+mod flow;
+mod scheduler;
 mod web_site;
 
 const RETRY_STATE_KEY: &str = "__zf_retry";
@@ -360,31 +355,13 @@ fn is_js_ident_continue(ch: char) -> bool {
     ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
 }
 
-fn nodes_scope_for_target(
-    target_node_id: &str,
-    nodes_output: &serde_json::Map<String, Value>,
-    retention: &NodesRetentionPlan,
-) -> Value {
-    match retention
-        .consumer_access
-        .get(target_node_id)
-        .unwrap_or(&NodesAccess::None)
-    {
-        NodesAccess::None => json!({}),
-        NodesAccess::Exact(ids) => {
-            let mut scoped = serde_json::Map::new();
-            for id in ids {
-                if let Some(value) = nodes_output.get(id) {
-                    scoped.insert(id.clone(), value.clone());
-                }
-            }
-            Value::Object(scoped)
-        }
-    }
-}
-
-fn should_retain_node_output(node_id: &str, retention: &NodesRetentionPlan) -> bool {
-    retention.retained_nodes.contains(node_id)
+/// The flow checks of `node-conventions.md` §4 on their own: no cycle but a
+/// `logic.retry` re-entry, every loop body entered only through its foreach
+/// and left only into its close, every `$nodes` reference upstream.
+/// Activation runs them; every run does too, through `validate_graph`.
+pub fn validate_flow(graph: &PipelineGraph) -> Result<(), PipelineError> {
+    let retention = build_nodes_retention_plan(graph)?;
+    flow::FlowPlan::build(graph, &retention.consumer_access).map(|_| ())
 }
 
 /// `$trigger` for the run: the snapshot the ingress set, else the envelope
@@ -478,17 +455,6 @@ fn retry_attempt_from_payload(payload: &Value) -> usize {
         .and_then(|value| value.get("attempt"))
         .and_then(Value::as_u64)
         .map(|n| n as usize)
-        .unwrap_or(0)
-}
-
-/// The attempt a retry node has already counted to, read from its last
-/// output (`nodes_output[<retry id>].__zf_retry.attempt`); 0 before it has
-/// run. Kept beside the payload's own count because a payload that was
-/// replaced on the way round the loop has forgotten it.
-fn retry_last_attempt(nodes_output: &serde_json::Map<String, Value>, retry_node_id: &str) -> usize {
-    nodes_output
-        .get(retry_node_id)
-        .map(retry_attempt_from_payload)
         .unwrap_or(0)
 }
 
@@ -1792,7 +1758,7 @@ impl PipelineEngine for BasicPipelineEngine {
                 ai::check_profile_of(&node.kind, &node.config)?;
             }
         }
-        build_nodes_retention_plan(graph)?;
+        self.flow_plan(graph)?;
         Ok(())
     }
 
@@ -1832,9 +1798,11 @@ impl PipelineEngine for BasicPipelineEngine {
 /// One engine lifecycle signal on the run's bus, when the run has one.
 ///
 /// The engine announces `run_start`, then per node `node_start` followed by
-/// exactly one of `node_ok` / `node_skip` / `node_fail` / `node_retry` /
-/// `node_error_routed`, then `run_done`. The last two are a failure an
-/// `:error` edge consumed: `node_retry` when the edge reaches `logic.retry`
+/// exactly one of `node_ok` / `node_empty` / `node_fail` / `node_retry` /
+/// `node_error_routed`, then `run_done`. A node that never ran (every edge
+/// into it skipped) gets one `node_skipped` and no `node_start`.
+/// `node_retry` and `node_error_routed` are a failure an `:error` edge
+/// consumed: `node_retry` when the edge reaches `logic.retry`
 /// (`data: { attempt, max_attempts, duration_ms, error_code, message }`),
 /// `node_error_routed` for any other consumer (`{ duration_ms, error_code,
 /// message, to_node }`); `node_fail` is the unrouted failure only. Every
@@ -1889,8 +1857,20 @@ fn emit_node_fail(
 
 
 impl BasicPipelineEngine {
+    /// The `$nodes` retention plan and the flow plan of a graph, refused
+    /// here exactly as at activation (`node-conventions.md` §4).
+    fn flow_plan(
+        &self,
+        graph: &PipelineGraph,
+    ) -> Result<(NodesRetentionPlan, flow::FlowPlan), PipelineError> {
+        let retention = build_nodes_retention_plan(graph)?;
+        let plan = flow::FlowPlan::build(graph, &retention.consumer_access)?;
+        Ok((retention, plan))
+    }
+
     /// The run itself. `execute_with_options_async` brackets it with
-    /// `run_start` / `run_done` on the bus.
+    /// `run_start` / `run_done` on the bus; [`scheduler`] decides which node
+    /// runs when.
     async fn run_graph(
         &self,
         graph: &PipelineGraph,
@@ -1898,32 +1878,8 @@ impl BasicPipelineEngine {
         options: &ExecuteOptions,
     ) -> Result<PipelineOutput, PipelineError> {
         self.validate_graph(graph)?;
+        let (retention, plan) = self.flow_plan(graph)?;
         let run_started = std::time::Instant::now();
-
-        let node_map: HashMap<&str, &PipelineNode> = graph
-            .nodes
-            .iter()
-            .map(|node| (node.id.as_str(), node))
-            .collect();
-        let mut outgoing: HashMap<(&str, &str), Vec<(&str, &str)>> = HashMap::new();
-        let mut incoming_counts: HashMap<&str, usize> = HashMap::new();
-        for edge in &graph.edges {
-            outgoing
-                .entry((edge.from_node.as_str(), edge.from_pin.as_str()))
-                .or_default()
-                .push((edge.to_node.as_str(), edge.to_pin.as_str()));
-            *incoming_counts.entry(edge.to_node.as_str()).or_default() += 1;
-        }
-
-        // Roots come from connectivity, never from source order
-        // (`kinds/pipeline/README.md` Frozen Defaults). A graph with two
-        // independent triggers has two roots and both run.
-        let start_nodes: Vec<String> = graph
-            .entry_node_ids()
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
-
         let bus = options.bus.clone();
         // Project configuration is immutable for this invocation. Snapshot the
         // timeout once instead of reparsing zebflow.yaml for every node.
@@ -1957,7 +1913,7 @@ impl BasicPipelineEngine {
         // Rule 3: whatever this project has taken out of the credential store is
         // masked in every payload, at every level, without any node declaring
         // it. Scoped to this owner/project — never another tenant's secrets.
-        let mut trace_capture = TraceCapture::new(project_capture.resolve(pipeline_capture))
+        let trace_capture = TraceCapture::new(project_capture.resolve(pipeline_capture))
             .with_confidential(crate::platform::services::credential::confidential_values(
                 &ctx.owner,
                 &ctx.project,
@@ -1971,132 +1927,130 @@ impl BasicPipelineEngine {
                     .and_then(|value| value.parse().ok())
             })
             .unwrap_or(crate::platform::model::default_pipeline_node_timeout_secs());
-        // nodes_output: accumulates only completed node outputs required by the
-        // graph's `$nodes`/`ctx.nodes` retention plan.
-        // Declared here (before the initial queue push) so entry-node metadata can include it.
-        let nodes_retention = build_nodes_retention_plan(graph)?;
-        let mut nodes_output = serde_json::Map::<String, Value>::new();
-        let mut queue = VecDeque::new();
-        for node_id in start_nodes {
-            let node = node_map
-                .get(node_id.as_str())
-                .ok_or_else(|| PipelineError::new("FW_ENTRY_NODE", "entry node missing"))?;
-            let first_pin = node.input_pins.first().cloned().unwrap_or_default();
-            queue.push_back(NodeExecutionInput {
-                node_id: node.id.clone(),
-                input_pin: first_pin,
-                payload: ctx.input.clone(),
-                metadata: execution_metadata(
-                    ctx,
-                    nodes_scope_for_target(&node.id, &nodes_output, &nodes_retention),
-                    ctx.placeholder.clone(),
-                ),
-                bus: bus.clone(),
-            });
+        let mut run = scheduler::RunState {
+            ctx,
+            graph,
+            bus,
+            run_started,
+            project_timeout_secs,
+            trace_capture,
+            retention,
+            responder: options.responder.clone(),
+            trace: vec![format!("engine={}", self.id())],
+            node_trace: Vec::new(),
+            response: None,
+            frames: vec![HashMap::new()],
+            last_answer: vec![None; graph.nodes.len()],
+            last_in_time: None,
+        };
+        let mut top = scheduler::ScopeRun::top(&plan, graph, &ctx.input);
+        self.run_scope(graph, &plan, &mut top, &mut run).await?;
+        Ok(run.finish(&plan))
+    }
+
+    /// One node, once: resolve its config, build it, run it under its
+    /// timeout, and record it. `Ran::Answered` carries its outputs with the
+    /// response envelope and `__signal` taken out; `Ran::Routed` is a failure
+    /// its wired `:error` pin takes, with the payload that pin delivers —
+    /// whether it failed resolving its config, building, running or timing
+    /// out. `Err` is the unrouted failure: the run fails there.
+    async fn run_node(
+        &self,
+        graph: &PipelineGraph,
+        plan: &flow::FlowPlan,
+        idx: usize,
+        delivery: scheduler::Delivery,
+        run: &mut scheduler::RunState<'_>,
+    ) -> Result<scheduler::Ran, PipelineError> {
+        let node = &graph.nodes[idx];
+        let ctx = run.ctx;
+        let bus = run.bus.clone();
+        let run_started = run.run_started;
+        let mut metadata = execution_metadata(ctx, run.nodes_scope(plan, node), ctx.placeholder.clone());
+        if let Some(map) = metadata.as_object_mut() {
+            if let Some(series) = delivery.series {
+                map.insert(crate::pipeline::expr::FOREACH_METADATA_KEY.to_string(), series);
+            }
+            if let Some(items) = delivery.loop_items {
+                map.insert(logic::LOOP_ITEMS_METADATA_KEY.to_string(), Value::Array(items));
+            }
         }
+        let input = NodeExecutionInput {
+            node_id: node.id.clone(),
+            input_pin: delivery.input_pin,
+            payload: delivery.payload,
+            metadata,
+            bus: bus.clone(),
+        };
 
-        let mut trace = vec![format!("engine={}", self.id())];
-        let mut last_value = Value::Null;
-        let mut response: Option<Value> = None;
-        let mut node_trace: Vec<NodeTraceEntry> = Vec::new();
-        // merge_pending: node_id -> { pin_name -> payload }
-        let mut collect_pending: HashMap<String, HashMap<String, Value>> = HashMap::new();
-        let mut reduce_pending: HashMap<String, ReducePendingState> = HashMap::new();
+        // The node's clock starts here, before its config is resolved and
+        // it is built, so a failure in either is announced as this node's
+        // and the badge never stays "running".
+        let node_start = std::time::Instant::now();
+        emit_lifecycle(
+            &bus,
+            "node_start",
+            format!("{} {} start", node.id, node.kind),
+            Some((&node.id, &node.kind)),
+            None,
+            &run_started,
+        );
 
-        while let Some(input) = queue.pop_front() {
-            let node = node_map.get(input.node_id.as_str()).ok_or_else(|| {
-                PipelineError::new("FW_EXEC_NODE", format!("node '{}' missing", input.node_id))
-            })?;
-
-            // The node's clock starts here, before its config is resolved and
-            // it is built, so a failure in either is announced as this
-            // node's `node_fail` and the badge never stays "running".
-            let node_start = std::time::Instant::now();
-            emit_lifecycle(
-                &bus,
-                "node_start",
-                format!("{} {} start", node.id, node.kind),
-                Some((&node.id, &node.kind)),
-                None,
-                &run_started,
-            );
-
-            // Resolve {{ expr }} placeholders in the node's config before building.
-            // Uses input.metadata["nodes"] (snapshot at queue-time) for $nodes scope,
-            // so each node only sees outputs of its transitive predecessors.
-            let effective_config = match resolve_config_expressions(
-                node.config.clone(),
-                &input.payload,
-                &input.metadata,
-                &self.language,
-            ) {
-                Ok(config) => config,
-                Err(e) => {
-                    emit_node_fail(&bus, &node.id, &node.kind, &e, &node_start, &run_started);
-                    return Err(e);
-                }
-            };
-            trace_capture.begin_node();
-            // A declared canvas preview asks for that payload in the record —
-            // see `TraceCapture::records_payload_for`. Read off the stored
-            // config: `preview` is presentation, never expression-resolved.
-            // An input node's widget is its input view — the Run form shows
-            // what went in from the record — so the family asks for its input
-            // payload the way a declared `--preview-in` does.
-            let preview_in =
-                node.config["preview"]["in"].is_object() || input::is_input_kind(&node.kind);
-            let preview_out = node.config["preview"]["out"].is_object();
-            // Captured before the node runs, because the error path needs it and
-            // the outcome is not known yet. At `on-error` a successful node
-            // drops it below; at `none` it is never taken at all.
-            let base_trace_config = if trace_capture.records_any_payload() {
-                trace_capture
-                    .config(&effective_config)
-                    .map(|config| mask_secret_config(&node.kind, config))
-            } else {
-                None
-            };
-            let built = if effective_config == node.config {
-                // No expressions resolved — use original node directly (common fast path).
+        // Resolve {{ expr }} placeholders before building, against the
+        // `$nodes` of this node's ancestors as they stand now. A failure here
+        // or in the build is the node's failure and routes like any other.
+        let resolved = resolve_config_expressions(
+            node.config.clone(),
+            &input.payload,
+            &input.metadata,
+            &self.language,
+        );
+        let effective_config = resolved.as_ref().map_or_else(|_| node.config.clone(), Clone::clone);
+        run.trace_capture.begin_node();
+        // A declared canvas preview asks for that payload in the record —
+        // see `TraceCapture::records_payload_for`. Read off the stored
+        // config: `preview` is presentation, never expression-resolved.
+        // An input node's widget is its input view — the Run form shows
+        // what went in from the record — so the family asks for its input
+        // payload the way a declared `--preview-in` does.
+        let preview_in =
+            node.config["preview"]["in"].is_object() || input::is_input_kind(&node.kind);
+        let preview_out = node.config["preview"]["out"].is_object();
+        // Captured before the node runs, because the error path needs it and
+        // the outcome is not known yet. At `on-error` a successful node
+        // drops it below; at `none` it is never taken at all.
+        let base_trace_config = if run.trace_capture.records_any_payload() {
+            run.trace_capture
+                .config(&effective_config)
+                .map(|config| mask_secret_config(&node.kind, config))
+        } else {
+            None
+        };
+        let built = resolved.and_then(|config| {
+            if config == node.config {
+                // No expressions resolved — use the node as stored.
                 self.build_node(node)
             } else {
-                self.build_node(&PipelineNode {
-                    config: effective_config.clone(),
-                    ..(*node).clone()
-                })
-            };
-            let dispatch = match built {
-                Ok(dispatch) => dispatch,
-                Err(e) => {
-                    emit_node_fail(&bus, &node.id, &node.kind, &e, &node_start, &run_started);
-                    return Err(e);
-                }
-            };
-
-            // Capture context for per-node trace before consuming `input`.
-            let trace_node_id = node.id.clone();
-            let trace_node_kind = node.kind.clone();
-            let input_snapshot = input.payload.clone();
-            let series = input.metadata.get(crate::pipeline::expr::FOREACH_METADATA_KEY).cloned();
-
-            // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
-            // Priority: the node's `--timeout` → project config → env var → default(30s).
-            // A `--timeout` that is not a duration from 1s to 1h fails the
-            // node here rather than being clamped into some other limit.
-            let per_node_timeout = crate::pipeline::model::node_timeout(&effective_config);
-            let node_timeout = match &per_node_timeout {
-                Ok(Some(duration)) => *duration,
-                _ => std::time::Duration::from_secs(project_timeout_secs),
-            };
-            let mut input_for_exec = input.clone();
-            if node.kind == logic::reduce::NODE_KIND
-                && let Some(acc) = reduce_pending
-                    .get(node.id.as_str())
-                    .and_then(|state| state.acc.clone())
-                && let Some(map) = input_for_exec.metadata.as_object_mut()
-            {
-                map.insert("reduce_acc".to_string(), acc);
+                self.build_node(&PipelineNode { config, ..node.clone() })
             }
+        });
+
+        let trace_node_id = node.id.clone();
+        let trace_node_kind = node.kind.clone();
+        let input_snapshot = input.payload.clone();
+
+        // Per-node timeout: the node's `--timeout` → project config → env
+        // var → default. A `--timeout` that is not a duration from 1s to 1h
+        // fails the node here rather than being clamped into another limit.
+        let per_node_timeout = crate::pipeline::model::node_timeout(&effective_config);
+        let node_timeout = match &per_node_timeout {
+            Ok(Some(duration)) => *duration,
+            _ => std::time::Duration::from_secs(run.project_timeout_secs),
+        };
+        let input_for_exec = input.clone();
+        let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> = match built {
+            Err(e) => Err(e),
+            Ok(dispatch) => {
             let exec_fut = async {
                 match dispatch {
                     NodeDispatch::Webhook(node) => node.execute_many_async(input_for_exec).await,
@@ -2300,515 +2254,371 @@ impl BasicPipelineEngine {
                     }
                 }
             }; // end exec_fut
-            let timeout_node_id = trace_node_id.clone();
-            let timeout_is_per_node = matches!(per_node_timeout, Ok(Some(_)));
-            let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> = match per_node_timeout {
-                Err(refused) => Err(refused),
-                Ok(_) => tokio::time::timeout(node_timeout, exec_fut).await.unwrap_or_else(|_| {
-                    let source = if timeout_is_per_node { "--timeout" } else { "the project's node timeout" };
-                    Err(PipelineError::new(
-                        "FW_NODE_TIMEOUT",
-                        format!(
-                            "node '{}' timed out after {} ({source})",
-                            timeout_node_id,
-                            crate::pipeline::nodes::shared::units::describe_duration(node_timeout)
-                        ),
-                    ))
-                }),
-            };
-
-            let outputs = match exec_result {
-                Ok(mut outs) => {
-                    let mut processed_payloads: Vec<Value> = Vec::new();
-                    // Skipped entirely when not recorded: not capturing is
-                    // cheaper than capturing and discarding, which is the
-                    // point on a device.
-                    let record_input = trace_capture.records_payload_for(true, preview_in);
-                    let record_output = trace_capture.records_payload_for(true, preview_out);
-                    let trace_input = if record_input {
-                        trace_capture.capture(&input_snapshot)
-                    } else {
-                        Value::Null
-                    };
-
-                    for out in &mut outs {
-                        out.payload = materialize_node_output_files(
-                            self.platform.as_ref(),
-                            ctx,
-                            &trace_node_kind,
-                            out.payload.clone(),
-                        )?;
-                        let mut output_payload = out.payload.clone();
-                        let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
-                        let payload_redact_except_paths =
-                            take_private_redact_except_paths(&mut output_payload);
-                        let payload_output = if payload_redact_tokens.is_empty() {
-                            output_payload
-                        } else {
-                            redact_json_value(
-                                &output_payload,
-                                &payload_redact_tokens,
-                                &payload_redact_except_paths,
-                                &[],
-                            )
-                        };
-                        processed_payloads.push(payload_output.clone());
-                        out.payload = payload_output;
-                    }
-
-                    let redacted_config = base_trace_config.clone();
-                    // Rule 3 by position: the node kind declares where a
-                    // secret sits in its own output, and only the record is
-                    // masked. `outs` — what the next node receives — is
-                    // untouched, because a level shapes the record, never the
-                    // run.
-                    let node_output_value = if !record_output {
-                        Value::Null
-                    } else {
-                        match declared_secret_paths(&trace_node_kind) {
-                            Some(paths) => crate::pipeline::trace_capture::mask_secret_paths(
-                                &trace_capture.outputs(&outs),
-                                paths,
-                            ),
-                            None => trace_capture.outputs(&outs),
-                        }
-                    };
-                    let nodes_output_value = if processed_payloads.len() == 1 {
-                        processed_payloads[0].clone()
-                    } else {
-                        Value::Array(processed_payloads)
-                    };
-                    // A declared image preview of a temporary file keeps a
-                    // small copy in the record, since the file itself is
-                    // deleted with the run. Read off the stored config, like
-                    // `preview_in` / `preview_out` above.
-                    let preview_snapshot = if preview_in || preview_out {
-                        crate::pipeline::trace_capture::preview_snapshot::snapshot_for(
-                            self.platform.as_ref(),
-                            &ctx.owner,
-                            &ctx.project,
-                            &node.config,
-                            &input_snapshot,
-                            &nodes_output_value,
-                        )
-                    } else {
-                        None
-                    };
-                    if should_retain_node_output(&trace_node_id, &nodes_retention) {
-                        nodes_output.insert(trace_node_id.clone(), nodes_output_value);
-                    }
-                    // A `logic.retry` that sent a verdict round again is a
-                    // wait, and the canvas should say so: `retry` in the
-                    // record, `node_retry` on the bus, with the count the
-                    // node stamped in `__zf_retry` (the platform's key, not
-                    // the author's body). On the error road the failing node
-                    // has already told this story, so the retry node stays
-                    // `ok` there and the status line keeps the error text.
-                    let verdict_retry = trace_node_kind == logic::retry::NODE_KIND
-                        && outs.iter().any(|o| {
-                            o.output_pins.iter().any(|p| p == logic::retry::OUTPUT_PIN_RETRY)
-                        })
-                        && input_snapshot
-                            .get(RETRY_STATE_KEY)
-                            .and_then(|s| s.get("failing_node_id"))
-                            .is_none();
-                    let status_word = if verdict_retry {
-                        "retry"
-                    } else if outs.is_empty() {
-                        // Ran and emitted nothing — a match with no case, a
-                        // filter that filtered everything. Not an error; grey
-                        // in a run view where six green dots would lie.
-                        "skip"
-                    } else {
-                        "ok"
-                    };
-                    node_trace.push(NodeTraceEntry {
-                        node_id: trace_node_id.clone(),
-                        node_kind: trace_node_kind.clone(),
-                        config: if trace_capture.records_successful_payloads() {
-                            redacted_config
-                        } else {
-                            None
-                        },
-                        duration_ms: node_start.elapsed().as_millis() as u64,
-                        input: trace_input,
-                        output: node_output_value,
-                        error: None,
-                        status: status_word.to_string(),
-                        error_code: None,
-                        preview_snapshot,
-                    });
-                    let duration_ms = node_start.elapsed().as_millis() as u64;
-                    if verdict_retry {
-                        let state = outs
-                            .first()
-                            .and_then(|o| o.payload.get(RETRY_STATE_KEY))
-                            .cloned()
-                            .unwrap_or(Value::Null);
-                        let attempt = state.get("attempt").and_then(Value::as_u64).unwrap_or(1);
-                        let max_attempts = state.get("max_attempts").and_then(Value::as_u64);
-                        // The reason a wait is a wait: the pause the node
-                        // took before the next attempt, as it stamped it
-                        // (`--delay` grown by `--backoff`).
-                        let message = state
-                            .get("next_delay_ms")
-                            .and_then(Value::as_u64)
-                            .filter(|d| *d > 0)
-                            .map(|d| format!("next attempt in {d} ms"));
-                        emit_lifecycle(
-                            &bus,
-                            "node_retry",
-                            match max_attempts {
-                                Some(max) => format!(
-                                    "{trace_node_id} {} waiting {attempt}/{max} {duration_ms} ms",
-                                    trace_node_kind
-                                ),
-                                None => format!(
-                                    "{trace_node_id} {} waiting {attempt} {duration_ms} ms",
-                                    trace_node_kind
-                                ),
-                            },
-                            Some((&trace_node_id, &trace_node_kind)),
-                            Some(json!({
-                                "attempt": attempt,
-                                "max_attempts": max_attempts,
-                                "duration_ms": duration_ms,
-                                "message": message,
-                            })),
-                            &run_started,
-                        );
-                    } else {
-                        let outcome = if outs.is_empty() { "node_skip" } else { "node_ok" };
-                        emit_lifecycle(
-                            &bus,
-                            outcome,
+                let timeout_node_id = trace_node_id.clone();
+                let timeout_is_per_node = matches!(per_node_timeout, Ok(Some(_)));
+                match per_node_timeout {
+                    Err(refused) => Err(refused),
+                    Ok(_) => tokio::time::timeout(node_timeout, exec_fut).await.unwrap_or_else(|_| {
+                        let source = if timeout_is_per_node { "--timeout" } else { "the project's node timeout" };
+                        Err(PipelineError::new(
+                            "FW_NODE_TIMEOUT",
                             format!(
-                                "{trace_node_id} {} {duration_ms} ms",
-                                trace_node_kind
+                                "node '{}' timed out after {} ({source})",
+                                timeout_node_id,
+                                crate::pipeline::nodes::shared::units::describe_duration(node_timeout)
                             ),
-                            Some((&trace_node_id, &trace_node_kind)),
-                            Some(json!({ "duration_ms": duration_ms })),
-                            &run_started,
-                        );
-                    }
-                    outs
+                        ))
+                    }),
                 }
-                Err(mut e) => {
-                    // Attribute error to the failing node if not already set.
-                    if e.node_id.is_none() {
-                        e.node_id = Some(trace_node_id.clone());
-                        e.node_kind = Some(trace_node_kind.clone());
-                    }
-                    // A failure an `:error` edge consumes is not the run
-                    // failing: it is a retry (the consumer is `logic.retry`)
-                    // or an error handled by whatever the edge reaches. The
-                    // record and the bus say which, so a poll loop that
-                    // waited eight times and then succeeded does not show
-                    // eight red crosses. `node_fail` is for the unrouted
-                    // failure that ends the run.
-                    let routed_edges = outgoing.get(&(node.id.as_str(), "error"));
-                    let retry_consumer = routed_edges.and_then(|edges| {
-                        edges
-                            .iter()
-                            .filter_map(|(to_node, _)| node_map.get(to_node).copied())
-                            .find(|target| target.kind == logic::retry::NODE_KIND)
-                    });
-                    let error_payload = routed_edges.map(|_| {
-                        let last_attempt = retry_consumer
-                            .map(|retry| retry_last_attempt(&nodes_output, &retry.id))
-                            .unwrap_or(0);
-                        build_retry_error_payload(&input_snapshot, &e, last_attempt)
-                    });
-                    let duration_ms = node_start.elapsed().as_millis() as u64;
-                    let routed_status = match (routed_edges, retry_consumer) {
-                        (None, _) => None,
-                        (Some(_), Some(retry)) => {
-                            let attempt = error_payload
-                                .as_ref()
-                                .map(retry_attempt_from_payload)
-                                .unwrap_or(1);
-                            let max_attempts = retry_max_attempts(retry);
-                            emit_lifecycle(
-                                &bus,
-                                "node_retry",
-                                match max_attempts {
-                                    Some(max) => format!(
-                                        "{trace_node_id} {} retry {attempt}/{max} {duration_ms} ms",
-                                        trace_node_kind
-                                    ),
-                                    None => format!(
-                                        "{trace_node_id} {} retry {attempt} {duration_ms} ms",
-                                        trace_node_kind
-                                    ),
-                                },
-                                Some((&trace_node_id, &trace_node_kind)),
-                                Some(json!({
-                                    "attempt": attempt,
-                                    "max_attempts": max_attempts,
-                                    "duration_ms": duration_ms,
-                                    "error_code": e.code,
-                                    "message": e.message,
-                                })),
-                                &run_started,
-                            );
-                            Some("retry")
-                        }
-                        (Some(edges), None) => {
-                            let to_node = edges.first().map(|(to, _)| *to).unwrap_or("");
-                            emit_lifecycle(
-                                &bus,
-                                "node_error_routed",
-                                format!(
-                                    "{trace_node_id} {} error → {to_node} {duration_ms} ms",
-                                    trace_node_kind
-                                ),
-                                Some((&trace_node_id, &trace_node_kind)),
-                                Some(json!({
-                                    "duration_ms": duration_ms,
-                                    "error_code": e.code,
-                                    "message": e.message,
-                                    "to_node": to_node,
-                                })),
-                                &run_started,
-                            );
-                            Some("error_routed")
-                        }
-                    };
-                    if routed_status.is_none() {
-                        emit_node_fail(
-                            &bus,
-                            &trace_node_id,
-                            &trace_node_kind,
-                            &e,
-                            &node_start,
-                            &run_started,
-                        );
-                    }
-                    node_trace.push(NodeTraceEntry {
-                        node_id: trace_node_id.clone(),
-                        node_kind: trace_node_kind.clone(),
-                        config: base_trace_config,
-                        duration_ms,
-                        input: if trace_capture.records_any_payload() {
-                            trace_capture.capture(&input_snapshot)
-                        } else {
-                            Value::Null
-                        },
-                        output: Value::Null,
-                        // The error text stays so the Logs panel says why,
-                        // whichever way the failure went.
-                        error: Some(e.message.clone()),
-                        status: match routed_status {
-                            Some(word) => word.to_string(),
-                            None => crate::pipeline::error_class::class_of(e.code)
-                                .as_status_word()
-                                .to_string(),
-                        },
-                        error_code: Some(e.code.to_string()),
-                        preview_snapshot: None,
-                    });
-                    if let (Some(next_edges), Some(error_payload)) = (routed_edges, error_payload) {
-                        for (to_node, to_pin) in next_edges {
-                            queue.push_back(NodeExecutionInput {
-                                node_id: (*to_node).to_string(),
-                                input_pin: (*to_pin).to_string(),
-                                payload: error_payload.clone(),
-                                metadata: execution_metadata(
-                                    ctx,
-                                    nodes_scope_for_target(
-                                        to_node,
-                                        &nodes_output,
-                                        &nodes_retention,
-                                    ),
-                                    ctx.placeholder.clone(),
-                                ),
-                                bus: bus.clone(),
-                            });
-                        }
-                        continue;
-                    }
-                    e.node_trace = node_trace.clone();
-                    return Err(e);
+            }
+        };
+
+        let mut outs = match exec_result {
+            Ok(outs) => outs,
+            Err(e) => {
+                return self.node_failed(plan, idx, node, e, &input_snapshot, base_trace_config, &node_start, run);
+            }
+        };
+        // The first `web.response.send` of a run answers the caller; a
+        // second one answers nobody, so it is recorded as having emitted
+        // nothing (`node-conventions.md` §4).
+        let second_response = node.kind == web::response::NODE_KIND && run.response.is_some();
+        if second_response {
+            outs.clear();
+        }
+        let mut processed_payloads: Vec<Value> = Vec::new();
+        // Skipped entirely when not recorded: not capturing is cheaper than
+        // capturing and discarding, which is the point on a device.
+        let record_input = run.trace_capture.records_payload_for(true, preview_in);
+        let record_output = run.trace_capture.records_payload_for(true, preview_out);
+        let trace_input = if record_input {
+            run.trace_capture.capture(&input_snapshot)
+        } else {
+            Value::Null
+        };
+        for out in &mut outs {
+            // Writing the files a node answered with is part of the node: a
+            // failure here routes like any other.
+            out.payload = match materialize_node_output_files(
+                self.platform.as_ref(),
+                ctx,
+                &trace_node_kind,
+                out.payload.clone(),
+            ) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    return self.node_failed(plan, idx, node, e, &input_snapshot, base_trace_config, &node_start, run);
                 }
             };
-            let outputs = if node.kind == logic::reduce::NODE_KIND {
-                let mut final_outputs = Vec::new();
-                if let Some(last_output) = outputs.last() {
-                    let state = reduce_pending.entry(node.id.clone()).or_default();
-                    state.acc = Some(logic::reduce::accumulator(&last_output.payload));
-                    state.received += 1;
-                    if state.expected.is_none() {
-                        state.expected = series
-                            .as_ref()
-                            .and_then(|s| s.get("count"))
-                            .or_else(|| input_snapshot.get("count"))
-                            .and_then(Value::as_u64)
-                            .map(|n| n as usize);
-                    }
-                    let expected = state.expected.unwrap_or(1);
-                    if state.received >= expected {
-                        final_outputs.push(last_output.clone());
-                        reduce_pending.remove(node.id.as_str());
-                    }
-                }
-                final_outputs
+            let mut output_payload = out.payload.clone();
+            let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
+            let payload_redact_except_paths = take_private_redact_except_paths(&mut output_payload);
+            let payload_output = if payload_redact_tokens.is_empty() {
+                output_payload
             } else {
-                outputs
+                redact_json_value(&output_payload, &payload_redact_tokens, &payload_redact_except_paths, &[])
             };
+            processed_payloads.push(payload_output.clone());
+            out.payload = payload_output;
+        }
 
-            for mut output in outputs {
-                // ── __signal extraction ──────────────────────────────────────
-                // Strip `__signal` from node output and route through the bus.
-                // Supports: string, object {kind,message,data}, or array of either.
-                if let Some(raw_signal) = output
-                    .payload
-                    .as_object_mut()
-                    .and_then(|m| m.remove("__signal"))
-                {
-                    if let Some(ref bus) = bus {
-                        let emit = |s: &Value| {
-                            let signal = match s {
-                                Value::String(msg) => Signal {
-                                    kind: "signal".to_string(),
-                                    message: msg.clone(),
-                                    node_id: trace_node_id.clone(),
-                                    node_kind: trace_node_kind.clone(),
-                                    data: None,
-                                    at: format!("{}ms", node_start.elapsed().as_millis()),
-                                },
-                                Value::Object(obj) => Signal {
-                                    kind: obj
-                                        .get("kind")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("signal")
-                                        .to_string(),
-                                    message: obj
-                                        .get("message")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    node_id: trace_node_id.clone(),
-                                    node_kind: trace_node_kind.clone(),
-                                    data: obj.get("data").cloned(),
-                                    at: format!("{}ms", node_start.elapsed().as_millis()),
-                                },
-                                _ => return,
-                            };
-                            bus.emit(signal);
+        // Rule 3 by position: the node kind declares where a secret sits in
+        // its own output, and only the record is masked. `outs` — what the
+        // next node receives — is untouched, because a level shapes the
+        // record, never the run.
+        let node_output_value = if !record_output {
+            Value::Null
+        } else {
+            match declared_secret_paths(&trace_node_kind) {
+                Some(paths) => crate::pipeline::trace_capture::mask_secret_paths(&run.trace_capture.outputs(&outs), paths),
+                None => run.trace_capture.outputs(&outs),
+            }
+        };
+        let nodes_output_value = if processed_payloads.len() == 1 {
+            processed_payloads[0].clone()
+        } else {
+            Value::Array(processed_payloads)
+        };
+        // A declared image preview of a temporary file keeps a small copy in
+        // the record, since the file itself is deleted with the run.
+        let preview_snapshot = if preview_in || preview_out {
+            crate::pipeline::trace_capture::preview_snapshot::snapshot_for(
+                self.platform.as_ref(),
+                &ctx.owner,
+                &ctx.project,
+                &node.config,
+                &input_snapshot,
+                &nodes_output_value,
+            )
+        } else {
+            None
+        };
+        if !second_response {
+            run.store_answer(node, idx, nodes_output_value);
+        }
+        // A `logic.retry` that sent a verdict round again is a wait, and the
+        // canvas should say so: `retry` in the record, `node_retry` on the
+        // bus, with the count the node stamped in `__zf_retry`. On the error
+        // road the failing node has already told this story, so the retry
+        // node stays `ok` there.
+        let verdict_retry = trace_node_kind == logic::retry::NODE_KIND
+            && outs.iter().any(|o| o.output_pins.iter().any(|p| p == logic::retry::OUTPUT_PIN_RETRY))
+            && input_snapshot
+                .get(RETRY_STATE_KEY)
+                .and_then(|s| s.get("failing_node_id"))
+                .is_none();
+        let status_word = if verdict_retry {
+            "retry"
+        } else if outs.is_empty() {
+            // Ran and emitted nothing — a match with no case, a filter that
+            // filtered everything, a loop over an empty list. Not an error;
+            // grey in a run view where a green dot would lie.
+            "empty"
+        } else {
+            "ok"
+        };
+        run.node_trace.push(NodeTraceEntry {
+            node_id: trace_node_id.clone(),
+            node_kind: trace_node_kind.clone(),
+            config: if run.trace_capture.records_successful_payloads() { base_trace_config } else { None },
+            duration_ms: node_start.elapsed().as_millis() as u64,
+            input: trace_input,
+            output: node_output_value,
+            error: second_response.then(|| {
+                "a response was already sent to the caller in this run; this one was not sent".to_string()
+            }),
+            status: status_word.to_string(),
+            error_code: None,
+            preview_snapshot,
+        });
+        let duration_ms = node_start.elapsed().as_millis() as u64;
+        if verdict_retry {
+            let state = outs
+                .first()
+                .and_then(|o| o.payload.get(RETRY_STATE_KEY))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let attempt = state.get("attempt").and_then(Value::as_u64).unwrap_or(1);
+            let max_attempts = state.get("max_attempts").and_then(Value::as_u64);
+            // The reason a wait is a wait: the pause the node took before the
+            // next attempt, as it stamped it (`--delay` grown by `--backoff`).
+            let message = state
+                .get("next_delay_ms")
+                .and_then(Value::as_u64)
+                .filter(|d| *d > 0)
+                .map(|d| format!("next attempt in {d} ms"));
+            emit_lifecycle(
+                &bus,
+                "node_retry",
+                match max_attempts {
+                    Some(max) => format!("{trace_node_id} {trace_node_kind} waiting {attempt}/{max} {duration_ms} ms"),
+                    None => format!("{trace_node_id} {trace_node_kind} waiting {attempt} {duration_ms} ms"),
+                },
+                Some((&trace_node_id, &trace_node_kind)),
+                Some(json!({
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "duration_ms": duration_ms,
+                    "message": message,
+                })),
+                &run_started,
+            );
+        } else {
+            let outcome = if outs.is_empty() { "node_empty" } else { "node_ok" };
+            emit_lifecycle(
+                &bus,
+                outcome,
+                format!("{trace_node_id} {trace_node_kind} {duration_ms} ms"),
+                Some((&trace_node_id, &trace_node_kind)),
+                Some(json!({ "duration_ms": duration_ms })),
+                &run_started,
+            );
+        }
+
+        for output in &mut outs {
+            // ── __signal extraction ──────────────────────────────────────
+            // Strip `__signal` from node output and route through the bus.
+            // Supports: string, object {kind,message,data}, or array of either.
+            if let Some(raw_signal) = output.payload.as_object_mut().and_then(|m| m.remove("__signal")) {
+                if let Some(ref bus) = bus {
+                    let emit = |s: &Value| {
+                        let signal = match s {
+                            Value::String(msg) => Signal {
+                                kind: "signal".to_string(),
+                                message: msg.clone(),
+                                node_id: trace_node_id.clone(),
+                                node_kind: trace_node_kind.clone(),
+                                data: None,
+                                at: format!("{}ms", node_start.elapsed().as_millis()),
+                            },
+                            Value::Object(obj) => Signal {
+                                kind: obj.get("kind").and_then(Value::as_str).unwrap_or("signal").to_string(),
+                                message: obj.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+                                node_id: trace_node_id.clone(),
+                                node_kind: trace_node_kind.clone(),
+                                data: obj.get("data").cloned(),
+                                at: format!("{}ms", node_start.elapsed().as_millis()),
+                            },
+                            _ => return,
                         };
-                        if let Value::Array(items) = &raw_signal {
-                            for item in items {
-                                emit(item);
-                            }
-                        } else {
-                            emit(&raw_signal);
+                        bus.emit(signal);
+                    };
+                    if let Value::Array(items) = &raw_signal {
+                        for item in items {
+                            emit(item);
                         }
-                    }
-                }
-                // ── the answer to the caller ─────────────────────────────────
-                // `web.response.send` hands what it answers beside its payload;
-                // it leaves the payload here, so the next node receives what
-                // the response node received. The first answer is the one sent.
-                if node.kind == web::response::NODE_KIND
-                    && let Some(envelope) = output
-                        .payload
-                        .as_object_mut()
-                        .and_then(|m| m.remove(web::response::ENVELOPE_KEY))
-                {
-                    response.get_or_insert(envelope);
-                }
-                trace.extend(output.trace.clone());
-                last_value = output.payload.clone();
-
-                for emitted_pin in &output.output_pins {
-                    if let Some(next_edges) =
-                        outgoing.get(&(node.id.as_str(), emitted_pin.as_str()))
-                    {
-                        for (to_node, to_pin) in next_edges {
-                            let target = node_map.get(to_node).ok_or_else(|| {
-                                PipelineError::new(
-                                    "FW_EXEC_EDGE",
-                                    format!("target node '{}' missing", to_node),
-                                )
-                            })?;
-                            if is_logic_collect(target) {
-                                let pending =
-                                    collect_pending.entry((*to_node).to_string()).or_default();
-                                let key = if emitted_pin == "out" {
-                                    node.id.clone()
-                                } else {
-                                    format!("{}:{}", node.id, emitted_pin)
-                                };
-                                pending.insert(key, output.payload.clone());
-                                let expected = incoming_counts.get(*to_node).copied().unwrap_or(1);
-                                if pending.len() >= expected {
-                                    // The delivered payloads in DSL text
-                                    // order (`node-conventions.md` §4): a
-                                    // node declared earlier comes first.
-                                    let mut delivered: Vec<(&String, &Value)> = pending.iter().collect();
-                                    delivered.sort_by_key(|(key, _)| {
-                                        let from = key.split(':').next().unwrap_or_default();
-                                        (graph.nodes.iter().position(|n| n.id == from).unwrap_or(usize::MAX), (*key).clone())
-                                    });
-                                    let combined = Value::Array(delivered.into_iter().map(|(_, v)| v.clone()).collect());
-                                    collect_pending.remove(*to_node);
-                                    queue.push_back(NodeExecutionInput {
-                                        node_id: (*to_node).to_string(),
-                                        input_pin: (*to_pin).to_string(),
-                                        payload: combined,
-                                        metadata: execution_metadata(
-                                            ctx,
-                                            nodes_scope_for_target(
-                                                to_node,
-                                                &nodes_output,
-                                                &nodes_retention,
-                                            ),
-                                            ctx.placeholder.clone(),
-                                        ),
-                                        bus: bus.clone(),
-                                    });
-                                }
-                            } else {
-                                let mut metadata = execution_metadata(
-                                    ctx,
-                                    nodes_scope_for_target(to_node, &nodes_output, &nodes_retention),
-                                    ctx.placeholder.clone(),
-                                );
-                                // A loop starts a series; a reduce closes it.
-                                let run = if node.kind == logic::foreach_::NODE_KIND {
-                                    Some(json!({
-                                        "item": output.payload.get("item").cloned().unwrap_or(Value::Null),
-                                        "index": output.payload.get("index").cloned().unwrap_or(Value::Null),
-                                        "count": output.payload.get("count").cloned().unwrap_or(Value::Null),
-                                    }))
-                                } else if node.kind == logic::reduce::NODE_KIND {
-                                    None
-                                } else {
-                                    series.clone()
-                                };
-                                if let (Some(run), Some(map)) = (run, metadata.as_object_mut()) {
-                                    map.insert(crate::pipeline::expr::FOREACH_METADATA_KEY.to_string(), run);
-                                }
-                                queue.push_back(NodeExecutionInput {
-                                    node_id: (*to_node).to_string(),
-                                    input_pin: (*to_pin).to_string(),
-                                    payload: output.payload.clone(),
-                                    metadata,
-                                    bus: bus.clone(),
-                                });
-                            }
-                        }
+                    } else {
+                        emit(&raw_signal);
                     }
                 }
             }
+            // ── the answer to the caller ─────────────────────────────────
+            // `web.response.send` hands what it answers beside its payload;
+            // it leaves the payload here, so the next node receives what the
+            // response node received. The first answer goes to the caller at
+            // once, through the responder the HTTP ingress waits on.
+            if node.kind == web::response::NODE_KIND
+                && let Some(envelope) = output
+                    .payload
+                    .as_object_mut()
+                    .and_then(|m| m.remove(web::response::ENVELOPE_KEY))
+                && run.response.is_none()
+            {
+                if let Some(responder) = &run.responder {
+                    responder.send(strip_private_markers(envelope.clone()));
+                }
+                run.response = Some(envelope);
+            }
+            run.trace.extend(output.trace.clone());
         }
+        let last = outs.last().map(|o| o.payload.clone());
+        if last.is_some() {
+            run.last_in_time = last.clone();
+        }
+        run.last_answer[idx] = last;
+        Ok(scheduler::Ran::Answered(outs))
+    }
 
-        Ok(PipelineOutput {
-            value: strip_private_markers(last_value),
-            response: response.map(strip_private_markers),
-            trace,
-            node_trace,
-        })
+    /// A node that failed: routed when its `:error` pin is wired (a retry
+    /// when that edge reaches `logic.retry`), else the run's failure.
+    #[allow(clippy::too_many_arguments)]
+    fn node_failed(
+        &self,
+        plan: &flow::FlowPlan,
+        idx: usize,
+        node: &PipelineNode,
+        mut e: PipelineError,
+        input_snapshot: &Value,
+        base_trace_config: Option<Value>,
+        node_start: &std::time::Instant,
+        run: &mut scheduler::RunState<'_>,
+    ) -> Result<scheduler::Ran, PipelineError> {
+        let (trace_node_id, trace_node_kind) = (&node.id, &node.kind);
+        let bus = run.bus.clone();
+        let run_started = run.run_started;
+        // Attribute error to the failing node if not already set.
+        if e.node_id.is_none() {
+            e.node_id = Some(trace_node_id.clone());
+            e.node_kind = Some(trace_node_kind.clone());
+        }
+        // A failure an `:error` edge consumes is not the run failing: it is a
+        // retry (the consumer is `logic.retry`) or an error handled by
+        // whatever the edge reaches. The record and the bus say which, so a
+        // poll loop that waited eight times and then succeeded does not show
+        // eight red crosses. `node_fail` is for the unrouted failure that
+        // ends the run.
+        let routed: Vec<usize> = plan.outgoing[idx]
+            .iter()
+            .copied()
+            .filter(|&edge| plan.edges[edge].from_pin == flow::ERROR_PIN)
+            .collect();
+        let retry_consumer = routed
+            .iter()
+            .map(|&edge| plan.edges[edge].to)
+            .find(|&to| run.graph.nodes[to].kind == logic::retry::NODE_KIND);
+        let error_payload = (!routed.is_empty()).then(|| {
+            let last_attempt = retry_consumer
+                .and_then(|retry| run.answer_of(retry))
+                .map(retry_attempt_from_payload)
+                .unwrap_or(0);
+            build_retry_error_payload(input_snapshot, &e, last_attempt)
+        });
+        let duration_ms = node_start.elapsed().as_millis() as u64;
+        let routed_status = match (routed.first(), retry_consumer) {
+            (None, _) => None,
+            (Some(_), Some(retry)) => {
+                let attempt = error_payload.as_ref().map(retry_attempt_from_payload).unwrap_or(1);
+                let max_attempts = retry_max_attempts(&run.graph.nodes[retry]);
+                emit_lifecycle(
+                    &bus,
+                    "node_retry",
+                    match max_attempts {
+                        Some(max) => format!("{trace_node_id} {trace_node_kind} retry {attempt}/{max} {duration_ms} ms"),
+                        None => format!("{trace_node_id} {trace_node_kind} retry {attempt} {duration_ms} ms"),
+                    },
+                    Some((trace_node_id, trace_node_kind)),
+                    Some(json!({
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "duration_ms": duration_ms,
+                        "error_code": e.code,
+                        "message": e.message,
+                    })),
+                    &run_started,
+                );
+                Some("retry")
+            }
+            (Some(&first), None) => {
+                let to_node = run.graph.nodes[plan.edges[first].to].id.clone();
+                emit_lifecycle(
+                    &bus,
+                    "node_error_routed",
+                    format!("{trace_node_id} {trace_node_kind} error → {to_node} {duration_ms} ms"),
+                    Some((trace_node_id, trace_node_kind)),
+                    Some(json!({
+                        "duration_ms": duration_ms,
+                        "error_code": e.code,
+                        "message": e.message,
+                        "to_node": to_node,
+                    })),
+                    &run_started,
+                );
+                Some("error_routed")
+            }
+        };
+        if routed_status.is_none() {
+            emit_node_fail(&bus, trace_node_id, trace_node_kind, &e, node_start, &run_started);
+        }
+        let input = if run.trace_capture.records_any_payload() {
+            run.trace_capture.capture(input_snapshot)
+        } else {
+            Value::Null
+        };
+        run.node_trace.push(NodeTraceEntry {
+            node_id: trace_node_id.clone(),
+            node_kind: trace_node_kind.clone(),
+            config: base_trace_config,
+            duration_ms,
+            input,
+            output: Value::Null,
+            // The error text stays so the Logs panel says why, whichever way
+            // the failure went.
+            error: Some(e.message.clone()),
+            status: match routed_status {
+                Some(word) => word.to_string(),
+                None => crate::pipeline::error_class::class_of(e.code).as_status_word().to_string(),
+            },
+            error_code: Some(e.code.to_string()),
+            preview_snapshot: None,
+        });
+        run.last_answer[idx] = None;
+        match error_payload {
+            Some(payload) => Ok(scheduler::Ran::Routed(payload)),
+            None => {
+                e.node_trace = run.node_trace.clone();
+                Err(e)
+            }
+        }
     }
 }
 
@@ -3220,7 +3030,7 @@ mod tests {
             };
             let bus = Arc::new(ExecutionBus::new(64));
             let mut rx = bus.subscribe();
-            let options = ExecuteOptions { bus: Some(bus) };
+            let options = ExecuteOptions { bus: Some(bus), ..Default::default() };
             let result = BasicPipelineEngine::default()
                 .execute_with_options_async(&graph, &ctx, &options)
                 .await;
@@ -4028,11 +3838,12 @@ mod tests {
         }
     }
 
-    /// A graph whose every node has an incoming edge has no root by
-    /// connectivity. Cycles are valid pipelines, so it still starts — source
-    /// order picks the entry in that one case, and only in that case.
+    /// A node runs once, when everything wired into it has answered, so a
+    /// cycle would wait for itself: one that is not a `logic.retry`
+    /// re-entry is refused at activation, naming it (`node-conventions.md`
+    /// §4). The parser still reads it, so the Studio can show it.
     #[test]
-    fn a_fully_cyclic_graph_still_has_a_starting_node() {
+    fn a_cycle_that_is_not_a_retry_re_entry_is_refused_at_activation() {
         let dsl = r#"
 [a] javascript.script.run -- "return input;"
 [b] javascript.script.run -- "return input;"
@@ -4041,7 +3852,9 @@ mod tests {
 [b] -> [a]
 "#;
         let graph = build_pipeline_graph("cyclic-root-test", dsl).expect("graph");
-        assert_eq!(graph.entry_node_ids(), vec!["a"]);
+        let err = BasicPipelineEngine::default().validate_graph(&graph).expect_err("refused");
+        assert_eq!(err.code, "FW_PIPELINE_CYCLE");
+        assert!(err.message.contains("a → b → a"), "{}", err.message);
     }
 
     #[tokio::test]
@@ -5245,7 +5058,7 @@ mod tests {
         };
         let bus = Arc::new(ExecutionBus::new(128));
         let mut rx = bus.subscribe();
-        let options = ExecuteOptions { bus: Some(bus) };
+        let options = ExecuteOptions { bus: Some(bus), ..Default::default() };
         let result = BasicPipelineEngine::default()
             .execute_with_options_async(&graph, &ctx, &options)
             .await;
@@ -5380,7 +5193,9 @@ mod tests {
         assert_eq!(out.value["script"]["seen"], 2);
         assert_eq!(out.node_trace.iter().filter(|t| t.node_id == "poll").count(), 3);
         // The wait is told on the retry node — `retry` twice, then `ok` when
-        // `done` fires — and nowhere else: every other entry is `ok`.
+        // `done` fires — and nowhere else: every other entry is `ok`, but
+        // `gaveup`, on the pin not taken, which is recorded `skipped`
+        // (`node-conventions.md` §4).
         let wait_statuses: Vec<&str> = out
             .node_trace
             .iter()
@@ -5389,7 +5204,10 @@ mod tests {
             .collect();
         assert_eq!(wait_statuses, ["retry", "retry", "ok"]);
         assert!(
-            out.node_trace.iter().filter(|t| t.node_id != "wait").all(|t| t.status == "ok"),
+            out.node_trace
+                .iter()
+                .filter(|t| t.node_id != "wait")
+                .all(|t| t.status == if t.node_id == "gaveup" { "skipped" } else { "ok" }),
             "{:?}",
             out.node_trace.iter().map(|t| (&t.node_id, &t.status)).collect::<Vec<_>>()
         );
@@ -5421,6 +5239,333 @@ mod tests {
         let out = result.expect("the run succeeds through the failed pin");
         assert_eq!(out.value["script"]["gaveup"], true);
         assert_eq!(out.value["script"]["attempts"], 2);
+    }
+
+    // ── node-conventions.md §4, Flow ─────────────────────────────────────
+
+    fn flow_ctx(id: &str, input: serde_json::Value) -> PipelineContext {
+        PipelineContext {
+            owner: "test".into(),
+            project: "test".into(),
+            pipeline: id.into(),
+            request_id: format!("{id}-run"),
+            route: String::new(),
+            input,
+            trigger: None,
+            placeholder: None,
+        }
+    }
+
+    async fn run_flow(
+        id: &str,
+        dsl: &str,
+        input: serde_json::Value,
+    ) -> Result<crate::pipeline::model::PipelineOutput, crate::pipeline::model::PipelineError> {
+        let graph = build_pipeline_graph(id, dsl).expect("graph");
+        BasicPipelineEngine::default().execute_async(&graph, &flow_ctx(id, input)).await
+    }
+
+    fn statuses_of(trace: &[crate::pipeline::model::NodeTraceEntry], node: &str) -> Vec<String> {
+        trace.iter().filter(|t| t.node_id == node).map(|t| t.status.clone()).collect()
+    }
+
+    /// Two branches meeting is a join: the node runs once, its input the
+    /// delivered payloads merged in DSL text order — `right` is declared
+    /// after `left`, so its key wins although it answered first in time.
+    #[tokio::test]
+    async fn a_join_runs_once_with_its_inputs_merged_in_text_order() {
+        let dsl = r#"
+[a] trigger.manual
+[left] javascript.script.run -- "return { side: 'left', left: true };"
+[right] javascript.script.run -- "return { side: 'right', right: true };"
+[join] javascript.script.run -- "return { side: input.script.side, keys: Object.keys(input).sort() };"
+[a] -> [right]
+[a] -> [left]
+[left] -> [join]
+[right] -> [join]
+"#;
+        let out = run_flow("join-once", dsl, json!({})).await.expect("run");
+        assert_eq!(statuses_of(&out.node_trace, "join"), ["ok"], "the join runs once");
+        let order: Vec<&str> = out.node_trace.iter().map(|t| t.node_id.as_str()).collect();
+        assert_eq!(order, ["a", "right", "left", "join"], "right answered first in time");
+        assert_eq!(out.value["script"]["side"], "right", "a later line wins: {}", out.value);
+        assert_eq!(out.value["script"]["keys"], json!(["manual", "script"]));
+    }
+
+    /// A branch not taken is skipped, and so is everything only it feeds;
+    /// a join with one live edge still runs. Skipped nodes are recorded
+    /// `skipped` and announced `node_skipped`.
+    #[tokio::test]
+    async fn a_skip_propagates_down_a_chain_and_a_join_with_one_live_edge_runs() {
+        let dsl = r#"
+[a] trigger.manual
+[gate] logic.if --when "false"
+[b] javascript.script.run -- "return { b: 1 };"
+[c] javascript.script.run -- "return { c: 1 };"
+[d] javascript.script.run -- "return { d: 1, from_c: input.script ? input.script.c : null };"
+[e] javascript.script.run -- "return { e: 1 };"
+[a] -> [gate]
+[gate]:true -> [b]
+[b] -> [c]
+[c] -> [d]
+[gate]:false -> [d]
+[c] -> [e]
+"#;
+        let (result, signals) = run_with_bus("skip-chain", dsl).await;
+        let out = result.expect("run");
+        for node in ["b", "c", "e"] {
+            assert_eq!(statuses_of(&out.node_trace, node), ["skipped"], "{node}");
+        }
+        assert_eq!(statuses_of(&out.node_trace, "d"), ["ok"]);
+        assert_eq!(out.value["script"], json!({ "d": 1, "from_c": null }), "{}", out.value);
+        let skipped: Vec<&str> = signals.iter().filter(|s| s.kind == "node_skipped").map(|s| s.node_id.as_str()).collect();
+        assert_eq!(skipped, ["b", "c", "e"]);
+        assert!(signals.iter().all(|s| !(s.kind == "node_start" && ["b", "c", "e"].contains(&s.node_id.as_str()))));
+    }
+
+    /// `{{ $nodes.big.text ?? $nodes.small.text }}` joins two branches: the
+    /// skipped one is `null`, and the path through it is `null`, not an error.
+    #[tokio::test]
+    async fn a_nullish_join_reads_whichever_branch_ran() {
+        let dsl = r#"
+[a] trigger.manual
+[gate] logic.if --when "input.manual.big"
+[big] javascript.script.run -- "return { text: 'BIG' };"
+[small] javascript.script.run -- "return { text: 'small' };"
+[out] web.response.send --body "{{ $nodes.big.script.text ?? $nodes.small.script.text }}"
+[a] -> [gate]
+[gate]:true -> [big]
+[gate]:false -> [small]
+[big] -> [out]
+[small] -> [out]
+"#;
+        for (big, said) in [(false, "small"), (true, "BIG")] {
+            let out = run_flow("nullish-join", dsl, json!({ "big": big })).await.expect("run");
+            assert_eq!(out.response.expect("answered")["text"], said);
+        }
+    }
+
+    /// A reference to a node on the branch not taken is `null`, and a path
+    /// through it is `null` — never `FW_EXPR_EVAL`.
+    #[tokio::test]
+    async fn a_reference_to_an_untaken_branch_is_null_not_an_error() {
+        let dsl = r#"
+[a] trigger.manual
+[gate] logic.if --when "false"
+[taken] javascript.script.run -- "return { text: 'never' };"
+[other] javascript.script.run -- "return { ok: true };"
+[out] web.response.send --body "{{ String($nodes.taken) + '/' + String($nodes.taken.script.text) + '/' + String($nodes.taken['script'].text) }}"
+[a] -> [gate]
+[gate]:true -> [taken]
+[gate]:false -> [other]
+[taken] -> [out]
+[other] -> [out]
+"#;
+        let out = run_flow("untaken-null", dsl, json!({})).await.expect("no error");
+        assert_eq!(out.response.expect("answered")["text"], "null/undefined/undefined");
+    }
+
+    /// References point upstream: a node no edge path leads from is refused
+    /// at activation, with "did you mean" when a near name exists.
+    #[test]
+    fn a_reference_to_a_node_not_upstream_is_refused_at_activation() {
+        let engine = BasicPipelineEngine::default();
+        let graph = |dsl: &str| build_pipeline_graph("not-upstream", dsl).expect("graph");
+        let sibling = graph("[a] trigger.manual\n[b] javascript.script.run -- \"return { x: 1 };\"\n[c] crypto.base64.encode --text \"{{ $nodes.b.script.x }}\"\n[a] -> [b]\n[a] -> [c]\n");
+        let err = engine.validate_graph(&sibling).expect_err("a sibling branch is not upstream");
+        assert_eq!(err.code, "FW_NODES_SCOPE_UPSTREAM");
+        assert!(err.message.contains("'c'") && err.message.contains("$nodes.b"), "{}", err.message);
+
+        let typo = graph("[a] trigger.manual\n[fetch] javascript.script.run -- \"return { x: 1 };\"\n[c] crypto.base64.encode --text \"{{ $nodes.fecth.script.x }}\"\n[a] -> [fetch]\n[fetch] -> [c]\n");
+        let err = engine.validate_graph(&typo).expect_err("no such node");
+        assert!(err.message.contains("did you mean $nodes.fetch"), "{}", err.message);
+    }
+
+    /// A failure resolving a node's config, or building it from the
+    /// resolved config, routes to `:error` like any execution failure.
+    #[tokio::test]
+    async fn a_config_expression_or_build_failure_routes_to_error() {
+        let dsl = r#"
+[a] trigger.manual
+[b] crypto.base64.encode --text "{{ input.manual.missing.deep }}"
+[h] javascript.script.run -- "return { handled: input.error.code };"
+[a] -> [b]
+[b]:error -> [h]
+"#;
+        let out = run_flow("expr-routed", dsl, json!({})).await.expect("routed, not failed");
+        assert_eq!(out.value["script"]["handled"], "FW_EXPR_EVAL", "{}", out.value);
+        assert_eq!(statuses_of(&out.node_trace, "b"), ["error_routed"]);
+
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.foreach --from "input.manual.rows" --batch-size "{{ input.manual.size }}"
+[h] javascript.script.run -- "return { handled: input.error.code };"
+[a] -> [b]
+[b]:error -> [h]
+"#;
+        let out = run_flow("build-routed", dsl, json!({ "rows": [1], "size": 0 })).await.expect("routed");
+        assert_eq!(out.value["script"]["handled"], "FW_NODE_LOGIC_FOREACH_CONFIG", "{}", out.value);
+
+        // Unrouted, the same failure still fails the run there.
+        let err = run_flow("expr-unrouted", "[a] trigger.manual\n[b] crypto.base64.encode --text \"{{ input.manual.missing.deep }}\"\n[a] -> [b]\n", json!({}))
+            .await
+            .expect_err("fails");
+        assert_eq!(err.code, "FW_EXPR_EVAL");
+        assert_eq!(err.node_id.as_deref(), Some("b"));
+    }
+
+    /// The body runs once per item, each in its own frame; the reduce that
+    /// closes the loop fires once, after every frame, folding only the items
+    /// that reached it — and an empty or all-filtered list closes too.
+    #[tokio::test]
+    async fn a_loop_close_fires_once_over_the_items_that_reached_it() {
+        let dsl = r#"
+[a] trigger.manual
+[f] logic.foreach --from "input.manual.rows"
+[keep] logic.if --when "input.item > 1"
+[x] javascript.script.run -- "return { v: input.item * 10 };"
+[r] logic.reduce --initial "{ vs: [] }" --step "{ vs: $acc.vs.concat([$input.script.v]) }"
+[a] -> [f]
+[f]:item -> [keep]
+[keep]:true -> [x]
+[x] -> [r]
+"#;
+        let out = run_flow("loop-close", dsl, json!({ "rows": [1, 2, 3] })).await.expect("run");
+        assert_eq!(out.value["reduce"]["vs"], json!([20, 30]), "{}", out.value);
+        assert_eq!(out.value["manual"]["rows"], json!([1, 2, 3]), "the close answers on the loop's own payload");
+        assert!(out.value.get("item").is_none(), "{}", out.value);
+        assert_eq!(statuses_of(&out.node_trace, "r"), ["ok"], "one entry for the close");
+        assert_eq!(statuses_of(&out.node_trace, "keep"), ["ok", "ok", "ok"]);
+        assert_eq!(statuses_of(&out.node_trace, "x"), ["skipped", "ok", "ok"]);
+
+        for rows in [json!([]), json!([1])] {
+            let out = run_flow("loop-close-empty", dsl, json!({ "rows": rows })).await.expect("run");
+            assert_eq!(out.value["reduce"]["vs"], json!([]), "{rows}: answers --initial");
+            assert_eq!(statuses_of(&out.node_trace, "r"), ["ok"]);
+        }
+
+        // `logic.collect` closes a loop the same way.
+        let dsl = "[a] trigger.manual\n[f] logic.foreach --from \"input.manual.rows\"\n[x] javascript.script.run -- \"return { v: input.item };\"\n[c] logic.collect\n[a] -> [f]\n[f]:item -> [x]\n[x] -> [c]\n";
+        let out = run_flow("loop-collect", dsl, json!({ "rows": ["p", "q"] })).await.expect("run");
+        assert_eq!(out.value["collect"]["count"], 2);
+        let vs: Vec<&serde_json::Value> = out.value["collect"]["items"].as_array().unwrap().iter().map(|i| &i["script"]["v"]).collect();
+        assert_eq!(vs, [&json!("p"), &json!("q")]);
+        let out = run_flow("loop-collect-empty", dsl, json!({ "rows": [] })).await.expect("run");
+        assert_eq!(out.value["collect"], json!({ "items": [], "count": 0 }));
+    }
+
+    /// Frames are keyed by the loop path: an inner loop runs whole inside
+    /// each outer item, and its close fires once per outer item.
+    #[tokio::test]
+    async fn nested_loops_keep_their_frames_apart() {
+        let dsl = r#"
+[a] trigger.manual
+[outer] logic.foreach --from "input.manual.groups"
+[inner] logic.foreach --from "input.item.values"
+[double] javascript.script.run -- "return { v: input.item * 2 };"
+[sum] logic.reduce --initial "0" --step "$acc + $input.script.v"
+[all] logic.collect
+[a] -> [outer]
+[outer]:item -> [inner]
+[inner]:item -> [double]
+[double] -> [sum]
+[sum] -> [all]
+"#;
+        let input = json!({ "groups": [{ "values": [1, 2] }, { "values": [] }, { "values": [3] }] });
+        let out = run_flow("nested-loops", dsl, input).await.expect("run");
+        let sums: Vec<&serde_json::Value> = out.value["collect"]["items"].as_array().unwrap().iter().map(|i| &i["reduce"]).collect();
+        assert_eq!(sums, [&json!(6), &json!(0), &json!(6)], "{}", out.value);
+        assert_eq!(statuses_of(&out.node_trace, "sum").len(), 3);
+        assert_eq!(statuses_of(&out.node_trace, "all"), ["ok"]);
+        assert_eq!(statuses_of(&out.node_trace, "double").len(), 3);
+    }
+
+    /// Inside a frame a body node reads that item's answers; after the close
+    /// the body is gone from `$nodes` and only the close's answer remains.
+    #[tokio::test]
+    async fn body_nodes_are_hidden_from_nodes_after_the_close() {
+        let dsl = r#"
+[a] trigger.manual
+[f] logic.foreach --from "input.manual.rows"
+[x] javascript.script.run -- "return { v: input.item };"
+[y] javascript.script.run -- "return { seen: ctx.nodes.x.script.v };"
+[r] logic.reduce --initial "0" --step "$acc + $input.script.seen"
+[after] web.response.send --body "{{ String($nodes.x) + ':' + $nodes.r.reduce }}"
+[a] -> [f]
+[f]:item -> [x]
+[x] -> [y]
+[y] -> [r]
+[r] -> [after]
+"#;
+        let out = run_flow("body-hidden", dsl, json!({ "rows": [1, 2, 3] })).await.expect("run");
+        assert_eq!(out.response.expect("answered")["text"], "null:6");
+    }
+
+    /// `web.response.send` answers the caller the moment it runs; the run
+    /// keeps going, and a later failure fails the run without touching what
+    /// the caller already has. A second response in one run is not sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_response_reaches_the_caller_before_a_slow_later_node_and_survives_its_failure() {
+        use crate::pipeline::model::{ExecuteOptions, Responder};
+        let dsl = r#"
+[a] trigger.manual
+[resp] web.response.send --body "answered early"
+[slow] logic.retry --max-attempts 3 --delay 1s --when "true"
+[boom] javascript.script.run -- "throw new Error('late failure');"
+[a] -> [resp]
+[resp] -> [slow]
+[slow]:retry -> [boom]
+"#;
+        let graph = build_pipeline_graph("early-response", dsl).expect("graph");
+        let (responder, early) = Responder::channel();
+        let options = ExecuteOptions { responder: Some(responder), ..Default::default() };
+        let started = std::time::Instant::now();
+        let run = tokio::spawn(async move {
+            BasicPipelineEngine::default()
+                .execute_with_options_async(&graph, &flow_ctx("early-response", json!({})), &options)
+                .await
+        });
+        let envelope = tokio::time::timeout(std::time::Duration::from_millis(900), early)
+            .await
+            .expect("the response arrives before the slow node finishes")
+            .expect("sent");
+        assert!(!run.is_finished(), "the run is still going");
+        assert_eq!(envelope["text"], "answered early");
+        let err = run.await.expect("joined").expect_err("the later failure fails the run");
+        assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+        assert!(err.message.contains("late failure"), "{}", err.message);
+        assert_eq!(envelope["text"], "answered early", "what the caller has is unchanged");
+
+        let dsl = "[a] trigger.manual\n[one] web.response.send --body first\n[two] web.response.send --body second\n[a] -> [one]\n[one] -> [two]\n";
+        let out = run_flow("two-responses", dsl, json!({})).await.expect("run");
+        assert_eq!(out.response.expect("answered")["text"], "first", "the first response wins");
+        let two = out.node_trace.iter().find(|t| t.node_id == "two").expect("two");
+        assert_eq!(two.status, "empty");
+        assert!(two.error.as_deref().is_some_and(|note| note.contains("already sent")), "{:?}", two.error);
+    }
+
+    /// `value` is the answer of the last sink that ran, in DSL text order —
+    /// never "whichever finished last".
+    #[tokio::test]
+    async fn the_run_value_is_the_last_sink_in_text_order() {
+        let dsl = r#"
+[a] trigger.manual
+[step] javascript.script.run -- "return { step: 1 };"
+[first] javascript.script.run -- "return { who: 'first' };"
+[second] javascript.script.run -- "return { who: 'second' };"
+[third] javascript.script.run -- "return { who: 'third' };"
+[gate] logic.if --when "false"
+[a] -> [second]
+[a] -> [step]
+[step] -> [first]
+[a] -> [gate]
+[gate]:true -> [third]
+"#;
+        let out = run_flow("value-sink", dsl, json!({})).await.expect("run");
+        let order: Vec<&str> = out.node_trace.iter().filter(|t| t.status == "ok").map(|t| t.node_id.as_str()).collect();
+        assert_eq!(order.last(), Some(&"first"), "first answered last in time: {order:?}");
+        assert_eq!(statuses_of(&out.node_trace, "third"), ["skipped"]);
+        assert_eq!(out.value["script"]["who"], "second", "{}", out.value);
     }
 }
 
@@ -5551,7 +5696,4 @@ fn refuse_uncheckable_egress_node(
     Ok(())
 }
 
-fn is_logic_collect(node: &PipelineNode) -> bool {
-    node.kind == logic::collect::NODE_KIND
-}
 

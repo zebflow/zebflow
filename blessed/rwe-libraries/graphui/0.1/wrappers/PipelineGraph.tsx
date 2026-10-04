@@ -113,13 +113,14 @@ export interface InputWidgetSpec {
 /** How one node's last (or current) run went, drawn as a badge at the box's top-right. */
 export interface NodeRunStatus {
   /**
-   * pending: grey dot · running: orange pulsing dot · ok: green tick · skip:
-   * grey dash · fail: red cross · retry: orange ring with the attempt count
+   * pending: grey dot · running: orange pulsing dot · ok: green tick · empty
+   * (ran, emitted nothing): grey dash · skipped (never ran, a branch not
+   * taken): hollow grey ring · fail: red cross · retry: orange ring with the attempt count
    * ("3/40") · error_routed: orange ring, tooltip "error → <to_node>". Red is
    * for `fail` only: a failure an `:error` edge consumed is a wait or a
    * handled error, never a failed node.
    */
-  state: "pending" | "running" | "ok" | "skip" | "fail" | "retry" | "error_routed";
+  state: "pending" | "running" | "ok" | "empty" | "skipped" | "fail" | "retry" | "error_routed";
   /** Shown under the mark when known. */
   duration_ms?: number;
   /** Shown as the badge's tooltip. */

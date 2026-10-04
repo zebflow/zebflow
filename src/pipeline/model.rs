@@ -4,11 +4,11 @@
 //! # Overview
 //!
 //! A **pipeline** is a directed graph of **nodes** connected by **edges**.
-//! Each edge links one node's output pin to another node's input pin.  The engine performs a
-//! BFS queue traversal, executing nodes in arrival order and forwarding the output
-//! **payload** (a `serde_json::Value`) downstream through the edges.
-//! Cycles are permitted — a node can be revisited when an edge points back to an earlier node
-//! (e.g. a conditional loop via `logic.if`'s `false` pin).
+//! Each edge links one node's output pin to another node's input pin.  A node runs
+//! once, when every edge into it has delivered a **payload** (a `serde_json::Value`) or
+//! been skipped (`docs/contracts/node-conventions.md` §4). The only cycle allowed is the
+//! edge from a `logic.retry`'s `retry` pin back to the node it retries; any other is
+//! refused at activation.
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
@@ -753,10 +753,10 @@ impl PipelineGraph {
     /// A root is a node no edge points at, and **every** root starts — a graph
     /// with two independent triggers is two roots, not one.
     ///
-    /// The fallback is for a graph that is entirely cyclic: cycles are valid
-    /// here, so a graph where every node has an incoming edge has no root by
-    /// connectivity and would otherwise never start. Source order picks the
-    /// first node in that one case, and only in that case.
+    /// The fallback is for a graph where every node has an incoming edge: it
+    /// has no root by connectivity. Such a graph is a cycle, which activation
+    /// refuses (`node-conventions.md` §4); source order names a node anyway,
+    /// so a caller asking about an unvalidated draft still gets one.
     pub fn entry_node_ids(&self) -> Vec<&str> {
         if !self.entry_nodes.is_empty() {
             return self.entry_nodes.iter().map(String::as_str).collect();
@@ -881,7 +881,8 @@ pub struct PipelineNote {
 ///
 /// Together, all edges in a [`PipelineGraph`] form a directed graph. The engine
 /// follows edges to determine which node fires next and what payload it receives.
-/// Cycles are permitted.
+/// A cycle is refused at activation, unless it is a `logic.retry` `retry`
+/// edge back to the node it retries.
 ///
 /// # Example
 ///
@@ -1590,6 +1591,38 @@ pub struct ExecuteOptions {
     /// When set, the engine threads this bus to every node and routes `__signal`
     /// output keys through it.  Consumers (SSE, WS, log) subscribe independently.
     pub bus: Option<std::sync::Arc<ExecutionBus>>,
+    /// When set, the first `web.response.send` of the run hands its envelope
+    /// here the moment it runs (`node-conventions.md` §4: it answers the
+    /// caller at once and later nodes keep running). The HTTP ingress waits
+    /// on it beside the run.
+    pub responder: Option<Responder>,
+}
+
+/// The one-shot hand-off of a run's response to the HTTP caller waiting on
+/// it. Only the first envelope is sent; the receiver ends without one when
+/// the run ends without a response.
+#[derive(Clone, Default)]
+pub struct Responder(
+    std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Value>>>>,
+);
+
+impl Responder {
+    pub fn channel() -> (Self, tokio::sync::oneshot::Receiver<Value>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (Self(std::sync::Arc::new(std::sync::Mutex::new(Some(tx)))), rx)
+    }
+
+    /// Sends the envelope if nothing was sent before; `false` otherwise.
+    pub fn send(&self, envelope: Value) -> bool {
+        let sender = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        sender.is_some_and(|tx| tx.send(envelope).is_ok())
+    }
+}
+
+impl std::fmt::Debug for Responder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Responder")
+    }
 }
 
 /// Immutable execution context passed to every node during a pipeline run.
@@ -1665,10 +1698,11 @@ pub struct NodeTraceEntry {
     /// Set if this node threw a `PipelineError`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// NodeIO status word: `ok`, `skip` (ran, deliberately emitted nothing),
-    /// `refused` (caller's fault), or `failed` (world's fault). Records
-    /// written before the word existed read as `ok`, which is what they
-    /// meant.
+    /// NodeIO status word: `ok`, `empty` (ran, deliberately emitted
+    /// nothing), `skipped` (never ran: every edge into it was skipped — a
+    /// branch not taken, `node-conventions.md` §4), `refused` (caller's
+    /// fault), or `failed` (world's fault). Records written before the word
+    /// existed read as `ok`, which is what they meant.
     ///
     /// Two engine words on top, since 2026-09-21. `retry`: a wait — a
     /// failure an `:error` edge handed to `logic.retry` (the node failed, the
@@ -1753,7 +1787,7 @@ impl PipelineOutput {
 /// (e.g. `"FW_NODE_POSTGRES_QUERY_RUN_CONFIG"`, `"FW_NODE_WEB_RENDER_COMPILE"`).  It is safe to
 /// match on in tests and error handlers.  `message` is the human-readable detail.
 ///
-/// `node_id` and `node_kind` are optionally populated by the engine at the BFS execution
+/// `node_id` and `node_kind` are optionally populated by the engine at the node execution
 /// boundary so error messages include the failing node identity.
 ///
 /// # Stable error code conventions
@@ -1772,11 +1806,11 @@ pub struct PipelineError {
     /// Human-readable error detail.
     pub message: String,
     /// Node instance id that produced this error (e.g. `"n1"`, `"query"`).
-    /// Populated by the engine at the BFS execution boundary; `None` for config errors.
+    /// Populated by the engine at the node execution boundary; `None` for config errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
     /// Node kind that produced this error (e.g. `"postgres.query.run"`).
-    /// Populated by the engine at the BFS execution boundary; `None` for config errors.
+    /// Populated by the engine at the node execution boundary; `None` for config errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_kind: Option<String>,
     /// Partial per-node execution trace captured before the failure.
@@ -1877,7 +1911,7 @@ mod function_result_tests {
         let ran = [("trigger.function", "ok"), ("http.response.fetch", "ok"), ("javascript.script.run", "ok")];
         assert_eq!(output(value.clone(), &ran).function_result(), json!({ "ok": true }));
 
-        let skipped_last = [("trigger.function", "ok"), ("http.response.fetch", "ok"), ("javascript.script.run", "skip")];
+        let skipped_last = [("trigger.function", "ok"), ("http.response.fetch", "ok"), ("javascript.script.run", "empty")];
         assert_eq!(output(value.clone(), &skipped_last).function_result(), json!({ "status": 200 }));
 
         let control_last = [("trigger.function", "ok"), ("javascript.script.run", "ok"), ("logic.if", "ok")];

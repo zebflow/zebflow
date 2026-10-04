@@ -1,9 +1,15 @@
-//! `logic.collect` — explicit together-processing fan-in node.
+//! `logic.collect` — gathers what several edges, or a loop's runs, delivered.
 //!
-//! The engine buffers incoming payloads until every wired upstream has
-//! delivered, then fires this node once with them as a list in DSL text
-//! order. It answers one key, `collect: { items, count }`, on top of the
-//! delivered payloads merged in that order (a key from a later one wins).
+//! **A join.** Like every node, it runs once, when every edge into it has
+//! delivered or been skipped (`node-conventions.md` §4); the engine hands it
+//! the delivered payloads as a list in DSL text order. It answers one key,
+//! `collect: { items, count }`, on top of those payloads merged in that order
+//! (a key from a later one wins).
+//!
+//! **A loop's close.** After a `logic.foreach` body it runs once, when every
+//! item has run, with the items under [`super::LOOP_ITEMS_METADATA_KEY`] and
+//! the payload the foreach received: `collect: { items, count }` on top of
+//! that payload (an empty list answers `{ items: [], count: 0 }`).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -25,11 +31,11 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Collect".to_string(),
-        description: "Joins branches: waits for every node wired into it, then fires once. Waits until every node wired into it has delivered a payload, then fires once. Answers one key, \
+        description: "Lists what reached it: the payloads of the branches wired into it, or the per-item answers of a `logic.foreach` loop it closes. Like every node it runs once, when every edge into it has delivered or been skipped, so a branch not taken is simply missing from the list. Answers one key, \
              `collect: { items, count }` — `items` the delivered payloads in DSL text order — on top of those payloads merged \
              in the same order (a key from a later one wins). Each upstream's answer also stays at `$nodes.<id>.<key>`. \
-             Graph mode only — it needs two or more incoming edges (`[b] -> [d]`, `[c] -> [d]`). It is not a join for \
-             `logic.foreach` emissions — use `logic.reduce` for those."
+             After a loop body (`[f]:item -> [x]`, `[x] -> [c]`) it closes the loop: it runs once after every item, `items` in item order, \
+             on top of the payload the foreach received; an empty list answers `{ items: [], count: 0 }`."
             .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({
@@ -70,7 +76,7 @@ pub fn definition() -> NodeDefinition {
                         "count": 2
                     }
                 }))
-                .note("After `[b] -> [d]` and `[c] -> [d]` with `b` declared first: `input.collect.items[0]` is b's payload; `$nodes.b.response` names it too."),
+                .note("After `[b] -> [d]` and `[c] -> [d]` with `b` declared first: `input.collect.items[0]` is b's payload; `$nodes.b.response` names it too. Had `b` been on a branch not taken, `items` would hold c's payload alone."),
         ],
         ..Default::default()
     }
@@ -119,9 +125,16 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
+        let payload = match input.metadata.get(super::LOOP_ITEMS_METADATA_KEY) {
+            Some(Value::Array(items)) => with_answer(
+                &input.payload,
+                json!({ ANSWER_KEY: { "items": items, "count": items.len() } }),
+            ),
+            _ => answer(input.payload),
+        };
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: answer(input.payload),
+            payload,
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }

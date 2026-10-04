@@ -1,7 +1,8 @@
 # Pipelines
 
 A pipeline is a function: a trigger starts a run, a chain of nodes adds to
-the payload, the last node answers.
+the payload, the last node answers. Each node runs once, when every edge into
+it has delivered or been skipped (`help("pipeline/dsl")`, Control flow).
 
 ```
 | trigger.webhook --route /posts/:slug --method GET
@@ -83,7 +84,11 @@ branching, fan-out, joins and loops:
 ```
 
 Every node must be reachable from the one entry; a node with no incoming
-edge is a second entry and runs on every request.
+edge is a second entry and runs on every request. A node runs once, when
+every edge into it has delivered or been skipped: above, `d` and `e` are on
+different branches, and the one not taken is skipped. A branch meeting
+another is a join, not a second run; a cycle is refused unless it is a
+`logic.retry` going round again.
 
 ---
 
@@ -180,7 +185,7 @@ inside a longer string is stringified.
 |---|---|
 | `input`, `$input` | the payload arriving at this node |
 | `$trigger` | the trigger's envelope for the whole run |
-| `$nodes.<id>` | an upstream node's payload; its answer is `$nodes.<id>.<key>` |
+| `$nodes.<id>` | an upstream node's payload; its answer is `$nodes.<id>.<key>` — `null` when it was skipped |
 | `$item`, `$index`, `$count` | inside `logic.foreach` |
 
 Always quote a value that contains `{{ }}` or a space as one argument.

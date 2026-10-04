@@ -61,8 +61,8 @@ short form with examples; this skill is the order of work.
   (`input.query.rows[0].title`). A write needs `--write`.
 - Several queries feeding one script: chain them in graph mode with ids and
   read each by id — `$nodes.posts.query.rows` in a flag,
-  `ctx.nodes.posts.query.rows` in a script. Two edges into one ordinary node
-  run it once per edge; put `logic.collect` where branches must meet.
+  `ctx.nodes.posts.query.rows` in a script. A node with two edges in runs
+  once, when both have delivered (or been skipped): that is the join.
 
 ## 4. Prove it before you save it
 

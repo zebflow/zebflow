@@ -472,7 +472,13 @@ const BASE_STYLE = `
   animation: zgu-status-pulse 1s ease-in-out infinite;
 }
 .zgu-node-status[data-state="ok"] .zgu-node-status-mark { background: #34d399; }
-.zgu-node-status[data-state="skip"] .zgu-node-status-mark { background: #94a3b8; }
+.zgu-node-status[data-state="empty"] .zgu-node-status-mark { background: #94a3b8; }
+/* Never ran: every edge into it was skipped — a branch not taken. */
+.zgu-node-status[data-state="skipped"] .zgu-node-status-mark {
+  background: transparent;
+  border: 2px solid #64748b;
+  box-sizing: border-box;
+}
 .zgu-node-status[data-state="fail"] .zgu-node-status-mark { background: #f43f5e; color: #fff; }
 /* A failure an :error edge consumed: a wait (retry) or a handled error
    (error_routed). An orange ring, never red — red is for fail only. */
@@ -1823,19 +1829,20 @@ function buildNodePreviewCell(cell, which) {
 // run went — n8n-style. Presentation only, like a preview: the host drives
 // it through a `nodeStatus` prop keyed by pipeline node id:
 //
-//   { [pipelineNodeId]: { state: "pending" | "running" | "ok" | "skip" | "fail"
+//   { [pipelineNodeId]: { state: "pending" | "running" | "ok" | "empty" | "skipped" | "fail"
 //                                | "retry" | "error_routed",
 //                         duration_ms?, error?, attempt?, max_attempts?, to_node? } }
 //
 // pending: grey dot · running: orange pulsing dot (with the count when the
-// node is going round again) · ok: green tick · skip: grey dash · fail: red
+// node is going round again) · ok: green tick · empty (ran, emitted nothing):
+// grey dash · skipped (never ran, a branch not taken): hollow grey ring · fail: red
 // cross · retry: orange ring with the attempt count ("3/40") · error_routed:
 // orange ring, tooltip "error → <to_node>"; the duration under it when known. Red is for `fail` only: a failure an
 // `:error` edge consumed is a wait or a handled error, and a poll loop that
 // waited eight times and then succeeded must not look like eight failures.
 
-const NODE_STATUS_STATES = ["pending", "running", "ok", "skip", "fail", "retry", "error_routed"];
-const NODE_STATUS_MARKS = { pending: "", running: "", ok: "✓", skip: "–", fail: "✕", retry: "", error_routed: "" };
+const NODE_STATUS_STATES = ["pending", "running", "ok", "empty", "skipped", "fail", "retry", "error_routed"];
+const NODE_STATUS_MARKS = { pending: "", running: "", ok: "✓", empty: "–", skipped: "", fail: "✕", retry: "", error_routed: "" };
 
 /** `3/40`, or `3` when the budget is unknown (a record seeds the count only); empty otherwise. */
 function formatNodeStatusCount(status) {

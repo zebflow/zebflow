@@ -387,11 +387,38 @@ pub(super) fn check_example(example: &Example, defs: &[NodeDefinition]) -> Vec<S
         }
     }
     if problems.is_empty() && example.whole && !is_sketch(&example.text) {
-        if let Err(err) = build_pipeline_graph_with_definitions("guide-lint", &example.text, defs) {
-            problems.push(format!("does not build: {err}"));
+        match build_pipeline_graph_with_definitions("guide-lint", &example.text, defs) {
+            Err(err) => problems.push(format!("does not build: {err}")),
+            // The flow activation refuses (`node-conventions.md` §4): a
+            // stray cycle, a loop wired across its boundary, a `$nodes`
+            // reference to a node not upstream. Only a whole pipeline — one
+            // whose text writes its trigger — is judged; a fragment reads
+            // nodes its text leaves out.
+            Ok(graph) if writes_a_trigger(&example.text) => {
+                if let Err(err) = crate::pipeline::engines::basic::validate_flow(&graph) {
+                    problems.push(format!("would be refused at activation: {}", err.message));
+                }
+            }
+            Ok(_) => {}
         }
     }
     problems
+}
+
+/// Whether an example writes its own trigger node (`| trigger.…`,
+/// `[a] trigger.…`), i.e. is a whole pipeline rather than a fragment. The
+/// trigger [`check_definition_examples`] puts before a one-node example
+/// (`| trigger.function | <node>`) is not the example's own.
+fn writes_a_trigger(text: &str) -> bool {
+    !text.starts_with(DEFINITION_WRAPPER) && text.lines().any(|line| {
+        let line = line.trim_start();
+        let line = line.strip_prefix('|').map(str::trim_start).unwrap_or(line);
+        let line = match line.strip_prefix('[') {
+            Some(rest) => rest.split_once(']').map_or(line, |(_, kind)| kind.trim_start()),
+            None => line,
+        };
+        line.starts_with("trigger.") || line.contains("| trigger.")
+    })
 }
 
 /// `input.rows`, `$nodes.n1.body`, `ctx.nodes.q.saved`, `$trigger.webhook` —
@@ -450,6 +477,9 @@ fn example_answer_key(def: &NodeDefinition, dsl: &str) -> Option<String> {
 /// What is wrong with one definition's examples: its DSL against the
 /// catalogue (as any guide example), its description's inline DSL and reads,
 /// and its input/output JSON against the one-answer-key rule.
+/// The trigger a one-node definition example is checked behind.
+const DEFINITION_WRAPPER: &str = "| trigger.function | ";
+
 pub(super) fn check_definition_examples(def: &NodeDefinition, defs: &[NodeDefinition]) -> Vec<String> {
     let mut problems = Vec::new();
     let is_trigger = def.input_pins.is_empty();
@@ -460,7 +490,7 @@ pub(super) fn check_definition_examples(def: &NodeDefinition, defs: &[NodeDefini
             let text = if is_trigger || dsl.starts_with('|') || dsl.starts_with('[') {
                 if dsl.starts_with('|') || dsl.starts_with('[') { dsl.to_string() } else { format!("| {dsl}") }
             } else {
-                format!("| trigger.function | {dsl}")
+                format!("{DEFINITION_WRAPPER}{dsl}")
             };
             let whole = Example { line: 0, text, whole: true };
             for problem in check_example(&whole, defs) {

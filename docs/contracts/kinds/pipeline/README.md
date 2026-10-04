@@ -145,8 +145,11 @@ or the engine-wide `error` output. Its target pin must be declared by the target
 instance. Node definitions remain the source used by authoring tools to create
 and validate those instance pins.
 
-Cycles are valid. Zebflow pipelines are directed graphs, not limited to DAGs.
-The engine applies its bounded execution rules at runtime.
+A node runs once, when every edge into it has delivered or been skipped
+(`node-conventions.md` §4), so a cycle would wait for itself and is refused
+at activation, naming it. The one way back is the edge from a
+`logic.retry`'s `retry` pin to the node it retries (a node upstream of the
+retry): it does not count towards readiness and runs that node again.
 
 ### `spec.notes`
 
@@ -285,6 +288,7 @@ promise.
 | Date | Change | Why it was safe |
 | --- | --- | --- |
 | 2026-09-09 | Added `spec.notes` | Optional, defaults to empty, and omitted on write when empty -- so a pipeline that never had notes is not modified by being opened and saved, and the golden fixture still round-trips without drift. No existing field changed meaning. It is a sibling of `nodes` rather than a kind inside it, so nothing that executes changed: a note has no pins, no config, cannot be reached by an edge, and no executor learns to skip it. Notes share the id namespace with nothing -- an id may repeat between a note and a node, because they are different collections. The one break is forward: a pipeline carrying notes is refused by a binary older than this amendment, which is the accepted cost before first release. |
+| 2026-10-04 | A cycle other than a `logic.retry` re-entry is refused at activation | Part of the 0.11 flow decision (`node-conventions.md` §4): a node waits for every edge into it, so any other cycle never ran as written. No field changed; graphs already stored that held one are refused with the cycle named, before first release. |
 
 ## Freeze Evidence
 

@@ -19,7 +19,7 @@
 //! | `trigger.error` | `error: { error_code, error_message, original_path, path, method, request_id, … }` |
 //! | `trigger.room` | `room: { room_id, session_id, event, payload, auth? }` |
 //! | `trigger.socket` | `socket: { trigger, url, node_id, message }` |
-//! | `trigger.topic` | `topic: { trigger, channel, node_id, message }` |
+//! | `trigger.topic` | `topic: { topic, message, node_id }` |
 //!
 //! The same envelope is `$trigger` in every expression, for the whole run
 //! (`metadata.trigger`; the engine falls back to the run's input when an

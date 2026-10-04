@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -189,12 +188,9 @@ impl KvSubscriber {
                                     .as_millis()
                             ),
                             route: String::new(),
-                            input: json!({
-                                "trigger": "kv.subscribe",
-                                "channel": channel_s,
-                                "node_id": node_id_s,
-                                "message": message,
-                            }),
+                            input: crate::pipeline::nodes::basic::trigger::kv_subscribe::envelope(
+                                &channel_s, &node_id_s, message,
+                            ),
                             trigger: None,
                             placeholder: None,
                         };
