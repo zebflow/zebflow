@@ -443,6 +443,57 @@
   };
 
   // ---------------------------------------------------------------------------
+  // zeb/potoru SSR stubs — the player and the compiler are browser-only.
+  // Same markup as the runtime's client components (0.1/runtime/entry.mjs) and
+  // the wrappers (0.1/wrappers/*.tsx), so hydration matches.
+  // ---------------------------------------------------------------------------
+  (function () {
+    function cssSize(value) { return typeof value === 'number' ? value + 'px' : String(value); }
+    function boxStyle(height, aspect) {
+      var style = { width: '100%', display: 'block', position: 'relative' };
+      if (height) style.height = cssSize(height);
+      if (aspect) style.aspectRatio = String(aspect).replace(':', ' / ');
+      return style;
+    }
+    globalThis.PotoruPlayer = function (props) {
+      var p = props || {};
+      var libraries = Array.isArray(p.libraries) ? p.libraries : String(p.libraries || '').split(/[\s,]+/).filter(Boolean);
+      var config = { src: p.src || '' };
+      if (libraries.length) config.libraries = libraries;
+      ['controls', 'autoplay', 'muted', 'loop', 'captions'].forEach(function (k) { if (p[k]) config[k] = true; });
+      ['mode', 'renderer', 'height', 'aspect', 'fit', 'camera'].forEach(function (k) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') config[k] = p[k]; });
+      return h('div', {
+        'data-zeb-lib': 'potoru',
+        'data-zeb-wrapper': 'PotoruPlayer',
+        'data-config': JSON.stringify(config),
+        id: p.id,
+        className: p.className,
+        style: boxStyle(config.height, config.aspect),
+      });
+    };
+    globalThis.PotoruCompiler = function (props) {
+      var p = props || {};
+      var config = { mode: p.mode === 'script' ? 'script' : 'files' };
+      if (p.files) config.files = p.files;
+      if (p.script) config.script = p.script;
+      if (p.height) config.height = p.height;
+      return h('div', {
+        'data-zeb-lib': 'potoru',
+        'data-zeb-wrapper': 'PotoruCompiler',
+        'data-config': JSON.stringify(config),
+        id: p.id,
+        className: p.className,
+        style: boxStyle(config.height || '560px'),
+      });
+    };
+    var browserOnly = function () { return Promise.reject(new Error('zeb/potoru runs in the browser')); };
+    globalThis.mountPotoruPlayer = browserOnly;
+    globalThis.mountPotoruCompiler = browserOnly;
+    globalThis.compile = globalThis.compile || browserOnly;
+    globalThis.potoru = { version: '0.1.0', get: function () { return undefined; }, getCompiler: function () { return undefined; }, mountPotoruPlayer: browserOnly, mountPotoruCompiler: browserOnly, compile: browserOnly, loadPlayer: browserOnly };
+  })();
+
+  // ---------------------------------------------------------------------------
   // Page-state bridge — SSR no-ops.
   // The real implementations are installed by build_client_module in render.rs
   // inside __RweRoot after hydration. These stubs prevent ReferenceError when

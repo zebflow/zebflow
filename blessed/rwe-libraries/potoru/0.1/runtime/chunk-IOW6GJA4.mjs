@@ -1,0 +1,1 @@
+var e;function t(r){e=r}function a(){if(!e)throw new Error("This package draws generators (capability generators); load app/src/runtime/generators.ts before evaluating it.");return e}async function n(){e||await import("./generators-XCIP65C5.mjs")}export{t as a,a as b,n as c};

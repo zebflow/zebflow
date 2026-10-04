@@ -321,17 +321,22 @@ curl -s -b /tmp/zf.txt -X POST -F photo=@/tmp/test_img.png \
   http://localhost:10610/wh/superadmin/default/test/fs-thumb
 ```
 
-The answer is the payload: `webhook: { body, files, … }` plus each node's
-answer — `file` (from `fs.file.put`) and `image`, a FileRef. A node never removes a payload key: with
-`--delete-source` the source object is gone but `file` stays, and
-`image.source_deleted` is `true`. The FileRef:
+This pipeline has no `web.response.send`, so the webhook answers `204 No
+Content` with no body — a run's payload is never sent to the caller on its
+own. To see the result, end the chain with
+`| web.response.send --body "{{ input.image }}"` before registering, or read
+the run's record. The payload at the end is `webhook: { body, files, … }`
+plus each node's answer — `file` (from `fs.file.put`) and `image`, a FileRef.
+A node never removes a payload key: with `--delete-source` the source object
+is gone but `file` stays, and `image.source_deleted` is `true`. The FileRef
+the response answers:
 
 ```json
-{"image":{"__zf_type":"file_ref","backend":"zebfs","store":"local",
+{"__zf_type":"file_ref","backend":"zebfs","store":"local",
   "ref":"test-thumbs/<uuid>.jpg","filename":"<uuid>.jpg","mime":"image/jpeg",
   "kind":"image","size":1723,"sha256":"sha256:...","lifecycle":"durable",
   "origin":"fs.image.thumbnail","trust":"sanitized",
-  "width":200,"height":200,"format":"jpg","source_deleted":true}}
+  "width":200,"height":200,"format":"jpg","source_deleted":true}
 ```
 
 Clean up after yourself — a test pipeline left active is a live webhook:

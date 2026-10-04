@@ -1,6 +1,6 @@
 # Published MCP
 
-Status: **decided for 0.11** — 2026-10-04, by the owner. Code lands in 0.11
+Status: **decided for 0.11** — 2026-10-04, by the owner. Defined in 0.11.0, served from 0.11.1
 (ledger: `zebflow › … › zf-0-11-grammar`).
 
 A project has two MCPs, and they are never mixed:
@@ -33,14 +33,55 @@ A project has two MCPs, and they are never mixed:
 - **`--auth` is required** — publishing is never implicit. `none` must be
   written to publish openly; `jwt`, `api_key` (`--credential`, `--role`) as on
   `trigger.webhook`. Every `trigger.mcp` on one route declares the same auth,
-  or activation refuses the route. The sign-in the ChatGPT and claude.ai
-  connectors use (OAuth: code + PKCE, client registration, consent) is a later
-  `--auth` word on the same routes.
+  or activation refuses the route. `oauth` (below) signs people in through the
+  app's own login, for the ChatGPT and claude.ai connectors.
 - It answers `mcp: { route, tool_name, arguments }` (§6 of
   [Node Conventions](./node-conventions.md)); `$trigger` is that envelope.
-- **The tool result** is what `web.response.send` answers (its `--body`), or the
-  run's value without one; a status of 400 or more is a tool error with that
-  body.
+- **The tool result** is what `web.response.send` answers (its `--body`); a
+  status of 400 or more is a tool error with that body. A run that reaches no
+  `web.response.send` answers an empty result, `{ content: [], isError: false }`
+  — the run's value is never sent on its own (the webhook's `204` rule,
+  [Node Conventions](./node-conventions.md) §4), and `pipeline_check` warns on
+  every path from `trigger.mcp` that ends without one.
+
+## `--auth oauth`
+
+```
+| trigger.mcp --route /library --name search --auth oauth --credential library-jwt --login /auth/login --role reader
+# the app's login pipeline, after it has checked the person:
+| auth.token.create --credential library-jwt --claim "sub=…" --claim "roles=…"
+| auth.oauth.approve --ticket "{{ $trigger.body.oauth }}" --token "{{ input.token.access_token }}" --client "{{ $trigger.body.client }}" --redirect-host "{{ $trigger.body.redirect_host }}"
+```
+
+- The route is an OAuth 2.1 protected resource and its own authorization
+  server (MCP authorization 2026-07-28, compatible with 2025-11-25);
+  `resource` = `issuer` = **R**, the connect URL: `https://{host}{mount}{route}`
+  on a named host, `http://{host}:{port}…` on the dev host,
+  `{ZEBFLOW_PLATFORM_BASE_URL}/mcp/{o}/{p}{route}` on the platform form —
+  which has no OAuth when that is unset. Never read off a forwarded header.
+- `--credential` is a `jwt_signing_key` (refused at activation otherwise): it
+  verifies the app's token at approve and signs the access tokens.
+- `--login` is a path of the app's `pages`, never a URL, never `/_…`. Authorize
+  sends the person there with `?oauth=<ticket>&client=<name>&redirect_host=<host>`;
+  the page shows the last two and posts all three back; `auth.oauth.approve`
+  refuses unless they are the ticket's (§6 of [Node Conventions](./node-conventions.md)).
+
+| Document / endpoint | Where |
+| --- | --- |
+| protected resource metadata (RFC 9728) | `/.well-known/oauth-protected-resource` + the path of R |
+| authorization server metadata (RFC 8414) | `/.well-known/oauth-authorization-server` + the path of R |
+| authorize · token · register (RFC 7591) | `R/_oauth/authorize` · `R/_oauth/token` · `R/_oauth/register` |
+
+- A route segment starting with `_` is refused at activation.
+- No token: 401 with `WWW-Authenticate: Bearer resource_metadata="…", scope="mcp"`
+  (`error="invalid_token"` when one was sent); a missing role is 403.
+- Clients: a client ID metadata document (an `https` `client_id`, fetched
+  under the outbound policy) or RFC 7591 registration; public clients only,
+  PKCE S256 only, `resource` (RFC 8707) checked, `iss` on every authorization
+  response (RFC 9207), redirect URIs matched exactly (a loopback port aside).
+- The access token is a JWT (`typ: at+jwt`) of the approved app token's claims
+  plus `iss`, `aud` = R, `exp` (1 h), `jti`, `client_id`, `scope`; it opens this
+  route only — never another route, never a `jwt` webhook.
 
 ## Rules
 
@@ -49,9 +90,15 @@ A project has two MCPs, and they are never mixed:
   required by or consulted for a published route. It authenticates only with
   the **app's** mechanism, as the app's webhooks do: `api_key` checks a key the
   app keeps in its credentials; `jwt` checks a token the app signed
-  (`auth.token.create`) and `--role` reads that token's roles; the later
-  `oauth` signs people in through the app's own login and users, and its
-  tokens are the app's tokens.
+  (`auth.token.create`) and `--role` reads that token's roles; `oauth` signs
+  people in through the app's own login page and issues the app's JWTs. No
+  Zebflow cookie is read or set anywhere in its flow.
+- OAuth state lives in the project's durable store under `zf.oauth/…` (no
+  `kv.*` node takes a `zf.` key), secrets only as hashes: tickets 10 min and
+  codes 2 min, each used once; refresh tokens rotate, and one presented twice
+  revokes its family; registrations and authorizations are capped per route
+  (`MAX_REGISTRATIONS_PER_DAY`, `MAX_TICKETS_PER_MINUTE` in
+  `services/published_oauth`).
 - A published route serves the MCP protocol for its own tools only: no project
   tool, resource, prompt or skill is ever listed or callable on it, and it
   reaches the project only through what its pipelines do.

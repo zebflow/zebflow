@@ -6,7 +6,8 @@
 //! parser built from the bodies those pipelines were registered with, and
 //! `answers.json` is what its webhook answered each request in
 //! `requests.json`. After the plan is applied, 0.11 must answer every
-//! request the same.
+//! request the same, except a route 0.10 answered with its whole payload:
+//! that one answers 204 and is listed for the owner to review.
 
 use std::sync::Arc;
 
@@ -175,7 +176,11 @@ async fn a_0_10_project_is_planned_applied_and_answers_as_it_did() {
     assert_eq!(plan["counts"]["pages_to_rewrite"], 1);
     assert_eq!(plan["counts"]["unresolved"], 0);
     assert_eq!(plan["counts"]["refusals"], 0);
-    assert_eq!(plan["counts"]["warnings"], 0, "{}", plan["report"].as_str().unwrap_or_default());
+    // The two routes 0.10 answered with their whole payload (no response
+    // node) are left answering 204: warned by the check, listed for review,
+    // never rebuilt as a payload dump (`node-conventions.md` §4).
+    assert_eq!(plan["counts"]["warnings"], 2, "{}", plan["report"].as_str().unwrap_or_default());
+    assert_eq!(plan["counts"]["review"], 2, "{}", plan["report"].as_str().unwrap_or_default());
     let report = send(&app, &cookie, "GET", &format!("/api/projects/{OWNER}/{PROJECT}/migration/0.11/plan?format=markdown"), None).await;
     let report = String::from_utf8_lossy(&to_bytes(report.into_body(), usize::MAX).await.unwrap()).to_string();
     assert!(report.contains("**ready to apply**") && report.contains("```diff"), "{report}");
@@ -226,11 +231,18 @@ async fn a_0_10_project_is_planned_applied_and_answers_as_it_did() {
     );
     assert_eq!(refused.unwrap_err().code, "PLATFORM_PIPELINE_ARCHIVED");
 
-    // Every request is answered as 0.10 answered it.
+    // Every request is answered as 0.10 answered it — except where 0.10
+    // answered the run's whole payload, which 0.11 never sends: 204, empty.
     let expected = fixture("answers.json");
+    const DUMPED: &[&str] = &["hello", "hello-default", "total"];
     for (request, want) in fixture("requests.json").as_array().unwrap().iter().zip(expected.as_array().unwrap()) {
         let got = answer(&app, &cookie, request).await;
-        assert_eq!(&got, want, "{}", request["name"]);
+        let want = if DUMPED.contains(&request["name"].as_str().unwrap()) {
+            json!({ "name": request["name"], "status": 204, "content_type": null, "set_cookie": null, "location": null, "body": "" })
+        } else {
+            want.clone()
+        };
+        assert_eq!(got, want, "{}", request["name"]);
     }
 
     // Idempotent: a second plan finds everything migrated, and applying it

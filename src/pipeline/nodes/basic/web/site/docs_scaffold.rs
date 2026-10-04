@@ -2,10 +2,10 @@
 //! file does not exist yet. The owner edits the written file from then on.
 
 pub(super) fn default_template_source(name: Option<&str>) -> String {
-    let fallback_title = name
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("Docs")
-        .to_string();
+    // Written into the TSX as a JavaScript string literal, never as markup:
+    // a name holding `{`, `}`, `<` or a quote stays text.
+    let fallback_title = serde_json::to_string(name.filter(|s| !s.trim().is_empty()).unwrap_or("Docs"))
+        .unwrap_or_else(|_| "\"Docs\"".to_string());
     format!(
         r##"import {{ useState, useEffect, useMemo, useCallback }} from "zeb/react";
 import Markdown from "zeb/markdown";
@@ -267,12 +267,12 @@ export default function DocsTemplate(input) {{
       <style>{{DOCS_MARKDOWN_CSS}}</style>
       <div class="min-h-screen bg-white text-slate-900 lg:h-screen lg:overflow-hidden">
         <div class="border-b border-slate-200 px-4 py-3 lg:hidden">
-          <a href={{input.site?.home_path || input.site?.deploy_base_path || input.site?.base_path || "/"}} class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{fallback_title}</a>
+          <a href={{input.site?.home_path || input.site?.deploy_base_path || input.site?.base_path || "/"}} class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{{{fallback_title}}}</a>
           <div class="mt-1 text-lg font-bold tracking-tight">{{page.title || input.site?.title || "Docs"}}</div>
         </div>
         <div class="lg:grid lg:h-screen lg:grid-cols-12">
           <aside class="border-b border-slate-200 px-4 py-4 lg:col-span-3 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:px-5 lg:py-5">
-            <div class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{fallback_title}</div>
+            <div class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{{{fallback_title}}}</div>
               <div class="mt-3">
                 <input
                   type="search"

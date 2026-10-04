@@ -177,9 +177,11 @@ fn weberror(n: &mut NodeRewrite<'_>) {
         Some(Value::Number(code)) => n.set("status", Value::Number(code)),
         Some(Value::String(code)) if code.trim().parse::<u16>().is_ok() => n.set("status", json!(code.trim().parse::<u16>().unwrap_or(0))),
         Some(Value::String(code)) if code.trim() == "*" => n.note("code * dropped (no --status catches every error)"),
-        Some(other) => n.unresolved(format!(
-            "code {other} is a range; trigger.error documents ranges for --status, but the 0.11 save-time check takes a number only — a 0.11 defect to fix before this pipeline can move"
-        )),
+        // A class of statuses, `4xx` or `5xx`, is kept as written.
+        Some(Value::String(code)) if matches!(code.trim().to_ascii_lowercase().as_str(), "4xx" | "5xx") => {
+            n.set("status", Value::String(code.trim().to_ascii_lowercase()))
+        }
+        Some(other) => n.unresolved(format!("code {other} is not a status (404) or a class of them (4xx, 5xx)")),
     }
 }
 
@@ -288,7 +290,9 @@ fn call_output(config: &Config, context: &RewriteContext) -> OldOutput {
 }
 
 fn call_error(_: &Config) -> OldOutput {
-    // v0.10.12 answered `{ error: "CODE: message" }` on its error pin.
+    // v0.10.12 answered `{ error: "CODE: message" }` on its error pin; 0.11
+    // fails the node, and the engine delivers the payload kept plus
+    // `result: { ok: false, error: { code, message } }`.
     OldOutput::replace(&[("error", "=`${@.result.error.code}: ${@.result.error.message}`")], None)
 }
 

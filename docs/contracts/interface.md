@@ -590,7 +590,13 @@ coverage claim becomes false.
 | Remote-hub far end | 9 | `/api/hub/remote/*` plus the four `artifact` / `artifacts/{sha256}` byte fetches. These answer *another* instance holding a publisher token or a digest. Nothing in this instance's own UI or CLI calls them; they are the server half of an operation whose client half is counted under `hub`. `distribution.md` §2 names the byte fetch `artifact()`, one of three calls behind the repository interface, and it is the one no person makes. |
 | Second spellings | 5 | One operation reachable two ways: `POST /home/projects/create` is the form twin of `POST /api/users/{owner}/projects`; `POST …/files/access` of the `PUT`; `PUT …/credentials/{id}` of `POST …/credentials`; `PUT …/db/connections/{slug}` of `POST …/db/connections`; and `GET …/hub/assets/preview` is literally the same handler as `GET …/hub/publish-preview`. |
 | Liveness and readiness | 2 | `/health` and `/ready`. Probes. The three routes on the dedicated health server are a separate router and are not in the 222 at all. |
-| Protocol discovery | 3 | The two `/.well-known/oauth-*` documents and `/oauth/callback`. Transport for an OAuth exchange a person starts elsewhere. |
+| Protocol discovery | 1 | `/oauth/callback`. Transport for an OAuth exchange a person starts elsewhere. A published MCP route's OAuth documents and endpoints answer on the `mcp` surface ([Published MCP](./published-mcp.md)), not here. |
+
+Not yet recounted (0.11.1): the two root `/.well-known/oauth-*` handlers
+are deleted (the dev MCP has no OAuth), and the published MCP surface added
+public ingress — `/mcp/{o}/{p}/…`, its worker hop, and the four
+`/.well-known/oauth-*/mcp/{o}/{p}/…` documents of an `--auth oauth` route.
+The totals above predate both.
 
 `POST /login` and `POST /logout` are **not** excluded. They are session
 operations with CLI counterparts, and §8.4 records that one of those

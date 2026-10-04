@@ -45,6 +45,9 @@ pub struct Rule {
     pub output: fn(&Config, &RewriteContext) -> OldOutput,
     /// What its `error` pin carried in 0.10.
     pub error_output: fn(&Config) -> OldOutput,
+    /// 0.10 delivered its own failure on `error` and, with that pin
+    /// unwired, carried on as if nothing failed; 0.11 fails the node.
+    pub self_routed: bool,
     /// Config keys holding code or a bare expression (no `{{ }}`).
     pub code_keys: &'static [(&'static str, Code)],
     /// The config rewrite.
@@ -57,7 +60,7 @@ impl Rule {
         output: fn(&Config, &RewriteContext) -> OldOutput,
         rewrite: fn(&mut NodeRewrite<'_>),
     ) -> Self {
-        Rule { new_kind: NewKind::Fixed(new_kind), output, error_output: engine_error, code_keys: &[], rewrite }
+        Rule { new_kind: NewKind::Fixed(new_kind), output, error_output: engine_error, self_routed: false, code_keys: &[], rewrite }
     }
 
     pub fn by(
@@ -65,7 +68,7 @@ impl Rule {
         output: fn(&Config, &RewriteContext) -> OldOutput,
         rewrite: fn(&mut NodeRewrite<'_>),
     ) -> Self {
-        Rule { new_kind: NewKind::By(new_kind), output, error_output: engine_error, code_keys: &[], rewrite }
+        Rule { new_kind: NewKind::By(new_kind), output, error_output: engine_error, self_routed: false, code_keys: &[], rewrite }
     }
 
     pub fn code(mut self, keys: &'static [(&'static str, Code)]) -> Self {
@@ -75,6 +78,7 @@ impl Rule {
 
     pub fn errors(mut self, error_output: fn(&Config) -> OldOutput) -> Self {
         self.error_output = error_output;
+        self.self_routed = true;
         self
     }
 
@@ -120,8 +124,8 @@ pub fn rule(kind: &str) -> Option<Rule> {
         .or_else(|| composite::rule(kind))
 }
 
-/// The engine's failure envelope: what a failed node's `error` pin carried
-/// in 0.10 and still carries in 0.11.
+/// The engine's failure: what a failed node's `error` pin carried in 0.10,
+/// rewritten to where 0.11 delivers it (`OldOutput::ErrorEnvelope`).
 pub fn engine_error(_: &Config) -> OldOutput {
     OldOutput::ErrorEnvelope
 }

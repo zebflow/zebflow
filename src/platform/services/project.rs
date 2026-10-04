@@ -1212,6 +1212,26 @@ impl ProjectService {
             published.extend(other.mcp_triggers.into_iter().map(|spec| (meta.file_rel_path.clone(), spec)));
         }
         for spec in &candidate.mcp_triggers {
+            // `oauth` verifies the app's tokens and signs access tokens with
+            // one key: a `jwt_signing_key` of this project, there now.
+            if spec.auth_type == "oauth" {
+                let kind = self
+                    .data
+                    .get_project_credential(owner, project, &slug_segment(&spec.auth_credential))?
+                    .map(|credential| credential.kind);
+                if kind.as_deref() != Some("jwt_signing_key") {
+                    return Err(PlatformError::new(
+                        crate::pipeline::nodes::basic::trigger::mcp_trigger::CONFIG_CODE,
+                        format!(
+                            "MCP route {} in pipeline '{}': --auth oauth needs --credential naming a jwt_signing_key of this project; '{}' is {}",
+                            spec.route,
+                            candidate.file_rel_path,
+                            spec.auth_credential,
+                            kind.map(|k| format!("a {k}")).unwrap_or_else(|| "not a credential of this project".to_string())
+                        ),
+                    ));
+                }
+            }
             for (file, other) in published.iter().filter(|(_, other)| other.route == spec.route) {
                 if other.tool_name == spec.tool_name {
                     return Err(PlatformError::new(
@@ -3481,13 +3501,17 @@ fn stable_hash_hex(input: &str) -> String {
     format!("{:x}", Sha256::digest(input.as_bytes()))
 }
 
-/// A route's guard as a person reads it: `api_key (shop-key)`, `jwt (jwt_main, roles editor)`.
+/// A route's guard as a person reads it: `api_key (shop-key)`, `jwt (jwt_main, roles editor)`,
+/// `oauth (library-jwt, login /auth/login)`.
 fn describe_guard(spec: &crate::platform::services::pipeline_runtime::McpTriggerSpec) -> String {
     let mut out = spec.auth_type.clone();
     if !spec.auth_credential.is_empty() {
         out.push_str(&format!(" ({}", spec.auth_credential));
         if !spec.auth_required_role.is_empty() {
             out.push_str(&format!(", roles {}", spec.auth_required_role.join(" ")));
+        }
+        if !spec.login.is_empty() {
+            out.push_str(&format!(", login {}", spec.login));
         }
         out.push(')');
     }

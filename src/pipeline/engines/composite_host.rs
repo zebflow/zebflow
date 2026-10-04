@@ -25,8 +25,9 @@
 //!
 //! [`PipelineOutput::function_result`]: crate::pipeline::model::PipelineOutput::function_result
 //! - A WASM node's result is what its export returned.
-//! - A failed function delivers `error` with
-//!   `<noun>: { ok: false, error: { code, message } }`, the payload kept.
+//! - A failed function is the node failing, with the function's code and
+//!   message: a wired `:error` receives it, otherwise the run fails there
+//!   (`node-conventions.md` §4).
 //! - A trigger answers its source (`trigger.telegram` → `telegram`): its
 //!   handler's result, or — without a handler, or when the handler fails —
 //!   what the ingress delivered, so an event is never dropped.
@@ -135,7 +136,7 @@ pub(super) async fn execute_installed_node(
         NodePackageSource::Composite => {
             let output =
                 execute_composite_node(&kind, &key, &manifest, &config, &platform, egress, input)
-                    .await;
+                    .await?;
             Ok(vec![output])
         }
         NodePackageSource::Declarative => Err(PipelineError::new(
@@ -404,6 +405,9 @@ async fn execute_installed_trigger(
 }
 
 /// Runs a composite node's function and answers its result under the noun.
+/// A function that cannot be loaded or fails is this node failing, like any
+/// node (`node-conventions.md` §4): the engine delivers it to a wired
+/// `:error`, otherwise the run fails here.
 async fn execute_composite_node(
     kind: &str,
     key: &str,
@@ -412,24 +416,16 @@ async fn execute_composite_node(
     platform: &Arc<crate::platform::services::PlatformService>,
     egress: Option<Arc<BundleEgress>>,
     input: NodeExecutionInput,
-) -> NodeExecutionOutput {
+) -> Result<NodeExecutionOutput, PipelineError> {
     let (owner, project) = scope_of(&input);
-    let failed = |code: &str, message: &str, trace: String| NodeExecutionOutput {
-        output_pins: vec!["error".to_string()],
-        payload: answered(
-            &input.payload,
-            key,
-            json!({ "ok": false, "error": { "code": code, "message": message } }),
-        ),
-        trace: vec![trace],
-    };
+    // The function's own code and message, owned by this node: the engine
+    // attributes it here, not to a node of the function's graph.
+    let failed = |e: PipelineError| PipelineError::new(e.code, e.message);
 
-    let graph = match platform.node_registry.load_composite_pipeline(&owner, &project, kind) {
-        Ok(graph) => graph,
-        Err(e) => {
-            return failed(&e.code, &e.message, format!("composite '{kind}' load error: {}", e.message));
-        }
-    };
+    let graph = platform
+        .node_registry
+        .load_composite_pipeline(&owner, &project, kind)
+        .map_err(|e| PipelineError::new(e.code, e.message))?;
 
     let placeholder_map = build_composite_placeholder_map(kind, config, &owner, &project, platform);
     let ctx = run_context(
@@ -441,18 +437,12 @@ async fn execute_composite_node(
         placeholder_map,
     );
 
-    match bundle_engine(&owner, &project, platform, egress).execute_async(&graph, &ctx).await {
-        Ok(output) => NodeExecutionOutput {
-            output_pins: vec!["out".to_string()],
-            payload: answered(&input.payload, key, output.function_result()),
-            trace: vec![format!("composite '{kind}' ok")],
-        },
-        Err(e) => failed(
-            &e.code,
-            &e.message,
-            format!("composite '{kind}' error: {} — {}", e.code, e.message),
-        ),
-    }
+    let output = bundle_engine(&owner, &project, platform, egress).execute_async(&graph, &ctx).await.map_err(failed)?;
+    Ok(NodeExecutionOutput {
+        output_pins: vec!["out".to_string()],
+        payload: answered(&input.payload, key, output.function_result()),
+        trace: vec![format!("composite '{kind}' ok")],
+    })
 }
 
 /// Builds a placeholder name → resolved value map from a composite node's
@@ -759,18 +749,16 @@ mod tests {
         std::fs::write(package_dir.join("functions/main.zf.json"), bytes).expect("function");
     }
 
-    /// A failed bundle node's `code: message`, from the `{ ok: false, error }`
-    /// it answers under its noun (`result` for these `x.<slug>.result.call`
-    /// fixtures); empty when it did not fail.
-    fn failure(payload: &Value) -> String {
-        let error = &payload["result"]["error"];
-        match (error["code"].as_str(), error["message"].as_str()) {
-            (Some(code), Some(message)) => format!("{code}: {message}"),
-            _ => String::new(),
+    /// A failed bundle node's `code: message` — the node fails with its
+    /// function's error; empty when it did not fail.
+    fn failure(ran: &Result<Value, crate::pipeline::model::PipelineError>) -> String {
+        match ran {
+            Ok(_) => String::new(),
+            Err(e) => format!("{}: {}", e.code, e.message),
         }
     }
 
-    async fn run_bundle_node(platform: &Arc<PlatformService>, slug: &str) -> Value {
+    async fn run_bundle_node(platform: &Arc<PlatformService>, slug: &str) -> Result<Value, crate::pipeline::model::PipelineError> {
         let outputs = super::execute_installed_node(
             format!("x.{slug}.result.call"),
             json!({}),
@@ -784,9 +772,8 @@ mod tests {
                 bus: None,
             },
         )
-        .await
-        .expect("the composite node itself dispatches");
-        outputs.into_iter().next().expect("one emission").payload
+        .await?;
+        Ok(outputs.into_iter().next().expect("one emission").payload)
     }
 
     /// The hole `spec.hosts` was declared to close: a bundle names one host and
@@ -996,11 +983,12 @@ mod tests {
             .refresh_project(OWNER, PROJECT)
             .expect("bundle registers");
 
-        let payload = run_bundle_node(&platform, "scriptpkg").await;
+        let ran = run_bundle_node(&platform, "scriptpkg").await;
         assert!(
-            !failure(&payload).contains("FW_EGRESS"),
-            "no egress guard has anything to say about a sandbox that cannot fetch, got: {payload}"
+            !failure(&ran).contains("FW_EGRESS"),
+            "no egress guard has anything to say about a sandbox that cannot fetch, got: {ran:?}"
         );
+        let payload = ran.expect("the script ran");
         assert_eq!(
             payload["result"],
             json!({ "ok": true }),
@@ -1341,34 +1329,28 @@ mod answer_tests {
     }
 
     #[tokio::test]
-    async fn telegram_refusals_answer_under_message_on_the_error_pin() {
+    async fn telegram_refusals_fail_the_node_with_the_functions_reason() {
         let bundles = telegram();
-        let (pins, payload) = run(
+        let failed = run(
             &bundles.platform,
             "x.tgcopy.message.send",
             json!({ "credential_id": "bot", "recipient": 1, "text": "t", "image": "https://example.com/a.jpg", "file": "f" }),
             json!({ "kept": 1 }),
         )
         .await
-        .expect("delivers");
-        assert_eq!(pins, ["error"]);
-        assert_eq!(keys(&payload), ["kept", "message"]);
-        assert_eq!(payload["message"]["ok"], false);
-        assert!(payload["message"]["error"]["message"].as_str().unwrap_or_default().contains("not both"), "{payload}");
+        .expect_err("a failed function fails the node");
+        assert!(failed.message.contains("not both"), "{failed:?}");
+        assert!(failed.node_id.is_none(), "the engine attributes it to the bundle node, not an inner one: {failed:?}");
 
-        let (pins, payload) = run(
+        let failed = run(
             &bundles.platform,
             "x.tgcopy.message.send",
             json!({ "credential_id": "bot", "recipient": "refuse", "text": "t" }),
             json!({}),
         )
         .await
-        .expect("delivers");
-        assert_eq!(pins, ["error"]);
-        assert!(
-            payload["message"]["error"]["message"].as_str().unwrap_or_default().contains("chat not found"),
-            "Telegram's own reason is kept: {payload}"
-        );
+        .expect_err("a failed function fails the node");
+        assert!(failed.message.contains("chat not found"), "Telegram's own reason is kept: {failed:?}");
 
         for (config, flag) in [
             (json!({ "credential_id": "bot", "recipient": 1, "text": "t", "format": "markdownv2" }), "--format"),
@@ -1380,6 +1362,56 @@ mod answer_tests {
             assert_eq!(refused.code, "FW_NODE_PACKAGE_CONFIG");
             assert!(refused.message.contains(flag), "{}", refused.message);
         }
+    }
+
+    /// A composite's failure is routed by the engine like any node's
+    /// (`node-conventions.md` §4, §6): a wired `:error` receives the payload
+    /// kept, plus the composite's noun answering `{ ok: false, error }`.
+    #[tokio::test]
+    async fn a_composite_failure_is_routed_under_its_noun_with_the_payload_kept() {
+        use crate::pipeline::PipelineContext;
+        use crate::pipeline::engines::basic::BasicPipelineEngine;
+        use crate::pipeline::interface::PipelineEngine;
+
+        let bundles = telegram();
+        let graph: crate::pipeline::model::PipelineGraph = serde_json::from_value(json!({
+            "id": "composite-routed",
+            "nodes": [
+                { "id": "a", "kind": "trigger.manual", "input_pins": [], "output_pins": ["out"], "config": {} },
+                { "id": "m", "kind": "x.tgcopy.message.send", "input_pins": ["in"], "output_pins": ["out"],
+                  "config": { "credential_id": "bot", "recipient": "refuse", "text": "t" } },
+                { "id": "h", "kind": "javascript.script.run", "input_pins": ["in"], "output_pins": ["out"],
+                  "config": { "source": "return { ok: input.message.ok, code: input.message.error.code, message: input.message.error.message, kept: input.manual.kept };" } },
+            ],
+            "edges": [
+                { "from_node": "a", "from_pin": "out", "to_node": "m", "to_pin": "in" },
+                { "from_node": "m", "from_pin": "error", "to_node": "h", "to_pin": "in" },
+            ],
+        }))
+        .expect("graph");
+        let ctx = PipelineContext {
+            owner: OWNER.into(),
+            project: PROJECT.into(),
+            pipeline: "composite-routed".into(),
+            request_id: "composite-routed-run".into(),
+            route: String::new(),
+            input: json!({ "kept": 1 }),
+            trigger: None,
+            placeholder: None,
+        };
+        let platform: Arc<PlatformService> = (*bundles.platform).clone();
+        let out = BasicPipelineEngine::default()
+            .with_platform(platform)
+            .execute_async(&graph, &ctx)
+            .await
+            .expect("a wired :error handles it");
+        let got = &out.value["script"];
+        assert_eq!(got["ok"], false, "{}", out.value);
+        assert!(got["code"].as_str().is_some_and(|c| !c.is_empty()), "{}", out.value);
+        assert!(got["message"].as_str().unwrap_or_default().contains("chat not found"), "{}", out.value);
+        assert_eq!(got["kept"], 1, "the payload the composite received is kept: {}", out.value);
+        let m = out.node_trace.iter().find(|t| t.node_id == "m").expect("traced");
+        assert_eq!(m.status, "error_routed");
     }
 
     #[tokio::test]

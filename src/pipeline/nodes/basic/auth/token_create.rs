@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use jsonwebtoken::Header;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -347,26 +347,15 @@ impl NodeHandler for Node {
             ));
         }
 
-        let algorithm_str = credential
-            .secret
-            .get("algorithm")
-            .and_then(|v| v.as_str())
-            .unwrap_or("HS256");
-
-        let algorithm = match algorithm_str {
-            "HS256" | "hs256" => Algorithm::HS256,
-            "HS384" | "hs384" => Algorithm::HS384,
-            "HS512" | "hs512" => Algorithm::HS512,
-            "RS256" | "rs256" => Algorithm::RS256,
-            "RS384" | "rs384" => Algorithm::RS384,
-            "RS512" | "rs512" => Algorithm::RS512,
-            other => {
-                return Err(PipelineError::new(
-                    "FW_NODE_AUTH_TOKEN_CREATE_ALGORITHM",
-                    format!("unsupported JWT algorithm '{}'", other),
-                ));
-            }
-        };
+        let (algorithm, key) = super::sign::encoding_key(&credential.secret).map_err(|err| {
+            let code = match err {
+                super::sign::KeyError::Algorithm(_) => "FW_NODE_AUTH_TOKEN_CREATE_ALGORITHM",
+                super::sign::KeyError::SecretMissing => "FW_NODE_AUTH_TOKEN_CREATE_SECRET_MISSING",
+                super::sign::KeyError::KeyMissing(_) => "FW_NODE_AUTH_TOKEN_CREATE_KEY_MISSING",
+                super::sign::KeyError::KeyInvalid(_) => "FW_NODE_AUTH_TOKEN_CREATE_KEY_INVALID",
+            };
+            PipelineError::new(code, err.to_string())
+        })?;
 
         // --- Build claims from input payload ---
         let mut claims_map = Map::new();
@@ -409,49 +398,8 @@ impl NodeHandler for Node {
         let header = Header::new(algorithm);
         let claims_val = Value::Object(claims_map);
 
-        let token = match algorithm {
-            Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
-                let secret = credential
-                    .secret
-                    .get("secret")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        PipelineError::new(
-                            "FW_NODE_AUTH_TOKEN_CREATE_SECRET_MISSING",
-                            "jwt_signing_key credential missing 'secret' field",
-                        )
-                    })?;
-                jsonwebtoken::encode(
-                    &header,
-                    &claims_val,
-                    &EncodingKey::from_secret(secret.as_bytes()),
-                )
-                .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_SIGN", err.to_string()))?
-            }
-            Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
-                let pem = credential
-                    .secret
-                    .get("private_key")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        PipelineError::new(
-                            "FW_NODE_AUTH_TOKEN_CREATE_KEY_MISSING",
-                            "jwt_signing_key credential missing 'private_key' field",
-                        )
-                    })?;
-                let key = EncodingKey::from_rsa_pem(pem.as_bytes()).map_err(|err| {
-                    PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_KEY_INVALID", err.to_string())
-                })?;
-                jsonwebtoken::encode(&header, &claims_val, &key)
-                    .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_SIGN", err.to_string()))?
-            }
-            _ => {
-                return Err(PipelineError::new(
-                    "FW_NODE_AUTH_TOKEN_CREATE_ALGORITHM",
-                    "unsupported JWT algorithm variant",
-                ));
-            }
-        };
+        let token = jsonwebtoken::encode(&header, &claims_val, &key)
+            .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_SIGN", err.to_string()))?;
 
         let output = json!({ "token": {
             "access_token": token,
@@ -464,8 +412,8 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, output),
             trace: vec![format!(
-                "auth.token.create: signed {} token, exp +{}s",
-                algorithm_str, expires_in
+                "auth.token.create: signed {:?} token, exp +{}s",
+                algorithm, expires_in
             )],
         })
     }

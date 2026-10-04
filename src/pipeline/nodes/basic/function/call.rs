@@ -3,8 +3,9 @@
 //! # Pipeline position
 //!
 //! Middleware node. Calls another active pipeline that starts with `trigger.function`.
-//! On success routes through `out`; on failure (pipeline not found, execution error)
-//! routes through `error`.
+//! On success routes through `out`. A failed call (the function missing, inactive
+//! or failed) is this node failing, like any node (`node-conventions.md` §4): the
+//! engine delivers it to a wired `:error`, otherwise the run fails here.
 //!
 //! # User-facing config
 //! | Field | Type | Required | Description |
@@ -22,7 +23,8 @@
 //! - **Input:** any payload; only `--argument` reaches the function
 //! - **Output `out`:** the payload plus `result`, the function's result: its last node's
 //!   answer (`PipelineOutput::function_result` — the rule composite nodes share)
-//! - **Output `error`:** the payload plus `result: { ok: false, error: { code, message } }`
+//! - **Failure:** the function's own error (`FW_FUNCTION_NOT_FOUND`, or the code
+//!   its failing node raised), through the engine's `:error` path
 
 use std::sync::Arc;
 
@@ -73,12 +75,13 @@ pub fn definition() -> NodeDefinition {
             or one `{{ object }}` (`--argument \"{{ { email: $trigger.body.email } }}\"`); without it the function receives `{}` and \
             answers under its trigger's key, `function`. `out` adds `result` — the function's result: what its last node answered (a \
             `javascript.script.run` ending the function answers `script`, so `result` is that value; a last `logic.*` node leaves the \
-            function's final payload without `function`) — and keeps the caller's payload. `error` adds `result: { ok: false, error: { code, message } }` when the function is missing, inactive or failed."
+            function's final payload without `function`) — and keeps the caller's payload. A call to a function that is missing, inactive or failed \
+            fails this node like any other: a wired `:error` receives the failure, otherwise the run fails here."
             .to_string(),
         input_pins: vec!["in".to_string()],
-        output_pins: vec!["out".to_string(), "error".to_string()],
+        output_pins: vec!["out".to_string()],
         output_schema: serde_json::json!({
-            "description": "On `out`: the payload plus `result`, what the called function's last node answered. On `error`: the payload plus `result: { ok: false, error: { code, message } }`.",
+            "description": "The payload plus `result`, what the called function's last node answered. A failed call fails the node.",
             "properties": { "result": {} }
         }),
         config_schema: serde_json::json!({
@@ -169,7 +172,7 @@ impl NodeHandler for Node {
     }
 
     fn output_pins(&self) -> &'static [&'static str] {
-        &["out", "error"]
+        &["out"]
     }
 
     async fn execute_async(
@@ -208,27 +211,20 @@ impl NodeHandler for Node {
 
         let call_input = call_arguments(&self.config.argument);
 
-        match platform
+        // A failed call is this node's failure, never a delivery of its own:
+        // the engine routes it to a wired `:error` or fails the run (§4).
+        // The failure is this node's: the function's own code and message,
+        // attributed by the engine to this node rather than to a node of the
+        // function's graph.
+        let result = platform
             .execute_function_pipeline(&owner, &project, &slug, call_input)
             .await
-        {
-            Ok(result) => Ok(NodeExecutionOutput {
-                output_pins: vec!["out".to_string()],
-                payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "result": result })),
-                trace: vec![format!("function.result.call: '{}' ok", slug)],
-            }),
-            Err(e) => Ok(NodeExecutionOutput {
-                output_pins: vec!["error".to_string()],
-                payload: crate::pipeline::nodes::shared::util::with_answer(
-                    &input.payload,
-                    serde_json::json!({ "result": { "ok": false, "error": { "code": e.code, "message": e.message } } }),
-                ),
-                trace: vec![format!(
-                    "function.result.call: '{}' error: {} — {}",
-                    slug, e.code, e.message
-                )],
-            }),
-        }
+            .map_err(|e| PipelineError::new(e.code, e.message))?;
+        Ok(NodeExecutionOutput {
+            output_pins: vec!["out".to_string()],
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "result": result })),
+            trace: vec![format!("function.result.call: '{}' ok", slug)],
+        })
     }
 }
 
@@ -249,7 +245,7 @@ mod tests {
 
     /// `result` is what the function's last node answered — the rule a
     /// composite node's answer shares — and the caller's payload is kept; a
-    /// missing function answers `result: { ok: false, error }` on `error`.
+    /// missing function is the node failing, never a delivery on a pin.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_result_is_the_functions_last_answer_under_result() {
         use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
@@ -294,11 +290,10 @@ mod tests {
                     bus: None,
                 })
                 .await
-                .expect("delivers")
             }
         };
 
-        let out = call("find-user").await;
+        let out = call("find-user").await.expect("delivers");
         assert_eq!(out.output_pins, ["out"]);
         assert_eq!(
             out.payload,
@@ -306,10 +301,60 @@ mod tests {
             "the last node's answer, not the function's whole payload"
         );
 
-        let out = call("no-such-function").await;
-        assert_eq!(out.output_pins, ["error"]);
-        assert_eq!(out.payload["kept"], 1);
-        assert_eq!(out.payload["result"]["ok"], false);
-        assert_eq!(out.payload["result"]["error"]["code"], "FW_FUNCTION_NOT_FOUND");
+        let failed = call("no-such-function").await.err().expect("a missing function fails the node");
+        assert_eq!(failed.code, "FW_FUNCTION_NOT_FOUND");
+    }
+
+    /// A failed call goes the way every node's failure goes (§4): a wired
+    /// `:error` receives it from the engine, and with nothing wired the run
+    /// fails at the call instead of carrying on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_call_is_routed_by_the_engine_or_fails_the_run() {
+        use std::sync::Arc;
+
+        use crate::pipeline::engines::basic::BasicPipelineEngine;
+        use crate::pipeline::{PipelineContext, PipelineEngine};
+
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let run = |dsl: &'static str| {
+            let platform: Arc<_> = (*platform).clone();
+            async move {
+                let graph = crate::platform::shell::parser::build_pipeline_graph("caller", dsl).expect("graph");
+                let ctx = PipelineContext {
+                    owner: "superadmin".into(),
+                    project: "default".into(),
+                    pipeline: "caller".into(),
+                    request_id: "caller-run".into(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                    placeholder: None,
+                };
+                BasicPipelineEngine::default().with_platform(platform).execute_async(&graph, &ctx).await
+            }
+        };
+
+        let routed = run("[a] trigger.manual\n\
+                          [c] function.result.call --function no-such-function\n\
+                          [h] javascript.script.run -- \"return { code: input.result.error.code, message: input.result.error.message, kept: input.manual };\"\n\
+                          [after] javascript.script.run -- \"return 'carried on';\"\n\
+                          [a] -> [c]\n[c] -> [after]\n[c]:error -> [h]\n")
+        .await
+        .expect("a wired :error handles it");
+        assert_eq!(routed.value["script"]["code"], "FW_FUNCTION_NOT_FOUND", "{}", routed.value);
+        assert!(routed.value["script"]["kept"].is_object(), "the caller's payload is kept beside `result`: {}", routed.value);
+        assert!(routed.value["script"]["message"].as_str().unwrap_or_default().contains("no-such-function"), "{}", routed.value);
+        let c = routed.node_trace.iter().find(|t| t.node_id == "c").expect("traced");
+        assert_eq!(c.status, "error_routed");
+        assert_eq!(routed.node_trace.iter().find(|t| t.node_id == "after").map(|t| t.status.as_str()), Some("skipped"));
+
+        let failed = run("[a] trigger.manual\n\
+                          [c] function.result.call --function no-such-function\n\
+                          [after] javascript.script.run -- \"return 'carried on';\"\n\
+                          [a] -> [c]\n[c] -> [after]\n")
+        .await
+        .expect_err("nothing wired: the run fails at the call");
+        assert_eq!(failed.code, "FW_FUNCTION_NOT_FOUND");
+        assert_eq!(failed.node_id.as_deref(), Some("c"), "attributed to the call, not to a node of the function");
     }
 }

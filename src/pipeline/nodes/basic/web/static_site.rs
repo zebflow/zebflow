@@ -78,8 +78,8 @@ impl SiteStore<'_> {
             Ok(()) => Ok(()),
             Err(err) if err.code == "ZEBFS_NOT_FOUND" => Ok(()),
             Err(err) => Err(PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_ASSET_DELETE",
-                format!("failed deleting stale asset '{key}': {err}"),
+                "FW_NODE_WEB_SITE_GENERATE_DELETE",
+                format!("failed deleting stale file '{key}': {err}"),
             )),
         }
     }
@@ -217,7 +217,8 @@ pub fn site_manifest_rel_path(site_root_rel: &str) -> String {
 
 /// The origin a site folder is served on: the first `serve` origin of the
 /// `public_execute` rule covering it (`node-conventions.md` §7). A site with
-/// no such rule has no origin, and writes host-relative links only.
+/// no such rule has no origin, and writes host-relative links only. An origin
+/// is scheme, host and port: the rule's trailing `/` is not part of it.
 pub fn site_origin(
     platform: Option<&std::sync::Arc<crate::platform::services::PlatformService>>,
     owner: &str,
@@ -229,7 +230,7 @@ pub fn site_origin(
     if rule.access != crate::zebfs::acl::ZebFsAccess::PublicExecute {
         return None;
     }
-    rule.serve.first().cloned()
+    normalize_deploy_base_url(rule.serve.first().map(String::as_str))
 }
 
 pub fn normalize_deploy_base_url(raw: Option<&str>) -> Option<String> {
@@ -303,6 +304,48 @@ pub fn absolute_deploy_url(base_url: Option<&str>, route_path: &str) -> Option<S
     normalize_deploy_base_url(base_url).map(|base| format!("{base}{route_path}"))
 }
 
+/// The platform asset URLs a rendered page links, each with where its copy
+/// lives inside the site.
+fn page_asset_origins(
+    html: &str,
+    asset_sources: &StaticAssetSources<'_>,
+) -> Result<Vec<(String, AssetOrigin)>, PipelineError> {
+    collect_static_asset_refs(html, asset_sources.owner, asset_sources.project)
+        .into_iter()
+        .map(|asset_url| {
+            let origin = AssetOrigin::from_url(&asset_url, asset_sources.owner, asset_sources.project).ok_or_else(|| {
+                PipelineError::new(
+                    "FW_NODE_WEB_SITE_GENERATE_ASSET_URL",
+                    format!("unsupported static asset reference '{asset_url}'"),
+                )
+            })?;
+            Ok((asset_url, origin))
+        })
+        .collect()
+}
+
+/// The page's HTML with every platform asset URL pointed at its copy under
+/// `_assets/`, relative to the page — without writing anything, so a caller
+/// can decide about a conflict before the first byte lands
+/// ([`localize_static_html_assets`] writes the copies).
+pub fn relink_static_html(
+    page_output_path: &str,
+    html: &str,
+    asset_sources: &StaticAssetSources<'_>,
+) -> Result<String, PipelineError> {
+    let origins = page_asset_origins(html, asset_sources)?;
+    if origins.is_empty() {
+        return Ok(html.to_string());
+    }
+    let page_output_path = normalize_page_output_path(page_output_path)?;
+    let mut rewritten = html.to_string();
+    for (asset_url, origin) in origins {
+        rewritten = rewritten.replace(&asset_url, &relative_href(&page_output_path, &origin.local_rel_path()));
+    }
+    Ok(rewritten)
+}
+
+/// [`relink_static_html`], and the copies it links written under `_assets/`.
 pub fn localize_static_html_assets(
     site: &SiteStore<'_>,
     page_output_path: &str,
@@ -310,42 +353,14 @@ pub fn localize_static_html_assets(
     asset_sources: StaticAssetSources<'_>,
     asset_group: &str,
 ) -> Result<LocalizedStaticHtml, PipelineError> {
-    let refs = collect_static_asset_refs(html, asset_sources.owner, asset_sources.project);
-    if refs.is_empty() {
-        return Ok(LocalizedStaticHtml {
-            html: html.to_string(),
-            assets: Vec::new(),
-        });
-    }
-
-    let page_output_path = normalize_page_output_path(page_output_path)?;
-    let mut rewritten = html.to_string();
     let mut asset_records = Vec::new();
     let mut written = BTreeSet::new();
-    for asset_url in refs {
-        let origin = AssetOrigin::from_url(&asset_url, asset_sources.owner, asset_sources.project)
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_WEB_SITE_GENERATE_ASSET_URL",
-                    format!("unsupported static asset reference '{asset_url}'"),
-                )
-            })?;
-        let local_rel = origin.local_rel_path();
-        materialize_asset(
-            site,
-            &origin,
-            &asset_sources,
-            asset_group,
-            &mut written,
-            &mut asset_records,
-        )?;
-        let replacement = relative_href(&page_output_path, &local_rel);
-        rewritten = rewritten.replace(&asset_url, &replacement);
+    for (_, origin) in page_asset_origins(html, &asset_sources)? {
+        materialize_asset(site, &origin, &asset_sources, asset_group, &mut written, &mut asset_records)?;
     }
-
     asset_records.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(LocalizedStaticHtml {
-        html: rewritten,
+        html: relink_static_html(page_output_path, html, &asset_sources)?,
         assets: asset_records,
     })
 }
@@ -357,6 +372,16 @@ pub fn asset_group_id(template_rel_path: &str, template_markup: &str) -> String 
     format!("tpl-{:016x}", hasher.finish())
 }
 
+/// Records one generation in the site's manifest.
+///
+/// `whole_template` says `pages` is every page the template builds (a docs
+/// build): a page the manifest lists under that template and this build did
+/// not produce is no longer generated, so its record and its file go — the
+/// site serves what its source holds, nothing left over. Pruning keys on the
+/// template, not on its asset group: the group is a hash of the markup, so
+/// keying on it stranded every earlier page and asset after a template edit.
+/// Assets the build no longer links go with them: those of this build's group,
+/// and those of the template's previous group once no page uses that group.
 pub fn update_site_manifest(
     site: &SiteStore<'_>,
     site_root_rel: &str,
@@ -367,7 +392,7 @@ pub fn update_site_manifest(
     asset_group: &str,
     pages: &[StaticPageRecord],
     assets: &[StaticAssetRecord],
-    prune_full_group: bool,
+    whole_template: bool,
 ) -> Result<StaticSiteManifest, PipelineError> {
     let deploy_base_url = normalize_deploy_base_url(deploy_base_url);
     let deploy_base_path = normalize_deploy_base_path(Some(deploy_base_path), "/")?;
@@ -408,6 +433,11 @@ pub fn update_site_manifest(
         template: template_rel_path.to_string(),
         asset_group: asset_group.to_string(),
     };
+    let previous_group = manifest
+        .templates
+        .iter()
+        .find(|item| item.template == template_rel_path && item.asset_group != asset_group)
+        .map(|item| item.asset_group.clone());
     if let Some(existing) = manifest
         .templates
         .iter_mut()
@@ -421,14 +451,23 @@ pub fn update_site_manifest(
             .sort_by(|a, b| a.template.cmp(&b.template));
     }
 
-    if prune_full_group {
+    if whole_template {
         let incoming_paths = pages
             .iter()
             .map(|page| page.path.as_str())
             .collect::<BTreeSet<_>>();
-        manifest.pages.retain(|page| {
-            page.asset_group != asset_group || incoming_paths.contains(page.path.as_str())
-        });
+        let gone = manifest
+            .pages
+            .iter()
+            .filter(|page| page.template == template_rel_path && !incoming_paths.contains(page.path.as_str()))
+            .map(|page| page.path.clone())
+            .collect::<Vec<_>>();
+        for path in &gone {
+            site.delete(path)?;
+        }
+        manifest
+            .pages
+            .retain(|page| page.template != template_rel_path || incoming_paths.contains(page.path.as_str()));
     }
 
     for page in pages {
@@ -444,26 +483,26 @@ pub fn update_site_manifest(
     }
     manifest.pages.sort_by(|a, b| a.path.cmp(&b.path));
 
-    if prune_full_group {
+    if whole_template {
         let incoming_asset_paths = assets
             .iter()
             .map(|asset| asset.path.as_str())
             .collect::<BTreeSet<_>>();
+        let retired_group = previous_group.filter(|group| !manifest.pages.iter().any(|page| &page.asset_group == group));
+        let stale = |asset: &StaticAssetRecord| {
+            (asset.asset_group == asset_group || Some(&asset.asset_group) == retired_group.as_ref())
+                && !incoming_asset_paths.contains(asset.path.as_str())
+        };
         let stale_asset_paths = manifest
             .assets
             .iter()
-            .filter(|asset| {
-                asset.asset_group == asset_group
-                    && !incoming_asset_paths.contains(asset.path.as_str())
-            })
+            .filter(|asset| stale(asset))
             .map(|asset| asset.path.clone())
             .collect::<Vec<_>>();
         for stale_path in &stale_asset_paths {
             site.delete(stale_path)?;
         }
-        manifest.assets.retain(|asset| {
-            asset.asset_group != asset_group || incoming_asset_paths.contains(asset.path.as_str())
-        });
+        manifest.assets.retain(|asset| !stale(asset));
     }
 
     for asset in assets {
@@ -1059,25 +1098,25 @@ mod tests {
     #[test]
     fn normalizes_site_root_and_page_paths() {
         assert_eq!(
-            normalize_site_root_rel_path("static/musicsite").unwrap(),
-            "static/musicsite"
+            normalize_site_root_rel_path("static/site-a").unwrap(),
+            "static/site-a"
         );
         assert_eq!(
-            page_rel_path_from_site_root("static/musicsite", "a/aurora/index.html").unwrap(),
-            "static/musicsite/a/aurora/index.html"
+            page_rel_path_from_site_root("static/site-a", "a/demo-author/index.html").unwrap(),
+            "static/site-a/a/demo-author/index.html"
         );
         assert!(normalize_page_output_path("../escape.html").is_err());
         assert_eq!(
-            site_manifest_rel_path("static/musicsite"),
-            "static/musicsite/.zebflow-static-site.json"
+            site_manifest_rel_path("static/site-a"),
+            "static/site-a/.zebflow-static-site.json"
         );
     }
 
     #[test]
     fn asset_group_hash_is_stable_for_same_template() {
-        let a = asset_group_id("pages/lyrics.tsx", "<Page>Hello</Page>");
-        let b = asset_group_id("pages/lyrics.tsx", "<Page>Hello</Page>");
-        let c = asset_group_id("pages/lyrics.tsx", "<Page>World</Page>");
+        let a = asset_group_id("pages/note.tsx", "<Page>Hello</Page>");
+        let b = asset_group_id("pages/note.tsx", "<Page>Hello</Page>");
+        let c = asset_group_id("pages/note.tsx", "<Page>World</Page>");
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -1097,8 +1136,8 @@ mod tests {
             "/docs/basic/query/"
         );
         assert_eq!(
-            route_path_for_output_path("/docs", "songs/let-it-be/lyrics.html").unwrap(),
-            "/docs/songs/let-it-be/lyrics.html"
+            route_path_for_output_path("/docs", "notes/first-note/text.html").unwrap(),
+            "/docs/notes/first-note/text.html"
         );
         assert_eq!(
             absolute_deploy_url(Some("https://db.docs.example/"), "/docs/basic/query/"),

@@ -52,6 +52,7 @@ Library surfaces:
 - `zeb/livegeo`
 - `zeb/markdown`
 - `zeb/pdf`
+- `zeb/potoru`
 - `zeb/react` (built-in core UI hooks and rendering API, including `ErrorBoundary`
   with `fallbackRender`/`resetKeys` and `useSyncExternalStore`; external stores must
   provide a matching `getServerSnapshot` for SSR and hydration)

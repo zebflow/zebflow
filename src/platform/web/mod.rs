@@ -11,6 +11,7 @@
 pub(crate) mod embedded;
 mod file_host;
 mod migration;
+mod published_mcp;
 mod webhook_url;
 mod ws_room;
 
@@ -329,6 +330,8 @@ pub struct PlatformAppState {
     sessions: Arc<std::sync::Mutex<HashMap<String, PlatformWebSession>>>,
     /// Per-process random secret for signing OAuth2 state parameters.
     oauth_state_secret: [u8; 32],
+    /// Refusals at the doors of published MCP routes, per client and route.
+    mcp_failures: Arc<published_mcp::FailureLimiter>,
 }
 
 /// Builds Zebflow platform router.
@@ -411,15 +414,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         // Liveness/readiness probes — no auth, always fast.
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
-        // OAuth discovery endpoints (RFC 9728 / MCP 2025-03-26 spec) — no auth required.
-        .route(
-            "/.well-known/oauth-protected-resource",
-            get(oauth_protected_resource_handler),
-        )
-        .route(
-            "/.well-known/oauth-authorization-server",
-            get(oauth_authorization_server_handler),
-        )
+        // OAuth discovery for a published MCP route, platform form
+        // (`published-mcp.md` § --auth oauth). On a project host the gate
+        // rewrites the path-inserted documents to these. The dev MCP has no
+        // OAuth: it authenticates with its session token.
+        .route("/.well-known/oauth-protected-resource/mcp/{owner}/{project}", any(published_mcp::protected_resource_root))
+        .route("/.well-known/oauth-protected-resource/mcp/{owner}/{project}/{*route}", any(published_mcp::protected_resource))
+        .route("/.well-known/oauth-authorization-server/mcp/{owner}/{project}", any(published_mcp::authorization_server_root))
+        .route("/.well-known/oauth-authorization-server/mcp/{owner}/{project}/{*route}", any(published_mcp::authorization_server))
         // OAuth2 credential callback — unauthenticated (provider redirects browser here).
         .route("/oauth/callback", get(oauth2_callback_handler))
         .route("/", get(root_redirect))
@@ -655,6 +657,18 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/internal/runtime/webhook/{owner}/{project}/{*tail}",
             any(api_internal_runtime_webhook),
+        )
+        .route(
+            "/api/internal/runtime/mcp/{owner}/{project}",
+            any(published_mcp::internal_ingress_root),
+        )
+        .route(
+            "/api/internal/runtime/mcp/{owner}/{project}/",
+            any(published_mcp::internal_ingress_root),
+        )
+        .route(
+            "/api/internal/runtime/mcp/{owner}/{project}/{*tail}",
+            any(published_mcp::internal_ingress),
         )
         .route(
             "/api/internal/project-transfer/{owner}/{project}/export/{kind}",
@@ -1270,9 +1284,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             any(public_webhook_ingress)
                 .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
-        // `/mcp/{owner}/{project}/…` is the `mcp` surface's platform form,
-        // where published MCP servers will answer (`published-mcp.md`); no
-        // route serves it yet, so it answers 404. Never the dev MCP above.
+        // Published MCP servers (`published-mcp.md`): the `mcp` surface's
+        // platform form, one server per `trigger.mcp --route`. Never the
+        // project's dev MCP above.
+        .route("/mcp/{owner}/{project}", any(published_mcp::ingress_root))
+        .route("/mcp/{owner}/{project}/", any(published_mcp::ingress_root))
+        .route("/mcp/{owner}/{project}/{*tail}", any(published_mcp::ingress))
         .route("/ms/{owner}/{project}", get(public_mapserver_ingress_root))
         .route("/ms/{owner}/{project}/", get(public_mapserver_ingress_root))
         .route("/ms/{owner}/{project}/{*tail}", get(public_mapserver_ingress))
@@ -1349,6 +1366,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             rand::rng().fill(&mut bytes);
             bytes
         },
+        mcp_failures: Arc::new(published_mcp::FailureLimiter::default()),
     };
 
     if app_state.platform.cluster_bootstrap.is_worker() {
@@ -1399,6 +1417,19 @@ pub struct ProjectHost {
     pub owner: String,
     pub project: String,
     pub dev_host: bool,
+    /// The surface's mount the request came through (`/_mcp` for
+    /// `/_mcp/library`): the request path minus the path under the surface.
+    /// `None` when the request used a platform form on this host.
+    pub mount: Option<String>,
+}
+
+/// Where a surface is mounted, read off a request: its path minus the path
+/// under the surface (`/_mcp/library` with `/library` → `/_mcp`).
+fn surface_mount(path: &str, rest: &str) -> String {
+    if rest == "/" {
+        return path.trim_end_matches('/').to_string();
+    }
+    path.strip_suffix(rest).unwrap_or(path).trim_end_matches('/').to_string()
 }
 
 /// Rewrites a request on a project host to the platform form it is served
@@ -1427,6 +1458,38 @@ async fn addressing_gate(
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
         return file_host::file_host_response(&state, &owner, &project, &path).await;
+    }
+    // A published MCP route's OAuth documents sit at the path-inserted
+    // well-known URIs of its connect URL (RFC 9728 §3.1, RFC 8414 §3.1):
+    // `/.well-known/oauth-protected-resource/_mcp/library` is about
+    // `/_mcp/library`. Answered as the platform form's documents when that
+    // path is the `mcp` surface on this host; anything else stays the site's.
+    if let Some(host) = host.as_deref()
+        && let Some((document, inner)) = published_mcp::well_known_split(&path)
+        && let Some(resolution) = state.platform.addressing.resolve(host, inner)
+        && resolution.surface == crate::platform::services::addressing::Surface::Mcp
+        && !resolution.file_host
+    {
+        if resolution.rest.is_empty() {
+            return (StatusCode::NOT_FOUND, "the mcp surface is switched off for this project (Settings → Addressing)").into_response();
+        }
+        let mount = surface_mount(inner, &resolution.rest);
+        let target = format!("/.well-known/{document}/mcp/{}/{}{}", resolution.owner, resolution.project, resolution.rest);
+        if let Ok(path_and_query) = target.parse::<axum::http::uri::PathAndQuery>() {
+            let mut parts = request.uri().clone().into_parts();
+            parts.path_and_query = Some(path_and_query);
+            if let Ok(uri) = Uri::from_parts(parts) {
+                *request.uri_mut() = uri;
+            }
+        }
+        request.extensions_mut().insert(ProjectHost {
+            host: resolution.host.clone(),
+            owner: resolution.owner.clone(),
+            project: resolution.project.clone(),
+            dev_host: resolution.dev_host,
+            mount: Some(mount),
+        });
+        return next.run(request).await;
     }
     if let Some(host) = host
         && let Some(resolution) = state.platform.addressing.resolve(&host, &path)
@@ -1491,6 +1554,7 @@ async fn addressing_gate(
             || own_prefixes
                 .iter()
                 .any(|p| path == *p || path.starts_with(&format!("{p}/")));
+        let mut mount = None;
         if !platform_form {
             if resolution.rest.is_empty() {
                 return (
@@ -1522,6 +1586,7 @@ async fn addressing_gate(
                 .map(|q| format!("?{q}"))
                 .unwrap_or_default();
             let target = format!("{}{}", resolution.platform_path().unwrap_or_default(), query);
+            mount = Some(surface_mount(&path, &resolution.rest));
             if let Ok(path_and_query) = target.parse::<axum::http::uri::PathAndQuery>() {
                 let mut parts = request.uri().clone().into_parts();
                 parts.path_and_query = Some(path_and_query);
@@ -1535,6 +1600,7 @@ async fn addressing_gate(
             owner: resolution.owner.clone(),
             project: resolution.project.clone(),
             dev_host: resolution.dev_host,
+            mount,
         });
         let mut response = next.run(request).await;
         // The proof a proxy is wired right: Settings → Addressing → Verify
@@ -2150,46 +2216,6 @@ async fn ready_handler() -> impl IntoResponse {
         )
             .into_response()
     }
-}
-
-// ---------------------------------------------------------------------------
-// OAuth discovery endpoints (RFC 9728 / MCP 2025-03-26 spec)
-// No auth required — these are public discovery documents.
-// ---------------------------------------------------------------------------
-
-/// GET /.well-known/oauth-protected-resource
-async fn oauth_protected_resource_handler(headers: HeaderMap) -> impl IntoResponse {
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
-        "http"
-    } else {
-        "https"
-    };
-    Json(json!({
-        "resource": format!("{}://{}", scheme, host),
-        "bearer_methods_supported": ["header"]
-    }))
-}
-
-/// GET /.well-known/oauth-authorization-server
-async fn oauth_authorization_server_handler(headers: HeaderMap) -> impl IntoResponse {
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
-        "http"
-    } else {
-        "https"
-    };
-    Json(json!({
-        "issuer": format!("{}://{}", scheme, host),
-        "token_endpoint": format!("{}://{}/api/mcp/token", scheme, host),
-        "response_types_supported": ["token"]
-    }))
 }
 
 async fn root_redirect() -> Redirect {
@@ -4164,6 +4190,20 @@ async fn forward_runtime_webhook_to_worker(
     body: &Bytes,
     worker_id: &str,
 ) -> Result<Response, PlatformError> {
+    let path_and_query = webhook_url::worker_path_and_query(uri)?;
+    forward_to_worker(state, method, &path_and_query, headers, body, worker_id).await
+}
+
+/// Sends one request on to a worker office at `path_and_query`, signed as
+/// this controller, and answers what the office answered.
+async fn forward_to_worker(
+    state: &PlatformAppState,
+    method: &Method,
+    path_and_query: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+    worker_id: &str,
+) -> Result<Response, PlatformError> {
     let worker = state
         .platform
         .cluster_registry
@@ -4175,11 +4215,7 @@ async fn forward_runtime_webhook_to_worker(
             )
         })?;
     let token = cluster_call_header_for_office(state, worker_office_id(&worker))?;
-    let url = format!(
-        "{}{}",
-        worker.base_url.trim_end_matches('/'),
-        webhook_url::worker_path_and_query(uri)?
-    );
+    let url = format!("{}{}", worker.base_url.trim_end_matches('/'), path_and_query);
     let reqwest_method =
         reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
             PlatformError::new(
@@ -7814,6 +7850,7 @@ fn content_type_for_path(path: &FsPath) -> &'static str {
         Some("pdf") => "application/pdf",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
+        Some("wasm") => "application/wasm",
         Some("ttf") => "font/ttf",
         Some("mp4") => "video/mp4",
         Some("mp3") => "audio/mpeg",
@@ -14252,10 +14289,13 @@ async fn execute_pipeline_local(
         // which returns while the run is still going.
         let platform_run = state.platform.clone();
         let scope_run = (owner.to_string(), project.to_string(), request_id.clone());
+        // The Studio's own execute route: its caller is the project's
+        // developer, who sees every failure in full.
         return pipeline_run_sse_response(
             engine,
             graph_for_run,
             ctx,
+            true,
             move || {
                 crate::pipeline::nodes::shared::file_ref::remove_run_temporary_files(
                     &platform_run, &scope_run.0, &scope_run.1, &scope_run.2,
@@ -22940,8 +22980,23 @@ fn is_event_stream_response(response: &Response) -> bool {
         .unwrap_or(false)
 }
 
-fn signal_event_data(signal: &Signal) -> String {
-    serde_json::to_string(signal).unwrap_or_else(|_| "{}".to_string())
+/// One signal as the stream sends it. With error detail hidden (the
+/// route's `--errors`, as on the plain answer), an engine lifecycle signal
+/// about a failure — `node_fail`, `node_error_routed`, `node_retry` on the
+/// error road — keeps its code and class and loses the raw message, which
+/// can carry internals.
+fn signal_event_data(signal: &Signal, errors_shown: bool) -> String {
+    let failure = matches!(signal.kind.as_str(), "node_fail" | "node_error_routed" | "node_retry")
+        && signal.data.as_ref().is_some_and(|d| d.get("error_code").is_some());
+    if errors_shown || !failure {
+        return serde_json::to_string(signal).unwrap_or_else(|_| "{}".to_string());
+    }
+    let mut masked = signal.clone();
+    if let Some(Value::Object(data)) = masked.data.as_mut() {
+        data.remove("error");
+        data.remove("message");
+    }
+    serde_json::to_string(&masked).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// The events of one streamed run, in order: every [`Signal`] the bus
@@ -22950,7 +23005,9 @@ fn signal_event_data(signal: &Signal) -> String {
 /// closing event `finish` names, built from the run's result.
 ///
 /// `finish` is where a caller records the invocation, so it runs exactly
-/// once — on whichever comes first, the result or the bus closing. (An
+/// once — on whichever comes first, the result or the bus closing.
+/// `errors_shown` is how much of a failure a signal may say
+/// ([`signal_event_data`]). (An
 /// earlier shape of this loop answered the result arm without recording,
 /// which skipped the record whenever the result landed before the engine
 /// dropped its sender.) Signals still queued when the result lands are
@@ -22960,6 +23017,7 @@ fn pipeline_run_events<T, F>(
     mut signal_rx: tokio::sync::broadcast::Receiver<Signal>,
     response_rx: Option<tokio::sync::oneshot::Receiver<Value>>,
     mut result_rx: tokio::sync::oneshot::Receiver<T>,
+    errors_shown: bool,
     finish: F,
 ) -> impl futures::Stream<Item = (&'static str, String)>
 where
@@ -22987,7 +23045,7 @@ where
                 sig = signal_rx.recv() => {
                     match sig {
                         Ok(signal) => {
-                            yield ("signal", signal_event_data(&signal));
+                            yield ("signal", signal_event_data(&signal, errors_shown));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -23002,7 +23060,7 @@ where
         loop {
             match signal_rx.try_recv() {
                 Ok(signal) => {
-                    yield ("signal", signal_event_data(&signal));
+                    yield ("signal", signal_event_data(&signal, errors_shown));
                 }
                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
                 Err(_) => break,
@@ -23030,6 +23088,7 @@ fn pipeline_run_sse_response<A, F>(
     engine: BasicPipelineEngine,
     graph: PipelineGraph,
     ctx: PipelineContext,
+    errors_shown: bool,
     after_run: A,
     finish: F,
 ) -> Response
@@ -23052,7 +23111,7 @@ where
         after_run();
         let _ = result_tx.send(result);
     });
-    let stream = pipeline_run_events(signal_rx, Some(response_rx), result_rx, finish).map(|(event, data)| {
+    let stream = pipeline_run_events(signal_rx, Some(response_rx), result_rx, errors_shown, finish).map(|(event, data)| {
         Ok::<_, Infallible>(Event::default().event(event).data(data))
     });
     Sse::new(stream)
@@ -23106,7 +23165,7 @@ fn verify_webhook_auth(
 
     match auth_type {
         "jwt" => {
-            use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+            use jsonwebtoken::{Validation, decode};
 
             // Check Authorization: Bearer header first, then Cookie: <cookie_name>.
             //
@@ -23141,53 +23200,9 @@ fn verify_webhook_auth(
                     redirect_url: auth_redirect.clone(),
                 })?;
 
-            let algo_str = credential
-                .secret
-                .get("algorithm")
-                .and_then(|v| v.as_str())
-                .unwrap_or("HS256");
-            let algorithm = match algo_str.to_ascii_uppercase().as_str() {
-                "HS256" => Algorithm::HS256,
-                "HS384" => Algorithm::HS384,
-                "HS512" => Algorithm::HS512,
-                "RS256" => Algorithm::RS256,
-                "RS384" => Algorithm::RS384,
-                "RS512" => Algorithm::RS512,
-                other => {
-                    return Err(AuthError::Internal(format!(
-                        "unsupported JWT algorithm '{other}'"
-                    )));
-                }
-            };
-
-            let decoding_key = match algorithm {
-                Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
-                    let secret = credential
-                        .secret
-                        .get("secret")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            AuthError::Internal(
-                                "jwt_signing_key credential missing 'secret' field".to_string(),
-                            )
-                        })?;
-                    DecodingKey::from_secret(secret.as_bytes())
-                }
-                _ => {
-                    let pem = credential
-                        .secret
-                        .get("public_key")
-                        .or_else(|| credential.secret.get("private_key"))
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            AuthError::Internal(
-                                "jwt_signing_key credential missing 'public_key'".to_string(),
-                            )
-                        })?;
-                    DecodingKey::from_rsa_pem(pem.as_bytes())
-                        .map_err(|e| AuthError::Internal(e.to_string()))?
-                }
-            };
+            let (algorithm, decoding_key) =
+                crate::pipeline::nodes::basic::auth::sign::decoding_key(&credential.secret)
+                    .map_err(|e| AuthError::Internal(e.to_string()))?;
 
             let mut validation = Validation::new(algorithm);
             validation.validate_exp = true;
@@ -23590,35 +23605,19 @@ async fn dispatch_weberror(
 
     let status = StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
-    // What `web.response.send` answered, the way the webhook ingress reads it;
-    // without one, the run's own value.
-    let value = output.response.clone().unwrap_or_else(|| output.value.clone());
+    // What `web.response.send` answered, the way the webhook ingress reads it.
+    // An error pipeline that answered nothing leaves the platform's own error
+    // answer: its run's value is never sent (`node-conventions.md` §4).
+    let Some(value) = output.response.clone() else {
+        eprintln!("⚠ weberror page {owner}/{project} {error_code} answered nothing (no web.response.send); answering with the plain error");
+        return None;
+    };
 
-    // Prefer rendered HTML output.
-    if let Some(html) = value.get("html").and_then(Value::as_str) {
-        let mut html = html.to_string();
-        if let Some(css) = value
-            .get("hydration_payload")
-            .and_then(|hp| hp.get("css"))
-            .and_then(Value::as_str)
-        {
-            html = crate::rwe::core::render::insert_engine_styles(&html, css);
-        }
-        let scripts = value
-            .get("compiled_scripts")
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
-            .unwrap_or_default();
-        let externalized =
-            match externalize_rwe_scripts(state, &html, &scripts, Some((owner, project))) {
-                Ok(html) => html,
-                Err(err) => return Some(internal_error(err)),
-            };
-        return Some((status, Html(externalized)).into_response());
-    }
-
-    // JSON fallback.
-    Some((status, Json(value)).into_response())
+    // Answered as the webhook ingress answers an envelope — a page, bytes,
+    // text, JSON or nothing, with its headers — under the error's status.
+    let mut response = zf_envelope_response(state, owner, project, &value);
+    *response.status_mut() = status;
+    Some(response)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -23813,10 +23812,12 @@ async fn public_webhook_ingress_run(
                 .into_response();
         }
     }
-    // Verify trigger-level auth before executing the pipeline.
-    let auth_claims = if is_controller_call(&state, &headers) {
-        Ok(None)
-    } else {
+    // Verify trigger-level auth before executing the pipeline — always, on
+    // whichever office runs it. A worker-placed project's request arrives
+    // here from its controller with the visitor's headers; the controller's
+    // call header proves who forwarded it, never that the visitor is signed
+    // in, so it is no stand-in for the route's `--auth`.
+    let auth_claims = {
         let verified = verify_webhook_auth(
             &headers,
             &body,
@@ -23890,21 +23891,6 @@ async fn public_webhook_ingress_run(
             return (status, Json(json!({"ok": false, "error": msg}))).into_response();
         }
     };
-
-    if let Ok(Some(placement)) = state.platform.cluster_placement.get(&owner, &project) {
-        if placement.target == ProjectRuntimePlacementTarget::Worker {
-            if let Some(worker_id) = placement.worker_id.as_deref() {
-                return match forward_runtime_webhook_to_worker(
-                    &state, &method, &uri, &headers, &body, worker_id,
-                )
-                .await
-                {
-                    Ok(response) => response,
-                    Err(err) => internal_error(err),
-                };
-            }
-        }
-    }
 
     let mut graph = selected.compiled.graph.clone();
     if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph) {
@@ -24051,6 +24037,7 @@ async fn public_webhook_ingress_run(
         let request_id_sse = request_id.clone();
         let owner_sse = owner.clone();
         let project_sse = project.clone();
+        let errors_shown_sse = route_errors_shown(&state, &owner, &project, &selected.errors);
         let finish = move |result: Result<PipelineOutput, PipelineError>| {
             let elapsed_ms = exec_start.elapsed().as_millis() as u64;
             let at = std::time::SystemTime::now()
@@ -24076,7 +24063,10 @@ async fn public_webhook_ingress_run(
                         retention.max_invocations,
                         retention.max_age_secs,
                     );
-                    ("done", json!({ "ok": true, "value": output.value }))
+                    // The stream ends the way the plain answer does: what
+                    // `web.response.send` answered went out as `event:
+                    // response`; the run's value is never sent (§4).
+                    ("done", json!({ "ok": true }))
                 }
                 Err(err) => {
                     platform_sse.pipeline_hits.record_failure(
@@ -24097,17 +24087,18 @@ async fn public_webhook_ingress_run(
                         retention.max_invocations,
                         retention.max_age_secs,
                     );
-                    (
-                        "error",
-                        json!({
-                            "ok": false,
-                            "error": { "code": err.code, "message": err.message }
-                        }),
-                    )
+                    // What the caller learns is the route's `--errors`, as
+                    // on the plain answer.
+                    let error = if errors_shown_sse {
+                        json!({ "code": err.code, "message": err.message, "request_id": request_id_sse })
+                    } else {
+                        json!({ "code": "internal", "request_id": request_id_sse })
+                    };
+                    ("error", json!({ "ok": false, "error": error }))
                 }
             }
         };
-        return pipeline_run_sse_response(engine, graph_for_run, ctx, after_run, finish);
+        return pipeline_run_sse_response(engine, graph_for_run, ctx, errors_shown_sse, after_run, finish);
     }
 
     // `web.response.send` answers the caller the moment it runs
@@ -24206,16 +24197,7 @@ async fn public_webhook_ingress_run(
             // never the host: the route's `--errors`, else the project's
             // `errors` (`addressing.md` §2a). The status is 500 either way,
             // and the full failure is in the invocation log whatever is shown.
-            let shown = match selected.errors.as_str() {
-                "show" => true,
-                "hide" => false,
-                _ => state
-                    .platform
-                    .addressing
-                    .read(&owner, &project)
-                    .map(|a| a.errors == crate::platform::services::addressing::ErrorDetail::Shown)
-                    .unwrap_or(false),
-            };
+            let shown = route_errors_shown(&state, &owner, &project, &selected.errors);
             let node_id = crate::platform::model::failing_trace_entry(&err.node_trace).map(|t| t.node_id.clone());
             // The registry opens a pipeline by its folder and file; the run is
             // in its Runs panel, found by the id. There is no /editor route.
@@ -24246,116 +24228,32 @@ async fn public_webhook_ingress_run(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response();
         }
     };
-    // ── web.response.send — explicit response envelope ───────────────────────────
+    // ── web.response.send — the only answer a route gives ────────────────────
     // When web.response.send ran, the run carries what it answered beside the
-    // payload; the envelope fully controls the HTTP response.
-    if let Some(resp_cfg) = output.response.clone() {
-        return zf_envelope_response(&state, &owner, &project, &resp_cfg);
+    // payload; the envelope fully controls the HTTP response. A run that
+    // reached no answering node answers 204 with no body: the run's value —
+    // the request body, credentials read into it, generated secrets — is
+    // never sent implicitly (`node-conventions.md` §4).
+    match output.response {
+        Some(resp_cfg) => zf_envelope_response(&state, &owner, &project, &resp_cfg),
+        None => StatusCode::NO_CONTENT.into_response(),
     }
+}
 
-    // ── _set_cookie convention (legacy) ──────────────────────────────────────
-    // If the pipeline output contains `_set_cookie`, build the Set-Cookie header string.
-    // Applied to the final response regardless of response type.
-    let set_cookie_header: Option<String> = output.value.get("_set_cookie").and_then(|sc| {
-        let name = sc.get("name")?.as_str()?;
-        let value = sc.get("value")?.as_str()?;
-        let max_age = sc.get("max_age").and_then(Value::as_i64).unwrap_or(900);
-        let path = sc.get("path").and_then(Value::as_str).unwrap_or("/");
-        let same_site = sc.get("same_site").and_then(Value::as_str).unwrap_or("Lax");
-        let http_only = sc.get("http_only").and_then(Value::as_bool).unwrap_or(true);
-        let secure = sc.get("secure").and_then(Value::as_bool).unwrap_or(false);
-        let mut parts = vec![
-            format!("{name}={value}"),
-            format!("Path={path}"),
-            format!("Max-Age={max_age}"),
-            format!("SameSite={same_site}"),
-        ];
-        if http_only {
-            parts.push("HttpOnly".to_string());
-        }
-        // The spec parsed `secure`; the header must say it or the flag was a lie.
-        if secure {
-            parts.push("Secure".to_string());
-        }
-        Some(parts.join("; "))
-    });
-
-    // ── HTML response (rendered template output) ─────────────────────────────
-    if let Some(html) = output.value.get("html").and_then(Value::as_str) {
-        let mut html = html.to_string();
-        // Re-inject Tailwind CSS from hydration_payload (extracted by RWE engine).
-        if let Some(css) = output
-            .value
-            .get("hydration_payload")
-            .and_then(|hp| hp.get("css"))
-            .and_then(Value::as_str)
-        {
-            html = crate::rwe::core::render::insert_engine_styles(&html, css);
-        }
-        let scripts = output
-            .value
-            .get("compiled_scripts")
-            .cloned()
-            .and_then(|value| serde_json::from_value::<Vec<CompiledScript>>(value).ok())
-            .unwrap_or_default();
-        let externalized =
-            match externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project))) {
-                Ok(html) => html,
-                Err(err) => return internal_error(err),
-            };
-        let mut resp = Html(externalized).into_response();
-        if let Some(ref cookie) = set_cookie_header {
-            if let Ok(v) = HeaderValue::from_str(cookie) {
-                resp.headers_mut().insert(SET_COOKIE, v);
-            }
-        }
-        return resp;
+/// What a caller learns about an uncaught failure is a switch, never the
+/// host: the route's `--errors`, else the project's `errors`
+/// (`addressing.md` §2a).
+fn route_errors_shown(state: &PlatformAppState, owner: &str, project: &str, route_errors: &str) -> bool {
+    match route_errors {
+        "show" => true,
+        "hide" => false,
+        _ => state
+            .platform
+            .addressing
+            .read(owner, project)
+            .map(|a| a.errors == crate::platform::services::addressing::ErrorDetail::Shown)
+            .unwrap_or(false),
     }
-
-    // ── _status convention ────────────────────────────────────────────────────
-    // If the pipeline output contains `_status`, use it as the HTTP status code.
-    // For 4xx/5xx codes, try dispatching a weberror pipeline for a custom error page.
-    if let Some(code) = output.value.get("_status").and_then(Value::as_u64) {
-        let status = StatusCode::from_u16(code as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        if code >= 400 {
-            // Build error payload — strip _status from body before forwarding.
-            let mut error_body = output.value.clone();
-            if let Value::Object(ref mut map) = error_body {
-                map.remove("_status");
-                map.remove("_set_cookie");
-            }
-            if let Some(err_resp) =
-                dispatch_weberror(&state, &owner, &project, code as u16, error_body.clone()).await
-            {
-                return err_resp;
-            }
-            return (status, Json(error_body)).into_response();
-        }
-        let mut body = output.value.clone();
-        if let Value::Object(ref mut map) = body {
-            map.remove("_status");
-            map.remove("_set_cookie");
-        }
-        let mut resp = (status, Json(body)).into_response();
-        if let Some(ref cookie) = set_cookie_header {
-            if let Ok(v) = HeaderValue::from_str(cookie) {
-                resp.headers_mut().insert(SET_COOKIE, v);
-            }
-        }
-        return resp;
-    }
-
-    let mut out_body = output.value.clone();
-    if let Value::Object(ref mut map) = out_body {
-        map.remove("_set_cookie");
-    }
-    let mut resp = Json(out_body).into_response();
-    if let Some(ref cookie) = set_cookie_header {
-        if let Ok(v) = HeaderValue::from_str(cookie) {
-            resp.headers_mut().insert(SET_COOKIE, v);
-        }
-    }
-    resp
 }
 
 async fn public_webhook_ingress_root(
@@ -27440,9 +27338,11 @@ fn internal_error(err: PlatformError) -> Response {
         // Someone else already owns that webhook path: a conflict with existing
         // state rather than a malformed request.
         "PLATFORM_PIPELINE_WEBHOOK_CONFLICT" => StatusCode::CONFLICT,
-        "PLATFORM_PIPELINE_MISSING" | "PLATFORM_PIPELINE_ACTIVE_SNAPSHOT_MISSING" => {
-            StatusCode::NOT_FOUND
-        }
+        "PLATFORM_PIPELINE_MISSING"
+        | "PLATFORM_PIPELINE_ACTIVE_SNAPSHOT_MISSING"
+        // A repository file that is not there is the caller's question
+        // answered, not the server breaking.
+        | "PLATFORM_REPO_MISSING" => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
@@ -29160,6 +29060,27 @@ mod webhook_sse_tests {
         collected
     }
 
+    /// With error detail hidden, a failure's lifecycle signal keeps its
+    /// code and class and loses the raw message; shown, it keeps it; a
+    /// signal about no failure is never touched.
+    #[test]
+    fn a_hidden_route_streams_a_failures_code_without_its_message() {
+        let mut fail = test_signal("node_fail", "n1");
+        fail.data = Some(serde_json::json!({ "error_code": "FW_NODE_TIMEOUT", "error_class": "failed", "error": "db at 203.0.113.10 refused", "duration_ms": 1 }));
+        let mut routed = test_signal("node_error_routed", "n1");
+        routed.data = Some(serde_json::json!({ "error_code": "FW_NODE_TIMEOUT", "message": "db at 203.0.113.10 refused", "to_node": "h" }));
+        let mut wait = test_signal("node_retry", "r");
+        wait.data = Some(serde_json::json!({ "attempt": 1, "message": "next attempt in 10 ms" }));
+        for signal in [&fail, &routed] {
+            let hidden: serde_json::Value = serde_json::from_str(&super::signal_event_data(signal, false)).unwrap();
+            assert_eq!(hidden["data"]["error_code"], "FW_NODE_TIMEOUT", "{hidden}");
+            assert!(!hidden.to_string().contains("203.0.113.10"), "{hidden}");
+            let shown = super::signal_event_data(signal, true);
+            assert!(shown.contains("203.0.113.10"), "{shown}");
+        }
+        assert!(super::signal_event_data(&wait, false).contains("next attempt in 10 ms"), "a wait is no failure");
+    }
+
     /// The production stream: signals in order, then the closing event
     /// `finish` names, built from the result.
     #[tokio::test]
@@ -29174,7 +29095,7 @@ mod webhook_sse_tests {
         drop(bus); // no more senders
         let _ = result_tx.send(Ok(serde_json::json!({"html": "<h1>hi</h1>"})));
 
-        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, |result| match result {
+        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, true, |result| match result {
             Ok(value) => ("done", serde_json::json!({"ok": true, "value": value})),
             Err(message) => ("error", serde_json::json!({"ok": false, "error": message})),
         }))
@@ -29200,7 +29121,7 @@ mod webhook_sse_tests {
         drop(bus);
         let _ = result_tx.send(Err("connection refused".to_string()));
 
-        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, |result| match result {
+        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, true, |result| match result {
             Ok(value) => ("done", serde_json::json!({"ok": true, "value": value})),
             Err(message) => ("error", serde_json::json!({"ok": false, "error": message})),
         }))
@@ -29228,7 +29149,7 @@ mod webhook_sse_tests {
         // `bus` is deliberately alive for the whole read.
         let finished = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = finished.clone();
-        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, move |result| {
+        let collected = collect(pipeline_run_events(signal_rx, None, result_rx, true, move |result| {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             ("result", serde_json::json!({"ok": result.is_ok(), "value": result.ok()}))
         }))

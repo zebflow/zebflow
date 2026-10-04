@@ -17,21 +17,24 @@
 //! | `--name` | yes | the tool name, unique on its route |
 //! | `--description` | no | what the agent reads to decide when to call the tool |
 //! | `--parameter` | no | `name:type[!] "doc"`, repeated — the tool's arguments, as on `trigger.function` |
-//! | `--auth` | yes | `none`, `jwt` or `api_key` — the same on every tool of a route |
-//! | `--credential` | with `jwt` / `api_key` | the credential that verifies `--auth` |
-//! | `--role` | no | a JWT role allowed in, repeated |
+//! | `--auth` | yes | `none`, `jwt`, `api_key` or `oauth` — the same on every tool of a route |
+//! | `--credential` | unless `none` | the credential that verifies `--auth` (`oauth`: a `jwt_signing_key`) |
+//! | `--login` | with `oauth` | the app's own login path, where a person signs in |
+//! | `--role` | no | a role of the token (`jwt`, `oauth`) allowed in, repeated |
 //! | `--errors` | no | `show` or `hide`: what a failed run reveals in the tool error |
 //!
 //! # The answer: `mcp: { route, tool_name, arguments }`
 //!
 //! The route's server builds the envelope before the run; `$trigger` is the
 //! same envelope. The tool result is what `web.response.send` answers (its
-//! `--body`), or the run's value without one; a status of 400 or more is a
-//! tool error with that body.
+//! `--body`); a status of 400 or more is a tool error with that body, and a
+//! run that reaches none answers an empty result.
 //!
-//! 0.11 seals the declaration — flags, answer, the save and activation
-//! checks. Serving the routes (the server, its auth at the door) lands in
-//! 0.11.1; until then the `mcp` surface answers 404.
+//! The route's server and its door live in `platform::web::published_mcp`:
+//! `--auth` is checked with the app's own credentials only (never a Zebflow
+//! session, login or dev MCP token), a refusal is one uniform 401 (403 for a
+//! role), recorded under [`AUTH_CODE`] without the presented key, and 20
+//! refusals a minute from one client address on one route answer 429.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -51,10 +54,16 @@ const OUTPUT_PIN_OUT: &str = "out";
 /// The key this trigger answers under.
 pub const ANSWER_KEY: &str = "mcp";
 /// `--auth`: the closed words. `hmac` signs one request body for one sender,
-/// which no MCP client does, so a published route does not take it.
-pub const AUTH_MODES: [&str; 3] = ["none", "jwt", "api_key"];
+/// which no MCP client does, so a published route does not take it. `oauth`
+/// signs people in through the app's own `--login` page, for the ChatGPT and
+/// claude.ai connectors.
+pub const AUTH_MODES: [&str; 4] = ["none", "jwt", "api_key", "oauth"];
 /// Raised when the flags of a `trigger.mcp` are refused at activation.
 pub const CONFIG_CODE: &str = "FW_NODE_TRIGGER_MCP_CONFIG";
+/// Raised when a request is refused at the door of a published route: a
+/// missing, wrong or expired credential, or a role the route does not admit.
+/// The reason is in the message; the presented key never is.
+pub const AUTH_CODE: &str = "FW_NODE_TRIGGER_MCP_AUTH";
 
 /// Return the [`NodeDefinition`] for `trigger.mcp`.
 pub fn definition() -> NodeDefinition {
@@ -98,11 +107,19 @@ pub fn definition() -> NodeDefinition {
     ];
     let mut guard = webhook::auth_flags("the MCP server");
     if let Some(auth) = guard.iter_mut().find(|f| f.flag == "--auth") {
-        auth.description = "Who may call the server: none (open — must be written), jwt or api_key (each needs --credential). Every trigger.mcp on one route declares the same.".to_string();
+        auth.description = "Who may call the server: none (open — must be written), jwt or api_key (each needs --credential), or oauth — people sign in through the app's own --login page and the client gets the app's tokens (ChatGPT, claude.ai connectors; needs a jwt_signing_key --credential). Every trigger.mcp on one route declares the same.".to_string();
         auth.required = true;
         auth.choices = AUTH_MODES.iter().map(|w| w.to_string()).collect();
     }
     dsl_flags.extend(guard);
+    dsl_flags.push(DslFlag {
+        flag: "--login".to_string(),
+        config_key: "login".to_string(),
+        description: "With --auth oauth: the app's own login path on its pages, e.g. /auth/login — never a URL. A person who connects is sent there with ?oauth=<ticket>&client=<name>&redirect_host=<host>; the login pipeline ends in auth.oauth.approve.".to_string(),
+        kind: DslFlagKind::Scalar,
+        value: "text".to_string(),
+        ..Default::default()
+    });
     dsl_flags.push(DslFlag {
         flag: "--errors".to_string(),
         config_key: "errors".to_string(),
@@ -131,9 +148,18 @@ pub fn definition() -> NodeDefinition {
     for mut field in webhook::auth_fields("Refused before any run: 401, or 403 for a missing role.") {
         if field.name == "auth" {
             field.options.retain(|o| AUTH_MODES.contains(&o.value.as_str()));
+            field.options.push(SelectOptionDef { value: "oauth".to_string(), label: "oauth".to_string() });
         }
         fields.push(field);
     }
+    fields.push(NodeFieldDef {
+        name: "login".to_string(),
+        label: "Login path".to_string(),
+        field_type: NodeFieldType::Text,
+        placeholder: Some("/auth/login".to_string()),
+        help: Some("With oauth: the app's login page, which ends in auth.oauth.approve.".to_string()),
+        ..Default::default()
+    });
     fields.push(NodeFieldDef {
         name: "errors".to_string(),
         label: "Errors".to_string(),
@@ -153,11 +179,12 @@ pub fn definition() -> NodeDefinition {
         description: "Publishes this pipeline as one tool of an MCP server on a route of its own, for outside agents (ChatGPT, Claude, any MCP client). \
             Every active trigger.mcp with the same `--route` is one tool of that route's server; another route is another server. \
             The server answers on the mcp surface, off by default — `/_mcp/ROUTE` on the project's hosts, `/mcp/{owner}/{project}/ROUTE` on the platform — \
-            and never on the project's dev MCP. `--auth` is required (`none` publishes openly) and is the app's own — a key or a token from its credentials, never a Zebflow account or session. \
+            and never on the project's dev MCP. `--auth` is required (`none` publishes openly) and is the app's own — a key or a token from its credentials, never a Zebflow account or session; \
+            `--auth oauth --login /auth/login` lets ChatGPT and claude.ai connectors sign people in through the app's own login page (which ends in `auth.oauth.approve`). \
             Answers one key, `mcp`: `{ route, tool_name, arguments }` — an argument is `input.mcp.arguments.<name>` \
-            (`$trigger.arguments.<name>` later). The tool result is what `web.response.send` answers (its `--body`), or the run's value \
-            without one; a status of 400 or more is a tool error with that body. \
-            In 0.11 the declaration is checked at save and activation; the route is served from 0.11.1."
+            (`$trigger.arguments.<name>` later). The tool result is what `web.response.send` answers (its `--body`); a status of 400 or more \
+            is a tool error with that body, and a run that reaches no `web.response.send` answers an empty result — the run's value is never sent. \
+            A refused credential is 401 (403 for a role the route does not admit), and 20 refusals a minute from one client answer 429."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -188,7 +215,8 @@ pub fn definition() -> NodeDefinition {
                 "name": { "type": "string", "description": "The tool name, unique on its route." },
                 "description": { "type": "string", "description": "What the tool does and when an agent should call it." },
                 "schema": { "type": "object", "description": "JSON Schema object of the tool's arguments." },
-                "auth": { "type": "string", "enum": AUTH_MODES, "description": "none, jwt or api_key; the same on every tool of a route." },
+                "auth": { "type": "string", "enum": AUTH_MODES, "description": "none, jwt, api_key or oauth; the same on every tool of a route." },
+                "login": { "type": "string", "description": "With oauth: the app's login path, e.g. /auth/login." },
                 "credential_id": { "type": "string", "description": "The credential that verifies --auth. Required unless auth is none." },
                 "role": { "type": "array", "items": { "type": "string" }, "description": "Roles allowed in; one entry of the JWT 'roles' claim must match." },
                 "errors": { "type": "string", "enum": webhook::ERRORS_MODES, "description": "What a failed run reveals in the tool error: show or hide. Absent: the project decides." }
@@ -203,6 +231,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("description".to_string()),
             LayoutItem::Field("schema".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("auth".to_string()), LayoutItem::Field("credential_id".to_string())] },
+            LayoutItem::Field("login".to_string()),
             LayoutItem::Field("role".to_string()),
             LayoutItem::Field("errors".to_string()),
         ],
@@ -214,7 +243,7 @@ pub fn definition() -> NodeDefinition {
             )
             .input(json!({ "route": "/shop", "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } }))
             .output(json!({ "mcp": { "route": "/shop", "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } } }))
-            .note("Then `| sekejap.query.run --param \"1={{ input.mcp.arguments.sku }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\" | web.response.send --body \"{{ input.query.rows }}\"`. An MCP client will connect to `/_mcp/shop` on the project's host with an `X-API-Key` header (served from 0.11.1)."),
+            .note("Then `| sekejap.query.run --param \"1={{ input.mcp.arguments.sku }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\" | web.response.send --body \"{{ input.query.rows }}\"`. An MCP client connects to `/_mcp/shop` on the project's host with an `X-API-Key` header, once the mcp surface is switched on."),
         ],
         ..Default::default()
     }
@@ -239,6 +268,9 @@ pub struct Config {
     pub credential_id: String,
     #[serde(default)]
     pub role: Vec<String>,
+    /// With `oauth`: the app's login path.
+    #[serde(default)]
+    pub login: String,
     #[serde(default)]
     pub errors: String,
 }
@@ -342,7 +374,7 @@ mod tests {
         let def = definition();
         let auth = def.dsl_flags.iter().find(|f| f.flag == "--auth").expect("--auth");
         assert!(auth.required);
-        assert_eq!(auth.choices, vec!["none", "jwt", "api_key"]);
+        assert_eq!(auth.choices, vec!["none", "jwt", "api_key", "oauth"]);
         assert!(def.dsl_flags.iter().all(|f| f.flag != "--params"));
     }
 }

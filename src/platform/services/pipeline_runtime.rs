@@ -123,23 +123,27 @@ pub struct McpTriggerSpec {
     pub tool_description: String,
     /// JSON Schema object of the tool's arguments (`--parameter`).
     pub input_schema: serde_json::Value,
-    /// `none`, `jwt` or `api_key` — the same on every tool of a route.
+    /// `none`, `jwt`, `api_key` or `oauth` — the same on every tool of a route.
     pub auth_type: String,
     #[serde(default)]
     pub auth_credential: String,
     #[serde(default)]
     pub auth_required_role: Vec<String>,
+    /// With `oauth`: the app's login path (`--login`), on its pages.
+    #[serde(default)]
+    pub login: String,
     /// `show` or `hide`; empty means the project decides.
     #[serde(default)]
     pub errors: String,
 }
 
 impl McpTriggerSpec {
-    /// The guard of the route, compared across its tools: `(auth, credential, roles)`.
-    pub fn guard(&self) -> (String, String, Vec<String>) {
+    /// The guard of the route, compared across its tools:
+    /// `(auth, credential, roles, login)`.
+    pub fn guard(&self) -> (String, String, Vec<String>, String) {
         let mut roles = self.auth_required_role.clone();
         roles.sort();
-        (self.auth_type.clone(), self.auth_credential.clone(), roles)
+        (self.auth_type.clone(), self.auth_credential.clone(), roles, self.login.clone())
     }
 }
 
@@ -550,6 +554,10 @@ fn mcp_trigger_spec(
             "--route '{raw_route}' must be a path starting with / and without parameters (`/shop`); it is served at /_mcp/… on the project's hosts"
         )));
     }
+    // `/_oauth/…` under a route is its sign-in; a `_` segment is the platform's.
+    if raw_route.split('/').any(|segment| segment.starts_with('_')) {
+        return Err(refuse(format!("--route '{raw_route}': a segment starting with `_` is reserved (a route's `/_oauth/…` is its sign-in)")));
+    }
     let tool_name = text("name");
     if !mcp_trigger::valid_tool_name(&tool_name) {
         return Err(refuse(format!(
@@ -567,8 +575,21 @@ fn mcp_trigger_spec(
     if auth != "none" && auth_credential.trim().is_empty() {
         return Err(refuse(format!("--auth {auth} needs --credential naming the credential that verifies it")));
     }
-    if !auth_required_role.is_empty() && auth != "jwt" {
-        return Err(refuse("--role checks JWT claims: it needs --auth jwt".to_string()));
+    if !auth_required_role.is_empty() && !matches!(auth.as_str(), "jwt" | "oauth") {
+        return Err(refuse("--role checks a token's roles: it needs --auth jwt or oauth".to_string()));
+    }
+    let login = text("login");
+    match (auth.as_str(), login.as_str()) {
+        ("oauth", "") => {
+            return Err(refuse("--auth oauth needs --login: the app's own login path, e.g. --login /auth/login".to_string()));
+        }
+        ("oauth", path) if !valid_login_path(path) => {
+            return Err(refuse(format!(
+                "--login '{path}' must be a path of the app's pages: starting with / but not /_, without ? # : or .. — never a URL"
+            )));
+        }
+        ("oauth", _) | (_, "") => {}
+        (other, _) => return Err(refuse(format!("--login is where --auth oauth signs people in; --auth {other} takes none"))),
     }
     let errors = choice(&text("errors"), &webhook::ERRORS_MODES, "", "--errors", code)
         .map_err(|err| trigger_refused(meta, node, err))?;
@@ -581,8 +602,19 @@ fn mcp_trigger_spec(
         auth_type: auth,
         auth_credential,
         auth_required_role,
+        login,
         errors: errors.to_string(),
     })
+}
+
+/// A `--login` path: on the app's pages, starting with `/` but not `/_`
+/// (the platform's), no query, fragment, scheme or `..`.
+fn valid_login_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.starts_with("/_")
+        && !path.starts_with("//")
+        && !path.contains(['?', '#', ':', ' ', '\\'])
+        && !path.contains("..")
 }
 
 /// Production runtime registry for activated pipelines.
@@ -874,6 +906,34 @@ mod trigger_tests {
         let open = compile("| trigger.mcp --route /shop --name search --auth none").expect("none is written, so it publishes");
         assert_eq!(open.mcp_triggers[0].auth_type, "none");
         assert!(open.webhook_triggers.is_empty(), "a published tool is never a webhook route");
+    }
+
+    /// `oauth` names its credential and the app's login path; `--login` is a
+    /// path of the app's pages and belongs to `oauth` alone; `_` segments of a
+    /// route are reserved for its `/_oauth/…`.
+    #[test]
+    fn an_oauth_route_names_its_login_and_reserves_underscore_segments() {
+        let spec = compile("| trigger.mcp --route /library --name search --auth oauth --credential library-jwt --login /auth/login --role reader")
+            .expect("compiles")
+            .mcp_triggers[0]
+            .clone();
+        assert_eq!((spec.auth_type.as_str(), spec.login.as_str()), ("oauth", "/auth/login"));
+        assert_eq!(spec.auth_required_role, vec!["reader".to_string()]);
+        for dsl in [
+            "| trigger.mcp --route /library --name search --auth oauth --credential library-jwt",
+            "| trigger.mcp --route /library --name search --auth oauth --login /auth/login",
+            "| trigger.mcp --route /library --name search --auth oauth --credential k --login https://evil.example/login",
+            "| trigger.mcp --route /library --name search --auth oauth --credential k --login /_mcp/x",
+            "| trigger.mcp --route /library --name search --auth oauth --credential k --login //evil.example",
+            "| trigger.mcp --route /library --name search --auth oauth --credential k --login /a/../b",
+            "| trigger.mcp --route /library --name search --auth oauth --credential k --login /login?next=x",
+            "| trigger.mcp --route /library --name search --auth api_key --credential k --login /auth/login",
+            "| trigger.mcp --route /library/_oauth --name search --auth none",
+            "| trigger.mcp --route /_private --name search --auth none",
+        ] {
+            let err = compile(dsl).err().unwrap_or_else(|| panic!("accepted: {dsl}"));
+            assert_eq!(err.code, "FW_NODE_TRIGGER_MCP_CONFIG", "{dsl}");
+        }
     }
 
     #[test]

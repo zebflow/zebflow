@@ -49,6 +49,13 @@ is the script's own answer, so anything downstream reads it one level deeper —
 `input.script.generated_at` — since the script node now keeps the rest of the
 payload and adds its own answer under `script` instead of replacing it.
 
+**What the page publishes.** The page renders from the payload and embeds it
+for hydration, so the generated file carries every key the payload holds —
+shape it first. The one exception is the request: a trigger's `headers`,
+`cookies` and `auth` (`input.webhook.headers`, `input.webhook.auth`, …) are
+never part of a generated page. A value the page should show — a caller's
+public profile, say — is copied into a key of its own by an upstream node.
+
 ---
 
 ## Pipeline
@@ -156,6 +163,13 @@ index, and a sitemap once the folder is served.
 | web.site.generate --from handbook --folder handbook-site --name "Example Handbook"
 ```
 
+One order — a folder's `nav` (the names listed come first, in that order),
+then `order` (a folder's in its `_meta.yaml`, a page's in its front matter;
+unordered items follow), then title — drives the sidebar, prev/next and the
+search index; the root `index.md` is first, a folder's `index.md` before its
+pages. A page whose Markdown was removed or renamed leaves the site on the
+next build: its file, its manifest entry, its sitemap and index lines.
+
 `--template` is the page template under the source root (default
 `docs.template.tsx`); when the file does not exist it is written from a
 scaffold, and edited from then on. `--path` and `--from` choose the mode —
@@ -215,16 +229,16 @@ For production static publishing, prefer a separate static host or ingress inste
 
 Example artifact root inside the project data volume:
 
-- `users/superadmin/default/files/static/musicsite`
+- `users/superadmin/default/files/static/site-a`
 
 Example nginx server:
 
 ```nginx
 server {
   listen 80;
-  server_name music.example;
+  server_name site-a.example;
 
-  root /data/users/superadmin/default/files/static/musicsite;
+  root /data/users/superadmin/default/files/static/site-a;
   index index.html;
 
   location / {
@@ -245,9 +259,9 @@ server {
 
 That mapping makes these files resolve directly:
 
-- `a/index.html` -> `https://music.example/a/`
-- `a/aurora/index.html` -> `https://music.example/a/aurora/`
-- `a/aurora/songs/runaway/lyrics/index.html` -> `https://music.example/a/aurora/songs/runaway/lyrics/`
+- `a/index.html` -> `https://site-a.example/a/`
+- `a/demo-author/index.html` -> `https://site-a.example/a/demo-author/`
+- `a/demo-author/notes/first-note/index.html` -> `https://site-a.example/a/demo-author/notes/first-note/`
 
 The generator is only writing artifacts. The nginx host is the publishing surface.
 

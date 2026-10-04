@@ -1,0 +1,40 @@
+{
+  "name": "zeb/potoru",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "Potoru 2D animation for RWE templates. A .poto player (canvas renderer, play / slide / interactive modes, host bridge set / fire / report) and an in-browser compiler from Potoru format v4 source folders (plus an experimental sandboxed authoring-API script mode). The entry bundle is a small bridge; the player and the compiler load on demand from files next to it. Fully offline.",
+  "source": {
+    "provider": "zebflow",
+    "package": "@potoru/player + @potoru/authoring (built from Potoru sources; not on npm yet)",
+    "package_version": "0.1.0",
+    "packed_version": "0.1",
+    "packed_kind": "full",
+    "entry": "runtime/potoru.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-potoru-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "potoru",
+      "mountPotoruPlayer",
+      "mountPotoruCompiler",
+      "compile"
+    ],
+    "wrappers": [
+      "PotoruPlayer",
+      "PotoruCompiler"
+    ]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/potoru.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

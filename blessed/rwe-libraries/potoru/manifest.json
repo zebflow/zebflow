@@ -1,0 +1,43 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "RweLibraryManifest",
+  "metadata": {
+    "name": "zeb/potoru"
+  },
+  "spec": {
+    "name": "zeb/potoru",
+    "description": "Potoru 2D animation for RWE templates: a .poto player (canvas, slides, interactive stories, host bridge) and an in-browser compiler from Potoru source folders. Offline; player and compiler load on demand.",
+    "exports": [
+      "PotoruPlayer",
+      "PotoruCompiler",
+      "mountPotoruPlayer",
+      "mountPotoruCompiler",
+      "compile",
+      "potoru"
+    ],
+    "versions": {
+      "0.1": {
+        "entry": "0.1/runtime/potoru.bundle.mjs",
+        "source": "offline",
+        "package_version": "0.1.0",
+        "size_bytes": 4495,
+        "integrity": "sha256:5a8025debd43ce01542778ddaa69cbabe55ad22603b885ec423d4ba5a089ed30",
+        "note": "Potoru web player 0.1.0 + format v4 compiler + authoring API (Potoru sources, Apache-2.0) via esbuild 0.28.1 with code splitting; lazy chunks, wasm engines, score-worker.js, potoru-authoring-sandbox.js and fonts/ sit next to the entry (new URL(..., import.meta.url)). Build: POTORU_SRC=<potoru>/designer/e3 node build/build.mjs (= esbuild --bundle --splitting --format=esm --minify --target=es2022 --outdir=0.1/runtime --entry-names=[name] --chunk-names=[name]-[hash] --out-extension:.js=.mjs entry.mjs, plus a worker build and an IIFE sandbox build; see NOTES.md). Every file: FILES-SHA256.txt."
+      }
+    },
+    "license": {
+      "spdx": "Apache-2.0 AND OFL-1.1 AND MIT AND BSD-3-Clause AND BSD-2-Clause AND Zlib AND Unicode-3.0",
+      "holders": [
+        "The Potoru Authors",
+        "The authors of the Rust crates compiled into the wasm engines (THIRD-PARTY-NOTICES.txt)",
+        "The Space Grotesk, Space Mono and Crimson Pro Project Authors (fonts, OFL-1.1)"
+      ],
+      "notices": [
+        "LICENSE",
+        "NOTICE.txt",
+        "THIRD-PARTY-NOTICES.txt"
+      ],
+      "modified": false
+    }
+  }
+}

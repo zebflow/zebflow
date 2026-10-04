@@ -64,7 +64,8 @@ logic.<verb>          control node   logic.if              logic.foreach
   noun itself.
 - **`trigger.mcp` publishes app functions** as an MCP server on its `--route`
   ([Published MCP](./published-mcp.md)); it is never the project's dev MCP and
-  never reaches it.
+  never reaches it. **`auth.oauth.approve`** completes an `--auth oauth`
+  route's sign-in from the app's own login pipeline.
 - `logic.*` is closed: `if` `match` `foreach` `reduce` `collect` `retry`
   `concept` (a stand-in for a step not built yet; passes its input on).
 
@@ -197,7 +198,11 @@ node has an `:error` pin. On top of that:
   `empty` (ran and emitted nothing). `web.response.send` answers the caller at
   once and later nodes keep running; a later failure is recorded on the run
   and does not change what the caller received; only the first response
-  answers.
+  answers. The answering nodes are `web.response.send` and
+  `auth.oauth.approve` (its redirect back to the MCP client); both follow
+  this rule.
+- **A webhook run that reaches no answering node** answers `204 No
+  Content` with no body; the run's value is never sent implicitly.
 
 The definition declares every role — flag, type (`text` `json`
 `file:image` …), `one` `repeat` or `map`, required, a ceiling on repeats. At
@@ -253,6 +258,7 @@ fs.image.thumbnail     → image:   { …FileRef…, width, height, source_delet
 postgres.query.run     → query:   { rows, columns, row_count }
 kv.entry.get           → entry:   { key, value, found }
 auth.token.create      → token:   { access_token, token_type, expires_in, profile }
+auth.oauth.approve     → oauth:   { approved, client, redirect_host }
 fs.folder.list         → folder:  { path, items, count }
 javascript.script.run  → script:  <what the code returned>
 ```

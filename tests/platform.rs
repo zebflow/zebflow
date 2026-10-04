@@ -8,3 +8,9 @@ mod smoke;
 mod migration;
 #[path = "platform/published_mcp.rs"]
 mod published_mcp;
+#[path = "platform/published_mcp_oauth.rs"]
+mod published_mcp_oauth;
+#[path = "platform/sekejap_nodes.rs"]
+mod sekejap_nodes;
+#[path = "platform/site_generate.rs"]
+mod site_generate;

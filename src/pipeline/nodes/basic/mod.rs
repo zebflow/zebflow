@@ -58,6 +58,17 @@ pub mod typescript;
 pub mod web;
 pub mod ws;
 
+/// The nodes that answer the caller (`node-conventions.md` §4): the first
+/// one a run reaches is the response, at once, and later nodes keep running.
+/// A webhook or published tool whose path reaches none answers `204` / an
+/// empty result.
+pub const ANSWERING_KINDS: [&str; 2] = [web::response::NODE_KIND, auth::oauth_approve::NODE_KIND];
+
+/// Whether `kind` is one of [`ANSWERING_KINDS`].
+pub fn answering_kind(kind: &str) -> bool {
+    ANSWERING_KINDS.contains(&kind)
+}
+
 /// The family lists, in the order the node index shows them.
 fn family_definitions() -> Vec<NodeDefinition> {
     let mut items = Vec::new();

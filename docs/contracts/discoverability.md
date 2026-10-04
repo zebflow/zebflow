@@ -123,7 +123,6 @@ What the catcher takes, and what it leaves alone:
 | no route matched | `weberror` 404, else the platform's neutral page |
 | a page needed a sign-in it did not have | `weberror` 401, else the redirect to the project's login |
 | a pipeline failed (uncaught) | `weberror` `500`/`5xx`/`*`, else the neutral page; JSON form for a JSON request |
-| a pipeline answered `_status ≥ 400` in its payload (legacy convention) | `weberror` for that code, else JSON |
 | a pipeline answered through `web.response.send --status ≥ 400` with a message, body or template | **that response, as authored, always** — the catcher never replaces what an author wrote |
 
 A request is a *JSON request* when its `Accept` names `application/json` and not `text/html`; everything else is a page request.

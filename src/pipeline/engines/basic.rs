@@ -487,30 +487,47 @@ fn retry_max_attempts(node: &PipelineNode) -> Option<u64> {
         .or_else(|| raw.as_str().and_then(|s| s.trim().parse().ok()))
 }
 
-/// The failure envelope an `:error` edge carries: the failing node's input
-/// under `input`, the error, and the retry state. `last_attempt` is what the
-/// consuming retry node counted to on the previous round (0 when there is
-/// none, or it has not run yet); the payload's own count wins when higher.
+/// What an `:error` edge carries (`node-conventions.md` §6): the payload the
+/// failing node received, kept, plus its key `key` answering
+/// `{ ok: false, error: { code, message } }`. Which node failed is the run
+/// record's to say, not the answer's.
+///
+/// The retry state rides beside it under `__zf_retry`, for `logic.retry`:
+/// the attempt, the failing node, `error_key` (where the failure sits) and
+/// `shadowed` (what the payload held at that key before, so a re-run gets
+/// its input back exactly). `last_attempt` is what the consuming retry node
+/// counted to on the previous round (0 when there is none, or it has not
+/// run yet); the payload's own count wins when higher. The payload's own
+/// state is kept otherwise, so the first attempt's time survives the round.
 fn build_retry_error_payload(
     input_payload: &Value,
     error: &PipelineError,
+    key: &str,
     last_attempt: usize,
 ) -> Value {
     let attempt = retry_attempt_from_payload(input_payload).max(last_attempt) + 1;
-    json!({
-        "input": input_payload,
-        "error": {
-            "code": error.code,
-            "message": error.message,
-            "node_id": error.node_id,
-            "node_kind": error.node_kind,
-        },
-        RETRY_STATE_KEY: {
-            "attempt": attempt,
-            "failing_node_id": error.node_id,
-            "failing_node_kind": error.node_kind,
-        }
-    })
+    let mut payload = match input_payload {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    };
+    let mut state = match payload.remove(RETRY_STATE_KEY) {
+        Some(Value::Object(state)) => state,
+        _ => Map::new(),
+    };
+    state.insert("attempt".to_string(), json!(attempt));
+    state.insert("failing_node_id".to_string(), json!(error.node_id));
+    state.insert("failing_node_kind".to_string(), json!(error.node_kind));
+    state.insert("error_key".to_string(), json!(key));
+    match payload.get(key) {
+        Some(previous) => state.insert("shadowed".to_string(), previous.clone()),
+        None => state.remove("shadowed"),
+    };
+    payload.insert(
+        key.to_string(),
+        json!({ "ok": false, "error": { "code": error.code, "message": error.message } }),
+    );
+    payload.insert(RETRY_STATE_KEY.to_string(), Value::Object(state));
+    Value::Object(payload)
 }
 
 pub(crate) fn is_sensitive_trace_config_key(key: &str) -> bool {
@@ -1447,6 +1464,19 @@ impl BasicPipelineEngine {
                     credentials.clone(),
                 )?))
             }
+            auth::oauth_approve::NODE_KIND => {
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        auth::oauth_approve::CODE_CONFIG,
+                        "auth.oauth.approve runs only in a project's pipeline, where the platform keeps its sign-ins",
+                    ));
+                };
+                Ok(NodeDispatch::AuthOAuthApprove(auth::oauth_approve::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|err| PipelineError::new(auth::oauth_approve::CODE_CONFIG, err.to_string()))?,
+                    platform.clone(),
+                )?))
+            }
             auth::token_verify::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
@@ -2215,6 +2245,9 @@ impl BasicPipelineEngine {
                     NodeDispatch::AuthTokenVerify(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
+                    NodeDispatch::AuthOAuthApprove(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
                     NodeDispatch::MailSend(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Concept(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WebError(node) => node.execute_many_async(input_for_exec).await,
@@ -2300,10 +2333,11 @@ impl BasicPipelineEngine {
                 return self.node_failed(plan, idx, node, e, &input_snapshot, base_trace_config, &node_start, run);
             }
         };
-        // The first `web.response.send` of a run answers the caller; a
-        // second one answers nobody, so it is recorded as having emitted
-        // nothing (`node-conventions.md` §4).
-        let second_response = node.kind == web::response::NODE_KIND && run.response.is_some();
+        // The first answering node of a run (`web.response.send`,
+        // `auth.oauth.approve`) answers the caller; a second one answers
+        // nobody, so it is recorded as having emitted nothing
+        // (`node-conventions.md` §4).
+        let second_response = crate::pipeline::nodes::basic::answering_kind(&node.kind) && run.response.is_some();
         if second_response {
             outs.clear();
         }
@@ -2386,7 +2420,7 @@ impl BasicPipelineEngine {
             && outs.iter().any(|o| o.output_pins.iter().any(|p| p == logic::retry::OUTPUT_PIN_RETRY))
             && input_snapshot
                 .get(RETRY_STATE_KEY)
-                .and_then(|s| s.get("failing_node_id"))
+                .and_then(|s| s.get("error_key"))
                 .is_none();
         let status_word = if verdict_retry {
             "retry"
@@ -2494,11 +2528,11 @@ impl BasicPipelineEngine {
                 }
             }
             // ── the answer to the caller ─────────────────────────────────
-            // `web.response.send` hands what it answers beside its payload;
-            // it leaves the payload here, so the next node receives what the
-            // response node received. The first answer goes to the caller at
-            // once, through the responder the HTTP ingress waits on.
-            if node.kind == web::response::NODE_KIND
+            // An answering node hands what it answers beside its payload;
+            // the envelope is lifted out here, so the next node never sees
+            // it. The first answer goes to the caller at once, through the
+            // responder the HTTP ingress waits on.
+            if crate::pipeline::nodes::basic::answering_kind(&node.kind)
                 && let Some(envelope) = output
                     .payload
                     .as_object_mut()
@@ -2562,7 +2596,11 @@ impl BasicPipelineEngine {
                 .and_then(|retry| run.answer_of(retry))
                 .map(retry_attempt_from_payload)
                 .unwrap_or(0);
-            build_retry_error_payload(input_snapshot, &e, last_attempt)
+            let key = crate::pipeline::nodes::failure_key(
+                &node.kind,
+                node.config.get("name").and_then(Value::as_str),
+            );
+            build_retry_error_payload(input_snapshot, &e, &key, last_attempt)
         });
         let duration_ms = node_start.elapsed().as_millis() as u64;
         let routed_status = match (routed.first(), retry_consumer) {
@@ -5049,12 +5087,18 @@ mod tests {
             .await
             .expect("execute");
 
+        // `c` answers its input, the last failure under the failing node's
+        // key, as its own `script`.
         assert!(
-            out.value["error"]["message"]
+            out.value["script"]["script"]["error"]["message"]
                 .as_str()
                 .expect("error message")
-                .contains("always fail")
+                .contains("always fail"),
+            "{}",
+            out.value
         );
+        assert_eq!(out.value["script"]["script"]["ok"], false);
+        assert!(out.value["manual"].is_object(), "the trigger's answer rides through: {}", out.value);
         assert_eq!(out.value["__zf_retry"]["attempt"], 2);
     }
 
@@ -5159,7 +5203,7 @@ mod tests {
         let dsl = r#"
 [a] trigger.manual
 [b] javascript.script.run -- "throw new Error('handled here');"
-[h] javascript.script.run -- "return { handled: input.error.message };"
+[h] javascript.script.run -- "return { handled: input.script.error.message };"
 [a] -> [b]
 [b]:error -> [h]
 "#;
@@ -5402,30 +5446,41 @@ mod tests {
         assert!(err.message.contains("did you mean $nodes.fetch"), "{}", err.message);
     }
 
-    /// A failure resolving a node's config, or building it from the
-    /// resolved config, routes to `:error` like any execution failure.
+    /// Every kind of failure — resolving a node's config, building it from
+    /// the resolved config, running it, timing out — routes to `:error` the
+    /// same way (`node-conventions.md` §4, §6): the handler receives the
+    /// payload the failing node received, kept, plus that node's key
+    /// answering `{ ok: false, error: { code, message } }`.
     #[tokio::test]
-    async fn a_config_expression_or_build_failure_routes_to_error() {
-        let dsl = r#"
-[a] trigger.manual
-[b] crypto.base64.encode --text "{{ input.manual.missing.deep }}"
-[h] javascript.script.run -- "return { handled: input.error.code };"
+    async fn every_kind_of_failure_delivers_the_payload_kept_plus_the_nodes_key() {
+        let handler = r#"[h] javascript.script.run -- "return { code: input.KEY.error.code, message: input.KEY.error.message, ok: input.KEY.ok, rows: input.manual.rows, keys: Object.keys(input.KEY).sort() };"
 [a] -> [b]
 [b]:error -> [h]
 "#;
-        let out = run_flow("expr-routed", dsl, json!({})).await.expect("routed, not failed");
-        assert_eq!(out.value["script"]["handled"], "FW_EXPR_EVAL", "{}", out.value);
-        assert_eq!(statuses_of(&out.node_trace, "b"), ["error_routed"]);
-
-        let dsl = r#"
-[a] trigger.manual
-[b] logic.foreach --from "input.manual.rows" --batch-size "{{ input.manual.size }}"
-[h] javascript.script.run -- "return { handled: input.error.code };"
-[a] -> [b]
-[b]:error -> [h]
-"#;
-        let out = run_flow("build-routed", dsl, json!({ "rows": [1], "size": 0 })).await.expect("routed");
-        assert_eq!(out.value["script"]["handled"], "FW_NODE_LOGIC_FOREACH_CONFIG", "{}", out.value);
+        let cases = [
+            ("resolve", "[b] crypto.base64.encode --text \"{{ input.manual.missing.deep }}\"", "base64", "FW_EXPR_EVAL"),
+            ("build", "[b] logic.foreach --from \"input.manual.rows\" --batch-size \"{{ input.manual.size }}\"", "foreach", "FW_NODE_LOGIC_FOREACH_CONFIG"),
+            ("run", "[b] javascript.script.run -- \"throw new Error('the node broke');\"", "script", ""),
+            ("timeout", "[b] logic.retry --max-attempts 5 --delay 3s --when \"true\" --timeout 1s", "retry", "FW_NODE_TIMEOUT"),
+        ];
+        for (kind, failing, key, code) in cases {
+            let dsl = format!("[a] trigger.manual\n{failing}\n{}", handler.replace("KEY", key));
+            let out = run_flow(&format!("{kind}-routed"), &dsl, json!({ "rows": [1, 2], "size": 0 }))
+                .await
+                .unwrap_or_else(|e| panic!("{kind}: routed, not failed: {e:?}"));
+            let got = &out.value["script"];
+            if code.is_empty() {
+                assert!(got["code"].as_str().is_some_and(|c| !c.is_empty()), "{kind}: {got}");
+                assert!(got["message"].as_str().unwrap_or_default().contains("the node broke"), "{kind}: {got}");
+            } else {
+                assert_eq!(got["code"], code, "{kind}: {got}");
+            }
+            assert_eq!(got["ok"], false, "{kind}: {got}");
+            assert_eq!(got["keys"], json!(["error", "ok"]), "{kind}: exactly {{ ok, error }}: {got}");
+            assert_eq!(got["rows"], json!([1, 2]), "{kind}: the payload the node received is kept: {got}");
+            assert!(out.value.get("input").is_none() && out.value.get("error").is_none(), "{kind}: no envelope: {}", out.value);
+            assert_eq!(statuses_of(&out.node_trace, "b"), ["error_routed"], "{kind}");
+        }
 
         // Unrouted, the same failure still fails the run there.
         let err = run_flow("expr-unrouted", "[a] trigger.manual\n[b] crypto.base64.encode --text \"{{ input.manual.missing.deep }}\"\n[a] -> [b]\n", json!({}))
@@ -5620,6 +5675,7 @@ enum NodeDispatch {
     LogicRetry(logic::retry::Node),
     AuthTokenCreate(auth::token_create::Node),
     AuthTokenVerify(auth::token_verify::Node),
+    AuthOAuthApprove(auth::oauth_approve::Node),
     MailSend(mail::send::Node),
     Concept(logic::concept::Node),
     WebError(weberror::Node),

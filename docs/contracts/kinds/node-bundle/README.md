@@ -290,7 +290,7 @@ engine places the answer, not the bundle (`src/pipeline/engines/composite_host.r
 | Node | Adds to the payload it was given |
 | --- | --- |
 | action | one key, its noun (`telegram.message.send` → `message`, `x.acme.invoice.create` → `invoice`), holding the result |
-| action, failed function | the same key: `{ ok: false, error: { code, message } }`, on `error` |
+| action, failed function | nothing itself: the node fails with the function's code and message, and the engine delivers the payload kept plus the same key, `{ ok: false, error: { code, message } }`, to a wired `:error`, or fails the run (§4) |
 | trigger | one key, its source (`trigger.telegram` → `telegram`), holding the handler's result — or what the ingress delivered, when there is no handler or it fails |
 
 - A composite's result is its function's **last node's answer** — the one rule
@@ -702,9 +702,10 @@ stubbed):
     caption) and answers `message: { id, recipient, sent_at, telegram }`;
     `telegram.message.edit` answers the same plus `edited_at`; the bot token
     never reaches the answer
-42. a refusal — from the function or from Telegram — answers
-    `message: { ok: false, error }` on `error`; an empty required flag or a word
-    outside a choice is refused with `FW_NODE_PACKAGE_CONFIG`
+42. a refusal — from the function or from Telegram — fails the node with the
+    function's reason; routed by the engine, a wired `:error` receives the
+    payload kept plus `message: { ok: false, error }`; an empty required flag
+    or a word outside a choice is refused with `FW_NODE_PACKAGE_CONFIG`
 43. `trigger.telegram` answers `telegram: <the update>` and nothing else; its
     `register-webhook` hook still registers the route its path template serves
 44. `ai.embedding.generate` answers `embedding: { vectors, model, dims, usage }`,

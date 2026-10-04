@@ -12,7 +12,8 @@
 //!
 //! Every value comes from a flag (a literal or `{{ expr }}`, resolved before
 //! the node is built), so the flags are checked when the node is built: an
-//! empty `--key` is refused with the kind's `_KEY` code, a `--ttl` that is
+//! empty `--key`, or one under the platform's own `zf.` prefix, is refused
+//! with the kind's `_KEY` code, a `--ttl` that is
 //! not a duration with its `_CONFIG` code. A `ttl` in an answer is the
 //! duration it was given in seconds, e.g. `"600s"`.
 
@@ -139,10 +140,20 @@ fn text_of(value: &Value, flag: &str, code: &'static str) -> Result<String, Pipe
 }
 
 /// `--key`, refused when it resolves empty ("empty is not a value").
+/// Keys the platform keeps in the project's store for itself — a published
+/// MCP route's OAuth state (`zf.oauth/…`). No `kv.*` node reads or writes one.
+pub const RESERVED_KEY_PREFIX: &str = "zf.";
+
 fn required_key(value: &Value, config_code: &'static str, key_code: &'static str) -> Result<String, PipelineError> {
     let key = text_of(value, "--key", config_code)?;
     if key.is_empty() {
         return Err(PipelineError::new(key_code, "--key is empty; it needs a value"));
+    }
+    if key.starts_with(RESERVED_KEY_PREFIX) {
+        return Err(PipelineError::new(
+            key_code,
+            format!("--key '{key}' starts with `{RESERVED_KEY_PREFIX}`, which the platform keeps for itself (a published route's sign-ins); choose another key"),
+        ));
     }
     Ok(key)
 }

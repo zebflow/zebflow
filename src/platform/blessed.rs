@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn every_blessed_package_carries_reserved_metadata_and_files() {
         let packages = blessed_packages().expect("blessed packages enumerate");
-        // 11 installable libraries. The six UI template sets that used to
+        // 12 installable libraries. The six UI template sets that used to
         // sit beside them were a copy of the same files `zeb/ui` now ships as
         // source; a project imports those without installing and clones one
         // through the catalog.
@@ -279,7 +279,7 @@ mod tests {
         // for `skills/<name>/`, seeded with a content-digest version.
         let libraries = packages.iter().filter(|p| p.asset_kind == "rwe_library").count();
         let skills = packages.iter().filter(|p| p.asset_kind == "skill").count();
-        assert_eq!(libraries, 11);
+        assert_eq!(libraries, 12);
         // The core `zebflow-*` skills are never on the shelf: they are the
         // MCP's own, listed in every project, not something to opt into.
         assert!(skills >= 1);

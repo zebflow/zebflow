@@ -10,6 +10,7 @@ These are the libraries Zebflow projects use directly in TSX (beyond
 - `zeb/codemirror`
 - `zeb/markdown`
 - `zeb/pdf`
+- `zeb/potoru`
 - `zeb/prosemirror`
 - `zeb/threejs`
 - `zeb/threejs-vrm`

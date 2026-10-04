@@ -33,6 +33,11 @@ Credentials default to `superadmin` / `admin123` and can be overridden with
   scaffolded folders**, confirm a sample pipeline 404s until activated and
   answers afterwards, then confirm the sample page renders with `globals.css`
   applied and its counter hydrates.
+- `specs/db-sekejap.spec.ts` — the Sekejap management pages on a connection
+  the spec creates in a throwaway project: tables, query, schema, graph, mart
+  and maintenance each draw real content; a table created in the UI takes a
+  row added in the grid; a query shows its rows; the relations graph draws the
+  edge and selects it.
 
 The lifecycle spec creates a real project and deletes it in `afterAll`, so a
 failed run leaves nothing behind.

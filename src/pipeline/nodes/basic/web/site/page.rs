@@ -1,18 +1,3 @@
-//! `web.site.generate` — render a TSX page once and persist it to Zebflow FS.
-//!
-//! This node is the file-producing counterpart to [`super::response`]:
-//! it uses the same RWE compile/render path, but instead of returning the HTML
-//! to the current HTTP request it writes the rendered document into
-//! a Zebflow FS object path.
-//!
-//! The generated HTML is self-contained for the first release:
-//! - project `styles/main.css` is inlined when present
-//! - Tailwind CSS extracted by the RWE engine is inlined
-//! - compiled client scripts are inlined as `<script type="module">`
-//!
-//! That keeps the artifact self-contained without depending on render-script
-//! cache plumbing.
-
 //! `web.site.generate --path` — one TSX page rendered once into the site.
 //!
 //! The file-producing counterpart to `web.response.send --template`: the same
@@ -56,14 +41,14 @@ pub fn resolve_template_source(
                 ),
             ));
         };
-        let abs = root.join(&template_rel);
-        if !abs.starts_with(root) || !abs.is_file() {
-            return Err(PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_MISSING",
-                format!("node '{node_id}' template '{}' not found", template_rel),
-            ));
-        }
-        std::fs::read_to_string(&abs).map_err(|err| {
+        // Through the repository reader: `..` and links refused, capped.
+        let bytes = crate::pipeline::nodes::shared::project_store::read_repo_file(
+            root,
+            &template_rel,
+            "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_MISSING",
+        )
+        .map_err(|err| PipelineError::new(err.code, format!("node '{node_id}' template {}", err.message)))?;
+        String::from_utf8(bytes).map_err(|err| {
             PipelineError::new(
                 "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_READ",
                 format!("failed reading template '{}': {err}", template_rel),
@@ -104,8 +89,15 @@ pub fn build_static_html(
     html = ensure_meta_charset(html);
 
     if let Some(root) = template_root {
-        let project_css_path = root.join("styles").join("main.css");
-        if let Ok(project_css) = std::fs::read_to_string(&project_css_path)
+        // Through the repository reader; a missing or linked file is no theme.
+        let project_css = crate::pipeline::nodes::shared::project_store::read_repo_file(
+            root,
+            "styles/main.css",
+            "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_READ",
+        )
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+        if let Some(project_css) = project_css
             && !project_css.trim().is_empty()
         {
             html = inject_before_head_end(
@@ -135,48 +127,79 @@ pub fn build_static_html(
     html
 }
 
+/// What a generated page renders from — and, since the RWE embeds its input
+/// for hydration, what the page publishes: the payload without the request
+/// that started the run. Every trigger envelope (`webhook`, `room`, `mcp`, …)
+/// loses its `headers`, `cookies` and `auth`, so a page generated from a
+/// request never carries the caller's address, browser, cookie, token or
+/// claims (`addressing.md` §0: a page never holds the project's own address,
+/// which `headers.host` is). A value the page should show is copied into a
+/// key of its own by an upstream node, where the pipeline says so.
+pub fn page_input(payload: &Value) -> Value {
+    let mut input = payload.clone();
+    if let Some(map) = input.as_object_mut() {
+        for source in crate::pipeline::nodes::basic::trigger::SOURCE_KEYS {
+            if let Some(Value::Object(envelope)) = map.get_mut(source) {
+                for request_only in REQUEST_ONLY_KEYS {
+                    envelope.remove(request_only);
+                }
+            }
+        }
+    }
+    input
+}
+
+/// The parts of a trigger envelope that belong to the request, never to a page.
+pub const REQUEST_ONLY_KEYS: [&str; 3] = ["headers", "cookies", "auth"];
+
+/// What writing `contents` at `rel_path` would do under `on_conflict`, decided
+/// before anything is written: `Some("unchanged")` or `Some("skipped")` leave
+/// the object as it is, `None` writes it, and `error` on a changed object fails.
+pub fn conflict_status(
+    store: &crate::zebfs::ZebFs,
+    rel_path: &str,
+    contents: &str,
+    on_conflict: &str,
+) -> Result<Option<&'static str>, PipelineError> {
+    let bytes = contents.as_bytes();
+    match crate::pipeline::nodes::shared::project_store::read_capped(store, rel_path, "FW_NODE_WEB_SITE_GENERATE_READ") {
+        Ok(existing) => {
+            if existing == bytes {
+                return Ok(Some("unchanged"));
+            }
+            match on_conflict.trim() {
+                "overwrite" | "" => Ok(None),
+                "skip" => Ok(Some("skipped")),
+                "error" => Err(PipelineError::new(
+                    super::CODE_CONFLICT,
+                    format!("destination '{rel_path}' already exists with other content"),
+                )),
+                other => Err(PipelineError::new(
+                    super::CODE_CONFLICT,
+                    format!("unsupported on_conflict value '{other}' — expected overwrite, skip, or error"),
+                )),
+            }
+        }
+        Err(_) if store.head(rel_path).is_err() => Ok(None),
+        Err(err) => Err(PipelineError::new(
+            "FW_NODE_WEB_SITE_GENERATE_READ",
+            format!("failed reading '{rel_path}': {err}"),
+        )),
+    }
+}
+
 /// Persist one generated file into the project's store — its one active
-/// backend — with simple conflict handling. The store writes atomically.
+/// backend — after [`conflict_status`] allows it. The store writes atomically.
 pub fn write_generated_object(
     store: &crate::zebfs::ZebFs,
     rel_path: &str,
     contents: &str,
     on_conflict: &str,
 ) -> Result<&'static str, PipelineError> {
-    let bytes = contents.as_bytes();
-    match crate::pipeline::nodes::shared::project_store::read_capped(store, rel_path, "FW_NODE_WEB_SITE_GENERATE_READ") {
-        Ok(existing) => {
-            if existing == bytes {
-                return Ok("unchanged");
-            }
-            match on_conflict.trim() {
-                "overwrite" | "" => {}
-                "skip" => return Ok("skipped"),
-                "error" => {
-                    return Err(PipelineError::new(
-                        "FW_NODE_WEB_SITE_GENERATE_CONFLICT",
-                        format!("destination '{rel_path}' already exists"),
-                    ));
-                }
-                other => {
-                    return Err(PipelineError::new(
-                        "FW_NODE_WEB_SITE_GENERATE_CONFLICT",
-                        format!(
-                            "unsupported on_conflict value '{other}' — expected overwrite, skip, or error"
-                        ),
-                    ));
-                }
-            }
-        }
-        Err(_) if store.head(rel_path).is_err() => {}
-        Err(err) => {
-            return Err(PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_READ",
-                format!("failed reading '{rel_path}': {err}"),
-            ));
-        }
+    if let Some(status) = conflict_status(store, rel_path, contents, on_conflict)? {
+        return Ok(status);
     }
-    store.put(rel_path, bytes).map_err(|err| {
+    store.put(rel_path, contents.as_bytes()).map_err(|err| {
         PipelineError::new(
             "FW_NODE_WEB_SITE_GENERATE_WRITE",
             format!("failed writing '{rel_path}': {err}"),
@@ -308,22 +331,37 @@ mod tests {
 
     #[test]
     fn a_page_key_stays_inside_its_folder() {
-        assert_eq!(page_key(&page("artists/a/song.html")).unwrap(), "site/artists/a/song.html");
+        assert_eq!(page_key(&page("authors/a/note.html")).unwrap(), "site/authors/a/note.html");
         assert!(page_key(&page("../escape.html")).is_err());
-        let named = Config { folder: Some("static/musicsite".to_string()), ..page("artists/a/song.html") };
-        assert_eq!(page_key(&named).unwrap(), "static/musicsite/artists/a/song.html");
+        let named = Config { folder: Some("static/site-a".to_string()), ..page("authors/a/note.html") };
+        assert_eq!(page_key(&named).unwrap(), "static/site-a/authors/a/note.html");
         let escaping = Config { folder: Some("../up".to_string()), ..page("a.html") };
         assert!(page_key(&escaping).is_err());
+    }
+
+    /// The request never reaches a page: every trigger envelope loses its
+    /// headers, cookies and auth; the rest of the payload is the page's.
+    #[test]
+    fn a_page_input_drops_the_request_and_keeps_the_rest() {
+        let payload = json!({
+            "webhook": { "body": { "title": "Demo" }, "query": { "q": "1" }, "headers": { "user-agent": "demo-agent" }, "cookies": { "s": "x" }, "auth": { "sub": "user-1" } },
+            "room": { "message": "hi", "auth": { "sub": "user-2" } },
+            "query": { "rows": [{ "headers": "a column, not a request" }] },
+        });
+        let input = super::page_input(&payload);
+        assert_eq!(input["webhook"], json!({ "body": { "title": "Demo" }, "query": { "q": "1" } }));
+        assert_eq!(input["room"], json!({ "message": "hi" }));
+        assert_eq!(input["query"], payload["query"], "a node's answer is the author's to render");
     }
 
     #[test]
     fn template_path_requires_explicit_tsx_extension() {
         assert_eq!(
-            super::normalize_template_rel_path("pages/lyrics.tsx").expect("tsx template"),
-            "pages/lyrics.tsx"
+            super::normalize_template_rel_path("pages/note.tsx").expect("tsx template"),
+            "pages/note.tsx"
         );
         let err =
-            super::normalize_template_rel_path("pages/lyrics").expect_err("missing extension");
+            super::normalize_template_rel_path("pages/note").expect_err("missing extension");
         assert_eq!(err.code, "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_PATH");
         assert!(err.message.contains(".tsx"));
     }
@@ -373,7 +411,7 @@ mod tests {
         std::fs::create_dir_all(&asset_dir).expect("asset dir");
         std::fs::write(asset_dir.join("favicon.ico"), b"ico").expect("favicon");
         std::fs::write(
-            template_dir.join("lyric.tsx"),
+            template_dir.join("note.tsx"),
             r#"
 import { ErrorBoundary, useSyncExternalStore } from "zeb/react";
 function LiveStatus() {
@@ -383,7 +421,7 @@ function LiveStatus() {
 function BrokenPanel() { throw new Error('static recovery'); }
 export const page = {
   head: {
-    title: "Lyric",
+    title: "Note",
     icons: [
       { rel: "icon", href: "/static/superadmin/example-project/icons/favicon.ico" }
     ]
@@ -392,13 +430,13 @@ export const page = {
 
 export const app = {};
 
-export default function LyricPage(input) {
+export default function NotePage(input) {
   return (
     <Page>
       <main className="min-h-screen bg-white text-slate-900 p-6">
         <img src="/assets/branding/logo.svg" alt="Zebflow" />
-        <h1 className="text-3xl font-black">{input.artist_name} - {input.song_title}</h1>
-        <p className="mt-4">{input.lyric_line}</p>
+        <h1 className="text-3xl font-black">{input.author_name} - {input.note_title}</h1>
+        <p className="mt-4">{input.note_line}</p>
         <LiveStatus />
         <ErrorBoundary fallback={<i>panel unavailable</i>}><BrokenPanel /></ErrorBoundary>
       </main>
@@ -410,7 +448,7 @@ export default function LyricPage(input) {
         .expect("template write");
 
         let graph = PipelineGraph {
-            id: "generate-lyric".to_string(),
+            id: "generate-note".to_string(),
             description: None,
             metadata: None,
             notes: Vec::new(),
@@ -421,9 +459,9 @@ export default function LyricPage(input) {
                 input_pins: vec!["in".to_string()],
                 output_pins: vec!["out".to_string()],
                 config: json!({
-                    "template": "pages/lyric.tsx",
-                    "folder": "static/musicsite",
-                    "path": "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
+                    "template": "pages/note.tsx",
+                    "folder": "static/site-a",
+                    "path": "authors/{{ $input.author_slug }}/{{ $input.note_slug }}/note.html"
                 }),
             }],
             edges: vec![],
@@ -435,11 +473,11 @@ export default function LyricPage(input) {
             request_id: "req-1".to_string(),
             route: String::new(),
             input: json!({
-                "artist_slug": "iwan-fals",
-                "song_slug": "bento",
-                "artist_name": "Iwan Fals",
-                "song_title": "Bento",
-                "lyric_line": "Namaku Bento."
+                "author_slug": "demo-author",
+                "note_slug": "first-note",
+                "author_name": "Demo Author",
+                "note_title": "First Note",
+                "note_line": "A first demo line."
             }),
             trigger: None,
             placeholder: None,
@@ -460,25 +498,25 @@ export default function LyricPage(input) {
         assert_eq!(first.value["site"]["status"], "written");
         assert_eq!(
             first.value["site"]["path"],
-            "static/musicsite/artists/iwan-fals/bento/lyric.html"
+            "static/site-a/authors/demo-author/first-note/note.html"
         );
-        assert_eq!(first.value["site"]["folder"], "static/musicsite");
+        assert_eq!(first.value["site"]["folder"], "static/site-a");
         assert_eq!(
             first.value["site"]["manifest_path"],
-            "static/musicsite/.zebflow-static-site.json"
+            "static/site-a/.zebflow-static-site.json"
         );
 
         let generated_path = layout
             .files_dir
             .join("static")
-            .join("musicsite")
-            .join("artists")
-            .join("iwan-fals")
-            .join("bento")
-            .join("lyric.html");
+            .join("site-a")
+            .join("authors")
+            .join("demo-author")
+            .join("first-note")
+            .join("note.html");
         let generated_html = std::fs::read_to_string(&generated_path).expect("generated html");
-        assert!(generated_html.contains("Iwan Fals - Bento"));
-        assert!(generated_html.contains("Namaku Bento."));
+        assert!(generated_html.contains("Demo Author - First Note"));
+        assert!(generated_html.contains("A first demo line."));
         assert!(generated_html.contains("<b>snapshot</b>"));
         assert!(generated_html.contains("<i>panel unavailable</i>"));
         assert!(!generated_html.contains("RWE component error"));
@@ -493,7 +531,7 @@ export default function LyricPage(input) {
             layout
                 .files_dir
                 .join("static")
-                .join("musicsite")
+                .join("site-a")
                 .join("_assets")
                 .join("libraries")
                 .join("zeb")
@@ -507,7 +545,7 @@ export default function LyricPage(input) {
             layout
                 .files_dir
                 .join("static")
-                .join("musicsite")
+                .join("site-a")
                 .join("_assets")
                 .join("project")
                 .join("icons")
@@ -518,7 +556,7 @@ export default function LyricPage(input) {
             layout
                 .files_dir
                 .join("static")
-                .join("musicsite")
+                .join("site-a")
                 .join("_assets")
                 .join("branding")
                 .join("logo.svg")
@@ -528,12 +566,12 @@ export default function LyricPage(input) {
             layout
                 .files_dir
                 .join("static")
-                .join("musicsite")
+                .join("site-a")
                 .join(".zebflow-static-site.json"),
         )
         .expect("manifest");
-        assert!(manifest.contains("\"site_root\": \"static/musicsite\""));
-        assert!(manifest.contains("\"template\": \"pages/lyric.tsx\""));
+        assert!(manifest.contains("\"site_root\": \"static/site-a\""));
+        assert!(manifest.contains("\"template\": \"pages/note.tsx\""));
         assert!(manifest.contains("\"path\": \"_assets/project/icons/favicon.ico\""));
         assert!(manifest.contains("\"path\": \"_assets/branding/logo.svg\""));
 
@@ -559,7 +597,7 @@ export default function LyricPage(input) {
         let template_dir = layout.repo_source_dir().join("pages");
         std::fs::create_dir_all(&template_dir).expect("template dir");
         std::fs::write(
-            template_dir.join("lyric.tsx"),
+            template_dir.join("note.tsx"),
             r#"
 export const page = {
   html: {
@@ -570,18 +608,18 @@ export const page = {
 export function getPage(input) {
   return {
     head: {
-      title: `${input.artist_name} — ${input.song_title} | Music Site`,
-      description: `${input.song_title} lyrics by ${input.artist_name}.`
+      title: `${input.author_name} — ${input.note_title} | Demo Site`,
+      description: `${input.note_title} notes by ${input.author_name}.`
     }
   };
 }
 
-export default function LyricPage(input) {
+export default function NotePage(input) {
   return (
     <Page>
       <main className="min-h-screen bg-white text-slate-900 p-6">
-        <h1 className="text-3xl font-black">{input.artist_name} - {input.song_title}</h1>
-        <p className="mt-4">{input.lyric_line}</p>
+        <h1 className="text-3xl font-black">{input.author_name} - {input.note_title}</h1>
+        <p className="mt-4">{input.note_line}</p>
       </main>
     </Page>
   );
@@ -591,7 +629,7 @@ export default function LyricPage(input) {
         .expect("template write");
 
         let graph = PipelineGraph {
-            id: "generate-one-lyric".to_string(),
+            id: "generate-one-note".to_string(),
             description: None,
             metadata: None,
             notes: Vec::new(),
@@ -602,9 +640,9 @@ export default function LyricPage(input) {
                 input_pins: vec!["in".to_string()],
                 output_pins: vec!["out".to_string()],
                 config: json!({
-                    "template": "pages/lyric.tsx",
-                    "folder": "static/musicsite",
-                    "path": "{{ $input.letter_slug }}/{{ $input.artist_slug }}/songs/{{ $input.song_slug }}/lyrics/index.html"
+                    "template": "pages/note.tsx",
+                    "folder": "static/site-a",
+                    "path": "{{ $input.letter_slug }}/{{ $input.author_slug }}/notes/{{ $input.note_slug }}/text/index.html"
                 }),
             }],
             edges: vec![],
@@ -619,102 +657,102 @@ export default function LyricPage(input) {
         .with_template_cache(new_template_cache())
         .with_data_root(root.to_path_buf());
 
-        let aurora_ctx = PipelineContext {
+        let sample_ctx = PipelineContext {
             owner: "superadmin".to_string(),
             project: "example-project".to_string(),
             pipeline: graph.id.clone(),
-            request_id: "req-aurora-1".to_string(),
+            request_id: "req-sample-1".to_string(),
             route: String::new(),
             input: json!({
-                "letter_slug": "a",
-                "artist_slug": "aurora",
-                "song_slug": "runaway",
-                "artist_name": "Aurora",
-                "song_title": "Runaway",
-                "lyric_line": "I was listening to the ocean."
+                "letter_slug": "s",
+                "author_slug": "sample-author",
+                "note_slug": "second-note",
+                "author_name": "Sample Author",
+                "note_title": "Second Note",
+                "note_line": "A second demo line."
             }),
             trigger: None,
             placeholder: None,
         };
-        let iwan_ctx = PipelineContext {
+        let demo_ctx = PipelineContext {
             owner: "superadmin".to_string(),
             project: "example-project".to_string(),
             pipeline: graph.id.clone(),
-            request_id: "req-iwan-1".to_string(),
+            request_id: "req-demo-1".to_string(),
             route: String::new(),
             input: json!({
-                "letter_slug": "i",
-                "artist_slug": "iwan-fals",
-                "song_slug": "bento",
-                "artist_name": "Iwan Fals",
-                "song_title": "Bento",
-                "lyric_line": "Namaku Bento."
+                "letter_slug": "d",
+                "author_slug": "demo-author",
+                "note_slug": "first-note",
+                "author_name": "Demo Author",
+                "note_title": "First Note",
+                "note_line": "A first demo line."
             }),
             trigger: None,
             placeholder: None,
         };
 
         engine
-            .execute_async(&graph, &aurora_ctx)
+            .execute_async(&graph, &sample_ctx)
             .await
-            .expect("generate aurora page");
+            .expect("generate sample page");
         engine
-            .execute_async(&graph, &iwan_ctx)
+            .execute_async(&graph, &demo_ctx)
             .await
-            .expect("generate iwan page");
+            .expect("generate demo page");
 
-        let aurora_path = layout
+        let sample_path = layout
             .files_dir
             .join("static")
-            .join("musicsite")
-            .join("a")
-            .join("aurora")
-            .join("songs")
-            .join("runaway")
-            .join("lyrics")
+            .join("site-a")
+            .join("s")
+            .join("sample-author")
+            .join("notes")
+            .join("second-note")
+            .join("text")
             .join("index.html");
-        let iwan_path = layout
+        let demo_path = layout
             .files_dir
             .join("static")
-            .join("musicsite")
-            .join("i")
-            .join("iwan-fals")
-            .join("songs")
-            .join("bento")
-            .join("lyrics")
+            .join("site-a")
+            .join("d")
+            .join("demo-author")
+            .join("notes")
+            .join("first-note")
+            .join("text")
             .join("index.html");
 
-        let aurora_before = std::fs::read_to_string(&aurora_path).expect("aurora before");
-        let iwan_before = std::fs::read_to_string(&iwan_path).expect("iwan before");
-        assert!(aurora_before.contains("I was listening to the ocean."));
-        assert!(iwan_before.contains("Namaku Bento."));
+        let sample_before = std::fs::read_to_string(&sample_path).expect("sample before");
+        let demo_before = std::fs::read_to_string(&demo_path).expect("demo before");
+        assert!(sample_before.contains("A second demo line."));
+        assert!(demo_before.contains("A first demo line."));
 
-        let aurora_updated_ctx = PipelineContext {
-            request_id: "req-aurora-2".to_string(),
+        let sample_updated_ctx = PipelineContext {
+            request_id: "req-sample-2".to_string(),
             input: json!({
-                "letter_slug": "a",
-                "artist_slug": "aurora",
-                "song_slug": "runaway",
-                "artist_name": "Aurora",
-                "song_title": "Runaway",
-                "lyric_line": "I was listening to the ocean, again."
+                "letter_slug": "s",
+                "author_slug": "sample-author",
+                "note_slug": "second-note",
+                "author_name": "Sample Author",
+                "note_title": "Second Note",
+                "note_line": "A second demo line, edited."
             }),
-            ..aurora_ctx
+            ..sample_ctx
         };
 
         let updated = engine
-            .execute_async(&graph, &aurora_updated_ctx)
+            .execute_async(&graph, &sample_updated_ctx)
             .await
-            .expect("update aurora page");
+            .expect("update sample page");
         assert_eq!(updated.value["site"]["status"], "written");
         assert_eq!(
             updated.value["site"]["path"],
-            "static/musicsite/a/aurora/songs/runaway/lyrics/index.html"
+            "static/site-a/s/sample-author/notes/second-note/text/index.html"
         );
 
-        let aurora_after = std::fs::read_to_string(&aurora_path).expect("aurora after");
-        let iwan_after = std::fs::read_to_string(&iwan_path).expect("iwan after");
-        assert!(aurora_after.contains("I was listening to the ocean, again."));
-        assert_eq!(iwan_before, iwan_after);
+        let sample_after = std::fs::read_to_string(&sample_path).expect("sample after");
+        let demo_after = std::fs::read_to_string(&demo_path).expect("demo after");
+        assert!(sample_after.contains("A second demo line, edited."));
+        assert_eq!(demo_before, demo_after);
     }
 }

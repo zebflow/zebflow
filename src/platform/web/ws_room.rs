@@ -202,10 +202,10 @@ fn admit(ctx: &SessionCtx, auth: &mut AuthCache) -> bool {
         .filter(|t| t.room.is_empty() || t.room == ctx.room_id)
         .collect();
     let requires: Vec<bool> = specs.iter().map(|t| !is_open(&t.auth_type)).collect();
+    // The room's own `--auth`, from the visitor's headers, on every office: a
+    // connection a controller forwards carries the visitor's headers, and the
+    // controller's call header proves only who forwarded it.
     admission(&requires, || {
-        if is_controller_call(&ctx.state, &ctx.headers) {
-            return true;
-        }
         for spec in specs.iter().filter(|t| !is_open(&t.auth_type)) {
             if let Ok(claims) = verify_trigger_auth(ctx, spec) {
                 auth.0.insert(AuthCache::key(spec), claims.unwrap_or(Value::Null));
@@ -220,7 +220,7 @@ fn verify_trigger_auth(
     ctx: &SessionCtx,
     spec: &crate::platform::services::pipeline_runtime::WsTriggerSpec,
 ) -> Result<Option<Value>, ()> {
-    if is_open(&spec.auth_type) || is_controller_call(&ctx.state, &ctx.headers) {
+    if is_open(&spec.auth_type) {
         return Ok(None);
     }
     verify_webhook_auth(

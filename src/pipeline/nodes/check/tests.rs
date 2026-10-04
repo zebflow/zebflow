@@ -203,3 +203,115 @@ fn a_loop_item_and_its_close_answer_what_they_say() {
     let found = warnings(&body.replace("input.item", "input.manual"));
     assert!(has(&found, "no node upstream of `b` answers `manual`"), "{found:?}");
 }
+
+// ── Routes that never answer (warnings) ──────────────────────────────────────
+
+#[test]
+fn a_webhook_path_without_a_response_warns_once_per_sink() {
+    // Every path answers: nothing to say.
+    assert!(check(&format!("{UPLOAD} | javascript.script.run -- \"return 1\" | web.response.send --body \"{{{{ input.script }}}}\"")).is_clean());
+    // No response at all: the run answers 204, and the sink is named.
+    let found = warnings(&format!("{UPLOAD} | javascript.script.run -- \"return 1\""));
+    assert_eq!(found, vec!["node `n1`: this route never answers a body (204) on the path ending at `n1` — end it in web.response.send to answer the caller".to_string()]);
+    // One branch answers and one does not: only the silent one is named.
+    let body = "[t] trigger.webhook --route /flag --method POST\n\
+                [i] logic.if --when \"input.webhook.body.ok\"\n\
+                [yes] web.response.send --body \"{{ { ok: true } }}\"\n\
+                [no] javascript.script.run -- \"return 0\"\n\
+                [t] -> [i]\n[i]:true -> [yes]\n[i]:false -> [no]\n";
+    let found = warnings(body);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("on the path ending at `no`"), "{found:?}");
+    // A node after the response runs after the caller has the answer.
+    assert!(check(&format!("{UPLOAD} | web.response.send --body \"{{{{ {{ ok: true }} }}}}\" | javascript.script.run -- \"return 1\"")).is_clean());
+    // Not a webhook: nobody is waiting on an answer.
+    assert!(check("| trigger.manual | javascript.script.run -- \"return 1\"").is_clean());
+}
+
+#[test]
+fn a_published_tool_path_without_a_response_warns_once_per_sink() {
+    let tool = "| trigger.mcp --route /library --name lookup --description \"Look a title up.\" --auth none";
+    let found = warnings(&format!("{tool} | javascript.script.run -- \"return 1\""));
+    assert_eq!(found, vec!["node `n1`: this tool never answers a result on the path ending at `n1` — end it in web.response.send to answer the agent".to_string()]);
+    assert!(check(&format!("{tool} | web.response.send --body \"{{{{ {{ ok: true }} }}}}\"")).is_clean());
+}
+
+#[test]
+fn an_error_handler_without_a_response_warns_too() {
+    let body = "[t] trigger.webhook --route /save --method POST\n\
+                [q] sqlite.query.run -- \"SELECT 1\"\n\
+                [ok] web.response.send --body \"{{ input.query.rows }}\"\n\
+                [h] javascript.script.run -- \"return 'logged'\"\n\
+                [t] -> [q]\n[q] -> [ok]\n[q]:error -> [h]\n";
+    let found = warnings(body);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("node `h`: this route never answers a body (204) on the path ending at `h`"), "{found:?}");
+    // A handler that answers is clean, and reads the failure the engine
+    // delivers under the failing node's key, beside the payload it kept.
+    let answered = body.replace(
+        "[h] javascript.script.run -- \"return 'logged'\"",
+        "[h] web.response.send --status 500 --body \"{{ { ok: false, error: { code: input.query.error.code }, sent: input.webhook.body } }}\"",
+    );
+    assert!(check(&answered).is_clean(), "{:?}", check(&answered));
+}
+
+#[test]
+fn the_old_failure_envelope_is_pointed_at_the_failing_nodes_key() {
+    let body = "[t] trigger.webhook --route /save --method POST\n\
+                [q] sqlite.query.run -- \"SELECT 1\"\n\
+                [ok] web.response.send --body \"{{ input.query.rows }}\"\n\
+                [h] web.response.send --status 500 --body \"{{ { code: input.error.code } }}\"\n\
+                [t] -> [q]\n[q] -> [ok]\n[q]:error -> [h]\n";
+    let found = warnings(body);
+    assert!(
+        has(&found, "no node upstream of `h` answers `error`; a failure arrives under the failing node's key — did you mean `input.query.error`?"),
+        "{found:?}"
+    );
+    // A control node's failure is under its second word.
+    let body = "[t] trigger.webhook --route /each --method POST\n\
+                [f] logic.foreach --from \"input.webhook.body.rows\"\n\
+                [x] javascript.script.run -- \"return 1\"\n\
+                [c] logic.collect\n\
+                [ok] web.response.send --body \"{{ input.collect }}\"\n\
+                [h] web.response.send --status 500 --body \"{{ { code: input.foreach.error.code } }}\"\n\
+                [t] -> [f]\n[f]:item -> [x]\n[x] -> [c]\n[c] -> [ok]\n[f]:error -> [h]\n";
+    assert!(check(body).is_clean(), "{:?}", check(body));
+}
+
+#[test]
+fn a_failure_replaces_its_key_so_input_reads_it_without_ambiguity() {
+    // `s` and the failing `q` both answer `script`; on `q`'s :error the
+    // engine's delivery replaces `script`, so `input.script` is the failure.
+    let body = "[t] trigger.webhook --route /twice --method POST\n\
+                [s] javascript.script.run -- \"return 1\"\n\
+                [q] javascript.script.run -- \"return 2\"\n\
+                [ok] web.response.send --body \"{{ $nodes.q.script }}\"\n\
+                [h] web.response.send --status 500 --body \"{{ { code: input.script.error.code, first: $nodes.s.script } }}\"\n\
+                [t] -> [s]\n[s] -> [q]\n[q] -> [ok]\n[q]:error -> [h]\n";
+    assert!(check(body).is_clean(), "{:?}", check(body));
+    // On the success path both answers are there, and `input.script` is ambiguous.
+    let found = warnings(&body.replace("{{ $nodes.q.script }}", "{{ input.script }}"));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("node `ok`: `input.script` — 2 upstream nodes answer `script`"), "{found:?}");
+}
+
+#[test]
+fn the_failing_node_is_null_on_its_own_error_path() {
+    let body = "[t] trigger.webhook --route /fail --method POST\n\
+                [q] sqlite.query.run -- \"SELECT 1\"\n\
+                [ok] web.response.send --body \"{{ input.query.rows }}\"\n\
+                [h] web.response.send --status 500 --body \"{{ { code: $nodes.q.error.code } }}\"\n\
+                [t] -> [q]\n[q] -> [ok]\n[q]:error -> [h]\n";
+    let found = warnings(body);
+    assert_eq!(
+        found,
+        vec!["node `h`: `$nodes.q.error` — on the `:error` path of `q`, `$nodes.q` is null; read `input.query.error`".to_string()],
+        "{found:?}"
+    );
+    // Reading the failing node's own key points at the same key in the payload.
+    let own = body.replace("$nodes.q.error.code", "$nodes.q.query.error.code");
+    assert!(has(&warnings(&own), "`$nodes.q.query` — on the `:error` path of `q`, `$nodes.q` is null; read `input.query.error` — did you mean `input.query`?"));
+    // On the success path `$nodes.q` holds its answer.
+    let ok = body.replace("{{ input.query.rows }}", "{{ $nodes.q.query.rows }}").replace("$nodes.q.error.code", "input.query.error.code");
+    assert!(check(&ok).is_clean(), "{:?}", check(&ok));
+}

@@ -27,6 +27,15 @@
         "ai.audio.generate"
       ]
     },
+    "auth.oauth.approve": {
+      "label": "OAUTH",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/auth.oauth.approve.svg",
+      "source_url": "",
+      "supports": [
+        "auth.oauth.approve"
+      ]
+    },
     "auth.token.create": {
       "label": "JWT",
       "method": "direct-svg",

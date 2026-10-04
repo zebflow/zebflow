@@ -11,8 +11,10 @@
 //! - [`check_pipeline`] — a whole graph: every node, kinds the catalogue
 //!   does not have ("did you mean"), a provider's credential of the wrong
 //!   kind, the flow rules; and, as warnings, references to keys no upstream
-//!   node answers ([`references`]).
+//!   node answers ([`references`]) and a webhook path that ends without
+//!   answering the caller ([`answers`]).
 
+pub mod answers;
 mod config;
 pub mod references;
 pub mod suggest;
@@ -145,8 +147,7 @@ pub fn check_flow(graph: &PipelineGraph) -> Vec<Problem> {
     }
 }
 
-/// Everything a save refuses, and the reference warnings `pipeline_check`
-/// adds.
+/// Everything a save refuses, and the warnings `pipeline_check` adds.
 pub fn check_pipeline(
     graph: &PipelineGraph,
     defs: &[NodeDefinition],
@@ -155,7 +156,9 @@ pub fn check_pipeline(
 ) -> PipelineCheck {
     let mut refusals = check_graph_nodes(graph, defs, catalogue, credential_kind);
     refusals.extend(check_flow(graph));
-    PipelineCheck { refusals, warnings: references::check_references(graph, defs) }
+    let mut warnings = references::check_references(graph, defs);
+    warnings.extend(answers::unanswered_routes(graph));
+    PipelineCheck { refusals, warnings }
 }
 
 /// No credential is known: the credential-kind check is skipped.

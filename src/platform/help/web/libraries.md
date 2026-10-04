@@ -17,7 +17,7 @@ Dynamic `import()` is refused by the default security policy
 supported — always the `zeb/<lib>` specifier. The libraries are browser code:
 call them from `useEffect`, event handlers or `useD3`-style hooks, not during
 render. Components the libraries provide (`DeckMap`, `ThreeScene`, `CodeEditor`,
-`Markdown`, `VrmViewer`) render a placeholder on the server and mount in the
+`Markdown`, `VrmViewer`, `PotoruPlayer`, `PotoruCompiler`) render a placeholder on the server and mount in the
 browser, so they may appear in JSX directly.
 
 A project can restrict which libraries its pages may load under
@@ -36,6 +36,7 @@ with no list, any of them loads on demand.
 | `zeb/threejs`, `zeb/threejs-vrm` | `threejs`, `<ThreeScene>`, `mountThreeScene`; `vrm`, `<VrmViewer>` | 3D scenes and VRM avatars |
 | `zeb/graphui` | `createGraphUI`, `GraphStore`, … | node-graph editors |
 | `zeb/pdf` | `createDocument`, `createTable`, `render`, `PAGE_SIZES`, … | PDF generation in the browser |
+| `zeb/potoru` | `<PotoruPlayer>`, `<PotoruCompiler>`, `potoru`, `mountPotoruPlayer`, `mountPotoruCompiler`, `compile` | 2D animation: play `.poto` stories; compile Potoru source in the browser |
 
 There is no icons library; use inline SVG (the `zeb/ui` components do).
 
@@ -239,6 +240,49 @@ import { VrmViewer } from "zeb/threejs-vrm";
 `threejs` is the namespace; `ensureThree`, `createSceneRuntime` and
 `mountThreeScene(host, options)` are the imperative forms. Read the library's
 README under `blessed/rwe-libraries/threejs/` for the scene runtime options.
+
+---
+
+## zeb/potoru
+
+```tsx
+import { PotoruPlayer, PotoruCompiler, potoru } from "zeb/potoru";
+
+<PotoruPlayer id="intro" src="/_files/stories/intro.poto" controls autoplay muted />
+<PotoruCompiler id="lab" files={files} height="600px" />
+<PotoruCompiler id="script-lab" mode="script" script={script} />
+```
+
+`PotoruPlayer` plays a `.poto` story (`mode`: play, slide or interactive). Its
+`src` is fetched by the browser, so it must be same-origin: an exposed file at
+`/_files/<path>` on the project's host (the `files` surface switched on, the
+path `public_read`), or bytes handed to `potoru.get(id).load(bytes)`. Events
+bubble from the container: `zeb:potoru:ready` (`{ duration, mode, scenes }`),
+`zeb:potoru:report` (what the story reports to the host), `zeb:potoru:ended`,
+`zeb:potoru:error` (`needs-newer-player` among the codes). `potoru.get(id)`
+plays, seeks, moves between slides (`next`, `prev`, `goto`), and drives the
+story's host inputs: `set(target, data, value)`, `fire(target, event)`.
+
+Two ways to author a story in the browser:
+
+- **Way A, files** — `potoru.compile({ files })` compiles a Potoru format v4
+  source folder (a map of path → YAML text) and resolves to
+  `{ ok, poto, diagnostics }`; each diagnostic names `file` and `line`.
+- **Way B, script** (experimental) — `potoru.compile({ script })` runs
+  authoring-API JavaScript (`Project`, `format` and `Potoru` in scope;
+  it ends with `return project`) in a sandboxed iframe with no network and a time limit, then
+  compiles what it returns. JavaScript only in 0.1.
+
+`PotoruCompiler` wraps both in a file list, an editor, diagnostics and a live
+preview with Compile and Download `.poto` (`mode="files"` with `files`, or
+`mode="script"` with `script`). It announces `zeb:potoru-compiler:compiled` and
+`zeb:potoru-compiler:error`; `potoru.getCompiler(id)` reads and replaces the
+files or script and compiles on demand.
+
+Only a small bridge loads with the page; the player code loads when a player
+mounts, the compiler only when it is used, and each WebAssembly engine only
+for a story that needs it. Read the library's README under
+`blessed/rwe-libraries/potoru/`.
 
 ---
 

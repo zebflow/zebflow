@@ -96,6 +96,8 @@ pub struct PlanFile {
     pub changes: Vec<Item>,
     pub notes: Vec<Item>,
     pub unresolved: Vec<Item>,
+    /// For the owner to look at; never blocks the apply.
+    pub review: Vec<Item>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check: Option<Checked>,
     pub diff: String,
@@ -148,6 +150,7 @@ pub struct Counts {
     pub refusals: usize,
     pub warnings: usize,
     pub notes: usize,
+    pub review: usize,
 }
 
 /// The inputs of a plan besides the files.
@@ -214,6 +217,7 @@ pub fn plan_sources(inputs: &PlanInputs<'_>, pipelines: &[PipelineSource]) -> Pl
             changes: Vec::new(),
             notes: Vec::new(),
             unresolved: Vec::new(),
+            review: Vec::new(),
             check: None,
             diff: String::new(),
             original: source.archived.clone().unwrap_or_else(|| source.live.clone()),
@@ -255,6 +259,7 @@ pub fn plan_sources(inputs: &PlanInputs<'_>, pipelines: &[PipelineSource]) -> Pl
         file.changes = rewrite.changes;
         file.notes = rewrite.notes;
         file.unresolved = rewrite.unresolved;
+        file.review = rewrite.review;
         if source.draft && live_is_old {
             file.unresolved.push(Item::new(
                 "",
@@ -285,6 +290,7 @@ pub fn plan_sources(inputs: &PlanInputs<'_>, pipelines: &[PipelineSource]) -> Pl
             file.changes.clear();
             file.notes.clear();
             file.unresolved.clear();
+            file.review.clear();
             file.check = None;
             file.diff.clear();
         }
@@ -347,6 +353,7 @@ pub fn plan_sources(inputs: &PlanInputs<'_>, pipelines: &[PipelineSource]) -> Pl
             changes: rewrite.changes,
             notes: rewrite.notes,
             unresolved: rewrite.unresolved,
+            review: Vec::new(),
             check: None,
             diff: unified(&original, &new_text),
             original: original.clone(),
@@ -463,6 +470,7 @@ fn finish(owner: &str, project: &str, mut files: Vec<PlanFile>) -> Plan {
         }
         counts.unresolved += file.unresolved.len();
         counts.notes += file.notes.len();
+        counts.review += file.review.len();
         if let Some(check) = &file.check {
             counts.refusals += check.refusals.len();
             counts.warnings += check.warnings.len();

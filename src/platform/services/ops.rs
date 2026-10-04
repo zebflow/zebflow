@@ -3418,8 +3418,13 @@ mod save_check_tests {
         let ops = PlatformOps::new((*platform).clone(), "superadmin", "default");
         let before = platform.projects.list_pipeline_meta_rows("superadmin", "default").expect("rows").len();
 
-        let clean = ops.pipeline_check(Some(&format!("{UPLOAD} | fs.file.put --from \"{{{{ input.webhook.files.photo }}}}\" --accept image")), None).await;
-        assert!(clean.text.contains("No problems: 2 nodes would register as written."), "{}", clean.text);
+        let clean = ops.pipeline_check(Some(&format!("{UPLOAD} | fs.file.put --from \"{{{{ input.webhook.files.photo }}}}\" --accept image | web.response.send --body \"{{{{ input.file }}}}\"")), None).await;
+        assert!(clean.text.contains("No problems: 3 nodes would register as written."), "{}", clean.text);
+
+        // A route that never answers is a warning, not a refusal.
+        let silent = ops.pipeline_check(Some(&format!("{UPLOAD} | fs.file.put --from \"{{{{ input.webhook.files.photo }}}}\" --accept image")), None).await;
+        assert!(silent.text.contains("⚠ warning: node `n1`: this route never answers a body (204) on the path ending at `n1`"), "{}", silent.text);
+        assert!(silent.text.contains("It would register (1 warning)."), "{}", silent.text);
 
         let wrong = ops.pipeline_check(Some(&format!("{UPLOAD} | fs.image.thumbnail --from \"{{{{ input.webhook.files.photo }}}}\" --format jpeg --timeout 2h")), None).await;
         assert!(wrong.text.contains("✗ refused: node `n1`: fs.image.thumbnail --format 'jpeg' must be one of jpg, png, webp"), "{}", wrong.text);

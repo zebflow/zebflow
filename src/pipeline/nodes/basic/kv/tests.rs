@@ -98,6 +98,15 @@ fn empty_values_and_bad_lifetimes_are_refused() {
     assert_eq!(refusal("kv.message.publish", json!({ "topic": "t" })), "FW_NODE_KV_MESSAGE_PUBLISH_BODY");
 }
 
+/// `zf.` is the platform's own: a published route's sign-ins live there.
+#[test]
+fn the_platform_prefix_is_refused_to_every_kv_node() {
+    assert_eq!(refusal("kv.entry.put", json!({ "key": "zf.oauth/x", "value": 1 })), "FW_NODE_KV_ENTRY_PUT_KEY");
+    assert_eq!(refusal("kv.entry.get", json!({ "key": "zf.oauth/ticket/x" })), "FW_NODE_KV_ENTRY_GET_KEY");
+    assert_eq!(refusal("kv.entry.delete", json!({ "key": "zf.x" })), "FW_NODE_KV_ENTRY_DELETE_KEY");
+    assert_eq!(refusal("kv.entry.increment", json!({ "key": "zf.x" })), "FW_NODE_KV_ENTRY_INCREMENT_KEY");
+}
+
 #[test]
 fn retired_flags_are_refused_by_the_dsl() {
     use crate::platform::shell::parser::build_pipeline_graph;

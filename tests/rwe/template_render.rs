@@ -87,7 +87,7 @@ export function getPage(input) {
   return {
     head: {
       title: `${input.artist} — ${input.song}`,
-      description: `Lyrics for ${input.song}`,
+      description: `Notes for ${input.song}`,
     },
     body: { className: "bg-slate-950 text-slate-100" },
   };
@@ -116,14 +116,14 @@ export default function Page(input) {
     let rendered = engine
         .render(
             &compiled,
-            json!({ "artist": "Aurora", "song": "Runaway" }),
+            json!({ "artist": "Demo Artist", "song": "Demo Song" }),
             &language,
-            &render_context("/lyrics/runaway"),
+            &render_context("/notes/demo-song"),
         )
         .expect("render getPage template");
 
-    assert!(rendered.html.contains("Runaway"));
-    assert!(rendered.html.contains("Aurora"));
+    assert!(rendered.html.contains("Demo Song"));
+    assert!(rendered.html.contains("Demo Artist"));
 }
 
 #[test]

@@ -428,7 +428,9 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
     println!("Data: {}", data_root.display());
     println!("Flow: /login -> /home -> /projects/{{owner}}/{{project}}");
 
-    axum::serve(listener, app)
+    // With the peer address: a published MCP route counts refused
+    // attempts per client (`published-mcp.md`).
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal(
             health.as_ref().map(|(state, _, _)| state.clone()),
         ))
@@ -645,7 +647,9 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
     println!("Public route: {app_url}");
     println!("Mode: standalone app runtime");
 
-    axum::serve(listener, app)
+    // With the peer address: a published MCP route counts refused
+    // attempts per client (`published-mcp.md`).
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal(
             health.as_ref().map(|(state, _, _)| state.clone()),
         ))

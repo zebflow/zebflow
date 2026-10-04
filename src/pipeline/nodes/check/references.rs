@@ -23,12 +23,17 @@ use crate::pipeline::nodes::answer_key;
 use crate::pipeline::nodes::basic::logic;
 use crate::pipeline::NodeDefinition;
 
+/// The pin every node has, where the engine delivers its failure.
+const ERROR_PIN: &str = "error";
+
 /// The keys a payload holds, each with the nodes that answered it; `open`
-/// when some of it cannot be known.
+/// when some of it cannot be known; `failed`, the nodes whose `:error` path
+/// every way here runs on — their `$nodes.<id>` is null here.
 #[derive(Debug, Clone, Default)]
 struct Keys {
     keys: BTreeMap<String, BTreeSet<usize>>,
     open: bool,
+    failed: BTreeSet<usize>,
 }
 
 impl Keys {
@@ -58,6 +63,11 @@ fn adds(node: &PipelineNode, def: Option<&NodeDefinition>) -> Result<Option<Stri
         None if kind.starts_with("logic.") || kind == "web.response.send" => Ok(None),
         None => Err(()),
     }
+}
+
+/// The key a node's failure arrives under on its `:error` pin.
+fn failure_key_of(node: &PipelineNode) -> String {
+    crate::pipeline::nodes::failure_key(&node.kind, node.config.get("name").and_then(Value::as_str))
 }
 
 /// A reference found in a node's config: the flag holding it, and what it reads.
@@ -169,6 +179,15 @@ pub fn check_references(graph: &PipelineGraph, defs: &[NodeDefinition]) -> Vec<P
         } else if incoming[i].is_empty() {
             payload.open = !node.kind.starts_with("trigger.");
         } else {
+            // A node failed on every way here only when each incoming
+            // payload says so.
+            let mut failed: Option<BTreeSet<usize>> = None;
+            let mut meet = |set: &BTreeSet<usize>| {
+                failed = Some(match failed.take() {
+                    None => set.clone(),
+                    Some(have) => have.intersection(set).copied().collect(),
+                });
+            };
             for &(from, pin) in &incoming[i] {
                 if graph.nodes[from].kind == logic::foreach_::NODE_KIND && pin == logic::foreach_::OUTPUT_PIN_ITEM {
                     let mut item = Keys::default();
@@ -178,11 +197,25 @@ pub fn check_references(graph: &PipelineGraph, defs: &[NodeDefinition]) -> Vec<P
                     if graph.nodes[from].config.get("keep_input").and_then(Value::as_bool).unwrap_or(false) {
                         item.merge(&keys_in[from]);
                     }
+                    meet(&keys_in[from].failed);
                     payload.merge(&item);
+                } else if pin == ERROR_PIN {
+                    // A failure the engine delivers (§6): the payload the
+                    // failing node received, kept, plus its key answering
+                    // `{ ok: false, error }`. Its delivery replaces that
+                    // key, so `input.<key>` is the failure alone, and
+                    // `$nodes.<failing node>` is null from here.
+                    let mut failure = keys_in[from].clone();
+                    failure.keys.insert(failure_key_of(&graph.nodes[from]), BTreeSet::from([from]));
+                    failure.failed.insert(from);
+                    meet(&failure.failed);
+                    payload.merge(&failure);
                 } else {
+                    meet(&keys_out[from].failed);
                     payload.merge(&keys_out[from]);
                 }
             }
+            payload.failed = failed.unwrap_or_default();
         }
         let mut out = payload.clone();
         match adds(node, def_of[i]) {
@@ -207,7 +240,11 @@ pub fn check_references(graph: &PipelineGraph, defs: &[NodeDefinition]) -> Vec<P
                 None => input_problem(graph, &keys_in[i], i, &incoming[i], &def_of, &read),
                 Some(id) => {
                     let Some(&at) = index.get(id.as_str()) else { continue };
-                    nodes_problem(graph, &keys_out[at], at, &read)
+                    if keys_in[i].failed.contains(&at) {
+                        Some(failed_node_problem(graph, at, &read))
+                    } else {
+                        nodes_problem(graph, &keys_out[at], at, &read)
+                    }
                 }
             };
             if let Some(message) = message {
@@ -248,12 +285,24 @@ fn input_problem(
         return None;
     }
     let mut message = format!("`{}` — no node upstream of `{id}` answers `{key}`", read.text);
-    if let Some(better) = suggest_input(payload, incoming, def_of, key) {
+    if let Some(better) = suggest_failure(graph, incoming, key) {
+        message.push_str(&format!("; a failure arrives under the failing node's key — did you mean `{better}`?"));
+    } else if let Some(better) = suggest_input(payload, incoming, def_of, key) {
         message.push_str(&format!("; did you mean `{better}`?"));
     } else if payload.keys.is_empty() {
         message.push_str("; its input is empty");
     }
     Some(message)
+}
+
+/// `input.error` read after an `:error` edge: the failure is under the
+/// failing node's key, `input.<key>.error`.
+fn suggest_failure(graph: &PipelineGraph, incoming: &[(usize, &str)], key: &str) -> Option<String> {
+    if key != "error" {
+        return None;
+    }
+    let from = incoming.iter().rev().find(|(_, pin)| *pin == ERROR_PIN).map(|&(from, _)| from)?;
+    Some(format!("input.{}.error", failure_key_of(&graph.nodes[from])))
 }
 
 /// The likeliest key an `input.<key>` meant: the key nested in an upstream
@@ -287,6 +336,19 @@ fn suggest_input(
         .find(|(n, _)| *n == feeder)
         .or_else(|| providers.first())
         .map(|(_, answer)| format!("input.{answer}"))
+}
+
+/// `$nodes.<id>…` read on `<id>`'s own `:error` path: the node answered
+/// nothing, so it is null there; its failure is in the payload, under its key.
+fn failed_node_problem(graph: &PipelineGraph, at: usize, read: &Read) -> String {
+    let id = graph.nodes[at].id.as_str();
+    let key = failure_key_of(&graph.nodes[at]);
+    let mut message = format!("`{}` — on the `:error` path of `{id}`, `$nodes.{id}` is null; read `input.{key}.error`", read.text);
+    // `$nodes.<id>.<key>…` meant the failure under the same key.
+    if read.key == key {
+        message.push_str(&format!(" — did you mean `input.{key}`?"));
+    }
+    message
 }
 
 fn nodes_problem(graph: &PipelineGraph, answered: &Keys, at: usize, read: &Read) -> Option<String> {

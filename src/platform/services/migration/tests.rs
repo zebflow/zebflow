@@ -291,14 +291,63 @@ fn a_response_writes_out_its_cookie_redirect_and_body() {
 }
 
 #[test]
-fn a_webhook_without_a_response_gains_one_answering_what_0_10_answered() {
+fn a_webhook_without_a_response_answers_204_and_is_left_for_review() {
     let out = rewrite(&chain(&[
         ("hook", "n.trigger.webhook", json!({ "path": "/api/ping", "method": "GET" })),
         ("pong", "n.script", json!({ "source": "return { ok: true, at: input.query.at };" })),
     ]));
-    assert_eq!(kind(&out, "respond"), "web.response.send");
-    assert_eq!(config(&out, "respond")["body"], "{{ input.script }}");
-    assert_clean(&out);
+    // Nothing reproduces the 0.10 payload dump: no response node is added.
+    let nodes = out.new_json.as_ref().unwrap().pointer("/spec/nodes").unwrap().as_array().unwrap().clone();
+    assert!(nodes.iter().all(|n| n["kind"] != "web.response.send"), "{nodes:#?}");
+    assert!(out.unresolved.is_empty(), "{:#?}", out.unresolved);
+    assert_eq!(out.review.len(), 1, "{:#?}", out.review);
+    assert_eq!(out.review[0].node, "pong");
+    assert_eq!(
+        out.review[0].text,
+        "0.10 answered the run's value here (`pong`'s answer, which replaced the payload); 0.11 answers 204 — add web.response.send with what the caller needs (the payload's keys: `script`, `webhook`)"
+    );
+
+    // A last node that added its key and kept the rest: the value was the
+    // payload as the path carried it, not one node's answer.
+    let kept = rewrite(&chain(&[
+        ("hook", "n.trigger.webhook", json!({ "path": "/api/convert", "method": "POST" })),
+        ("conv", "n.table.convert", json!({ "from": "uploads/demo.csv", "to_format": "json" })),
+    ]));
+    assert_eq!(kept.review.len(), 1, "{:#?}", kept.review);
+    assert!(
+        kept.review[0].text.starts_with("0.10 answered the run's value here (the payload this path carried); 0.11 answers 204"),
+        "{:#?}",
+        kept.review
+    );
+
+    // Each branch that ends without one is its own item; one that answers is not.
+    let branches = rewrite(&doc(
+        &[
+            ("hook", "n.trigger.webhook", json!({ "path": "/api/flag", "method": "POST" })),
+            ("check", "n.logic.if", json!({ "expr": "input.body.ok" })),
+            ("yes", "n.web.response", json!({ "body": "{{ { ok: true } }}" })),
+            ("no", "n.script", json!({ "source": "return { seen: true };" })),
+        ],
+        &[("hook", "out", "check"), ("check", "true", "yes"), ("check", "false", "no")],
+    ));
+    assert_eq!(branches.review.iter().map(|r| r.node.as_str()).collect::<Vec<_>>(), ["no"], "{:#?}", branches.review);
+
+    // A schedule answers nobody: nothing to review.
+    let tick = rewrite(&chain(&[
+        ("tick", "n.trigger.schedule", json!({ "cron": "0 * * * *" })),
+        ("log", "n.script", json!({ "source": "return { at: input.fired_at };" })),
+    ]));
+    assert!(tick.review.is_empty(), "{:#?}", tick.review);
+}
+
+#[test]
+fn a_script_returning_0_10_response_instructions_is_unresolved() {
+    let out = rewrite(&chain(&[
+        ("hook", "n.trigger.webhook", json!({ "path": "/login", "method": "POST" })),
+        ("go", "n.script", json!({ "source": "return { _status: 303, _set_cookie: { name: 's', value: 'v' } };" })),
+    ]));
+    assert!(unresolved_mentions(&out, "`_status`"), "{:#?}", out.unresolved);
+    assert!(out.review.is_empty(), "{:#?}", out.review);
 }
 
 // ── scripts ──────────────────────────────────────────────────────────────────
@@ -355,6 +404,115 @@ fn a_call_sends_the_payload_0_10_sent_and_reads_the_result_where_0_11_puts_it() 
     // An unknown function leaves what it returned unknown.
     let blind = rewrite(&caller);
     assert!(unresolved_mentions(&blind, "not a 0.10 function pipeline"), "{:#?}", blind.unresolved);
+}
+
+/// A handler on an ordinary node's `error` pin read the 0.10 envelope
+/// (`input.error`, `input.input`); 0.11 delivers the payload kept plus the
+/// failing node's key, so `error` moves under that key and `input.<k>` is
+/// read where the failing node received it.
+#[test]
+fn a_handler_reading_the_old_failure_envelope_reads_the_failing_nodes_key() {
+    let out = rewrite(&doc(
+        &[
+            ("hook", "n.trigger.webhook", json!({ "path": "/save", "method": "POST" })),
+            ("s", "n.script", json!({ "source": "return { saved: true };" })),
+            ("ok", "n.web.response", json!({ "body": "{{ { saved: input.saved } }}" })),
+            ("oops", "n.web.response", json!({
+                "status": 500,
+                "body": "{{ { code: input.error.code, why: input.error.message, name: input.input.body.name, attempt: input.__zf_retry.attempt } }}"
+            })),
+        ],
+        &[("hook", "out", "s"), ("s", "out", "ok"), ("s", "error", "oops")],
+    ));
+    assert_eq!(
+        config(&out, "oops")["body"],
+        "{{ { code: input.script.error.code, why: input.script.error.message, name: input.webhook.body.name, attempt: input.__zf_retry.attempt } }}"
+    );
+    assert!(out.unresolved.is_empty(), "{:#?}", out.unresolved);
+
+    // Which node failed is the run record's, not the answer's.
+    let gone = rewrite(&doc(
+        &[
+            ("hook", "n.trigger.webhook", json!({ "path": "/save", "method": "POST" })),
+            ("s", "n.script", json!({ "source": "return { saved: true };" })),
+            ("oops", "n.web.response", json!({ "status": 500, "body": "{{ { at: input.error.node_id } }}" })),
+        ],
+        &[("hook", "out", "s"), ("s", "error", "oops")],
+    ));
+    assert!(gone.unresolved.iter().any(|u| u.text.contains("the run record names the failing node")), "{:#?}", gone.unresolved);
+}
+
+#[test]
+fn an_unwired_failed_call_in_a_webhook_answers_its_failure_and_nothing_else() {
+    let callee = chain(&[
+        ("fn", "n.trigger.function", json!({ "description": "Greets." })),
+        ("greet", "n.script", json!({ "source": "return { user: { name: input.name } };" })),
+    ]);
+    let mut context = RewriteContext::default();
+    let graph = old_graph(&callee, &context).unwrap();
+    context.functions.insert("greet".into(), super::kinds::function_result(&graph.outputs[1], Some("script")));
+    let caller = chain(&[
+        ("hook", "n.trigger.webhook", json!({ "path": "/greet", "method": "POST" })),
+        ("call", "n.function.call", json!({ "function": "greet", "input": "{{ { name: input.body.name } }}" })),
+        ("answer", "n.web.response", json!({ "body": "{{ { hello: input.user.name } }}" })),
+    ]);
+    let out = rewrite_pipeline(&caller, &context);
+    assert_eq!(kind(&out, "failed"), "web.response.send");
+    assert_eq!(config(&out, "failed")["status"], 500);
+    assert_eq!(
+        config(&out, "failed")["body"],
+        "{{ { ok: false, error: { code: input.result.error.code } } }}",
+        "the call's error code, under its noun, and nothing of the payload — no raw message"
+    );
+    let edges = out.new_json.as_ref().unwrap().pointer("/spec/edges").unwrap().as_array().unwrap().clone();
+    assert!(
+        edges.iter().any(|e| e["from_node"] == "call" && e["from_pin"] == "error" && e["to_node"] == "failed"),
+        "{edges:#?}"
+    );
+    assert!(out.changes.iter().any(|c| c.node == "failed" && c.text.contains("on `call`'s :error")), "{:#?}", out.changes);
+    assert!(out.review.is_empty(), "the call path answers: {:#?}", out.review);
+    assert_clean(&out);
+
+    // A wired error pin is the author's handler, kept; it reads the failure
+    // where 0.11 delivers it.
+    let wired = rewrite_pipeline(
+        &doc(
+            &[
+                ("hook", "n.trigger.webhook", json!({ "path": "/greet", "method": "POST" })),
+                ("call", "n.function.call", json!({ "function": "greet", "input": "{{ { name: input.body.name } }}" })),
+                ("answer", "n.web.response", json!({ "body": "{{ { hello: input.user.name } }}" })),
+                ("oops", "n.web.response", json!({ "status": 502, "body": "{{ { failed: input.error } }}" })),
+            ],
+            &[("hook", "out", "call"), ("call", "out", "answer"), ("call", "error", "oops")],
+        ),
+        &context,
+    );
+    let nodes = wired.new_json.as_ref().unwrap().pointer("/spec/nodes").unwrap().as_array().unwrap().clone();
+    assert!(nodes.iter().all(|n| n["id"] != "failed"), "{nodes:#?}");
+    assert_eq!(config(&wired, "oops")["body"], "{{ { failed: (`${input.result.error.code}: ${input.result.error.message}`) } }}");
+    assert_clean(&wired);
+
+    // Outside a webhook nobody waits on an answer: the run fails there, noted.
+    let job = rewrite_pipeline(
+        &chain(&[
+            ("tick", "n.trigger.schedule", json!({ "cron": "0 * * * *" })),
+            ("call", "n.function.call", json!({ "function": "greet", "input": "{{ { name: 'x' } }}" })),
+        ]),
+        &context,
+    );
+    assert!(job.notes.iter().any(|n| n.node == "call" && n.text.contains("0.11 fails the run")), "{:#?}", job.notes);
+}
+
+#[test]
+fn an_error_page_keeps_its_status_class_as_written() {
+    for class in ["4xx", "5xx"] {
+        let out = rewrite(&chain(&[
+            ("err", "n.trigger.weberror", json!({ "code": class })),
+            ("page", "n.web.response", json!({ "status": 500, "body": "{{ { path: input.original_path } }}" })),
+        ]));
+        assert_eq!(config(&out, "err")["status"], class);
+        assert_clean(&out);
+    }
 }
 
 // ── logic ────────────────────────────────────────────────────────────────────

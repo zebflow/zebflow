@@ -122,7 +122,7 @@ This server lists these tools and nothing else. A pipeline whose entry is
 `trigger.mcp` publishes a tool of the **app** on a route of the `mcp` surface
 (`/_mcp/ROUTE` on the project's hosts, off by default) for outside agents; it
 never appears here and cannot be called from here (`skill_read
-name="zebflow-pipeline"`, "Publishing an MCP server"; served from 0.11.1).
+name="zebflow-pipeline"`, "Publishing an MCP server").
 
 ---
 

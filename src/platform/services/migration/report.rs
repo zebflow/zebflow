@@ -38,8 +38,8 @@ pub fn plan_markdown(plan: &Plan) -> String {
     }
     out.push_str(&format!(
         "Pipelines: {} to rewrite, {} already migrated, {} already 0.11. Pages: {} to rewrite, {} already migrated. \
-         Check warnings: {}. Behaviour notes: {}.\n\n",
-        c.pipelines_to_rewrite, c.pipelines_done, c.pipelines_unchanged, c.pages_to_rewrite, c.pages_done, c.warnings, c.notes
+         Check warnings: {}. Behaviour notes: {}. To review: {}.\n\n",
+        c.pipelines_to_rewrite, c.pipelines_done, c.pipelines_unchanged, c.pages_to_rewrite, c.pages_done, c.warnings, c.notes, c.review
     ));
     out.push_str(
         "Apply deactivates each pipeline below, copies it and each page below to `archive/0.10/<same path>`, \
@@ -68,6 +68,7 @@ pub fn plan_markdown(plan: &Plan) -> String {
         }
         out.push_str("\n\n");
         items(&mut out, "Unresolved (blocks the apply)", &file.unresolved);
+        items(&mut out, "Review (does not block the apply)", &file.review);
         if let Some(check) = &file.check {
             if check.refusals.is_empty() {
                 out.push_str(&format!("Save-time check: passed, {} warning(s)\n", check.warnings.len()));

@@ -95,6 +95,9 @@ pub struct PlatformService {
     pub mem_hub: Arc<MemHub>,
     /// Shared state-bus seam currently backed by the same in-process mem hub.
     pub state_bus: DynStateBus,
+    /// The OAuth state of published MCP routes (`--auth oauth`), in each
+    /// project's durable store.
+    pub published_oauth: Arc<crate::platform::services::PublishedOAuthService>,
     /// In-memory registry of embedded `zeb/*` library manifests.
     pub library: Arc<LibraryService>,
     /// Fonts: the bundled default set and each project's `static/fonts/`.
@@ -333,6 +336,7 @@ impl PlatformService {
             mcp_sessions,
             ws_hub,
             mem_hub,
+            published_oauth: Arc::new(crate::platform::services::PublishedOAuthService::new(state_bus.clone())),
             state_bus,
             library,
             fonts,

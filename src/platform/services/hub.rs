@@ -4160,7 +4160,7 @@ impl HubService {
             &policy_entries,
             Vec::new(),
             PackageReviewOptions {
-                bundle_internal_paths: payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
+                bundle_internal_paths: lands_outside_repo(&payload.asset_kind),
                 ..PackageReviewOptions::default()
             },
         );
@@ -5874,7 +5874,7 @@ fn review_publish_entries(
             title: title.to_string(),
             description: description.to_string(),
             has_cover_image,
-            bundle_internal_paths: asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
+            bundle_internal_paths: lands_outside_repo(asset_kind),
         },
     )
 }
@@ -6701,11 +6701,24 @@ fn default_install_target_folder(
     }
 }
 
+/// Whether a package's paths name files inside its own artifact rather than
+/// inside a project's `repo/`, so the repository's file-type rule does not
+/// judge them (`PackageReviewOptions::bundle_internal_paths`).
+///
+/// True exactly for the kinds [`hub_install_base`] puts in `data/hub/`: a node
+/// bundle and an RWE library. A library's `0.1/runtime/*.wasm` never lands
+/// where a page or pipeline of the project could be written, so refusing it by
+/// the repository's extension set refused a file the project never holds.
+/// Every other kind lands in `repo/` and keeps the rule.
+fn lands_outside_repo(asset_kind: &str) -> bool {
+    asset_kind == HUB_ASSET_KIND_NODE_BUNDLE || asset_kind == HUB_ASSET_KIND_RWE_LIBRARY
+}
+
 /// Where a package's entries are written: bundles and libraries are
 /// materialized artifacts and land in the INSTALLED tier (`data/hub/`);
 /// everything else is project source and lands in `repo/`.
 fn hub_install_base(layout: &ProjectFileLayout, asset_kind: &str) -> PathBuf {
-    if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE || asset_kind == HUB_ASSET_KIND_RWE_LIBRARY {
+    if lands_outside_repo(asset_kind) {
         layout.data_hub_dir()
     } else {
         layout.repo_dir.clone()
@@ -7101,7 +7114,7 @@ fn refuse_prepared_install_violations(
         &policy_entries,
         Vec::new(),
         PackageReviewOptions {
-            bundle_internal_paths: asset_kind == HUB_ASSET_KIND_NODE_BUNDLE,
+            bundle_internal_paths: lands_outside_repo(asset_kind),
             ..PackageReviewOptions::default()
         },
     );
@@ -12643,6 +12656,73 @@ mod tests {
             "{}",
             item.message
         );
+    }
+
+    /// A library may carry WebAssembly engines next to its entry. It lands in
+    /// `data/hub/`, never in `repo/`, so the repository's extension set does
+    /// not judge its files — and the seeded package the Studio enables with
+    /// one click installs, engines included.
+    #[test]
+    fn a_blessed_library_carrying_wasm_installs_with_its_engines() {
+        let (root, platform) = hub_publish_fixture("Wasm Library");
+
+        let result = platform
+            .hub
+            .install_asset(
+                "superadmin",
+                "default",
+                "zebflow.potoru",
+                &blessed_version("zebflow.potoru"),
+                "",
+            )
+            .expect("a library carrying .wasm installs from the seeded local hub");
+        assert_eq!(result.asset_kind, HUB_ASSET_KIND_RWE_LIBRARY);
+
+        let runtime = root
+            .path()
+            .join("users/superadmin/default/data/hub/rwe-libraries/zebflow.potoru/0.1/runtime");
+        for engine in [
+            "potoru_action_wasm_bg.wasm",
+            "potoru_score_wasm_bg.wasm",
+            "potoru_render_wasm_bg.wasm",
+        ] {
+            let bytes = std::fs::read(runtime.join(engine)).expect("the engine is copied");
+            assert!(bytes.starts_with(b"\0asm"), "{engine} is WebAssembly");
+        }
+        assert!(
+            !root
+                .path()
+                .join("users/superadmin/default/repo/rwe-libraries")
+                .exists(),
+            "nothing of the library lands in the repository"
+        );
+    }
+
+    /// The exemption is the destination's, not the extension's: the same
+    /// `.wasm` in a package that lands in `repo/` is refused as before.
+    #[test]
+    fn wasm_is_still_refused_in_a_package_that_lands_in_the_repository() {
+        let layout = ResolvedProjectLayout::platform_default();
+        let engine = b"\0asm\x01\0\0\0";
+
+        refuse_prepared_install_violations(
+            &layout,
+            HUB_ASSET_KIND_RWE_LIBRARY,
+            &[prepared_entry("rwe-libraries/zebflow.demo/0.1/runtime/engine_bg.wasm", engine)],
+        )
+        .expect("a library's engine is package content");
+
+        let rel = "pipelines/hub/pkg/engine_bg.wasm";
+        for kind in [HUB_ASSET_KIND_PIPELINE_BUNDLE, HUB_ASSET_KIND_PROJECT_BUNDLE] {
+            let error = refuse_prepared_install_violations(&layout, kind, &[prepared_entry(rel, engine)])
+                .expect_err("a repository package may not carry .wasm");
+            assert_eq!(error.code, "HUB_INSTALL_REFUSED");
+            assert!(
+                error.message.contains(rel) && error.message.contains("'.wasm'"),
+                "the refusal names the path and the extension: {}",
+                error.message
+            );
+        }
     }
 
     /// Omitted flags mean the install this caller always got.

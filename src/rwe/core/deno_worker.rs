@@ -863,7 +863,7 @@ mod tests {
                 return {
                     head: {
                         title: `${input.artist} — ${input.song}`,
-                        description: `Lyrics for ${input.song}`,
+                        description: `Notes for ${input.song}`,
                     },
                     body: { className: "dynamic-body" },
                 };
@@ -875,17 +875,17 @@ mod tests {
 
         let render = render_ssr(
             source,
-            &json!({ "artist": "Aurora", "song": "Runaway" }),
+            &json!({ "artist": "Demo Artist", "song": "Demo Song" }),
             10_000,
         )
         .expect("render");
-        assert!(render.html.contains("Runaway"));
+        assert!(render.html.contains("Demo Song"));
         assert_eq!(
             render.page_config,
             Some(json!({
                 "head": {
-                    "title": "Aurora — Runaway",
-                    "description": "Lyrics for Runaway"
+                    "title": "Demo Artist — Demo Song",
+                    "description": "Notes for Demo Song"
                 },
                 "html": { "lang": "en" },
                 "body": { "className": "dynamic-body" },

@@ -21,6 +21,7 @@ pub use super::docs_text::{DocHeading, FolderMeta, PageFrontmatter};
 use super::{Config, DEFAULT_DOCS_TEMPLATE, DOCS_META_FILE, Mode};
 use crate::pipeline::PipelineError;
 use crate::pipeline::nodes::basic::web::static_site;
+use crate::pipeline::nodes::shared::project_store;
 use crate::rwe::TemplateSource;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +37,8 @@ pub struct DocPage {
     pub source_rel_path: String,
     pub output_rel_path: String,
     pub route_path: String,
-    pub order: i64,
+    /// Front matter `order`; a page without one follows every ordered sibling.
+    pub order: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,10 +105,16 @@ impl FolderNode {
 /// used to be reached by a single `parent()` hop: that is only the repository
 /// root when the source directory is exactly one segment deep, so a project
 /// declaring `source: src/app` resolved its docs against `repo/src`.
+///
+/// Every repository read goes through the link-refusing reader
+/// (`project_store::read_repo_file` / `list_repo_folder`); the scaffold, when
+/// the template is missing, is written by `create_template` — the repository
+/// API on a platform.
 pub fn load_site(
     config: &Config,
     template_root: &Path,
     docs_root: &Path,
+    create_template: &dyn Fn(&str, &str) -> Result<(), PipelineError>,
 ) -> Result<DocsSite, PipelineError> {
     let docs_root_rel = normalize_rel_dir_path(config.from.as_deref().unwrap_or_default(), "--from")?;
     let site_root_rel = config.folder_rel(Mode::Docs)?;
@@ -115,23 +123,24 @@ pub fn load_site(
     )?;
     let meta_file = DOCS_META_FILE;
 
-    let docs_root_abs = docs_root.join(&docs_root_rel);
-    if !docs_root_abs.is_dir() {
+    if project_store::list_repo_folder(docs_root, &docs_root_rel, "FW_NODE_WEB_SITE_GENERATE_ROOT_MISSING").is_err() {
         return Err(PipelineError::new(
             "FW_NODE_WEB_SITE_GENERATE_ROOT_MISSING",
-            format!("docs root '{}' not found", docs_root_abs.display()),
+            format!("docs folder 'docs/{docs_root_rel}' not found"),
         ));
     }
 
-    let template_source = ensure_template_scaffold(template_root, &template_rel_path, config.name.as_deref())?;
+    let template_source =
+        ensure_template_scaffold(template_root, &template_rel_path, config.name.as_deref(), create_template)?;
     // A site runs at the root of its serve address (`node-conventions.md` §7).
     let deploy_base_path = "/".to_string();
 
     let mut folder_meta = HashMap::new();
     let mut pages = Vec::new();
     collect_docs(
-        &docs_root_abs,
-        &docs_root_abs,
+        docs_root,
+        &docs_root_rel,
+        "",
         meta_file,
         &deploy_base_path,
         &mut folder_meta,
@@ -306,32 +315,19 @@ fn ensure_template_scaffold(
     template_root: &Path,
     template_rel_path: &str,
     name: Option<&str>,
+    create_template: &dyn Fn(&str, &str) -> Result<(), PipelineError>,
 ) -> Result<TemplateSource, PipelineError> {
     let template_abs_path = template_root.join(template_rel_path);
-    if !template_abs_path.exists() {
-        if let Some(parent) = template_abs_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                PipelineError::new(
-                    "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_DIR",
-                    format!("failed creating '{}': {err}", parent.display()),
-                )
-            })?;
-        }
-        std::fs::write(&template_abs_path, super::docs_scaffold::default_template_source(name)).map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_WRITE",
-                format!(
-                    "failed writing docs scaffold '{}': {err}",
-                    template_abs_path.display()
-                ),
-            )
-        })?;
+    // `symlink_metadata`: a link is "there" and then refused by the reader,
+    // never replaced and never followed.
+    if std::fs::symlink_metadata(&template_abs_path).is_err() {
+        create_template(template_rel_path, &super::docs_scaffold::default_template_source(name))?;
     }
-
-    let markup = std::fs::read_to_string(&template_abs_path).map_err(|err| {
+    let bytes = project_store::read_repo_file(template_root, template_rel_path, "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_READ")?;
+    let markup = String::from_utf8(bytes).map_err(|err| {
         PipelineError::new(
             "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_READ",
-            format!("failed reading '{}': {err}", template_abs_path.display()),
+            format!("'{template_rel_path}' is not UTF-8 text: {err}"),
         )
     })?;
 
@@ -342,78 +338,46 @@ fn ensure_template_scaffold(
     })
 }
 
+/// One repository text file under `docs/`, through the link-refusing reader.
+fn read_docs_text(docs_root: &Path, rel: &str, code: &'static str) -> Result<String, PipelineError> {
+    let bytes = project_store::read_repo_file(docs_root, rel, code)?;
+    String::from_utf8(bytes).map_err(|err| PipelineError::new(code, format!("'docs/{rel}' is not UTF-8 text: {err}")))
+}
+
+/// Walks `docs/<from>/<dir_rel>`: its `_meta.yaml`, its Markdown pages, its
+/// folders. Hidden entries and links are skipped, never followed.
 fn collect_docs(
-    root_abs: &Path,
-    dir_abs: &Path,
+    docs_root: &Path,
+    from_rel: &str,
+    dir_rel: &str,
     meta_file: &str,
     deploy_base_path: &str,
     folder_meta: &mut HashMap<String, FolderMeta>,
     pages: &mut Vec<DocPage>,
 ) -> Result<(), PipelineError> {
-    let dir_rel = rel_dir_string(root_abs, dir_abs)?;
-    let meta_path = dir_abs.join(meta_file);
-    if meta_path.is_file() {
-        let content = std::fs::read_to_string(&meta_path).map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_META_READ",
-                format!("failed reading '{}': {err}", meta_path.display()),
-            )
-        })?;
-        folder_meta.insert(dir_rel.clone(), parse_folder_meta(&content));
-    }
+    let join = |name: &str| if dir_rel.is_empty() { name.to_string() } else { format!("{dir_rel}/{name}") };
+    let dir_key = format!("{from_rel}/{dir_rel}");
+    let entries = project_store::list_repo_folder(docs_root, &dir_key, "FW_NODE_WEB_SITE_GENERATE_READ_DIR")?;
 
-    let mut entries = std::fs::read_dir(dir_abs)
-        .map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_READ_DIR",
-                format!("failed reading '{}': {err}", dir_abs.display()),
-            )
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_READ_DIR",
-                format!("failed reading '{}': {err}", dir_abs.display()),
-            )
-        })?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_docs(
-                root_abs,
-                &path,
-                meta_file,
-                deploy_base_path,
-                folder_meta,
-                pages,
-            )?;
+    for entry in &entries {
+        if entry.name.starts_with('.') {
             continue;
         }
-        if !path.is_file() {
+        if entry.is_dir {
+            collect_docs(docs_root, from_rel, &join(&entry.name), meta_file, deploy_base_path, folder_meta, pages)?;
             continue;
         }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        if entry.name == meta_file {
+            let content = read_docs_text(docs_root, &format!("{from_rel}/{}", join(&entry.name)), "FW_NODE_WEB_SITE_GENERATE_META_READ")?;
+            folder_meta.insert(dir_rel.to_string(), parse_folder_meta(&content));
             continue;
-        };
-        if name == meta_file || !name.ends_with(".md") {
+        }
+        if !entry.name.ends_with(".md") {
             continue;
         }
 
-        let rel = path.strip_prefix(root_abs).map_err(|_| {
-            PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_REL_PATH",
-                format!("failed resolving relative path for '{}'", path.display()),
-            )
-        })?;
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
-        let raw = std::fs::read_to_string(&path).map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_READ_PAGE",
-                format!("failed reading '{}': {err}", path.display()),
-            )
-        })?;
+        let rel_str = join(&entry.name);
+        let raw = read_docs_text(docs_root, &format!("{from_rel}/{rel_str}"), "FW_NODE_WEB_SITE_GENERATE_READ_PAGE")?;
         let (frontmatter, markdown) = split_frontmatter(&raw);
         let slug_segments = slug_segments_for_markdown(&rel_str);
         let output_rel_path = output_rel_path_for(&slug_segments);
@@ -425,14 +389,7 @@ fn collect_docs(
             .clone()
             .filter(|s| !s.trim().is_empty())
             .or_else(|| headings.first().map(|h| h.text.clone()))
-            .unwrap_or_else(|| {
-                titleize_segment(
-                    rel.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("docs")
-                        .trim_end_matches(".md"),
-                )
-            });
+            .unwrap_or_else(|| titleize_segment(entry.name.trim_end_matches(".md")));
         let description = frontmatter
             .description
             .clone()
@@ -449,13 +406,19 @@ fn collect_docs(
             source_rel_path: rel_str,
             output_rel_path,
             route_path,
-            order: frontmatter.order.unwrap_or(0),
+            order: frontmatter.order,
         });
     }
 
     Ok(())
 }
 
+/// The sidebar and the reading order, from one sort: the root page first,
+/// then each folder's children by its `_meta.yaml` `nav` (names listed there
+/// first, in that order), then `order` (a folder's from its `_meta.yaml`, a
+/// page's from its front matter; unordered after ordered), then title. A
+/// folder's index page comes before its children. Prev/next and the search
+/// index follow the same order the sidebar shows.
 fn build_sidebar_and_order(
     pages: &[DocPage],
     folder_meta: &HashMap<String, FolderMeta>,
@@ -463,58 +426,81 @@ fn build_sidebar_and_order(
     let mut root = FolderNode::new(String::new());
     apply_folder_meta(&mut root, folder_meta.get(""));
     for (idx, page) in pages.iter().enumerate() {
-        let folder_segments =
-            if page.source_rel_path.ends_with("/index.md") || page.source_rel_path == "index.md" {
-                page.slug_segments.clone()
-            } else if page.slug_segments.is_empty() {
-                Vec::new()
-            } else {
-                page.slug_segments[..page.slug_segments.len() - 1].to_vec()
-            };
         let is_index =
             page.source_rel_path.ends_with("/index.md") || page.source_rel_path == "index.md";
-        if is_index {
-            let dir_key = folder_segments.join("/");
-            let current = node_mut_for_segments(&mut root, &folder_segments, folder_meta);
-            apply_folder_meta(current, folder_meta.get(&dir_key));
-            current.page_index = Some(idx);
-            current.title.get_or_insert_with(|| page.title.clone());
-            current.order.get_or_insert(page.order);
+        let folder_segments = if is_index || page.slug_segments.is_empty() {
+            page.slug_segments.clone()
         } else {
-            let current = node_mut_for_segments(&mut root, &folder_segments, folder_meta);
+            page.slug_segments[..page.slug_segments.len() - 1].to_vec()
+        };
+        let current = node_mut_for_segments(&mut root, &folder_segments, folder_meta);
+        let node = if is_index {
+            current
+        } else {
             let leaf_segment = page.slug_segments.last().cloned().unwrap_or_default();
-            let leaf = current
+            current
                 .children
                 .entry(leaf_segment.clone())
-                .or_insert_with(|| FolderNode::new(leaf_segment));
-            leaf.page_index = Some(idx);
-            leaf.title.get_or_insert_with(|| page.title.clone());
-            leaf.order.get_or_insert(page.order);
+                .or_insert_with(|| FolderNode::new(leaf_segment))
+        };
+        node.page_index = Some(idx);
+        node.title.get_or_insert_with(|| page.title.clone());
+        if node.order.is_none() {
+            node.order = page.order;
         }
     }
 
     let mut ordered = Vec::new();
-    let mut items = root
-        .children
-        .values()
-        .map(|node| to_sidebar_item(node, pages, &mut ordered))
-        .collect::<Vec<_>>();
+    let mut items = Vec::new();
     if let Some(root_idx) = root.page_index {
-        ordered.insert(0, root_idx);
+        ordered.push(root_idx);
         let page = &pages[root_idx];
-        items.insert(
-            0,
-            DocSidebarItem {
-                key: page.route_path.clone(),
-                title: page.title.clone(),
-                href: Some(page.route_path.clone()),
-                active: false,
-                expanded: true,
-                children: Vec::new(),
-            },
-        );
+        items.push(DocSidebarItem {
+            key: page.route_path.clone(),
+            title: page.title.clone(),
+            href: Some(page.route_path.clone()),
+            active: false,
+            expanded: true,
+            children: Vec::new(),
+        });
     }
-    (sort_sidebar_items(items), ordered)
+    for child in sorted_children(&root, pages) {
+        items.push(to_sidebar_item(child, pages, &mut ordered));
+    }
+    (items, ordered)
+}
+
+/// A node's title as the sidebar shows it.
+fn node_title(node: &FolderNode, pages: &[DocPage]) -> String {
+    match node.page_index {
+        Some(idx) => pages[idx].title.clone(),
+        None => node.title.clone().unwrap_or_else(|| titleize_segment(&node.segment)),
+    }
+}
+
+/// `parent`'s children in sidebar order: `nav`, then `order`, then title.
+fn sorted_children<'a>(parent: &'a FolderNode, pages: &[DocPage]) -> Vec<&'a FolderNode> {
+    let mut children = parent.children.values().collect::<Vec<_>>();
+    let nav_rank = |node: &FolderNode| parent.nav.iter().position(|name| name.trim_end_matches(".md") == node.segment);
+    children.sort_by(|a, b| {
+        let by_nav = match (nav_rank(a), nav_rank(b)) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        let by_order = match (a.order, b.order) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        by_nav
+            .then(by_order)
+            .then_with(|| node_title(a, pages).to_lowercase().cmp(&node_title(b, pages).to_lowercase()))
+            .then_with(|| a.segment.cmp(&b.segment))
+    });
+    children
 }
 
 fn node_mut_for_segments<'a>(
@@ -576,53 +562,24 @@ fn to_sidebar_item(
     pages: &[DocPage],
     ordered: &mut Vec<usize>,
 ) -> DocSidebarItem {
-    let mut children = node
-        .children
-        .values()
+    // A folder's own page is read before the pages inside it.
+    let href = node.page_index.map(|idx| {
+        ordered.push(idx);
+        pages[idx].route_path.clone()
+    });
+    let children = sorted_children(node, pages)
+        .into_iter()
         .map(|child| to_sidebar_item(child, pages, ordered))
         .collect::<Vec<_>>();
-    children = sort_sidebar_items(children);
-
-    let (title, href, active) = if let Some(idx) = node.page_index {
-        ordered.push(idx);
-        let page = &pages[idx];
-        (page.title.clone(), Some(page.route_path.clone()), false)
-    } else {
-        (
-            node.title
-                .clone()
-                .unwrap_or_else(|| titleize_segment(&node.segment)),
-            None,
-            false,
-        )
-    };
 
     DocSidebarItem {
-        key: if href.is_some() {
-            href.clone().unwrap_or_default()
-        } else {
-            format!("group:{}", node.segment)
-        },
-        title,
+        key: href.clone().unwrap_or_else(|| format!("group:{}", node.segment)),
+        title: node_title(node, pages),
         href,
-        active,
+        active: false,
         expanded: !node.collapsed,
         children,
     }
-}
-
-fn sort_sidebar_items(items: Vec<DocSidebarItem>) -> Vec<DocSidebarItem> {
-    let mut items = items;
-    items.sort_by(|a, b| {
-        let a_group = !a.children.is_empty();
-        let b_group = !b.children.is_empty();
-        match (a_group, b_group) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-        }
-    });
-    items
 }
 
 fn mark_active_sidebar(items: &[DocSidebarItem], current: &str) -> Vec<DocSidebarItem> {
@@ -761,25 +718,6 @@ fn build_search_index_json(pages: &[DocPage]) -> String {
     serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
 }
 
-fn rel_dir_string(root_abs: &Path, dir_abs: &Path) -> Result<String, PipelineError> {
-    if root_abs == dir_abs {
-        return Ok(String::new());
-    }
-    dir_abs
-        .strip_prefix(root_abs)
-        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-        .map_err(|_| {
-            PipelineError::new(
-                "FW_NODE_WEB_SITE_GENERATE_REL_DIR",
-                format!(
-                    "failed resolving '{}' relative to '{}'",
-                    dir_abs.display(),
-                    root_abs.display()
-                ),
-            )
-        })
-}
-
 fn output_rel_path_for(slug_segments: &[String]) -> String {
     if slug_segments.is_empty() {
         "index.html".to_string()
@@ -817,6 +755,86 @@ mod tests {
     use crate::platform::model::FileAdapterKind;
     use crate::platform::services::project_config::ProjectConfigurationService;
     use crate::rwe::resolve_engine_or_default;
+
+    /// A docs folder on disk, its template root beside it.
+    fn docs_tree(files: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let tmp = tempfile::Builder::new().prefix("zebflow-docs-order-").tempdir().expect("tempdir");
+        let docs = tmp.path().join("docs");
+        let source = tmp.path().join("src");
+        std::fs::create_dir_all(&source).expect("source");
+        for (rel, content) in files {
+            let path = docs.join("guide").join(rel);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+            std::fs::write(path, content).expect("write");
+        }
+        (tmp, docs, source)
+    }
+
+    fn load(docs: &std::path::Path, source: &std::path::Path, name: Option<&str>) -> super::DocsSite {
+        let config = super::Config { from: Some("guide".to_string()), name: name.map(str::to_string), ..Default::default() };
+        let create = |rel: &str, content: &str| {
+            crate::pipeline::nodes::shared::project_store::create_repo_file(source, rel, content.as_bytes(), "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_WRITE")
+        };
+        super::load_site(&config, source, docs, &create).expect("site")
+    }
+
+    /// One order — `nav`, then `order`, then title; the root page first; a
+    /// folder's page before its children — read by the sidebar, prev/next
+    /// and the search index alike.
+    #[test]
+    fn the_sidebar_order_is_the_reading_order() {
+        let (_tmp, docs, source) = docs_tree(&[
+            ("zeta.md", "# Zeta\n"),
+            ("index.md", "# Home\n"),
+            ("alpha/_meta.yaml", "title: Alpha\norder: 2\n"),
+            ("alpha/b.md", "---\ntitle: B page\n---\n# B\n"),
+            ("alpha/a.md", "---\ntitle: A page\n---\n# A\n"),
+            ("beta/_meta.yaml", "title: Beta\norder: 1\nnav:\n  - second\n  - first\n"),
+            ("beta/index.md", "# Beta home\n"),
+            ("beta/first.md", "---\ntitle: First\norder: 1\n---\n# First\n"),
+            ("beta/second.md", "---\ntitle: Second\norder: 2\n---\n# Second\n"),
+            ("beta/third.md", "---\ntitle: Third\norder: 3\n---\n# Third\n"),
+        ]);
+        let site = load(&docs, &source, None);
+        let routes: Vec<&str> = site.pages.iter().map(|page| page.route_path.as_str()).collect();
+        let expected = ["/", "/beta/", "/beta/second/", "/beta/first/", "/beta/third/", "/alpha/a/", "/alpha/b/", "/zeta/"];
+        assert_eq!(routes, expected, "nav beats order, ordered folders before an unordered page, titles last");
+
+        fn flatten(items: &[super::DocSidebarItem], out: &mut Vec<String>) {
+            for item in items {
+                out.push(item.href.clone().unwrap_or_else(|| item.key.clone()));
+                flatten(&item.children, out);
+            }
+        }
+        let mut sidebar = Vec::new();
+        flatten(&site.sidebar, &mut sidebar);
+        assert_eq!(sidebar, ["/", "/beta/", "/beta/second/", "/beta/first/", "/beta/third/", "group:alpha", "/alpha/a/", "/alpha/b/", "/zeta/"]);
+
+        let index: Vec<serde_json::Value> = serde_json::from_str(&site.search_index_json).expect("index");
+        let hrefs: Vec<&str> = index.iter().filter_map(|entry| entry["href"].as_str()).collect();
+        assert_eq!(hrefs, expected);
+
+        let page = super::page_payload(&site, 2, json!({})).expect("payload");
+        assert_eq!(page["page"]["prev"]["href"], "/beta/");
+        assert_eq!(page["page"]["next"]["href"], "/beta/first/");
+    }
+
+    /// `--name` lands in the scaffold as a string, so markup or braces in it
+    /// stay text; a link in the docs tree is skipped, never followed.
+    #[test]
+    fn the_scaffold_quotes_the_name_and_links_are_not_followed() {
+        let (tmp, docs, source) = docs_tree(&[("index.md", "# Home\n")]);
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("secret.md"), "# Outside\n").expect("outside page");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, docs.join("guide").join("linked")).expect("link");
+
+        let site = load(&docs, &source, Some("Demo {x} </div><b>\"q\""));
+        assert!(site.template_source.markup.contains(r#"{"Demo {x} </div><b>\"q\""}"#), "{}", &site.template_source.markup[..200]);
+        assert!(site.pages.iter().all(|page| !page.source_rel_path.starts_with("linked")), "a linked folder is not read");
+        assert_eq!(site.pages.len(), 1);
+    }
 
     #[tokio::test]
     async fn engine_generates_static_docs_site_and_scaffolds_template() {

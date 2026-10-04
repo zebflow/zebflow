@@ -21,6 +21,7 @@ const CODE_TEMPLATE_ROOT: &str = "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_ROOT";
 const CODE_COMPILE: &str = "FW_NODE_WEB_SITE_GENERATE_COMPILE";
 const CODE_RENDER: &str = "FW_NODE_WEB_SITE_GENERATE_RENDER";
 const CODE_READ: &str = "FW_NODE_WEB_SITE_GENERATE_READ";
+const CODE_TEMPLATE_WRITE: &str = "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_WRITE";
 
 /// What one render of a page produced, ready to be written.
 struct RenderedPage {
@@ -69,6 +70,39 @@ impl BasicPipelineEngine {
         Ok((node_store, zebfs))
     }
 
+    /// Writes a docs site's scaffolded template: through the repository API
+    /// when the engine runs on a platform, else through the link-refusing
+    /// repository writer (tests, tools).
+    fn create_docs_template(
+        &self,
+        ctx: &PipelineContext,
+        template_root: &std::path::Path,
+        template_rel: &str,
+        content: &str,
+    ) -> Result<(), PipelineError> {
+        let repo_rel = self
+            .repo_layout
+            .as_ref()
+            .and_then(|layout| template_root.strip_prefix(&layout.repo_dir).ok())
+            .map(|source| {
+                let source = source.to_string_lossy().replace('\\', "/");
+                if source.is_empty() { template_rel.to_string() } else { format!("{source}/{template_rel}") }
+            });
+        match (self.platform.as_ref(), repo_rel) {
+            (Some(platform), Some(repo_rel)) => platform
+                .projects
+                .write_repo_file(&ctx.owner, &ctx.project, &repo_rel, content)
+                .map(|_| ())
+                .map_err(|err| PipelineError::new(CODE_TEMPLATE_WRITE, format!("'{repo_rel}': {}", err.message))),
+            _ => crate::pipeline::nodes::shared::project_store::create_repo_file(
+                template_root,
+                template_rel,
+                content.as_bytes(),
+                CODE_TEMPLATE_WRITE,
+            ),
+        }
+    }
+
     /// The compiled page for `source`, from the cache when its markup was seen.
     fn compile_site_template(
         &self,
@@ -115,6 +149,12 @@ impl BasicPipelineEngine {
         metadata: Value,
         ctx: &PipelineContext,
     ) -> Result<RenderedPage, PipelineError> {
+        // A generated page is not an answer to a request: the run's trigger
+        // (its headers, auth, pathname) is never injected into its state.
+        let mut metadata = metadata;
+        if let Some(map) = metadata.as_object_mut() {
+            map.remove("trigger");
+        }
         let enabled_libraries: Vec<String> = self
             .platform
             .as_ref()
@@ -180,20 +220,46 @@ impl BasicPipelineEngine {
         if let Some(map) = metadata.as_object_mut() {
             map.insert("route".to_string(), Value::String(route.clone()));
         }
-        let rendered = self.render_site_page(node_id, &compiled, payload.clone(), metadata, ctx)?;
+        let rendered = self.render_site_page(node_id, &compiled, site::page::page_input(payload), metadata, ctx)?;
 
         let asset_group = static_site::asset_group_id(&template_source.id, &template_source.markup);
         let project_asset_root = self.repo_layout.as_ref().map(|layout| layout.repo_static_dir());
         let site_store = static_site::SiteStore { store: &zebfs, root_rel: folder.clone() };
-        let localized = static_site::localize_static_html_assets(
-            &site_store,
-            &page_path,
-            &rendered.html,
-            self.asset_sources(ctx, project_asset_root.as_deref()),
-            &asset_group,
-        )?;
-        let status = site::page::write_generated_object(&zebfs, &rel_path, &localized.html, config.on_conflict()?.as_str())?;
-        let bytes = localized.html.len() as u64;
+        let sources = self.asset_sources(ctx, project_asset_root.as_deref());
+        // Decided before anything is written: `skip` and `error` leave the
+        // site exactly as it was — no asset, no manifest entry.
+        let relinked = static_site::relink_static_html(&page_path, &rendered.html, &sources)?;
+        let on_conflict = config.on_conflict()?;
+        let skipped = site::page::conflict_status(&zebfs, &rel_path, &relinked, on_conflict.as_str())? == Some("skipped");
+        // The site's origin is its folder's serve origin, never a flag.
+        let origin = static_site::site_origin(self.platform.as_ref(), &ctx.owner, &ctx.project, &folder);
+        let status = if skipped {
+            "skipped"
+        } else {
+            let localized = static_site::localize_static_html_assets(&site_store, &page_path, &rendered.html, sources, &asset_group)?;
+            let status = site::page::write_generated_object(&zebfs, &rel_path, &localized.html, on_conflict.as_str())?;
+            let page_record = static_site::StaticPageRecord {
+                path: page_path.clone(),
+                route: route.clone(),
+                template: template_source.id.clone(),
+                asset_group: asset_group.clone(),
+                generator: site::NODE_KIND.to_string(),
+            };
+            static_site::update_site_manifest(
+                &site_store,
+                &folder,
+                origin.as_deref(),
+                "/",
+                site::NODE_KIND,
+                &template_source.id,
+                &asset_group,
+                &[page_record],
+                &localized.assets,
+                false,
+            )?;
+            status
+        };
+        let bytes = relinked.len() as u64;
         let file = match node_store.as_ref() {
             Some(store) => {
                 let written = crate::pipeline::nodes::shared::project_store::read_capped(&zebfs, &rel_path, CODE_READ)?;
@@ -202,27 +268,6 @@ impl BasicPipelineEngine {
             }
             None => Value::Null,
         };
-        // The site's origin is its folder's serve origin, never a flag.
-        let origin = static_site::site_origin(self.platform.as_ref(), &ctx.owner, &ctx.project, &folder);
-        let page_record = static_site::StaticPageRecord {
-            path: page_path,
-            route: route.clone(),
-            template: template_source.id.clone(),
-            asset_group: asset_group.clone(),
-            generator: site::NODE_KIND.to_string(),
-        };
-        static_site::update_site_manifest(
-            &site_store,
-            &folder,
-            origin.as_deref(),
-            "/",
-            site::NODE_KIND,
-            &template_source.id,
-            &asset_group,
-            &[page_record],
-            &localized.assets,
-            false,
-        )?;
 
         let mut trace = rendered.trace;
         trace.push(format!("node_kind={}", site::NODE_KIND));
@@ -267,7 +312,8 @@ impl BasicPipelineEngine {
             return Err(PipelineError::new(CODE_TEMPLATE_ROOT, "project layout is not configured on this pipeline engine"));
         };
         let on_conflict = config.on_conflict()?;
-        let mut docs = site::docs::load_site(config, template_root, &docs_root)?;
+        let create_template = |rel: &str, content: &str| self.create_docs_template(ctx, template_root, rel, content);
+        let mut docs = site::docs::load_site(config, template_root, &docs_root, &create_template)?;
         docs.set_origin(static_site::site_origin(self.platform.as_ref(), &ctx.owner, &ctx.project, &docs.site_root_rel));
         let compiled = self.compile_site_template(
             node_id,
@@ -275,51 +321,73 @@ impl BasicPipelineEngine {
             vec!["tailwind".to_string(), "markdown".to_string()],
         )?;
 
-        let mut written = Written::default();
         let asset_group = static_site::asset_group_id(&docs.template_rel_path, &docs.template_source.markup);
-        let mut page_records = Vec::new();
-        let mut asset_records = Vec::new();
         let site_store = static_site::SiteStore { store: &zebfs, root_rel: docs.site_root_rel.clone() };
         let project_asset_root = self.repo_layout.as_ref().map(|layout| layout.repo_static_dir());
-        let mut routes = Vec::new();
+        let source = site::page::page_input(payload);
 
+        // Every file of the build, rendered and decided before the first is
+        // written: `--on-conflict error` on one page leaves the whole site as
+        // it was.
+        let mut files = Vec::new();
+        let mut rendered_pages = Vec::new();
         for (page_index, page) in docs.pages.iter().enumerate() {
             let mut page_metadata = metadata.clone();
             if let Some(map) = page_metadata.as_object_mut() {
                 map.insert("route".to_string(), Value::String(site::docs::default_route(page)));
             }
-            let state = site::docs::page_payload(&docs, page_index, payload.clone())?;
+            let state = site::docs::page_payload(&docs, page_index, source.clone())?;
             let rendered = self.render_site_page(node_id, &compiled, state, page_metadata, ctx)?;
+            let relinked = static_site::relink_static_html(
+                &page.output_rel_path,
+                &rendered.html,
+                &self.asset_sources(ctx, project_asset_root.as_deref()),
+            )?;
+            let html = site::docs::apply_page_seo(relinked, &docs, page_index);
+            files.push((site::docs::output_rel_path(page, &docs.site_root_rel)?, html));
+            rendered_pages.push(rendered.html);
+        }
+        let sitemap_path = (!docs.sitemap_xml.trim().is_empty()).then(|| site::docs::sitemap_rel_path(&docs.site_root_rel));
+        if let Some(sitemap_rel) = &sitemap_path {
+            files.push((sitemap_rel.clone(), docs.sitemap_xml.clone()));
+        }
+        let search_index_rel = site::docs::search_index_rel_path(&docs.site_root_rel);
+        files.push((search_index_rel.clone(), docs.search_index_json.clone()));
+        let mut statuses = Vec::with_capacity(files.len());
+        for (rel_path, contents) in &files {
+            statuses.push(site::page::conflict_status(&zebfs, rel_path, contents, on_conflict.as_str())?);
+        }
+
+        let mut written = Written::default();
+        let mut asset_records = Vec::new();
+        for (page, html) in docs.pages.iter().zip(&rendered_pages) {
             let localized = static_site::localize_static_html_assets(
                 &site_store,
                 &page.output_rel_path,
-                &rendered.html,
+                html,
                 self.asset_sources(ctx, project_asset_root.as_deref()),
                 &asset_group,
             )?;
-            asset_records.extend(localized.assets.iter().cloned());
-            let html = site::docs::apply_page_seo(localized.html, &docs, page_index);
-            let rel_path = site::docs::output_rel_path(page, &docs.site_root_rel)?;
-            written.count(site::page::write_generated_object(&zebfs, &rel_path, &html, on_conflict.as_str())?);
-            routes.push(page.route_path.clone());
-            page_records.push(static_site::StaticPageRecord {
+            asset_records.extend(localized.assets);
+        }
+        for ((rel_path, contents), status) in files.iter().zip(statuses) {
+            written.count(match status {
+                Some(kept) => kept,
+                None => site::page::write_generated_object(&zebfs, rel_path, contents, on_conflict.as_str())?,
+            });
+        }
+        let routes = docs.pages.iter().map(|page| page.route_path.clone()).collect::<Vec<_>>();
+        let page_records = docs
+            .pages
+            .iter()
+            .map(|page| static_site::StaticPageRecord {
                 path: page.output_rel_path.clone(),
                 route: page.route_path.clone(),
                 template: docs.template_rel_path.clone(),
                 asset_group: asset_group.clone(),
                 generator: site::DOCS_MANIFEST_GENERATOR.to_string(),
-            });
-        }
-
-        let sitemap_path = if docs.sitemap_xml.trim().is_empty() {
-            None
-        } else {
-            let sitemap_rel = site::docs::sitemap_rel_path(&docs.site_root_rel);
-            written.count(site::page::write_generated_object(&zebfs, &sitemap_rel, &docs.sitemap_xml, on_conflict.as_str())?);
-            Some(sitemap_rel)
-        };
-        let search_index_rel = site::docs::search_index_rel_path(&docs.site_root_rel);
-        written.count(site::page::write_generated_object(&zebfs, &search_index_rel, &docs.search_index_json, on_conflict.as_str())?);
+            })
+            .collect::<Vec<_>>();
 
         static_site::update_site_manifest(
             &site_store,

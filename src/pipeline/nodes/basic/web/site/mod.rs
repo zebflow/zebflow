@@ -194,10 +194,14 @@ pub fn definition() -> NodeDefinition {
             renders the TSX page with the payload as its `input` (`--route` sets `ctx.route`; default: the page's address). \
             A docs site: `--from handbook` turns the Markdown under `docs/handbook/` into pages, a sidebar, a search index and, \
             when the folder is served, a sitemap; `--template` is the page template, created from a scaffold when missing \
-            (default `docs.template.tsx`); `--name` is the site's name; each folder's `_meta.yaml` sets its title, order and nav. \
+            (default `docs.template.tsx`); `--name` is the site's name; each folder's `_meta.yaml` sets its title, `order` and `nav` \
+            (a page's front matter its `order`), and that one order drives the sidebar, prev/next and the search index; \
+            a page whose Markdown is gone is removed from the site on the next build. \
             Both write under `--folder` (default `site` for a page, `docs` for a docs site), sharing one manifest and one `_assets/`; \
-            a page whose content changed is overwritten unless `--on-conflict` says skip or error. Adds `site` and keeps the payload. \
-            The files stay private until the owner serves the folder in Studio → Files."
+            a page whose content changed is overwritten unless `--on-conflict` says skip or error, decided before anything is written. \
+            The page renders from the payload, which it also embeds for hydration — so it publishes what the payload holds — \
+            except the request: the trigger's `headers`, `cookies` and `auth` are never part of it; copy a value into a key of its own upstream to show it. \
+            Adds `site` and keeps the payload. The files stay private until the owner serves the folder in Studio → Files."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
@@ -334,7 +338,7 @@ mod tests {
         let page = config(Some("index.html"), None);
         assert_eq!(page.folder_rel(Mode::Page).unwrap(), "site");
         assert_eq!(page.folder_rel(Mode::Docs).unwrap(), "docs");
-        let named = Config { folder: Some("/static/music/".to_string()), ..page };
-        assert_eq!(named.folder_rel(Mode::Page).unwrap(), "static/music");
+        let named = Config { folder: Some("/static/site-a/".to_string()), ..page };
+        assert_eq!(named.folder_rel(Mode::Page).unwrap(), "static/site-a");
     }
 }

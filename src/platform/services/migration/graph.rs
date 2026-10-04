@@ -52,9 +52,12 @@ pub enum OldOutput {
     Replace { keys: Vec<Mapping>, whole: Option<Vec<String>>, rest: Rest },
     /// Added `keys` and kept the rest of the payload.
     Merge { keys: Vec<Mapping> },
-    /// The engine's failure envelope on an `error` pin, the same in both
-    /// versions: `{ input: <the failing node's input>, error, __zf_retry }`.
-    /// Keys under `input` are read at the failing node's input.
+    /// The engine's failure on an `error` pin. 0.10 delivered
+    /// `{ input: <the failing node's input>, error, __zf_retry }`; 0.11
+    /// delivers the failing node's input kept, plus its key answering
+    /// `{ ok: false, error: { code, message } }` (`node-conventions.md` §6).
+    /// `input.<k>` is read at the failing node's input, `error.<k>` under
+    /// its key.
     ErrorEnvelope,
     /// Cannot be modelled; a reference through it is not rewritten.
     Unknown(String),
@@ -211,6 +214,9 @@ pub struct OldGraph {
     pub nouns: Vec<Option<String>>,
     /// What each node's `error` pin carried in 0.10, when it can be said.
     pub error_outputs: Vec<OldOutput>,
+    /// The key each node's failure is delivered under in 0.11
+    /// (`nodes::failure_key`); `None` for a kind 0.11 does not have.
+    pub failure_keys: Vec<Option<String>>,
 }
 
 impl OldGraph {
@@ -334,22 +340,36 @@ impl OldGraph {
                 origin
             }),
             OldOutput::ErrorEnvelope => match path.split_first() {
+                // The failing node's input is the payload itself in 0.11,
+                // under the failing node's own key.
                 Some((first, rest)) if first == "input" && !rest.is_empty() => {
-                    self.resolve_input_seen(node, rest, seen).and_then(|inner| match inner.path() {
-                        Some(inner_path) => {
-                            let mut base = vec!["input".to_string()];
-                            base.extend(inner_path);
-                            Ok(Origin { producer: node, base: Target::Path(base), rest: Vec::new(), via: BTreeSet::new() })
-                        }
-                        None => Err(fail(format!("`{key}` on the error pin of `{}` cannot be written as a path", self.nodes[node].id))),
+                    self.resolve_input_seen(node, rest, seen).map(|mut inner| {
+                        inner.via.insert(node);
+                        inner
                     })
                 }
-                Some((first, _)) if first == "error" || first == "__zf_retry" || first == "input" => Ok(Origin {
+                Some((first, rest)) if first == "error" => match self.failure_keys[node].as_deref() {
+                    Some(failure) => match rest.first().map(String::as_str) {
+                        None | Some("code" | "message") => {
+                            let mut base = vec![failure.to_string(), "error".to_string()];
+                            base.extend(rest.iter().cloned());
+                            Ok(Origin { producer: node, base: Target::Path(base), rest: Vec::new(), via: BTreeSet::new() })
+                        }
+                        Some(other) => Err(fail(format!(
+                            "`{key}`: a failure answers only `code` and `message` in 0.11, not `{other}` — the run record names the failing node"
+                        ))),
+                    },
+                    None => Err(fail(format!("`{key}` on the error pin of `{}`, a kind 0.11 does not have", self.nodes[node].id))),
+                },
+                Some((first, _)) if first == "__zf_retry" => Ok(Origin {
                     producer: node,
                     base: Target::Path(path.to_vec()),
                     rest: Vec::new(),
                     via: BTreeSet::new(),
                 }),
+                Some((first, _)) if first == "input" => Err(fail(format!(
+                    "`{key}`: the failing node's whole input is the payload itself in 0.11, beside the failure under its key"
+                ))),
                 _ => Err(Failure {
                     dead: true,
                     why: format!("`{key}` is not in the failure envelope of node `{}`", self.nodes[node].id),

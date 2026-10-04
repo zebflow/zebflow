@@ -102,9 +102,11 @@ still reads `input.file.ref` two nodes later.
   value is `input.prompt`.
 - Any upstream node's answer stays at `$nodes.<id>.<key>`
   (`$nodes.n1.query.rows`, `$nodes.thumb.image.ref`).
-- A node that routes its own failures answers the same key as
-  `{ ok: false, error: { code, message } }` on its error pin; its page says
-  when it does.
+- No node routes its own failure: a node that fails — `function.result.call`
+  and an installed composite included — goes to a wired `:error` with the
+  payload it received, kept, plus its own key answering
+  `{ ok: false, error: { code, message } }` (`input.query.error.code` after a
+  failed `postgres.query.run`), or fails the run (**Failure** below).
 
 The shape inside each key is on the node's page; read it there rather than
 guessing from a neighbour.
@@ -339,17 +341,38 @@ activated, naming it:
 ```
 
 **Failure.** A node that fails — running, timing out, or resolving its
-`{{ }}` flags — delivers `{ input, error: { code, message } }` to its
-`:error` pin when one is wired, its other edges are skipped, and the run goes
-on; otherwise the run fails there. A failure an edge consumed is drawn orange
-on the canvas with a count, never red.
+`{{ }}` flags — delivers to its `:error` pin, when one is wired, the payload
+it received, kept, plus its key answering `{ ok: false, error: { code,
+message } }`; its other edges are skipped, and the run goes on. Otherwise the
+run fails there. The key is the node's noun (`query`, `result`, `message`);
+a control node, which has none, uses its second word (`logic.foreach` →
+`foreach`). Which node failed is in the run record. A failure an edge
+consumed is drawn orange on the canvas with a count, never red.
+
+```
+[t] trigger.webhook --route /orders --method POST
+[q] postgres.query.run --credential shop --param "1={{ $trigger.body.email }}" -- "INSERT INTO orders (email) VALUES ($1)"
+[ok] web.response.send --body "{{ { saved: true } }}"
+[h] web.response.send --status 502 --body "{{ { ok: false, error: { code: input.query.error.code }, email: input.webhook.body.email } }}"
+[t] -> [q]
+[q] -> [ok]
+[q]:error -> [h]
+```
+
+`logic.retry` on an `:error` pin gives the failing node its input back on
+`retry`, and passes the last failure on `failed`, read the same way
+(`input.query.error.code`).
 
 **The end of a run.** A run ends when every node has answered or been
 skipped. Its result is the answer of the last node with no outgoing edge
 that ran, in text order. `web.response.send` answers the caller the moment it
 runs; the nodes after it keep running, and a failure after it is recorded on
 the run without changing what the caller received. The first response wins:
-a second `web.response.send` in the same run sends nothing.
+a second `web.response.send` in the same run sends nothing. A webhook run
+that reaches no `web.response.send` answers `204 No Content` with no body —
+the run's result is never sent to the caller on its own, and
+`pipeline_check` warns on every path from `trigger.webhook` that ends
+without one (an `:error` handler included).
 
 ---
 
@@ -393,7 +416,8 @@ envelope's shape (`input.webhook.body`, `.params`, `.query`, `.files`,
 Any webhook pipeline streams when the client asks: a request with
 `Accept: text/event-stream` receives `event: signal` messages while nodes
 run, `event: response` with what `web.response.send` answered the moment it
-runs, then `event: done` with the result or `event: error`. A signal is
+runs, then `event: done` (`{ ok: true }` — never the run's result) or
+`event: error` (its detail as the route's `--errors` says). A signal is
 anything a node emits (`ai.text.generate` thinking and tool calls, a
 script's `emit`) and the engine's own lifecycle: `run_start`; per node
 `node_start` and one of `node_ok`, `node_empty` (ran, emitted nothing),

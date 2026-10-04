@@ -36,6 +36,9 @@ pub struct Rewrite {
     pub notes: Vec<Item>,
     /// What the rewrite could not map with certainty.
     pub unresolved: Vec<Item>,
+    /// What the owner should look at: the rewrite is safe as it stands, but
+    /// answers less than 0.10 did. Never blocks the apply.
+    pub review: Vec<Item>,
     /// The templates its response nodes render, by node id.
     pub templates: Vec<(String, String)>,
 }
@@ -79,6 +82,7 @@ pub fn old_graph(doc: &Value, context: &RewriteContext) -> Result<OldGraph, Stri
     let mut outputs = Vec::new();
     let mut error_outputs = Vec::new();
     let mut nouns = Vec::new();
+    let mut failure_keys = Vec::new();
     for node in &nodes {
         let config = node.config.as_object().cloned().unwrap_or_default();
         match kinds::rule(&node.kind) {
@@ -87,15 +91,20 @@ pub fn old_graph(doc: &Value, context: &RewriteContext) -> Result<OldGraph, Stri
                 error_outputs.push((rule.error_output)(&config));
                 let new_kind = rule.kind_for(&node.kind, &config);
                 nouns.push(noun_of(&new_kind, &config));
+                failure_keys.push(Some(crate::pipeline::nodes::failure_key(
+                    &new_kind,
+                    config.get("name").and_then(Value::as_str),
+                )));
             }
             None => {
                 outputs.push(OldOutput::unknown("a kind 0.11 does not have"));
                 error_outputs.push(OldOutput::unknown("a kind 0.11 does not have"));
                 nouns.push(None);
+                failure_keys.push(None);
             }
         }
     }
-    Ok(OldGraph { nodes, edges, incoming, outputs, nouns, error_outputs })
+    Ok(OldGraph { nodes, edges, incoming, outputs, nouns, error_outputs, failure_keys })
 }
 
 /// A `logic.retry` edge back into the node it re-runs.
@@ -183,7 +192,8 @@ pub fn rewrite_pipeline(old_json: &Value, context: &RewriteContext) -> Rewrite {
         new_edges.push(edge);
     }
 
-    respond_like_0_10(&graph, &mut new_nodes, &mut new_edges, &mut out);
+    answer_unwired_failures(&graph, &mut new_nodes, &mut new_edges, &mut out);
+    review_unanswered_routes(&graph, &mut out);
 
     let mut doc = old_json.clone();
     doc["spec"]["nodes"] = Value::Array(new_nodes);
@@ -346,97 +356,111 @@ fn whole_producer(graph: &OldGraph, mut node: usize) -> Option<usize> {
     None
 }
 
-/// A 0.10 webhook with no response node answered its last payload as JSON;
-/// a 0.11 one would answer every upstream answer. Such a pipeline gains a
-/// `web.response.send` answering exactly what 0.10 answered.
-fn respond_like_0_10(graph: &OldGraph, nodes: &mut Vec<Value>, edges: &mut Vec<Value>, out: &mut Rewrite) {
+/// A node id not yet in `nodes`: `base`, else `base2`, `base3`, ….
+fn fresh_id(nodes: &[Value], base: &str) -> String {
+    let used: BTreeSet<&str> = nodes.iter().filter_map(|n| n.get("id").and_then(Value::as_str)).collect();
+    let mut id = base.to_string();
+    let mut k = 1;
+    while used.contains(id.as_str()) {
+        k += 1;
+        id = format!("{base}{k}");
+    }
+    id
+}
+
+/// A 0.10 node that delivered its own failure (`function.call`, the
+/// composites) carried on past it when its `error` pin was unwired, and the
+/// webhook answered the payload. 0.11 fails the node there. In a webhook
+/// pipeline the failure stays visible to the caller without the payload:
+/// the node's `:error` is wired to a `web.response.send --status 500`
+/// answering `{ ok: false, error: { code } }` and nothing else — no message:
+/// a raw message can carry internals, and the route's `--errors` governs
+/// detail.
+fn answer_unwired_failures(graph: &OldGraph, nodes: &mut Vec<Value>, edges: &mut Vec<Value>, out: &mut Rewrite) {
     let webhook = graph.nodes.iter().any(|n| n.kind == "n.trigger.webhook");
-    if !webhook {
+    for (i, node) in graph.nodes.iter().enumerate() {
+        let self_routed = kinds::rule(&node.kind).is_some_and(|rule| rule.self_routed);
+        if !self_routed || graph.edges.iter().any(|e| e.from == i && e.from_pin == "error") {
+            continue;
+        }
+        if !webhook {
+            out.notes.push(Item::new(
+                &node.id,
+                "0.10 carried on past a failure here with nothing wired to `error`; 0.11 fails the run at this node",
+            ));
+            continue;
+        }
+        let id = fresh_id(nodes, "failed");
+        let key = graph.failure_keys[i].as_deref().unwrap_or("result");
+        let body = format!("{{{{ {{ ok: false, error: {{ code: input.{key}.error.code }} }} }}}}");
+        nodes.push(json!({
+            "id": id,
+            "kind": "web.response.send",
+            "input_pins": ["in"],
+            "output_pins": ["out"],
+            "config": { "status": 500, "body": body },
+        }));
+        edges.push(json!({ "from_node": node.id, "from_pin": "error", "to_node": id, "to_pin": "in" }));
+        out.changes.push(Item::new(
+            &id,
+            format!(
+                "added web.response.send --status 500 --body \"{body}\" on `{}`'s :error: 0.10 carried on past a failed call and answered the run's value; 0.11 answers the failure's code and nothing else",
+                node.id
+            ),
+        ));
+    }
+}
+
+/// A 0.10 webhook answered the payload of whichever path ended without a
+/// response node — request body, credentials read into it, generated
+/// secrets. 0.11 never does (`node-conventions.md` §4): such a path answers
+/// `204` with no body. Nothing is added to reproduce the old answer; each
+/// such path is for the owner to review, with the keys its payload holds so
+/// they can choose what the caller needs.
+fn review_unanswered_routes(graph: &OldGraph, out: &mut Rewrite) {
+    if !graph.nodes.iter().any(|n| n.kind == "n.trigger.webhook") {
         return;
     }
     let responds = |i: usize| graph.nodes[i].kind == "n.web.response";
-    let has_response = graph.nodes.iter().enumerate().any(|(i, _)| responds(i));
     let sinks: Vec<usize> = (0..graph.nodes.len())
         .filter(|&i| !graph.edges.iter().any(|e| e.from == i && !is_reentry(&graph.nodes, e)))
         .filter(|&i| !responds(i) && !graph.ancestors(i).iter().any(|&a| responds(a)))
         .collect();
-    if sinks.is_empty() {
-        return;
-    }
-    if has_response {
-        out.notes.push(Item::new(
-            "",
-            format!(
-                "the run can also end at {} after no response node; 0.10 answered the payload that came last in time, 0.11 answers at the response node when one runs (the same answer when the response came last, as it must have for this pipeline to answer at all)",
-                sinks.iter().map(|&s| format!("`{}`", graph.nodes[s].id)).collect::<Vec<_>>().join(", ")
-            ),
-        ));
-        return;
-    }
-    if sinks.len() > 1 {
-        out.unresolved.push(Item::new(
-            "",
-            format!(
-                "the run can end at {} and has no response node; 0.10 answered whichever payload came last — end each branch in web.response.send",
-                sinks.iter().map(|&s| format!("`{}`", graph.nodes[s].id)).collect::<Vec<_>>().join(", ")
-            ),
-        ));
-        return;
-    }
-    let sink = sinks[0];
-    let sink_id = graph.nodes[sink].id.clone();
-    // What 0.10 answered: the sink's whole payload, minus the keys the
-    // ingress read as instructions.
-    let producer = whole_producer(graph, sink);
-    if let Some(producer) = producer
-        && graph.nodes[producer].kind == "n.script"
-    {
-        let source = graph.nodes[producer].config.get("source").and_then(Value::as_str).unwrap_or("");
-        for word in ["_status", "_set_cookie", "html"] {
-            if source.contains(word) {
+    for sink in sinks {
+        // The 0.10 response instructions a script could return: the route
+        // set a status, a cookie or a page from them, which 0.11 does only
+        // through web.response.send.
+        let producer = whole_producer(graph, sink);
+        if let Some(producer) = producer
+            && graph.nodes[producer].kind == "n.script"
+        {
+            let source = graph.nodes[producer].config.get("source").and_then(Value::as_str).unwrap_or("");
+            if let Some(word) = ["_status", "_set_cookie", "html"].into_iter().find(|w| source.contains(w)) {
                 out.unresolved.push(Item::new(
                     &graph.nodes[producer].id,
                     format!("the script may answer `{word}`, which the 0.10 webhook read as a response instruction; answer with web.response.send instead"),
                 ));
-                return;
+                continue;
             }
         }
-        if super::expr::returns_only_literals(source) == Some(false) {
-            out.notes.push(Item::new(
-                &graph.nodes[producer].id,
-                "the webhook answers what this script returns; a string is answered as text in 0.11 (0.10: a JSON string)",
-            ));
-        }
-    }
-    match graph.whole_output_expr(sink, "input", Some("$nodes")) {
-        Ok((expr, dropped)) => {
-            let body = format!("{{{{ {expr} }}}}");
-            let used: BTreeSet<String> = graph.nodes.iter().map(|n| n.id.clone()).collect();
-            let mut id = "respond".to_string();
-            let mut k = 1;
-            while used.contains(&id) {
-                k += 1;
-                id = format!("respond{k}");
-            }
-            nodes.push(json!({
-                "id": id,
-                "kind": "web.response.send",
-                "input_pins": ["in"],
-                "output_pins": ["out"],
-                "config": { "body": body },
-            }));
-            edges.push(json!({ "from_node": sink_id, "from_pin": "out", "to_node": id, "to_pin": "in" }));
-            out.changes.push(Item::new(
-                &id,
-                format!("added web.response.send --body \"{body}\" after `{sink_id}`: 0.10 answered that payload as JSON"),
-            ));
-            if !dropped.is_empty() {
-                out.notes.push(Item::new(&id, format!("the answer leaves out {} (no 0.11 equivalent)", dropped.join(", "))));
-            }
-        }
-        Err(why) => out.unresolved.push(Item::new(
-            &sink_id,
-            format!("0.10 answered this node's whole payload as JSON, and that payload cannot be rebuilt in 0.11: {why}"),
-        )),
+        let mut keys: BTreeSet<String> = graph.ancestors(sink).iter().filter_map(|&a| graph.nouns[a].clone()).collect();
+        keys.extend(graph.nouns[sink].clone());
+        let keys = if keys.is_empty() {
+            "none known".to_string()
+        } else {
+            keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
+        };
+        // What the run's value was: a node that replaced the payload
+        // answered its own value, else the payload as this path carried it.
+        let value = match producer {
+            Some(p) => format!("`{}`'s answer, which replaced the payload", graph.nodes[p].id),
+            None => "the payload this path carried".to_string(),
+        };
+        out.review.push(Item::new(
+            &graph.nodes[sink].id,
+            format!(
+                "0.10 answered the run's value here ({value}); 0.11 answers 204 — add web.response.send with what the caller needs (the payload's keys: {keys})"
+            ),
+        ));
     }
 }

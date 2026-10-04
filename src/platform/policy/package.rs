@@ -205,11 +205,12 @@ pub struct PackageReviewOptions {
     /// Whether these `rel_path`s name files inside the package artifact rather
     /// than inside a project's `repo/`.
     ///
-    /// A node bundle is the only package this is true of: it materializes into
-    /// `data/hub/nodes/` and its file set is fixed by the `NodeBundle` contract,
-    /// not by a project's layout. Applying a repository rule to it would let a
-    /// project that narrowed its own extensions refuse a bundle that never
-    /// touches its repository.
+    /// Two packages are like that, the two that land in `data/hub/`: a node
+    /// bundle (`data/hub/nodes/`, its file set fixed by the `NodeBundle`
+    /// contract) and an RWE library (`data/hub/rwe-libraries/`, which may carry
+    /// `.wasm` engines next to its entry). Applying a repository rule to either
+    /// would let a project that narrowed its own extensions refuse a package
+    /// that never touches its repository.
     ///
     /// The default is `false`, so a caller that forgets gets the repository
     /// rule enforced rather than skipped.

@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Build inputs of zeb/potoru 0.1. The Potoru packages (@potoru/player, @potoru/authoring) are not published to npm yet, so the bundle is built from a Potoru source checkout: set POTORU_SRC to its designer/e3 folder (dependencies installed there with npm ci) and run `node build/build.mjs` from the hand-off folder. esbuild is taken from POTORU_SRC/node_modules.",
+  "dependencies": {
+    "@potoru/player": "0.1.0 (from POTORU_SRC/app/src/player, not on npm yet)",
+    "@potoru/authoring": "0.1.0 (from POTORU_SRC/authoring/src and app/src/format, not on npm yet)"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  },
+  "scripts": {
+    "build": "node ../../../build/build.mjs"
+  }
+}

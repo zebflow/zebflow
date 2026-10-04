@@ -1,0 +1,1 @@
+import{a,b,c,d,e,f,g,h,i,j,k}from"./chunk-HD35QE4Q.mjs";import"./chunk-LS4UKH6J.mjs";export{b as BUILTIN_FONT_ALIASES,a as FONT_ALIAS_PREFIX,g as builtinFontAlias,h as describeFontAliasOrigin,d as fontAliasId,i as fontAliasesUsed,c as isFontAlias,f as isFontAliasId,j as libraryFontAliases,e as parseFontAliasId,k as resolveFontAliases};

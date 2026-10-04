@@ -6280,6 +6280,81 @@ async fn the_material_a_controller_stores_forges_nothing_at_its_office() {
     let _ = fs::remove_dir_all(&office_root);
 }
 
+/// A worker-placed project's route checks its own `--auth` on the office
+/// that runs it. The controller forwards the visitor's request with its
+/// call header; that header proves the controller sent it, never that the
+/// visitor is signed in, so a forwarded call without the app's token is
+/// refused like any other.
+#[tokio::test]
+async fn a_forwarded_webhook_still_needs_the_routes_own_auth() {
+    use jsonwebtoken::{EncodingKey, Header, encode};
+
+    let controller_root = temp_test_dir("controller-forwarded-auth");
+    let office_root = temp_test_dir("office-forwarded-auth");
+    let mut controller = PlatformConfig::default();
+    controller.data_root = controller_root.clone();
+    controller.cluster.role = ClusterRole::Master;
+    controller.default_password = "test-pass".to_string();
+    let controller_app = build_router(controller).await.expect("controller starts");
+    let controller_cookie = login_cookie(controller_app.clone(), "superadmin", "test-pass").await;
+    let token = mint_join_token_at(&controller_app, &controller_cookie, "office-a", "http://office-a.example:10610").await;
+    let office = build_office(&office_root, &token).await;
+    let parsed = JoinToken::parse(&token).expect("parse");
+    let controller_call = format!(
+        "zfjoin2c:office-a:{}",
+        controller_signing_key(&controller_root).sign(&format!("zfjoin2/controller-call:office-a:{}", parsed.fingerprint()))
+    );
+
+    // The office's operator sets the route up (§6: on the host).
+    host_authority(&office_root).break_glass("superadmin", "set up a test route").expect("break glass");
+    let cookie = login_cookie(office.clone(), "superadmin", "test-pass").await;
+    post_json(
+        &office,
+        &cookie,
+        "/api/projects/superadmin/default/credentials",
+        json!({ "credential_id": "member-key", "title": "Members", "kind": "jwt_signing_key", "notes": "",
+            "secret": { "algorithm": "HS256", "secret": "test-secret-at-least-32-bytes-long!!" } }),
+    )
+    .await;
+    for dsl in [
+        r#"register pipelines/tests/members -- | trigger.webhook --route /members --method GET --auth jwt --credential member-key | web.response.send --body "{{ { who: input.webhook.auth.sub } }}""#,
+        "activate pipeline pipelines/tests/members.zf.json",
+    ] {
+        let answer = post_json(&office, &cookie, "/api/projects/superadmin/default/pipelines/dsl", json!({ "dsl": dsl })).await;
+        assert_eq!(answer["ok"], json!(true), "{dsl}: {answer}");
+    }
+
+    let forwarded = |bearer: Option<String>| {
+        let office = office.clone();
+        let controller_call = controller_call.clone();
+        async move {
+            let mut request = Request::builder()
+                .uri("/api/internal/runtime/webhook/superadmin/default/members")
+                .method("GET")
+                .header("x-zebflow-cluster-token", &controller_call);
+            if let Some(bearer) = bearer {
+                request = request.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+            }
+            let response = office.oneshot(request.body(Body::empty()).expect("request")).await.expect("response");
+            let status = response.status();
+            (status, response_json(response).await)
+        }
+    };
+
+    let (status, body) = forwarded(None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the controller's header is not the visitor's sign-in: {body}");
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_secs() as i64;
+    let member = encode(&Header::default(), &json!({ "sub": "m_1", "exp": now + 600 }), &EncodingKey::from_secret(b"test-secret-at-least-32-bytes-long!!"))
+        .expect("jwt");
+    let (status, body) = forwarded(Some(member)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["who"], json!("m_1"), "the visitor's own token, forwarded, admits it: {body}");
+
+    let _ = fs::remove_dir_all(&controller_root);
+    let _ = fs::remove_dir_all(&office_root);
+}
+
 /// Being logged out must never grant more than being logged in without the
 /// capability. The pipeline upsert route carried an early-development
 /// convenience that skipped its capability check whenever no session cookie was
@@ -7797,6 +7872,56 @@ export function getPage() { return { head: { title: "Not found" } }; }"#;
     assert!(!html.contains("RWE component error"), "{html}");
 }
 
+/// A `--body` error answer is its body, as on a webhook: the JSON the
+/// author wrote, never the response envelope (`status`, `json`, `headers`)
+/// it travels in.
+#[tokio::test]
+async fn a_weberror_body_answers_its_body_not_the_envelope() {
+    let mut config = PlatformConfig::default();
+    let root = temp_test_dir("weberror-body");
+    config.data_root = root.to_path_buf();
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    for dsl in [
+        r#"register pipelines/missing -- | trigger.error --status 404 | web.response.send --status 404 --header "X-Missing=yes" --body "{{ { missing: input.error.path } }}""#,
+        "activate pipeline pipelines/missing.zf.json",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/projects/superadmin/default/pipelines/dsl")
+                    .method("POST")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "dsl": dsl }).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("dsl response");
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], json!(true), "{body}");
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/wh/superadmin/default/no/such/thing")
+                .method("GET")
+                .header(header::ACCEPT, "application/json")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers().get("x-missing").and_then(|v| v.to_str().ok()), Some("yes"));
+    let body = response_json(response).await;
+    assert_eq!(body, json!({ "missing": "/no/such/thing" }), "the body, not the envelope");
+    let _ = fs::remove_dir_all(&root);
+}
+
 /// A bundle webhook trigger whose sender proves itself (`trigger.secret_header`)
 /// is refused at the door without that proof: `trigger.telegram`'s route
 /// answers 401 to an update with no `X-Telegram-Bot-Api-Secret-Token`, 403 to a
@@ -8079,4 +8204,82 @@ async fn a_deleted_project_stops_answering_its_webhooks() {
     assert_eq!(deleted.status(), StatusCode::OK);
     assert_eq!(call().await, StatusCode::NOT_FOUND);
     assert!(!test_root.join("users/superadmin/doomed").exists(), "a call to a deleted project re-created its folders");
+}
+
+/// `node-conventions.md` §4: a route answers only what it says it answers.
+/// A webhook run that reaches no `web.response.send` answers 204 with no
+/// body — never the payload it built (the request body, a token it minted)
+/// — on the plain answer and at the end of an event stream alike; a failed
+/// function call fails the run (500 per `--errors`) unless a handler is
+/// wired to its `:error`.
+#[tokio::test]
+async fn a_route_answers_only_what_it_says_it_answers() {
+    let data_root = temp_test_dir("route-answers-only");
+    let mut config = PlatformConfig::default();
+    config.data_root = data_root.clone();
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    for dsl in [
+        r#"register pipelines/tests/silent -- | trigger.webhook --route /silent --method POST | javascript.script.run -- "return { minted: 'not-for-the-caller' }""#,
+        r#"register pipelines/tests/said -- | trigger.webhook --route /said --method POST | javascript.script.run -- "return { minted: 'kept' }" | web.response.send --body "{{ { ok: true } }}""#,
+        r#"register pipelines/tests/unwired -- | trigger.webhook --route /unwired --method POST --errors hide | function.result.call --function no-such-function"#,
+        "register pipelines/tests/wired -- [t] trigger.webhook --route /wired --method POST\n[c] function.result.call --function no-such-function\n[h] web.response.send --status 502 --body \"{{ { failed: input.result.error.code, kept: input.webhook.body.password != null } }}\"\n[t] -> [c]\n[c]:error -> [h]\n",
+    ] {
+        let answer = post_json(&app, &cookie, "/api/projects/superadmin/default/pipelines/dsl", json!({ "dsl": dsl })).await;
+        assert_eq!(answer["ok"], json!(true), "{dsl}: {answer}");
+    }
+    for name in ["silent", "said", "unwired", "wired"] {
+        let dsl = format!("activate pipeline pipelines/tests/{name}.zf.json");
+        let answer = post_json(&app, &cookie, "/api/projects/superadmin/default/pipelines/dsl", json!({ "dsl": dsl })).await;
+        assert_eq!(answer["ok"], json!(true), "{name}: {answer}");
+    }
+    let call = |route: &'static str, accept: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/wh/superadmin/default{route}"))
+                        .method("POST")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::ACCEPT, accept)
+                        .body(Body::from(json!({ "password": uuid::Uuid::new_v4().to_string() }).to_string()))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+            (status, String::from_utf8_lossy(&bytes).to_string())
+        }
+    };
+
+    let (status, body) = call("/silent", "application/json").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_empty(), "nothing of the run is sent: {body}");
+
+    let (_, stream) = call("/silent", "text/event-stream").await;
+    assert!(stream.contains("event: done"), "{stream}");
+    assert!(!stream.contains("hunter2-example") && !stream.contains("not-for-the-caller"), "the stream's end carries no payload: {stream}");
+
+    let (status, body) = call("/said", "application/json").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_str::<Value>(&body).expect("json"), json!({ "ok": true }));
+
+    let (status, body) = call("/unwired", "application/json").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "a failed call fails the run: {body}");
+    assert!(!body.contains("hunter2-example"), "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).expect("json")["error"]["code"], json!("internal"), "--errors hide: {body}");
+    // Streamed, the lifecycle says which code failed and never the raw
+    // message: `--errors hide` governs the signals too.
+    let (_, stream) = call("/unwired", "text/event-stream").await;
+    assert!(stream.contains("node_fail") && stream.contains("FW_FUNCTION_NOT_FOUND"), "{stream}");
+    assert!(!stream.contains("no-such-function"), "no raw message on a hidden route: {stream}");
+
+    let (status, body) = call("/wired", "application/json").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).expect("json"), json!({ "failed": "FW_FUNCTION_NOT_FOUND", "kept": true }), "the handler reads the failure under the call's noun, the webhook body still there");
+
+    let _ = fs::remove_dir_all(&data_root);
 }

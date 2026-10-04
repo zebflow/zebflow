@@ -1,0 +1,36 @@
+{
+  "package": "zeb/potoru",
+  "version": "0.1",
+  "symbols": [
+    {
+      "name": "PotoruPlayer",
+      "kind": "wrapper",
+      "doc": "Play a .poto story: <PotoruPlayer src=\"/assets/x.poto\" controls autoplay muted />. Events zeb:potoru:ready / report / ended / error; window.__zebPotoru.get(id)."
+    },
+    {
+      "name": "PotoruCompiler",
+      "kind": "wrapper",
+      "doc": "Authoring widget: <PotoruCompiler files={files} />. Events zeb:potoru-compiler:compiled / error; window.__zebPotoruCompiler.get(id)."
+    },
+    {
+      "name": "potoru",
+      "kind": "raw",
+      "doc": "zeb/potoru namespace: version, get(id), getCompiler(id), mountPotoruPlayer, mountPotoruCompiler, compile."
+    },
+    {
+      "name": "mountPotoruPlayer",
+      "kind": "raw",
+      "doc": "mountPotoruPlayer(host, { src, controls, autoplay, muted, loop, mode, height }) → Promise<instance>."
+    },
+    {
+      "name": "mountPotoruCompiler",
+      "kind": "raw",
+      "doc": "mountPotoruCompiler(host, { files, mode, height }) → Promise<widget>."
+    },
+    {
+      "name": "compile",
+      "kind": "raw",
+      "doc": "compile({ files } | { script }) → Promise<{ ok, poto, diagnostics, files, sizes }>. Prefer potoru.compile (compile is a generic global name)."
+    }
+  ]
+}

@@ -78,7 +78,9 @@ skill is the order of work.
   `--body VALUE` → text or JSON; `--status 303 --header "Location=/path"` → a
   redirect (always root-relative — the project's host makes it right);
   `--header "Set-Cookie=…; Path=/; HttpOnly"` → a cookie, sent as written. A
-  404 is a `logic.if` with two `web.response.send` nodes on its pins.
+  404 is a `logic.if` with two `web.response.send` nodes on its pins. A path
+  that ends without one answers `204` with no body — the payload is never
+  sent on its own; `pipeline_check` warns on each such path.
 - **A site-wide 404 is `trigger.error --status 404 | web.response.send --status 404 --template pages/not-found.tsx`.**
   A webhook on `/*` does not catch unknown routes.
 - **Forms are two pipelines.** `GET` renders the page; `POST` validates
@@ -160,17 +162,30 @@ client) as an MCP server — the app's, not this session's.
   refused at activation). Another route is another server.
 - **`--auth` is required and the same on every tool of a route**: `none`
   publishes openly and must be written; `api_key` or `jwt` take
-  `--credential` (an id from `credential_list`).
+  `--credential` (an id from `credential_list`); `oauth` — what ChatGPT and
+  claude.ai connectors need — takes a `jwt_signing_key` `--credential` and
+  `--login /auth/login`, the app's own login page, whose POST pipeline ends in
+  `auth.oauth.approve` (`help(topic="pipeline/examples/mcp-oauth-login")`).
 - The arguments are `input.mcp.arguments.<name>` (`$trigger.arguments.<name>`
   later); the tool result is what `web.response.send` answers, and a status of
-  400 or more is a tool error with that body.
-- It will answer at `/_mcp/shop` on the project's hosts
-  (`/mcp/{owner}/{project}/shop` on the platform), once the owner switches the
-  `mcp` surface on in Settings → Addressing; it is off by default. Ask; never
-  assume. **In 0.11 the declaration is checked (`pipeline_check`, activation)
-  but the route is not served yet** — serving lands in 0.11.1.
-- **This session never lists or calls a published tool.** Once served, a
-  published route is proven as a webhook is: by calling the route.
+  400 or more is a tool error with that body. Without one the tool answers an
+  empty result — end every path in `web.response.send`.
+- It answers at `/_mcp/shop` on the project's hosts
+  (`/mcp/{owner}/{project}/shop` on the platform) once the owner switches the
+  `mcp` surface on in Settings → Addressing; it is off by default, and off is
+  404. Ask; never assume.
+- The door takes the app's credential only: `X-API-Key: <key>` or
+  `Authorization: ApiKey <key>` for `api_key`, `Authorization: Bearer <token>`
+  for `jwt` (a token the app signed with `auth.token.create`) and for `oauth`
+  (an access token the route's own sign-in issued; its 401 says where to sign
+  in). No cookie,
+  Zebflow login or this session's token is ever read. A refusal is 401 (403
+  for a role), recorded on the tool's run log without the key; 20 refusals a
+  minute from one client answer 429.
+- **This session never lists or calls a published tool.** A published route
+  is proven as a webhook is: by calling the route (`route_fetch` with
+  `path=/_mcp/shop`, `method=POST`, the credential in `headers`, and
+  `Accept: application/json, text/event-stream`).
 
 ## When it fails
 

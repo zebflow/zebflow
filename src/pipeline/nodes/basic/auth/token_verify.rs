@@ -17,7 +17,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation};
+use jsonwebtoken::Validation;
+#[cfg(test)]
+use jsonwebtoken::Algorithm;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -223,59 +225,14 @@ impl NodeHandler for Node {
         // The algorithm is the credential's, never the token's. Reading `alg`
         // from the token is what lets an attacker pick `none`, or hand an
         // RS256 verifier an HS256 token signed with the public key.
-        let algorithm_str = credential
-            .secret
-            .get("algorithm")
-            .and_then(Value::as_str)
-            .unwrap_or("HS256");
-        let algorithm = match algorithm_str {
-            "HS256" | "hs256" => Algorithm::HS256,
-            "HS384" | "hs384" => Algorithm::HS384,
-            "HS512" | "hs512" => Algorithm::HS512,
-            "RS256" | "rs256" => Algorithm::RS256,
-            "RS384" | "rs384" => Algorithm::RS384,
-            "RS512" | "rs512" => Algorithm::RS512,
-            other => {
-                return Err(PipelineError::new(
-                    "FW_NODE_AUTH_TOKEN_VERIFY_ALGORITHM",
-                    format!("unsupported JWT algorithm '{other}'"),
-                ));
-            }
-        };
-
-        let key = match algorithm {
-            Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
-                let secret = credential
-                    .secret
-                    .get("secret")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        PipelineError::new(
-                            "FW_NODE_AUTH_TOKEN_VERIFY_SECRET_MISSING",
-                            "jwt_signing_key credential missing 'secret' field",
-                        )
-                    })?;
-                DecodingKey::from_secret(secret.as_bytes())
-            }
-            _ => {
-                // An RSA token is verified with the public half; the private
-                // key is for signing and is not what a verifier needs.
-                let pem = credential
-                    .secret
-                    .get("public_key")
-                    .or_else(|| credential.secret.get("private_key"))
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        PipelineError::new(
-                            "FW_NODE_AUTH_TOKEN_VERIFY_SECRET_MISSING",
-                            "jwt_signing_key credential missing 'public_key' for an RSA algorithm",
-                        )
-                    })?;
-                DecodingKey::from_rsa_pem(pem.as_bytes()).map_err(|err| {
-                    PipelineError::new("FW_NODE_AUTH_TOKEN_VERIFY_KEY", err.to_string())
-                })?
-            }
-        };
+        let (algorithm, key) = super::sign::decoding_key(&credential.secret).map_err(|err| {
+            let code = match err {
+                super::sign::KeyError::Algorithm(_) => "FW_NODE_AUTH_TOKEN_VERIFY_ALGORITHM",
+                super::sign::KeyError::KeyInvalid(_) => "FW_NODE_AUTH_TOKEN_VERIFY_KEY",
+                _ => "FW_NODE_AUTH_TOKEN_VERIFY_SECRET_MISSING",
+            };
+            PipelineError::new(code, err.to_string())
+        })?;
 
         let mut validation = Validation::new(algorithm);
         // A session token without an expiry is a session that never ends.

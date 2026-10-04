@@ -1,6 +1,6 @@
 ---
 name: zebflow-auth
-description: Login, sessions, roles and protected routes in a Zebflow project — JWT on triggers, cookies, registration, password hashing, OAuth (Google), public vs private claims, public vs private files. Use before building anything a visitor must be signed in for, or anything that must be hidden from one.
+description: Login, sessions, roles and protected routes in a Zebflow project — JWT on triggers, cookies, registration, password hashing, OAuth (Google; signing agents in to a published MCP server), public vs private claims, public vs private files. Use before building anything a visitor must be signed in for, or anything that must be hidden from one.
 license: MIT
 metadata:
   version: "1"
@@ -81,6 +81,15 @@ Every node above has its page: `help(topic="pipeline/nodes/auth.token.create")`,
 7. **OAuth** (Google) is the same shape with `http.response.fetch` for the token
    exchange and `kv.entry.put`/`kv.entry.get` for the state parameter —
    `help(topic="pipeline/examples/oauth-login-google")`.
+8. **Signing agents in to a published MCP server** (ChatGPT, claude.ai
+   connectors) is the other direction — the app is the OAuth server, its
+   login page the sign-in: `trigger.mcp --auth oauth --credential <jwt key>
+   --login /auth/login`, and the login pipeline ends in
+   `auth.oauth.approve --ticket … --token "{{ input.token.access_token }}"
+   --client … --redirect-host …` instead of setting a cookie. The page shows
+   `client` and `redirect_host` from its query and posts them back unchanged —
+   `help(topic="pipeline/examples/mcp-oauth-login")`. Keys under `zf.` are the
+   platform's; no `kv.*` node takes one.
 
 ## Files
 

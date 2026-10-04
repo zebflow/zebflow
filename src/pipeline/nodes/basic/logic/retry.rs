@@ -1,11 +1,13 @@
 //! `logic.retry` — bounded retry control, fed two ways.
 //!
 //! **The error road.** The engine routes a node failure into `:error` edges
-//! when they exist. `logic.retry` consumes that failure envelope
-//! (`{ input, error, __zf_retry }`) and either emits `retry` with the original
-//! upstream input plus updated retry metadata, or `failed` when the attempt
-//! budget is exhausted. A `refused`-class error goes straight to `failed`:
-//! running it again cannot help.
+//! when they exist: the payload the failing node received, kept, plus that
+//! node's key answering `{ ok: false, error: { code, message } }`
+//! (`node-conventions.md` §6), with the retry state under `__zf_retry`
+//! (`error_key` names the key). `logic.retry` either emits `retry` with the
+//! failing node's input given back plus updated retry metadata, or `failed`
+//! with the failure when the attempt budget is exhausted. A `refused`-class
+//! error goes straight to `failed`: running it again cannot help.
 //!
 //! **The verdict road.** A payload arriving on `in` from an ordinary edge is a
 //! verdict, not a failure: `retry: true` on it (or `--when "<expr>"` true —
@@ -16,7 +18,7 @@
 //! the canvas should never paint it red.
 //!
 //! Attempts are counted from `__zf_retry.attempt`: on the payload when the
-//! author (or the engine's envelope) carried it, and from this node's own last
+//! author (or the engine's failure delivery) carried it, and from this node's own last
 //! output through `$nodes.<self>` — the engine keeps a retry node in its own
 //! scope for exactly this — so a loop whose payload is replaced on the way
 //! round (`http.response.fetch` answers with a fresh body) still counts 1, 2, 3.
@@ -59,9 +61,10 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Retry".to_string(),
-        description: "Runs a failed or not-yet-ready node again, with a delay and a budget. It is fed either way. **From an `:error` pin** (`[b]:error -> [r]`): it receives the failure \
-             envelope and fires `retry` with the original input (wire `[r]:retry -> [b]`) until `--max-attempts` is spent, \
-             then `failed` with the last error; a `refused`-class error goes straight to `failed`. **From an ordinary edge** \
+        description: "Runs a failed or not-yet-ready node again, with a delay and a budget. It is fed either way. **From an `:error` pin** (`[b]:error -> [r]`): it receives the failure — \
+             the payload kept, the failing node's key answering `{ ok: false, error: { code, message } }` — and fires `retry` with \
+             the failing node's input given back (wire `[r]:retry -> [b]`) until `--max-attempts` is spent, then `failed` with the \
+             last failure (`input.<noun>.error.code`); a `refused`-class error goes straight to `failed`. **From an ordinary edge** \
              (`[check] -> [r]`): the payload is a verdict — `retry: true` on it, or `--when \"<expr>\"` true (JavaScript over \
              `input`, as `logic.if --when`), fires `retry` with that payload; false passes it through on `done`; the budget \
              spent fires `failed`. A poll loop waits this way without throwing, so the canvas shows a wait, never a failure. \
@@ -452,26 +455,23 @@ fn attempt_of(state: Option<&Value>) -> Option<usize> {
         .map(|n| n as usize)
 }
 
-/// The engine's failure envelope, and nothing else: `input` beside an
-/// `error` with a registered `code`, under retry state the engine stamped
-/// with the failing node. A verdict payload may carry its own `error` (a
-/// provider's answer, say); it is not this.
-fn is_failure_envelope(payload: &Value) -> bool {
-    payload.get("input").is_some()
-        && payload
-            .get("error")
-            .and_then(|e| e.get("code"))
-            .and_then(Value::as_str)
-            .is_some()
-        && retry_state(payload)
-            .and_then(|s| s.get("failing_node_id"))
-            .is_some()
+/// Where the engine put the failure it delivered: the key its retry state
+/// names, when that key answers `ok: false` with an error `code`. Only the
+/// engine stamps `error_key` (this node's own stamp never keeps it), so a
+/// verdict payload carrying its own `error` (a provider's answer, say), or
+/// the state left from an earlier round, is not this.
+fn failure_key_of(payload: &Value) -> Option<&str> {
+    let key = retry_state(payload)?.get("error_key")?.as_str()?;
+    let answer = payload.get(key)?;
+    (answer.get("ok") == Some(&Value::Bool(false))
+        && answer.get("error").and_then(|e| e.get("code")).and_then(Value::as_str).is_some())
+    .then_some(key)
 }
 
 /// The retry state carried into this run, wherever it rode: on the payload
-/// itself (verdict road), on the failing node's input inside the engine's
-/// envelope (error road — that input is what this node emitted last round),
-/// or on this node's own last output in `$nodes.<self>`.
+/// itself (both roads — on the error road the engine kept what this node
+/// stamped last round and counted the failure), or on this node's own last
+/// output in `$nodes.<self>`.
 struct PriorState {
     attempt: usize,
     first_at: Option<u64>,
@@ -481,7 +481,6 @@ fn prior_state(input: &NodeExecutionInput) -> PriorState {
     let payload = &input.payload;
     let candidates = [
         retry_state(payload),
-        payload.get("input").and_then(retry_state),
         input
             .metadata
             .get("nodes")
@@ -544,14 +543,16 @@ impl StateStamp<'_> {
     }
 }
 
-/// The original input out of the engine's envelope, for the `retry` pin.
-fn original_input(payload: &Value) -> Result<Value, PipelineError> {
-    payload.get("input").cloned().ok_or_else(|| {
-        PipelineError::new(
-            "FW_NODE_LOGIC_RETRY_INPUT",
-            "retry input payload missing `input`",
-        )
-    })
+/// The failing node's input given back, for the `retry` pin: the payload
+/// with the failure taken off its key, and what that key held before put
+/// back (`shadowed`). The retry state is restamped by the caller.
+fn original_input(payload: &Value, key: &str) -> Value {
+    let mut original = payload.as_object().cloned().unwrap_or_default();
+    original.remove(key);
+    if let Some(previous) = retry_state(payload).and_then(|s| s.get("shadowed")) {
+        original.insert(key.to_string(), previous.clone());
+    }
+    Value::Object(original)
 }
 
 /// What the node decided for attempt `attempt`: wait `Some(delay)` and go
@@ -688,10 +689,12 @@ impl Node {
         }
     }
 
-    /// The error road: the engine's envelope after a node failed.
+    /// The error road: the engine's delivery after a node failed, the
+    /// failure under `key`.
     async fn after_error(
         &self,
         input: NodeExecutionInput,
+        key: String,
         mut trace: Vec<String>,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let prior = prior_state(&input);
@@ -708,31 +711,31 @@ impl Node {
         // the attempt budget is not spent on it: straight to the failed pin,
         // with the reason in the trace. Only `failed`-class errors (the world's
         // fault — a relay down, a timeout) are worth another try.
-        let error_code = input
-            .payload
-            .get("error")
-            .and_then(|e| e.get("code"))
-            .and_then(Value::as_str);
-        let error_message = input
-            .payload
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let error = input.payload.get(&key).and_then(|answer| answer.get("error"));
+        let error_code = error.and_then(|e| e.get("code")).and_then(Value::as_str);
+        let error_message = error.and_then(|e| e.get("message")).and_then(Value::as_str).unwrap_or_default();
+        let engine_state = retry_state(&input.payload).cloned();
         if let Some(code) = error_code {
             use crate::pipeline::error_class::{ErrorClass, class_of_error};
             if class_of_error(code, error_message) == ErrorClass::Refused {
                 trace.push(format!("refused: {code} — retrying cannot help"));
+                let stamp = StateStamp {
+                    attempt,
+                    max_attempts: self.budgets.max_attempts,
+                    first_at: prior.first_at.unwrap_or_else(now_ms),
+                    next_delay_ms: None,
+                    gave_up: None,
+                    engine: engine_state.as_ref(),
+                };
                 return Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_FAILED.to_string()],
-                    payload: input.payload,
+                    payload: stamp.stamp(input.payload),
                     trace,
                 });
             }
         }
 
-        let original = original_input(&input.payload)?;
-        let engine_state = retry_state(&input.payload).cloned();
+        let original = original_input(&input.payload, &key);
         self.retry_or_fail(
             attempt,
             &prior,
@@ -802,8 +805,8 @@ impl NodeHandler for Node {
             format!("node_kind={NODE_KIND}"),
             format!("max_attempts={}", self.budgets.max_attempts),
         ];
-        if is_failure_envelope(&input.payload) {
-            self.after_error(input, trace).await
+        if let Some(key) = failure_key_of(&input.payload).map(str::to_string) {
+            self.after_error(input, key, trace).await
         } else {
             self.after_verdict(input, trace).await
         }
@@ -874,13 +877,28 @@ mod tests {
     #[test]
     fn a_failed_class_error_is_retried() {
         let out = run(&node(3, None), json!({
-            "input": { "email": "sari@example.test" },
-            "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND", "message": "relay unreachable" },
-            "__zf_retry": { "attempt": 1, "failing_node_id": "m" }
+            "email": "sari@example.test",
+            "message": { "ok": false, "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND", "message": "relay unreachable" } },
+            "__zf_retry": { "attempt": 1, "failing_node_id": "m", "error_key": "message" }
         }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_RETRY.to_string()]);
         assert_eq!(out.payload["email"], "sari@example.test");
+        assert!(out.payload.get("message").is_none(), "the failure is taken off the input given back: {}", out.payload);
         assert_eq!(out.payload["__zf_retry"]["attempt"], 1);
+        assert!(out.payload["__zf_retry"].get("error_key").is_none(), "only the engine stamps error_key");
+    }
+
+    /// What the failing node's key held before the failure covered it is
+    /// what the re-run receives there.
+    #[test]
+    fn a_retry_gives_back_what_the_failure_covered() {
+        let out = run(&node(3, None), json!({
+            "query": { "ok": false, "error": { "code": "FW_NODE_POSTGRES_QUERY_RUN", "message": "connection reset" } },
+            "__zf_retry": { "attempt": 1, "failing_node_id": "q", "error_key": "query", "shadowed": { "rows": [1] } }
+        }));
+        assert_eq!(out.output_pins, vec![OUTPUT_PIN_RETRY.to_string()]);
+        assert_eq!(out.payload["query"], json!({ "rows": [1] }));
+        assert!(out.payload["__zf_retry"].get("shadowed").is_none());
     }
 
     /// A bad address is the caller's fault. Retrying cannot help, so the
@@ -888,11 +906,12 @@ mod tests {
     #[test]
     fn a_refused_class_error_goes_straight_to_failed() {
         let out = run(&node(3, None), json!({
-            "input": { "email": "not an address" },
-            "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND_ADDRESS", "message": "not a mailbox" },
-            "__zf_retry": { "attempt": 1, "failing_node_id": "m" }
+            "email": "not an address",
+            "message": { "ok": false, "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND_ADDRESS", "message": "not a mailbox" } },
+            "__zf_retry": { "attempt": 1, "failing_node_id": "m", "error_key": "message" }
         }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_FAILED.to_string()]);
+        assert_eq!(out.payload["message"]["error"]["code"], "FW_NODE_MAIL_MESSAGE_SEND_ADDRESS", "the failure rides on to `failed`");
         assert!(
             out.trace.iter().any(|t| t.contains("retrying cannot help")),
             "{:?}",
@@ -960,11 +979,18 @@ mod tests {
         assert_eq!(ready.output_pins, vec![OUTPUT_PIN_DONE.to_string()]);
     }
 
-    /// A verdict payload that happens to carry an `error` object (a
-    /// provider's answer) is still a verdict, not the engine's envelope.
+    /// A verdict payload that happens to carry an `ok: false` answer (a
+    /// provider's), or the state an earlier round left, is still a verdict:
+    /// only the engine's `error_key` marks a delivered failure.
     #[test]
     fn a_verdict_payload_with_its_own_error_key_is_not_an_envelope() {
         let out = run(&node(5, None), json!({ "retry": false, "state": "error", "error": { "message": "provider said no" } }));
+        assert_eq!(out.output_pins, vec![OUTPUT_PIN_DONE.to_string()]);
+        let out = run(&node(5, None), json!({
+            "retry": false,
+            "response": { "ok": false, "error": { "code": "X", "message": "no" } },
+            "__zf_retry": { "attempt": 1, "failing_node_id": "m" }
+        }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_DONE.to_string()]);
     }
     /// The rate-limited-API example: 500 ms doubled each attempt, held at
@@ -999,15 +1025,15 @@ mod tests {
         assert_eq!(third.payload["__zf_retry"]["next_delay_ms"], 30, "capped by --max-delay");
     }
 
-    /// The error road carries `first_at` too: the failing node's input inside
-    /// the envelope is what this node emitted last round.
+    /// The error road carries `first_at` too: the engine keeps the state
+    /// this node stamped last round and counts the failure on it.
     #[test]
-    fn the_error_road_reads_first_at_from_the_envelopes_input_and_keeps_the_failing_node() {
+    fn the_error_road_reads_first_at_from_the_kept_state_and_keeps_the_failing_node() {
         let node = node_with(budgets(5, "0ms", 1.0, None, None));
         let out = run(&node, json!({
-            "input": { "email": "x@example.test", "__zf_retry": { "attempt": 1, "first_at": 1000 } },
-            "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND", "message": "relay unreachable" },
-            "__zf_retry": { "attempt": 2, "failing_node_id": "m", "failing_node_kind": "mail.message.send" }
+            "email": "x@example.test",
+            "message": { "ok": false, "error": { "code": "FW_NODE_MAIL_MESSAGE_SEND", "message": "relay unreachable" } },
+            "__zf_retry": { "attempt": 2, "first_at": 1000, "failing_node_id": "m", "failing_node_kind": "mail.message.send", "error_key": "message" }
         }));
         assert_eq!(out.output_pins, vec![OUTPUT_PIN_RETRY.to_string()]);
         assert_eq!(out.payload["__zf_retry"]["attempt"], 2);

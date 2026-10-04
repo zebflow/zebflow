@@ -1,0 +1,32 @@
+{
+  "package": "zeb/potoru",
+  "version": "0.1",
+  "raw": {
+    "potoru": {
+      "entry": "runtime/potoru.bundle.mjs",
+      "description": "Namespace: version, get(id), getCompiler(id), mountPotoruPlayer, mountPotoruCompiler, compile, loadPlayer."
+    },
+    "mountPotoruPlayer": {
+      "entry": "runtime/potoru.bundle.mjs",
+      "description": "Mount a Potoru player into a host element (loads the player code on demand); resolves to the instance."
+    },
+    "mountPotoruCompiler": {
+      "entry": "runtime/potoru.bundle.mjs",
+      "description": "Mount the authoring widget into a host element (loads the compiler code on demand)."
+    },
+    "compile": {
+      "entry": "runtime/potoru.bundle.mjs",
+      "description": "Compile a source folder ({ files }) or an authoring-API script ({ script }, experimental) to .poto bytes with diagnostics."
+    }
+  },
+  "wrappers": {
+    "PotoruPlayer": {
+      "entry": "wrappers/PotoruPlayer.tsx",
+      "description": "TSX wrapper: server-rendered placeholder the runtime mounts a <potoru-player> into."
+    },
+    "PotoruCompiler": {
+      "entry": "wrappers/PotoruCompiler.tsx",
+      "description": "TSX wrapper: server-rendered placeholder for the authoring widget (files, editor, diagnostics, preview)."
+    }
+  }
+}

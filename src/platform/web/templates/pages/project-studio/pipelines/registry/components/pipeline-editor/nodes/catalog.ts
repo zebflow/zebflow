@@ -29,6 +29,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "ws.state.delete": "#064e3b",
   "ws.message.send": "#065f46",
   "auth.token.create": "#78350f",
+  "auth.oauth.approve": "#78350f",
   "browser.page.run": "#0369a1",
   "trigger.function": "#166534",
   "function.result.call": "#1e40af",

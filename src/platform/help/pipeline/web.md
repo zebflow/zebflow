@@ -3,7 +3,12 @@
 Everything a pipeline sends back over HTTP goes through `web.response.send`: JSON,
 a rendered page, a redirect, a cookie, a header. Nothing is implicit — a
 script cannot set a status or a header; it returns the next payload and the
-graph decides which `web.response.send` answers.
+graph decides which `web.response.send` answers. A webhook run that reaches
+no `web.response.send` answers `204 No Content` with no body: the run's
+payload — the request body, anything read into it — is never sent on its own.
+One other node answers the caller the same way: `auth.oauth.approve`, which
+ends an app's login for a published MCP server with its redirect back to the
+agent (`help("pipeline/examples/mcp-oauth-login")`).
 
 For writing a rendered page to project storage instead of answering the
 request, `web.site.generate` renders the same templates

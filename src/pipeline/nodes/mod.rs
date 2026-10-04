@@ -699,6 +699,24 @@ pub fn answer_key(kind: &str) -> Option<String> {
     }
 }
 
+/// The key a node's failure is delivered under on its `:error` pin
+/// (`node-conventions.md` §6, `{ ok: false, error: { code, message } }`):
+/// the key it answers under — a run input's literal `--name` — and, for a
+/// node with none fixed (a control node, `web.response.send`), the second
+/// word of its kind: `logic.if` → `if`, `web.response.send` → `response`.
+pub fn failure_key(kind: &str, name: Option<&str>) -> String {
+    if kind.starts_with("input.")
+        && let Some(name) = name.and_then(|n| n.split('.').next()).map(str::trim)
+        && !name.is_empty()
+        && !name.contains("{{")
+    {
+        return name.to_string();
+    }
+    answer_key(kind)
+        .or_else(|| kind.split('.').nth(1).filter(|w| !w.is_empty()).map(str::to_string))
+        .unwrap_or_else(|| "error".to_string())
+}
+
 pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
     let mut s = String::new();
     s.push_str(&format!("### `{}` — {}\n\n", def.kind, def.title));

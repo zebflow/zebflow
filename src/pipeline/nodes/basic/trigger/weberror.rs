@@ -4,8 +4,11 @@
 //! checks for matching weberror pipelines when:
 //!
 //! - A route is not found (404)
-//! - A pipeline sets `_status: 4xx/5xx` in its output
+//! - A route's `--auth` refuses the visitor (401/403)
 //! - A pipeline execution fails (500)
+//!
+//! It answers through `web.response.send`; one that answers nothing leaves
+//! the platform's own error answer — its run's value is never sent.
 //!
 //! The node answers one key, `error`, holding the error context the platform
 //! built (`node-conventions.md` §6).

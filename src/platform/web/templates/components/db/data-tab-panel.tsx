@@ -77,7 +77,9 @@ export default function DataTabPanel({ activeTable, grid, editor, selection, cap
           <div className="flex h-full min-h-[14rem] items-center justify-center text-sm text-muted-foreground">
             Select a table to inspect its data and structure.
           </div>
-        ) : grid.rows.length ? (
+        ) : grid.rows.length || editor.draftRows.length ? (
+          // A drafted row is a row to draw: an empty table's first row is a
+          // draft until saved, and the empty state used to hide it.
           <ResizableDataGrid
             columns={grid.columns}
             rows={editor.displayRows()}

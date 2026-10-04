@@ -127,6 +127,79 @@ pub fn open_from(
 /// refused), no segment may be a link, and the read is capped
 /// (`node-conventions.md` §3).
 pub fn read_repo_file(root: &std::path::Path, rel: &str, code: &'static str) -> Result<Vec<u8>, PipelineError> {
+    let (rel, path) = repo_path_without_links(root, rel, code)?;
+    let meta = std::fs::metadata(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))?;
+    if !meta.is_file() {
+        return Err(PipelineError::new(code, format!("'{rel}' is not a file")));
+    }
+    if meta.len() > MAX_NODE_OBJECT_BYTES {
+        return Err(PipelineError::new(code, format!("'{rel}' is {} bytes, over the {MAX_NODE_OBJECT_BYTES} a node reads at once", meta.len())));
+    }
+    std::fs::read(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))
+}
+
+/// One entry of a repository folder, as [`list_repo_folder`] answers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// The files and folders directly inside a repository folder, sorted by name.
+/// The same reader as [`read_repo_file`]: the key is normalised, no segment of
+/// it may be a link, and a link inside the folder is neither listed nor
+/// followed. An empty `rel` lists `root` itself.
+pub fn list_repo_folder(root: &std::path::Path, rel: &str, code: &'static str) -> Result<Vec<RepoEntry>, PipelineError> {
+    let (rel, path) = if rel.trim_matches('/').is_empty() {
+        (String::new(), root.to_path_buf())
+    } else {
+        repo_path_without_links(root, rel, code)?
+    };
+    let read = std::fs::read_dir(&path).map_err(|_| PipelineError::new(code, format!("'{rel}' is not a folder in the project")))?;
+    let mut entries = Vec::new();
+    for entry in read {
+        let entry = entry.map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))?;
+        // `DirEntry::file_type` does not follow a link: a link is neither.
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_symlink() || !(kind.is_dir() || kind.is_file()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        entries.push(RepoEntry { name, is_dir: kind.is_dir() });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
+}
+
+/// Creates a repository file that does not exist yet, with its folders, for
+/// a node running without the platform (tests, tools); with the platform a
+/// node writes through the repository API instead. No existing segment may be
+/// a link, and an existing file is refused rather than replaced.
+pub fn create_repo_file(root: &std::path::Path, rel: &str, bytes: &[u8], code: &'static str) -> Result<(), PipelineError> {
+    let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
+        .map_err(|err| PipelineError::new(code, format!("'{rel}': {}", err.message)))?;
+    let mut path = root.to_path_buf();
+    let segments: Vec<&str> = rel.split('/').collect();
+    for (index, segment) in segments.iter().enumerate() {
+        path.push(segment);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(PipelineError::new(code, format!("'{rel}' passes through a link; repository writes never follow one")));
+            }
+            Ok(_) if index + 1 == segments.len() => {
+                return Err(PipelineError::new(code, format!("'{rel}' already exists")));
+            }
+            Ok(_) => {}
+            Err(_) if index + 1 == segments.len() => {}
+            Err(_) => std::fs::create_dir(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))?,
+        }
+    }
+    std::fs::write(&path, bytes).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))
+}
+
+/// `root` joined with the normalised `rel`, refused when the key escapes or
+/// any segment of it is a link or missing.
+fn repo_path_without_links(root: &std::path::Path, rel: &str, code: &'static str) -> Result<(String, std::path::PathBuf), PipelineError> {
     let rel = crate::zebfs::normalize_object_path(rel.trim_start_matches('/'))
         .map_err(|err| PipelineError::new(code, format!("'{rel}': {}", err.message)))?;
     let mut path = root.to_path_buf();
@@ -138,14 +211,7 @@ pub fn read_repo_file(root: &std::path::Path, rel: &str, code: &'static str) -> 
             return Err(PipelineError::new(code, format!("'{rel}' passes through a link; repository reads never follow one")));
         }
     }
-    let meta = std::fs::metadata(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))?;
-    if !meta.is_file() {
-        return Err(PipelineError::new(code, format!("'{rel}' is not a file")));
-    }
-    if meta.len() > MAX_NODE_OBJECT_BYTES {
-        return Err(PipelineError::new(code, format!("'{rel}' is {} bytes, over the {MAX_NODE_OBJECT_BYTES} a node reads at once", meta.len())));
-    }
-    std::fs::read(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))
+    Ok((rel, path))
 }
 
 /// [`NodeStore::read_capped`] for a store held without its id.
