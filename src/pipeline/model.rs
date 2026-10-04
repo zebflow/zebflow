@@ -240,16 +240,8 @@ pub enum DslFlagKind {
     /// `--template-path pages/blog-home` → `config["template_path"] = "pages/blog-home"`
     #[default]
     Scalar,
-    /// List value with compact comma form as the recommended rendering.
-    ///
-    /// The parser accepts either `--key a,b,c` or `--key a --key b --key c`,
-    /// but rejects mixing those styles for the same flag in one node command.
-    /// `--case create --case update` → `config["cases"] = ["create","update"]`
-    CommaSeparatedList,
-    /// List value with repeated flag form as the recommended rendering.
-    ///
-    /// Parser behavior is identical to [`DslFlagKind::CommaSeparatedList`].
-    /// Use this for long atomic values where commas may appear inside the value.
+    /// A repeatable role (`node-conventions.md` §2): each occurrence is one
+    /// value, a comma inside it included, so `--case a,b` is one case.
     /// `--from "posts.parquet as posts" --from "authors.csv as authors"`
     /// → `config["from"] = ["posts.parquet as posts","authors.csv as authors"]`
     RepeatedList,
@@ -1134,6 +1126,63 @@ pub struct NodeDefinition {
     /// If empty, the frontend title-cases the subcategory slug.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ui_category_label: String,
+    /// One profile per `--provider` word of a swappable task
+    /// (`node-conventions.md` §11): what that provider takes beyond the
+    /// kind's shared roles. Empty for a kind without `--provider`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<ProviderProfile>,
+}
+
+/// What one provider of a swappable task takes (`node-conventions.md` §11).
+///
+/// A flag named in some profile's `roles` is provider-specific: only the
+/// providers listing it take it. Every other flag of the kind is shared.
+/// A profile is added or extended, never changed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderProfile {
+    /// One word of the kind's `--provider` choices.
+    pub provider: String,
+    /// The credential kinds a `--credential` may name for this provider.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_kinds: Vec<String>,
+    /// The `--model` ids this provider takes; empty takes any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// The provider-specific roles it takes, by flag (`--image`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub roles: std::collections::BTreeMap<String, ProfileRole>,
+    /// A narrower word list for a choice flag of the kind, by flag.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub choices: std::collections::BTreeMap<String, Vec<String>>,
+    /// The closed, typed `--option key=value` keys it takes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<ProfileOption>,
+}
+
+/// How a provider takes one of the kind's provider-specific roles.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRole {
+    /// The provider needs it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    /// The most values a repeatable role takes from this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_repeat: Option<u32>,
+}
+
+/// One `--option key=value` setting a provider takes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileOption {
+    pub key: String,
+    /// What the value is: one of [`FLAG_VALUE_TYPES`].
+    pub value: String,
+    /// The closed words it takes; empty for a free value of its type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    pub description: String,
 }
 
 /// One concrete node usage example.

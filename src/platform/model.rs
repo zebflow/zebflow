@@ -3019,6 +3019,9 @@ pub struct MultiNodeEntryDefinition {
     pub layout: Vec<crate::pipeline::model::LayoutItem>,
     #[serde(default)]
     pub dsl_flags: Vec<crate::pipeline::model::DslFlag>,
+    /// One profile per `--provider` word (`node-conventions.md` §11).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<crate::pipeline::model::ProviderProfile>,
 }
 
 /// Runtime-enriched entry for an installed node package.

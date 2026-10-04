@@ -857,8 +857,8 @@ impl DslExecutor {
 
         // Build raw_flag_key → config_key maps for all DSL flag kinds so that flags like
         // --credential (raw key "credential") correctly write to config_key "credential_id",
-        // --claim → "claims" (KeyValuePairs), --roles → ["a","b"] (CommaSeparatedList), etc.
-        let (kv_config_keys, comma_list_config_keys, scalar_config_keys): (
+        // --claim → "claims" (KeyValuePairs), --case → ["a"] (RepeatedList), etc.
+        let (kv_config_keys, list_config_keys, scalar_config_keys): (
             std::collections::HashMap<String, String>,
             std::collections::HashMap<String, String>,
             std::collections::HashMap<String, String>,
@@ -877,17 +877,11 @@ impl DslExecutor {
                         .collect()
                 })
                 .unwrap_or_default();
-            let csv = node_def
+            let list = node_def
                 .map(|d| {
                     d.dsl_flags
                         .iter()
-                        .filter(|f| {
-                            matches!(
-                                f.kind,
-                                crate::pipeline::model::DslFlagKind::CommaSeparatedList
-                                    | crate::pipeline::model::DslFlagKind::RepeatedList
-                            )
-                        })
+                        .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::RepeatedList)
                         .map(|f| (flag_key(f), f.config_key.clone()))
                         .collect()
                 })
@@ -908,7 +902,7 @@ impl DslExecutor {
                         .collect()
                 })
                 .unwrap_or_default();
-            (kv, csv, scalar)
+            (kv, list, scalar)
         };
 
         if let Value::Object(ref mut cfg) = node.config {
@@ -948,19 +942,16 @@ impl DslExecutor {
                         }
                         m.extend(patched);
                     }
-                } else if let Some(config_key) = comma_list_config_keys.get(k) {
-                    // CommaSeparatedList: split "a,b,c" → ["a","b","c"].
-                    // parse_flags_for_patch stored it as a raw string via coerce_scalar_value.
-                    let csv = match v {
-                        Value::String(s) => s.as_str(),
-                        _ => {
-                            // Already an array (or unexpected type) — store as-is.
-                            cfg.insert(config_key.clone(), v.clone());
-                            continue;
-                        }
+                } else if let Some(config_key) = list_config_keys.get(k) {
+                    // RepeatedList: each occurrence is one value, a comma
+                    // inside it included. One occurrence arrives as a string,
+                    // several as an array.
+                    let list = match v {
+                        Value::Array(items) => items.clone(),
+                        Value::String(s) if s.trim().is_empty() => Vec::new(),
+                        other => vec![other.clone()],
                     };
-                    let arr: Vec<Value> = csv.split(',').map(|s| json!(s.trim())).collect();
-                    cfg.insert(config_key.clone(), Value::Array(arr));
+                    cfg.insert(config_key.clone(), Value::Array(list));
                 } else {
                     // Scalar/Bool: map flag key → config_key (e.g. "credential" → "credential_id").
                     // Fall back to the raw key for unknown/custom config keys.

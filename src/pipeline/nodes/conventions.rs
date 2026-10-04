@@ -277,12 +277,87 @@ mod tests {
                 if !flag.choices.is_empty() && !matches!(flag.kind, DslFlagKind::Scalar | DslFlagKind::RepeatedList) {
                     problems.push(format!("{}: {} lists choices on a {:?} flag", def.kind, flag.flag, flag.kind));
                 }
-                if flag.max_repeat.is_some() && !matches!(flag.kind, DslFlagKind::RepeatedList | DslFlagKind::CommaSeparatedList) {
+                if flag.max_repeat.is_some() && !matches!(flag.kind, DslFlagKind::RepeatedList) {
                     problems.push(format!("{}: {} has a repeat ceiling but does not repeat", def.kind, flag.flag));
                 }
             }
         }
         report("flag_metadata_is_well_formed", problems);
+    }
+
+    /// §11: a kind with `--provider` has a profile for every provider word
+    /// and none outside them; a profile's roles and choice lists name flags
+    /// the kind declares, its narrower words are the kind's own, and its
+    /// options are typed; a kind with profiles takes `--option`.
+    #[test]
+    fn providers_declare_profiles() {
+        use crate::pipeline::model::FLAG_VALUE_TYPES;
+        let mut problems = Vec::new();
+        let mut profiled = 0usize;
+        for def in official_definitions() {
+            let kind = def.kind.as_str();
+            let flag = |name: &str| def.dsl_flags.iter().find(|f| f.flag == name);
+            let words: Vec<String> = flag("--provider").map(|f| f.choices.clone()).unwrap_or_default();
+            let named: Vec<&str> = def.profiles.iter().map(|p| p.provider.as_str()).collect();
+            if flag("--provider").is_none() {
+                if !def.profiles.is_empty() {
+                    problems.push(format!("{kind}: has profiles but no --provider"));
+                }
+                continue;
+            }
+            profiled += 1;
+            if words.is_empty() {
+                problems.push(format!("{kind}: --provider lists no words"));
+            }
+            for word in &words {
+                if !named.contains(&word.as_str()) {
+                    problems.push(format!("{kind}: --provider {word} has no profile"));
+                }
+            }
+            for (i, name) in named.iter().enumerate() {
+                if !words.iter().any(|w| w == name) {
+                    problems.push(format!("{kind}: a profile for '{name}', which is not a --provider word"));
+                }
+                if named[..i].contains(name) {
+                    problems.push(format!("{kind}: two profiles for '{name}'"));
+                }
+            }
+            if flag("--option").is_none() {
+                problems.push(format!("{kind}: has profiles but does not take --option"));
+            }
+            for profile in &def.profiles {
+                let provider = profile.provider.as_str();
+                for role in profile.roles.keys() {
+                    if flag(role).is_none() {
+                        problems.push(format!("{kind} --provider {provider}: role {role} is not a flag of the kind"));
+                    }
+                }
+                for (name, narrower) in &profile.choices {
+                    match flag(name) {
+                        None => problems.push(format!("{kind} --provider {provider}: choices for {name}, not a flag of the kind")),
+                        Some(f) if !f.choices.is_empty() => {
+                            for word in narrower.iter().filter(|w| !f.choices.contains(w)) {
+                                problems.push(format!("{kind} --provider {provider}: {name} {word} is not one of the kind's words"));
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                }
+                if !profile.models.is_empty() && flag("--model").is_none() {
+                    problems.push(format!("{kind} --provider {provider}: lists models but the kind has no --model"));
+                }
+                for option in &profile.options {
+                    if !FLAG_VALUE_TYPES.contains(&option.value.as_str()) {
+                        problems.push(format!("{kind} --provider {provider}: --option {} declares value '{}'", option.key, option.value));
+                    }
+                    if option.description.trim().is_empty() {
+                        problems.push(format!("{kind} --provider {provider}: --option {} has no description", option.key));
+                    }
+                }
+            }
+        }
+        assert!(profiled >= 3, "only {profiled} kinds take --provider; the check has gone blind");
+        report("providers_declare_profiles", problems);
     }
 
     /// The signature is generated from the definition: choices, value types,

@@ -58,7 +58,7 @@ paths. `fs.pdf.convert` sanitises its output path with `sanitize_rel_path`.
 `current_dir(&layout.repo_dir)`.
 
 **`ai.text.generate` has no shell.** The only tools the model can call are the
-project's function pipelines, named by slug in `--tools`; nothing is offered
+project's function pipelines, named one by one with `--tool`; nothing is offered
 unless named. The shell tools (`ls`, `pwd`, `python`) that once ran inside the
 project's `repo/` were removed on 2026-09-19: a Python tool reachable from a
 public webhook's agent is not a boundary, it is a door.

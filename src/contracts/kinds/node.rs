@@ -440,6 +440,7 @@ pub fn normalize_node_bundle(
             dsl_flags: node.definition.dsl_flags.clone(),
             fields: node.definition.fields.clone(),
             layout: node.definition.layout.clone(),
+            profiles: node.definition.profiles.clone(),
             ui_category: node.ui_category.clone(),
             ui_category_label: node.ui_category_label.clone(),
             ..Default::default()

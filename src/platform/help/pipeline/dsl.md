@@ -72,8 +72,7 @@ Flag value kinds, as each node declares them:
 |---|---|---|
 | scalar | `--template pages/post.tsx` | `"pages/post.tsx"` |
 | bool | `--durable` | `true` — no value consumed |
-| comma-list | `--accept pdf,docx` or `--accept pdf --accept docx` | `["pdf","docx"]` — one style per flag |
-| repeated | `--case create --case update` | `["create","update"]` — one value per flag |
+| repeated | `--case create --case update` | `["create","update"]` — one value per flag; a comma stays inside its value (`--case "a,b"` is one case) |
 | key-value-pairs | `--claim "sub={{ input.id }}" --claim "name:public={{ input.name }}"` | `{ sub: …, name: … }` — repeat the flag, one key each |
 
 Two flags exist on every node: `--timeout <duration>` (engine timeout for this
@@ -550,8 +549,8 @@ a `data:` URI is refused — fetch with `http.response.fetch --parse bytes`,
 ```
 | trigger.manual
 | input.text brief --label "What the poster is for"
-| ai.text.generate --credential openrouter --output-mode final_only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.brief }}
-| fs.image.render --text "{{ input.data.svg }}" --folder sandbox/posters/out --preview image
+| ai.text.generate --provider openrouter --credential openrouter --answer-only --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' -- Write one 1080x1350 SVG poster (xmlns, width and height set, font-family Inter, the headline as a <text> with inline-size="918") for: {{ input.brief }}
+| fs.image.render --text "{{ input.text.data.svg }}" --folder sandbox/posters/out --preview image
 ```
 
 The SVG is exactly one of `--from` (a stored `.svg`: a FileRef, an upload or

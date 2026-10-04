@@ -3,6 +3,8 @@
 //! - [`file_ref`] — the FileRef payload IR: producers, validators, and the
 //!   ZebFS path resolvers every file-taking node goes through.
 //! - [`limits`] — closed choices and the ceilings every node shares.
+//! - [`profile`] — provider profiles of a swappable task: `--provider`,
+//!   `--option` and the check that holds a config to its provider.
 //! - [`project_store`] — which store a node reads or writes, its keys, and
 //!   `--on-conflict`.
 //! - [`query`] — the database query nodes' `--param`, `--write`, `--limit`
@@ -18,6 +20,7 @@
 
 pub mod file_ref;
 pub mod limits;
+pub mod profile;
 pub mod project_store;
 pub mod query;
 pub mod script;

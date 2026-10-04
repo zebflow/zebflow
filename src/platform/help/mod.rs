@@ -344,7 +344,6 @@ pub fn format_node_flags_markdown(def: &crate::pipeline::NodeDefinition) -> Stri
     for f in &def.dsl_flags {
         let kind = match f.kind {
             DslFlagKind::Scalar => "",
-            DslFlagKind::CommaSeparatedList => " · comma list",
             DslFlagKind::RepeatedList => " · repeatable",
             DslFlagKind::Bool => " · switch",
             DslFlagKind::KeyValuePairs => " · `K=V`, repeatable",

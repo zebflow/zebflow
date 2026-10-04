@@ -9,8 +9,9 @@ A minimal end-to-end text-to-speech demo:
 - user types text
 - page calls the API
 - API runs `ai.audio.generate`
-- page plays the returned `audio.blob_base64`
-- generated `.wav` is also persisted under Zebflow FS
+- page plays the returned `audio.base64`
+- nothing is written to the store (`--return inline`); `--return file`
+  writes the `.wav` instead and answers its FileRef
 
 This is the fastest real shape to try `ai.audio.generate` in a browser.
 
@@ -66,7 +67,7 @@ return {
   slug: String($trigger.body.slug || Date.now())
 };
 "
-[c] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.script.text }}" --filename "{{ 'tts-' + input.script.slug }}" --on-conflict overwrite --return both
+[c] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.script.text }}" --return inline
 [d] web.response.send
 
 [a] -> [guard]
@@ -81,29 +82,26 @@ Response shape:
 ```json
 {
   "audio": {
+    "base64": "UklGRi4A...",
+    "size": 186924,
     "provider": "piper",
     "format": "wav",
     "mime_type": "audio/wav",
-    "file": {
-      "__zf_type": "file_ref", "backend": "zebfs", "store": "local",
-      "ref": "audio/tts-my-demo.wav", "filename": "tts-my-demo.wav",
-      "mime": "audio/wav", "kind": "audio", "size": 186924,
-      "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.audio.generate", "trust": "generated"
-    },
     "sample_rate": 22050,
     "samples": 93440,
-    "bytes": 186924,
-    "duration_ms": 4238,
-    "credential_id": "narrator-tts",
-    "blob_base64": "UklGRi4A...",
-    "word_timings": null,
-    "lipsync": null
+    "duration_ms": 4238
   }
 }
 ```
 
-`audio.word_timings` and `audio.lipsync` are only populated when `--lipsync` is passed to
-`ai.audio.generate`; otherwise both stay `null`.
+With `--option lipsync=timed_words` (or `basic`, `audio_guided`,
+`audio_segmented`) the answer also carries `audio.word_timings` and
+`audio.lipsync` (metadata and mouth cues); without it neither key is there.
+
+With `--return file` (the default) and `--filename "{{ 'tts-' + input.script.slug }}"`
+the wav is written to the store and `audio` holds its FileRef (`ref`,
+`store`, `filename`, `mime`, `kind`, `size`, `sha256`, …) beside `provider`,
+`format` and the rest, instead of `base64`.
 
 ---
 
@@ -164,7 +162,6 @@ export default function Page(input) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [audioUrl, setAudioUrl] = useState("");
-  const [fileUrl, setFileUrl] = useState("");
   const [meta, setMeta] = useState(null);
 
   async function handleSubmit(event) {
@@ -192,12 +189,11 @@ export default function Page(input) {
       }
 
       const blob = decodeBase64ToBlob(
-        payload?.audio?.blob_base64,
+        payload?.audio?.base64,
         payload?.audio?.mime_type || "audio/wav"
       );
       const nextAudioUrl = URL.createObjectURL(blob);
       setAudioUrl(nextAudioUrl);
-      setFileUrl(payload?.audio?.file?.ref || "");
       setMeta(payload?.audio || null);
     } catch (err) {
       setError(String(err?.message || err));
@@ -217,7 +213,7 @@ export default function Page(input) {
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-300">
           Type text, call <code className="rounded bg-stone-900 px-1 py-0.5">/api/tts</code>,
-          play the returned audio blob immediately, and keep the generated wav file.
+          and play the returned audio immediately.
         </p>
       </div>
 
@@ -252,7 +248,7 @@ export default function Page(input) {
               {loading ? "Generating..." : "Generate Voice"}
             </button>
             <span className="text-xs text-stone-400">
-              Returns file + blob
+              Returns the audio inline
             </span>
           </div>
         </form>
@@ -265,16 +261,6 @@ export default function Page(input) {
           {audioUrl ? (
             <div className="mt-4 space-y-4">
               <audio controls src={audioUrl} className="w-full" />
-              {fileUrl ? (
-                <a
-                  href={fileUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex rounded-xl border border-stone-700 px-3 py-2 text-sm text-stone-100"
-                >
-                  Open generated wav
-                </a>
-              ) : null}
             </div>
           ) : (
             <p className="mt-4 text-sm text-stone-400">
@@ -286,8 +272,7 @@ export default function Page(input) {
             <div className="mt-6 rounded-2xl bg-stone-950 p-4 text-xs text-stone-300">
               <div>sample_rate: {meta.sample_rate}</div>
               <div>duration_ms: {meta.duration_ms}</div>
-              <div>bytes: {meta.bytes}</div>
-              <div className="truncate">path: {meta.path}</div>
+              <div>size: {meta.size}</div>
             </div>
           ) : null}
         </aside>
@@ -308,19 +293,18 @@ Open:
 Type text, click **Generate Voice**, and the page should:
 
 1. `POST` to `/api/tts`
-2. receive `audio.blob_base64`
+2. receive `audio.base64`
 3. create a browser `Blob`
 4. play the audio immediately
-5. show where the `.wav` was stored (its store key)
 
 ---
 
 ## Notes
 
-- `audio.blob_base64` is the right field for immediate browser playback or websocket delivery.
-- `audio.file` is the stored `.wav` as a FileRef. It is private like every
-  stored file; to offer it for download, expose its folder (`audio/`) in
-  Studio → Files and link to it on the project's file host.
+- `--return inline` and `audio.base64` are right for immediate browser playback or websocket delivery.
+- `--return file` keeps the `.wav`: `audio` is then its FileRef. It is private
+  like every stored file; to offer it for download, expose its folder
+  (`audio/`) in Studio → Files and link to it on the project's file host.
 - For local Piper, the current stable requirement is just:
   - `model_file`
   - `config_file`

@@ -160,8 +160,7 @@
 //! | `DslFlagKind` | DSL syntax | Config result |
 //! |---|---|---|
 //! | `Scalar` | `--key value` | `"value"` |
-//! | `CommaSeparatedList` | `--key a,b,c` or `--key a --key b` | `["a","b"]` |
-//! | `RepeatedList` | `--key a --key b` or `--key a,b` | `["a","b"]` |
+//! | `RepeatedList` | `--key a --key b` (a comma stays inside its value) | `["a","b"]` |
 //! | `Bool` | `--batch` (no value) | `true` |
 //!
 //! Body content (after ` -- `) is always captured separately as the node body string.
@@ -560,32 +559,123 @@ pub fn node_signature(def: &NodeDefinition) -> String {
     let kind = def.kind.as_str();
     let mut out = kind.to_string();
     for flag in def.dsl_flags.iter().filter(|flag| !common.contains(&flag.flag)) {
-        let value = if !flag.choices.is_empty() {
-            flag.choices.join("|")
-        } else {
-            match flag.value.as_str() {
-                "" => "VALUE".to_string(),
-                "number" => "N".to_string(),
-                "expression" => "EXPR".to_string(),
-                other => other.trim_start_matches("file:").to_ascii_uppercase(),
-            }
-        };
-        let token = match flag.kind {
-            DslFlagKind::Bool => flag.flag.clone(),
-            DslFlagKind::KeyValuePairs => format!("{} KEY={value}…", flag.flag),
-            DslFlagKind::RepeatedList | DslFlagKind::CommaSeparatedList => format!("{} {value}…", flag.flag),
-            _ => format!("{} {value}", flag.flag),
-        };
-        if flag.required {
-            out.push_str(&format!(" {token}"));
-        } else {
-            out.push_str(&format!(" [{token}]"));
-        }
+        out.push(' ');
+        out.push_str(&flag_token(flag, &flag.choices, flag.required));
     }
     if let Some(key) = answer_key(kind) {
         out.push_str(&format!(" → {key}"));
     }
     out
+}
+
+/// What a value is, as a signature writes it: its words, or its type.
+fn value_token(value: &str, choices: &[String]) -> String {
+    if !choices.is_empty() {
+        return choices.join("|");
+    }
+    match value {
+        "" => "VALUE".to_string(),
+        "number" => "N".to_string(),
+        "expression" => "EXPR".to_string(),
+        other => other.trim_start_matches("file:").to_ascii_uppercase(),
+    }
+}
+
+/// One flag of a signature, bracketed when optional.
+fn flag_token(flag: &crate::pipeline::model::DslFlag, choices: &[String], required: bool) -> String {
+    let value = value_token(&flag.value, choices);
+    let token = match flag.kind {
+        DslFlagKind::Bool => flag.flag.clone(),
+        DslFlagKind::KeyValuePairs => format!("{} KEY={value}…", flag.flag),
+        DslFlagKind::RepeatedList => format!("{} {value}…", flag.flag),
+        _ => format!("{} {value}", flag.flag),
+    };
+    if required { token } else { format!("[{token}]") }
+}
+
+/// One provider's signature (`node-conventions.md` §11), generated from the
+/// kind's definition and that provider's profile: the shared roles, the
+/// provider-specific roles it takes, its narrower choices and models, and
+/// each `--option` key it takes in place of the open `--option`. `None` for
+/// a provider the kind has no profile for.
+pub fn provider_signature(def: &NodeDefinition, provider: &str) -> Option<String> {
+    use crate::pipeline::nodes::shared::profile::{MODEL_FLAG, OPTION_FLAG, PROVIDER_FLAG, gated_roles};
+    let profile = def.profiles.iter().find(|p| p.provider == provider)?;
+    let gated = gated_roles(def);
+    let common: Vec<String> = crate::pipeline::model::engine_common_dsl_flags()
+        .into_iter()
+        .map(|flag| flag.flag)
+        .collect();
+    let mut out = def.kind.clone();
+    for flag in def.dsl_flags.iter().filter(|flag| !common.contains(&flag.flag)) {
+        let name = flag.flag.as_str();
+        let token = if name == PROVIDER_FLAG {
+            format!("{PROVIDER_FLAG} {provider}")
+        } else if name == OPTION_FLAG {
+            let options: Vec<String> = profile
+                .options
+                .iter()
+                .map(|option| format!("[{OPTION_FLAG} {}={}]", option.key, value_token(&option.value, &option.choices)))
+                .collect();
+            if options.is_empty() {
+                continue;
+            }
+            options.join(" ")
+        } else if gated.contains(name) {
+            let Some(role) = profile.roles.get(name) else { continue };
+            let mut token = flag_token(flag, &flag.choices, role.required);
+            if let Some(max) = role.max_repeat {
+                token = token.replacen('…', &format!("…(≤{max})"), 1);
+            }
+            token
+        } else {
+            let choices = match (name, profile.choices.get(name)) {
+                (_, Some(words)) => words.clone(),
+                (MODEL_FLAG, None) if !profile.models.is_empty() => profile.models.clone(),
+                _ => flag.choices.clone(),
+            };
+            flag_token(flag, &choices, flag.required)
+        };
+        out.push(' ');
+        out.push_str(&token);
+    }
+    if let Some(key) = answer_key(&def.kind) {
+        out.push_str(&format!(" → {key}"));
+    }
+    Some(out)
+}
+
+/// Every provider's signature and what it adds, as a help section; empty for
+/// a kind without profiles.
+pub fn format_provider_profiles_markdown(def: &NodeDefinition) -> String {
+    if def.profiles.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("**Per provider** (`--provider` picks one; each line is generated from its profile):\n\n```\n");
+    for profile in &def.profiles {
+        if let Some(signature) = provider_signature(def, &profile.provider) {
+            s.push_str(&signature);
+            s.push('\n');
+        }
+    }
+    s.push_str("```\n\n");
+    for profile in &def.profiles {
+        let kinds = if profile.credential_kinds.is_empty() {
+            "any kind".to_string()
+        } else {
+            profile.credential_kinds.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(" or ")
+        };
+        s.push_str(&format!("- `{}` — `--credential` of kind {kinds}", profile.provider));
+        if !profile.models.is_empty() {
+            s.push_str(&format!("; `--model` {}", profile.models.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(" ")));
+        }
+        s.push('\n');
+        for option in &profile.options {
+            s.push_str(&format!("  - `--option {}=…` — {}\n", option.key, option.description.trim()));
+        }
+    }
+    s.push('\n');
+    s
 }
 
 /// The key a kind answers under (`node-conventions.md` §1, §6): an acting
@@ -612,6 +702,7 @@ pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
     let mut s = String::new();
     s.push_str(&format!("### `{}` — {}\n\n", def.kind, def.title));
     s.push_str(&format!("```\n{}\n```\n\n", node_signature(def)));
+    s.push_str(&format_provider_profiles_markdown(def));
     s.push_str(def.description.trim());
     s.push_str("\n\n");
     let ip = if def.input_pins.is_empty() {
@@ -634,7 +725,6 @@ pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
             let req = if f.required { "yes" } else { "no" };
             let kind_s = match f.kind {
                 DslFlagKind::Scalar => "scalar",
-                DslFlagKind::CommaSeparatedList => "comma-list",
                 DslFlagKind::RepeatedList => "repeated-list",
                 DslFlagKind::Bool => "bool",
                 DslFlagKind::KeyValuePairs => "key-value-pairs",
@@ -906,6 +996,26 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "node layout:\n{}", failures.join("\n"));
+    }
+
+    /// `help("pipeline/nodes/<kind>")` prints each provider's own signature,
+    /// generated from its profile: the openai line narrows `--model` to its
+    /// models, the openrouter line takes any.
+    #[test]
+    fn a_kind_with_profiles_prints_each_providers_signature() {
+        let def = crate::platform::services::node_registry::NodeRegistryService::embedded_official_definitions()
+            .into_iter()
+            .find(|d| d.kind == "ai.embedding.generate")
+            .expect("the embedding composite ships");
+        let help = crate::platform::help::get_help("pipeline/nodes/ai.embedding.generate").expect("help");
+        assert!(help.contains("**Per provider**"), "{help}");
+        assert!(help.contains("ai.embedding.generate --provider openai --credential TEXT [--model text-embedding-3-small|text-embedding-3-large|text-embedding-ada-002] --text TEXT… → embedding"), "{help}");
+        assert!(help.contains("ai.embedding.generate --provider openrouter --credential TEXT [--model TEXT] --text TEXT… → embedding"), "{help}");
+        assert!(help.contains("- `openai` — `--credential` of kind `openai`"), "{help}");
+        assert_eq!(super::provider_signature(&def, "cohere"), None);
+        let tts = crate::platform::help::get_help("pipeline/nodes/ai.audio.generate").expect("help");
+        assert!(tts.contains("[--option volume=N] [--option lipsync=none|basic|timed_words|audio_guided|audio_segmented]"), "{tts}");
+        assert!(tts.contains("  - `--option volume=…` — Loudness multiplier"), "{tts}");
     }
 
     #[test]

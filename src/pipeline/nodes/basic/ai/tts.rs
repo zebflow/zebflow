@@ -1,10 +1,21 @@
-//! `ai.audio.generate` — synthesize speech from text using pluggable TTS providers.
+//! `ai.audio.generate` — speech from text, one kind for every TTS provider
+//! (`node-conventions.md` §11).
 //!
-//! First stable provider:
-//! - `piper` via local Python runtime
+//! | Use | DSL |
+//! |---|---|
+//! | A file in the store | `\| ai.audio.generate --provider piper --credential narrator --text "{{ input.body }}" --filename welcome` |
+//! | Bytes for a page to play | `\| ai.audio.generate --provider piper --credential narrator --text "Hello" --return inline` |
+//! | Mouth cues for an avatar | `\| ai.audio.generate --provider piper --credential narrator --text "Hello" --option lipsync=timed_words` |
 //!
-//! Local provider assets are resolved from Zebflow FS using relative paths stored
-//! in the selected credential secret.
+//! Providers: `piper`, a local Python runtime whose voice files live in the
+//! project store at the keys its `tts` credential names. `--voice` and
+//! `--speed` are words every TTS takes; a provider's own settings are
+//! `--option` keys its profile closes (`volume`, `lipsync` for piper).
+//!
+//! Answer: `audio: { …FileRef…, format, mime_type, provider, sample_rate,
+//! samples, duration_ms, word_timings?, lipsync? }` with `--return file`
+//! (the default), or the same with `base64` and `size` in place of the
+//! FileRef with `--return inline`. The payload is kept.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,6 +28,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::pipeline::nodes::shared::limits::choice;
+use crate::pipeline::nodes::shared::profile::{check_credential, check_profile, option_flag, option_text, provider_flag};
 use crate::pipeline::nodes::shared::project_store::{OnConflict, on_conflict_flag, open_store, store_fields, store_flag, target_key};
 use crate::pipeline::nodes::shared::store_scratch::StoreScratch;
 use crate::pipeline::nodes::shared::util::metadata_scope;
@@ -24,7 +37,7 @@ use crate::pipeline::PipelineError;
 use crate::pipeline::model::NodeCapability;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeDefinition, NodeFieldDataSource, NodeFieldDef,
-    NodeFieldType, SelectOptionDef,
+    NodeFieldType, ProfileOption, ProviderProfile, SelectOptionDef,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::platform::services::{CredentialService, PlatformService};
@@ -32,6 +45,17 @@ use crate::platform::services::{CredentialService, PlatformService};
 pub const NODE_KIND: &str = "ai.audio.generate";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
+
+const CONFIG_CODE: &str = "FW_NODE_AI_AUDIO_GENERATE_CONFIG";
+const CREDENTIAL_CODE: &str = "FW_NODE_AI_AUDIO_GENERATE_CREDENTIAL";
+const FILE_CODE: &str = "FW_NODE_AI_AUDIO_GENERATE_FILE";
+
+/// The TTS providers, each with a profile.
+pub const PROVIDERS: &[&str] = &["piper"];
+/// `--return`: the bytes in the answer, or a file in the store.
+const RETURNS: &[&str] = &["inline", "file"];
+/// `--option lipsync=…` for piper.
+const LIPSYNC_MODES: &[&str] = &["none", "basic", "timed_words", "audio_guided", "audio_segmented"];
 
 const PIPER_BRIDGE_SCRIPT: &str = r#"
 import base64
@@ -94,32 +118,10 @@ except Exception as exc:  # noqa: BLE001
     fail(str(exc))
 "#;
 
-fn default_provider() -> String {
-    "piper".to_string()
-}
-
-fn default_return_mode() -> ReturnMode {
-    ReturnMode::Both
-}
-
-fn default_speed() -> f32 {
-    1.0
-}
-
-fn default_volume() -> f32 {
-    1.0
-}
-
-fn default_lipsync_mode() -> LipSyncMode {
-    LipSyncMode::None
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReturnMode {
+    Inline,
     File,
-    Blob,
-    Both,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,15 +146,30 @@ impl LipSyncMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The node's config as stored: every value a literal or a resolved
+/// `{{ }}`. [`Node::build`] reads it into [`Settings`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_provider")]
+    /// `piper`; checked against the profiles before this is read.
+    #[serde(default)]
     pub provider: String,
+    #[serde(default)]
     pub credential_id: String,
-    /// What to say — a literal or `{{ expr }}`, arriving final. Until this
-    /// migration there was no literal form at all: even fixed words had to be
-    /// written as a quoted JS string.
+    /// What to say — a literal or `{{ expr }}`, arriving final.
+    #[serde(default)]
     pub text: String,
+    /// The voice: for piper, a speaker id of a multi-speaker model.
+    #[serde(default)]
+    pub voice: Value,
+    /// Speed factor, 1 = normal; greater is faster.
+    #[serde(default)]
+    pub speed: Value,
+    /// The provider's own settings, closed by its profile.
+    #[serde(default)]
+    pub option: std::collections::BTreeMap<String, Value>,
+    /// `inline` or `file` (default).
+    #[serde(default, rename = "return")]
+    pub return_mode: String,
     /// Store folder for the audio file (default: `audio`).
     #[serde(default)]
     pub folder: String,
@@ -168,39 +185,62 @@ pub struct Config {
     /// `overwrite`, `skip` or `error` (default: error).
     #[serde(default)]
     pub on_conflict: Option<String>,
-
-    #[serde(default = "default_return_mode")]
-    pub return_mode: ReturnMode,
-    #[serde(default)]
-    pub speaker: Option<i64>,
-    #[serde(default = "default_speed")]
-    pub speed: f32,
-    #[serde(default = "default_volume")]
-    pub volume: f32,
-    #[serde(default = "default_lipsync_mode")]
-    pub lipsync_mode: LipSyncMode,
-
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            provider: default_provider(),
-            credential_id: String::new(),
-            text: String::new(),
-            folder: String::new(),
-            filename: None,
-            path: None,
-            store: None,
-            on_conflict: None,
+/// What a built node runs with: the config read and checked once.
+#[derive(Debug, Clone)]
+struct Settings {
+    return_mode: ReturnMode,
+    voice: Option<i32>,
+    speed: f32,
+    volume: f32,
+    lipsync: LipSyncMode,
+}
 
-            return_mode: default_return_mode(),
-            speaker: None,
-            speed: default_speed(),
-            volume: default_volume(),
-            lipsync_mode: default_lipsync_mode(),
+/// A number flag or option as the DSL or the editor sends it; unset is `None`.
+fn number(value: &Value, what: &str) -> Result<Option<f64>, PipelineError> {
+    let shown = match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let bad = || PipelineError::new(CONFIG_CODE, format!("{what} '{shown}' is not a number"));
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) if s.trim().is_empty() => Ok(None),
+        Value::String(s) => s.trim().parse::<f64>().ok().filter(|n| n.is_finite()).map(Some).ok_or_else(bad),
+        Value::Number(n) => n.as_f64().map(Some).ok_or_else(bad),
+        _ => Err(bad()),
+    }
+}
 
-        }
+impl Config {
+    fn settings(&self) -> Result<Settings, PipelineError> {
+        let return_mode = match choice(&self.return_mode, RETURNS, "file", "--return", CONFIG_CODE)? {
+            "inline" => ReturnMode::Inline,
+            _ => ReturnMode::File,
+        };
+        let voice = match number(&self.voice, "--voice")? {
+            None => None,
+            Some(id) if id.fract() == 0.0 && id >= 0.0 && id <= f64::from(i32::MAX) => Some(id as i32),
+            Some(id) => {
+                return Err(PipelineError::new(CONFIG_CODE, format!("--voice {id}: a piper voice is a speaker id, a whole number")));
+            }
+        };
+        let speed = number(&self.speed, "--speed")?.unwrap_or(1.0) as f32;
+        speed_to_length_scale(speed)?;
+        let option = Value::Object(self.option.clone().into_iter().collect());
+        let volume = match option_text(&option, "volume") {
+            Some(text) => number(&Value::String(text), "--option volume")?.unwrap_or(1.0) as f32,
+            None => 1.0,
+        };
+        let lipsync = match choice(&option_text(&option, "lipsync").unwrap_or_default(), LIPSYNC_MODES, "none", "--option lipsync", CONFIG_CODE)? {
+            "basic" => LipSyncMode::Basic,
+            "timed_words" => LipSyncMode::TimedWords,
+            "audio_guided" => LipSyncMode::AudioGuided,
+            "audio_segmented" => LipSyncMode::AudioSegmented,
+            _ => LipSyncMode::None,
+        };
+        Ok(Settings { return_mode, voice, speed, volume, lipsync })
     }
 }
 
@@ -221,8 +261,15 @@ struct PiperBridgeResult {
     sample_rate: i64,
     samples: usize,
     duration_ms: u64,
-    bytes: usize,
     audio_blob_base64: String,
+}
+
+/// What a provider synthesised: wav bytes and their measure.
+struct Synthesis {
+    wav: Vec<u8>,
+    sample_rate: i64,
+    samples: usize,
+    duration_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -232,38 +279,89 @@ struct TimedWord {
     pause_after_ms: u64,
 }
 
+fn profiles() -> Vec<ProviderProfile> {
+    vec![ProviderProfile {
+        provider: "piper".to_string(),
+        credential_kinds: vec!["tts".to_string()],
+        options: vec![
+            ProfileOption {
+                key: "volume".to_string(),
+                value: "number".to_string(),
+                description: "Loudness multiplier; 1 is as the voice was recorded.".to_string(),
+                ..Default::default()
+            },
+            ProfileOption {
+                key: "lipsync".to_string(),
+                value: "text".to_string(),
+                choices: LIPSYNC_MODES.iter().map(|m| m.to_string()).collect(),
+                description: "Mouth cues and word timings in the answer: none (default), basic, timed_words, audio_guided or audio_segmented.".to_string(),
+            },
+        ],
+        ..Default::default()
+    }]
+}
+
+/// The definition, built once: every build of the node checks its config
+/// against the profiles here.
+fn checked_definition() -> &'static NodeDefinition {
+    static DEFINITION: std::sync::LazyLock<NodeDefinition> = std::sync::LazyLock::new(definition);
+    &DEFINITION
+}
+
+/// The config against the chosen provider's profile.
+pub fn check_config_profile(config: &Value) -> Result<(), PipelineError> {
+    check_profile(checked_definition(), config).map_err(|message| PipelineError::new(CONFIG_CODE, message))
+}
+
+fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
+    DslFlag {
+        flag: name.to_string(),
+        config_key: key.to_string(),
+        description: description.to_string(),
+        kind: DslFlagKind::Scalar,
+        value: value.to_string(),
+        ..Default::default()
+    }
+}
+
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(|w| w.to_string()).collect()
+}
+
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         capabilities: vec![NodeCapability::Filesystem, NodeCapability::Credential, NodeCapability::Process],
-        title: "AI TTS".to_string(),
-        description: "Turns text into speech with a local Piper model named by a credential (the owner installs the voice files; the \
-            credential points at them). `--text \"{{ expr }}\"` is what to say; `--filename x` (in `--folder`, default `audio`) or `--path audio/x.wav` writes the file, `--return file|blob|both` \
-            decides whether `audio` carries a FileRef, the bytes, or both. Adds `audio: { file, blob_base64, word_timings, lipsync, provider, format, mime_type, … }` \
-            to the payload and keeps the rest; a page plays `audio.blob_base64` (a stored file is reachable only where the owner exposes its folder)."
+        title: "AI Audio".to_string(),
+        description: "Speech from text. `--provider piper` runs a local Piper voice named by a `tts` credential (the owner \
+            puts the voice files in the store; the credential names their keys). `--text` is what to say; `--voice` and \
+            `--speed` shape it; the provider's own settings are `--option` keys (piper: volume, lipsync). `--return file` \
+            (default) writes a wav at `--path`, or `--folder`/`--filename` (default folder `audio`), and answers \
+            `audio: { …FileRef…, format, mime_type, provider, sample_rate, samples, duration_ms }`; `--return inline` writes \
+            nothing and answers the bytes as `audio.base64`, which a page plays at once. Keeps the payload."
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "description": "Current payload. Use --text to choose what text to speak — a literal or {{ expr }}."
+            "description": "The payload the {{ expr }} in --text resolve against. The node reads nothing else of it."
         }),
         output_schema: json!({
             "type": "object",
             "properties": {
                 "audio": {
                     "type": "object",
+                    "description": "With --return file: the written wav's FileRef fields (ref, store, filename, mime, kind, size, sha256, …) and the rest. With --return inline: base64 and size in their place.",
                     "properties": {
                         "provider": { "type": "string" },
                         "format": { "type": "string" },
                         "mime_type": { "type": "string" },
-                        "file": { "description": "A durable FileRef for the written wav, or null" },
+                        "ref": { "type": "string", "description": "--return file: the store key written." },
+                        "base64": { "type": "string", "description": "--return inline: the wav bytes." },
+                        "size": { "type": "integer" },
                         "sample_rate": { "type": "integer" },
                         "samples": { "type": "integer" },
-                        "bytes": { "type": "integer" },
                         "duration_ms": { "type": "integer" },
-                        "credential_id": { "type": "string" },
-                        "blob_base64": { "type": ["string", "null"] },
-                        "word_timings": { "type": ["array", "null"] },
-                        "lipsync": { "type": ["object", "null"] }
+                        "word_timings": { "type": "array", "description": "With --option lipsync other than none." },
+                        "lipsync": { "type": "object", "description": "With --option lipsync other than none: metadata and cues." }
                     }
                 }
             }
@@ -271,108 +369,27 @@ pub fn definition() -> NodeDefinition {
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         dsl_flags: vec![
-            DslFlag {
-                flag: "--provider".to_string(),
-                config_key: "provider".to_string(),
-                description: "TTS provider. First stable provider: piper.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--credential".to_string(),
-                config_key: "credential_id".to_string(),
-                description: "Project credential that binds the provider runtime and local model files.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--text".to_string(),
-                config_key: "text".to_string(),
-                description: "Expression that resolves to the text to synthesize.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--folder".to_string(),
-                config_key: "folder".to_string(),
-                description: "Store folder for the audio file (default: audio).".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--filename".to_string(),
-                config_key: "filename".to_string(),
-                description: "Audio file name; .wav is added (default: a UUID).".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--path".to_string(),
-                config_key: "path".to_string(),
-                description: "Exact store key for the audio file; overrides --folder and --filename.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            store_flag(),
-            on_conflict_flag(OnConflict::Error),
-            DslFlag {
-                flag: "--return".to_string(),
-                config_key: "return_mode".to_string(),
-                description: "Return mode: file, blob, or both.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--speaker".to_string(),
-                config_key: "speaker".to_string(),
-                description: "Optional speaker id for multi-speaker voices.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--speed".to_string(),
-                config_key: "speed".to_string(),
-                description: "Playback speed factor. 1.0 = normal. Greater is faster.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--volume".to_string(),
-                config_key: "volume".to_string(),
-                description: "Audio volume multiplier.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--lipsync".to_string(),
-                config_key: "lipsync_mode".to_string(),
-                description: "Optional lipsync mode: none, basic, timed_words, audio_guided, or audio_segmented.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                ..Default::default()
-            },
+            provider_flag(PROVIDERS, "Who speaks: piper (a local Piper voice). Literal, never {{ }}."),
+            DslFlag { required: true, ..flag("--credential", "credential_id", "The provider's credential: for piper, kind tts, naming the store keys of the voice files.", "text") },
+            DslFlag { required: true, ..flag("--text", "text", "What to say — a literal or {{ expr }}.", "text") },
+            flag("--voice", "voice", "The voice: for piper, the speaker id of a multi-speaker model.", "text"),
+            flag("--speed", "speed", "Speed factor: 1 is normal, greater is faster.", "number"),
+            option_flag(),
+            DslFlag { choices: words(RETURNS), ..flag("--return", "return", "file (default) writes a wav to the store and answers its FileRef; inline writes nothing and answers the bytes as base64. Literal.", "") },
+            DslFlag { value: "text".to_string(), ..store_flag() },
+            flag("--folder", "folder", "Store folder for the audio file (default: audio).", "text"),
+            flag("--filename", "filename", "Audio file name; .wav is added (default: a UUID).", "text"),
+            flag("--path", "path", "Exact store key for the audio file; overrides --folder and --filename.", "text"),
+            DslFlag { choices: words(&["error", "skip", "overwrite"]), ..on_conflict_flag(OnConflict::Error) },
         ],
+        profiles: profiles(),
         fields: vec![
             NodeFieldDef {
                 name: "provider".to_string(),
                 label: "Provider".to_string(),
                 field_type: NodeFieldType::Select,
-                options: vec![SelectOptionDef {
-                    value: "piper".to_string(),
-                    label: "Piper".to_string(),
-                }],
-                default_value: Some(json!("piper")),
-                help: Some("TTS backend provider. Piper is the current local speech synthesis provider.".to_string()),
+                options: vec![SelectOptionDef { value: "piper".to_string(), label: "Piper".to_string() }],
+                help: Some("Who speaks. Piper runs a local voice named by a tts credential.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -380,20 +397,19 @@ pub fn definition() -> NodeDefinition {
                 label: "Credential".to_string(),
                 field_type: NodeFieldType::Select,
                 data_source: Some(NodeFieldDataSource::CredentialsAll),
-                help: Some("Credential with provider binding and local private-file references.".to_string()),
+                help: Some("The provider's credential; for piper, kind tts naming the voice files.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "return_mode".to_string(),
+                name: "return".to_string(),
                 label: "Return".to_string(),
                 field_type: NodeFieldType::Select,
                 options: vec![
                     SelectOptionDef { value: "file".to_string(), label: "File".to_string() },
-                    SelectOptionDef { value: "blob".to_string(), label: "Blob".to_string() },
-                    SelectOptionDef { value: "both".to_string(), label: "Both".to_string() },
+                    SelectOptionDef { value: "inline".to_string(), label: "Inline".to_string() },
                 ],
-                default_value: Some(json!("both")),
-                help: Some("Choose whether the node returns a file reference, an inline blob, or both.".to_string()),
+                default_value: Some(json!("file")),
+                help: Some("file writes a wav and answers its FileRef; inline answers the bytes as base64.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -419,10 +435,10 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "speaker".to_string(),
-                label: "Speaker".to_string(),
-                field_type: NodeFieldType::Number,
-                help: Some("Optional speaker id for multi-speaker voices.".to_string()),
+                name: "voice".to_string(),
+                label: "Voice".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("For piper, the speaker id of a multi-speaker voice.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -430,39 +446,23 @@ pub fn definition() -> NodeDefinition {
                 label: "Speed".to_string(),
                 field_type: NodeFieldType::Number,
                 default_value: Some(json!(1.0)),
-                help: Some("Speed factor. 1.0 = normal. Greater is faster.".to_string()),
+                help: Some("Speed factor. 1 = normal. Greater is faster.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "volume".to_string(),
-                label: "Volume".to_string(),
-                field_type: NodeFieldType::Number,
-                default_value: Some(json!(1.0)),
-                help: Some("Audio volume multiplier.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "lipsync_mode".to_string(),
-                label: "Lipsync".to_string(),
-                field_type: NodeFieldType::Select,
-                options: vec![
-                    SelectOptionDef { value: "none".to_string(), label: "None".to_string() },
-                    SelectOptionDef { value: "basic".to_string(), label: "Basic".to_string() },
-                    SelectOptionDef { value: "timed_words".to_string(), label: "Timed Words".to_string() },
-                    SelectOptionDef { value: "audio_guided".to_string(), label: "Audio Guided".to_string() },
-                    SelectOptionDef { value: "audio_segmented".to_string(), label: "Audio Segmented".to_string() },
-                ],
-                default_value: Some(json!("none")),
-                help: Some("Optional cheap lipsync metadata strategy.".to_string()),
+                name: "option".to_string(),
+                label: "Provider options".to_string(),
+                field_type: NodeFieldType::KeyValuePairs,
+                help: Some("Settings of the chosen provider, key=value. Piper: volume (a number), lipsync (none, basic, timed_words, audio_guided, audio_segmented).".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
                 name: "text".to_string(),
-                label: "Text Expr".to_string(),
+                label: "Text".to_string(),
                 field_type: NodeFieldType::Textarea,
                 rows: Some(4),
-                placeholder: Some("$input.text".to_string()),
-                help: Some("Expression that resolves to the text to synthesize.".to_string()),
+                placeholder: Some("{{ input.script.text }}".to_string()),
+                help: Some("What to say — a literal or {{ expr }}.".to_string()),
                 span: Some("full".to_string()),
                 ..Default::default()
             },
@@ -476,7 +476,7 @@ pub fn definition() -> NodeDefinition {
             },
             LayoutItem::Row {
                 row: vec![
-                    LayoutItem::Field("return_mode".to_string()),
+                    LayoutItem::Field("return".to_string()),
                     LayoutItem::Field("folder".to_string()),
                     LayoutItem::Field("filename".to_string()),
                     LayoutItem::Field("path".to_string()),
@@ -486,21 +486,18 @@ pub fn definition() -> NodeDefinition {
             },
             LayoutItem::Row {
                 row: vec![
-                    LayoutItem::Field("speaker".to_string()),
+                    LayoutItem::Field("voice".to_string()),
                     LayoutItem::Field("speed".to_string()),
-                    LayoutItem::Field("volume".to_string()),
                 ],
             },
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("lipsync_mode".to_string()),
-                ],
-            },
+            LayoutItem::Field("option".to_string()),
             LayoutItem::Field("text".to_string()),
         ],
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.audio.generate --provider piper --credential piper_en --text "{{ input.query.rows[0].body }}" --filename "{{ $trigger.params.slug }}" --return file"#)
-                .output(serde_json::json!({ "audio": { "provider": "piper", "format": "wav", "mime_type": "audio/wav", "file": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "audio/hello.wav", "filename": "hello.wav", "mime": "audio/wav", "kind": "audio", "size": 88244, "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.audio.generate", "trust": "generated" } } })),
+            crate::pipeline::model::NodeExample::dsl("Read a post aloud", r#"ai.audio.generate --provider piper --credential piper_en --text "{{ input.query.rows[0].body }}" --filename "{{ $trigger.params.slug }}""#)
+                .output(serde_json::json!({ "audio": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "audio/hello.wav", "filename": "hello.wav", "mime": "audio/wav", "kind": "audio", "size": 88244, "sha256": "sha256:…", "lifecycle": "durable", "origin": "ai.audio.generate", "trust": "generated", "provider": "piper", "format": "wav", "mime_type": "audio/wav", "sample_rate": 22050, "samples": 44100, "duration_ms": 2000 } })),
+            crate::pipeline::model::NodeExample::dsl("Bytes for a page, with mouth cues", r#"ai.audio.generate --provider piper --credential piper_en --text "Hello there." --return inline --option lipsync=timed_words"#)
+                .note("`audio.base64` is the wav; `audio.word_timings` and `audio.lipsync.cues` drive an avatar's mouth. Nothing is written to the store."),
         ],
         ..Default::default()
     }
@@ -508,21 +505,130 @@ pub fn definition() -> NodeDefinition {
 
 pub struct Node {
     config: Config,
+    settings: Settings,
     credentials: Option<Arc<CredentialService>>,
     platform: Option<Arc<PlatformService>>,
 }
 
 impl Node {
-    pub fn new(
-        config: Config,
+    /// The node from its stored (or resolved) config: held to the chosen
+    /// provider's profile, then read and checked once.
+    pub fn build(
+        config: &Value,
         credentials: Option<Arc<CredentialService>>,
         platform: Option<Arc<PlatformService>>,
-    ) -> Self {
-        Self {
-            config,
-            credentials,
-            platform,
+    ) -> Result<Self, PipelineError> {
+        check_config_profile(config)?;
+        let config: Config =
+            serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(CONFIG_CODE, err.to_string()))?;
+        let settings = config.settings()?;
+        Ok(Self { config, settings, credentials, platform })
+    }
+
+    /// The answer for what was synthesised: written to the store with
+    /// `--return file`, or carried as base64 with `--return inline`.
+    fn deliver(
+        &self,
+        platform: &Arc<PlatformService>,
+        owner: &str,
+        project: &str,
+        synthesis: Synthesis,
+    ) -> Result<Value, PipelineError> {
+        let (word_timings, lipsync) = build_lipsync_payload(
+            self.settings.lipsync,
+            self.config.text.trim(),
+            synthesis.duration_ms,
+            synthesis.sample_rate,
+            &synthesis.wav,
+        )?;
+        let mut audio = match self.settings.return_mode {
+            ReturnMode::Inline => json!({
+                "base64": BASE64_STANDARD.encode(&synthesis.wav),
+                "size": synthesis.wav.len(),
+            }),
+            ReturnMode::File => {
+                let folder = if self.config.folder.trim().is_empty() { "audio" } else { self.config.folder.trim() };
+                let filename = self
+                    .config
+                    .filename
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let key = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_AI_AUDIO_GENERATE_OUTPUT_PATH")?;
+                let final_rel = normalize_audio_output_rel_path(&key)?;
+                let store = open_store(platform, owner, project, self.config.store.as_deref())?;
+                let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, FILE_CODE)?;
+                if on_conflict.allows(&store.fs, &final_rel, FILE_CODE)? {
+                    store.fs.put(&final_rel, &synthesis.wav).map_err(|err| {
+                        PipelineError::new(FILE_CODE, format!("failed to write wav file: {err}"))
+                    })?;
+                    let leaf = final_rel.rsplit('/').next().unwrap_or(&final_rel).to_string();
+                    store.file_ref(&final_rel, &leaf, "audio/wav", &synthesis.wav, NODE_KIND, "generated")
+                } else {
+                    // Skipped: the answer is the file already there, as it is.
+                    store.stored_ref(&final_rel, NODE_KIND, "generated", FILE_CODE)?
+                }
+            }
+        };
+        audio["provider"] = json!(self.config.provider.trim());
+        audio["format"] = json!("wav");
+        audio["mime_type"] = json!("audio/wav");
+        audio["sample_rate"] = json!(synthesis.sample_rate);
+        audio["samples"] = json!(synthesis.samples);
+        audio["duration_ms"] = json!(synthesis.duration_ms);
+        if self.settings.lipsync != LipSyncMode::None {
+            audio["word_timings"] = word_timings;
+            audio["lipsync"] = lipsync;
         }
+        Ok(json!({ "audio": audio }))
+    }
+
+    /// Piper: the credential's voice files pulled from the node's store into
+    /// a scratch folder, then the Python bridge.
+    fn synthesise_piper(
+        &self,
+        platform: &Arc<PlatformService>,
+        owner: &str,
+        project: &str,
+        secret: &PiperCredentialSecret,
+    ) -> Result<Synthesis, PipelineError> {
+        let zebfs = open_store(platform, owner, project, self.config.store.as_deref())?.fs;
+        let scratch = StoreScratch::new(FILE_CODE)?;
+        let model_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.model_file, "model_file")?)?;
+        let config_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.config_file, "config_file")?)?;
+        let model_abs = scratch.pull(&zebfs, &model_rel).map_err(|_| {
+            PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_MODEL", format!("model file '{model_rel}' does not exist"))
+        })?;
+        let config_abs = scratch.pull(&zebfs, &config_rel).map_err(|_| {
+            PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_VOICE_CONFIG", format!("config file '{config_rel}' does not exist"))
+        })?;
+        let espeak_abs = match secret.espeak_data_dir.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => {
+                let espeak_rel = normalize_zebfs_asset_rel_path(value)?;
+                Some(scratch.pull(&zebfs, &espeak_rel).map_err(|_| {
+                    PipelineError::new(
+                        "FW_NODE_AI_AUDIO_GENERATE_ESPEAK",
+                        format!("espeak data dir '{espeak_rel}' does not exist"),
+                    )
+                })?)
+            }
+            None => None,
+        };
+        let bridge = run_piper_bridge(&PiperBridgeRequest {
+            model_path: model_abs,
+            config_path: config_abs,
+            espeak_data_dir: espeak_abs,
+            text: self.config.text.trim().to_string(),
+            speaker: self.settings.voice,
+            length_scale: speed_to_length_scale(self.settings.speed)?,
+            volume: self.settings.volume,
+        })?;
+        let wav = BASE64_STANDARD.decode(bridge.audio_blob_base64.as_bytes()).map_err(|err| {
+            PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_BLOB", format!("failed to decode audio blob: {err}"))
+        })?;
+        Ok(Synthesis { wav, sample_rate: bridge.sample_rate, samples: bridge.samples, duration_ms: bridge.duration_ms })
     }
 }
 
@@ -547,194 +653,55 @@ impl NodeHandler for Node {
         let (owner, project, _, _) = metadata_scope(&input.metadata)?;
         let platform = self.platform.as_ref().ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_AI_TTS_PLATFORM",
+                "FW_NODE_AI_AUDIO_GENERATE_PLATFORM",
                 "platform service is not configured on this framework engine",
             )
         })?;
         let credentials = self.credentials.as_ref().ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_AI_TTS_CREDENTIALS",
+                "FW_NODE_AI_AUDIO_GENERATE_CREDENTIALS",
                 "credential service is not configured on this framework engine",
             )
         })?;
-        let provider = self.config.provider.trim().to_lowercase();
-        if provider != "piper" {
-            return Err(PipelineError::new(
-                "FW_NODE_AI_TTS_PROVIDER",
-                format!("unsupported provider '{provider}' — expected piper"),
-            ));
-        }
+        let provider = self.config.provider.trim();
 
-        // Arrives final — `{{ }}` resolved engine-side before this ran. There
-        // is now a literal form: `--text "Welcome to Researchsite"`.
-        let text = self.config.text.trim().to_string();
-        if text.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_AI_TTS_TEXT",
-                "config.text must not be empty",
-            ));
+        // Arrives final — `{{ }}` resolved engine-side before this ran.
+        if self.config.text.trim().is_empty() {
+            return Err(PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_TEXT", "--text is empty; it needs what to say"));
         }
 
         let credential_id = self.config.credential_id.trim();
         if credential_id.is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_AI_TTS_CREDENTIAL",
-                "credential_id must not be empty",
-            ));
+            return Err(PipelineError::new(CREDENTIAL_CODE, "--credential is empty; it needs the provider's credential"));
         }
-
         let credential = credentials
             .get_project_credential(owner, project, credential_id)
-            .map_err(|err| PipelineError::new("FW_NODE_AI_TTS_CREDENTIAL", err.to_string()))?
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_AI_TTS_CREDENTIAL",
-                    format!("credential '{credential_id}' not found"),
-                )
-            })?;
-        if credential.kind != "tts" {
-            return Err(PipelineError::new(
-                "FW_NODE_AI_TTS_CREDENTIAL_KIND",
-                format!(
-                    "credential '{credential_id}' must have kind 'tts', got '{}'",
-                    credential.kind
-                ),
-            ));
-        }
+            .map_err(|err| PipelineError::new(CREDENTIAL_CODE, err.to_string()))?
+            .ok_or_else(|| PipelineError::new(CREDENTIAL_CODE, format!("credential '{credential_id}' not found")))?;
+        check_credential(checked_definition(), provider, credential_id, &credential.kind)
+            .map_err(|message| PipelineError::new(CREDENTIAL_CODE, message))?;
 
-        let secret: PiperCredentialSecret = serde_json::from_value(credential.secret.clone())
-            .map_err(|err| {
-                PipelineError::new(
-                    "FW_NODE_AI_TTS_CREDENTIAL_SECRET",
-                    format!("invalid tts credential secret: {err}"),
-                )
-            })?;
+        let secret: PiperCredentialSecret = serde_json::from_value(credential.secret.clone()).map_err(|err| {
+            PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_CREDENTIAL_SECRET", format!("invalid tts credential secret: {err}"))
+        })?;
         if let Some(secret_provider) = secret.provider.as_deref() {
             let secret_provider = secret_provider.trim().to_lowercase();
             if !secret_provider.is_empty() && secret_provider != provider {
                 return Err(PipelineError::new(
-                    "FW_NODE_AI_TTS_PROVIDER_MISMATCH",
-                    format!(
-                        "node provider '{provider}' does not match credential provider '{secret_provider}'"
-                    ),
+                    "FW_NODE_AI_AUDIO_GENERATE_PROVIDER_MISMATCH",
+                    format!("--provider '{provider}' does not match credential provider '{secret_provider}'"),
                 ));
             }
         }
 
-        // Piper reads its model from paths: model, config and espeak data are
-        // pulled from this node's pinned store into a scratch folder for the run.
-        let zebfs = open_store(platform, owner, project, self.config.store.as_deref())?.fs;
-        let scratch = StoreScratch::new("FW_NODE_AI_TTS_FILE")?;
-        let model_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.model_file, "model_file")?)?;
-        let config_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.config_file, "config_file")?)?;
-        let model_abs = scratch.pull(&zebfs, &model_rel).map_err(|_| {
-            PipelineError::new("FW_NODE_AI_TTS_MODEL", format!("model file '{model_rel}' does not exist"))
-        })?;
-        let config_abs = scratch.pull(&zebfs, &config_rel).map_err(|_| {
-            PipelineError::new("FW_NODE_AI_TTS_CONFIG", format!("config file '{config_rel}' does not exist"))
-        })?;
-        let espeak_abs = match secret
-            .espeak_data_dir
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            Some(value) => {
-                let espeak_rel = normalize_zebfs_asset_rel_path(value)?;
-                Some(scratch.pull(&zebfs, &espeak_rel).map_err(|_| {
-                    PipelineError::new(
-                        "FW_NODE_AI_TTS_ESPEAK",
-                        format!("espeak data dir '{espeak_rel}' does not exist"),
-                    )
-                })?)
-            }
-            None => None,
-        };
-
-        let speaker = self
-            .config
-            .speaker
-            .map(|value| i32::try_from(value).ok())
-            .flatten();
-        let length_scale = speed_to_length_scale(self.config.speed)?;
-        // The mode arrives final — a literal or a resolved `{{ }}`.
-        let lipsync_mode = self.config.lipsync_mode;
-
-        let bridge_result = run_piper_bridge(&PiperBridgeRequest {
-            model_path: model_abs,
-            config_path: config_abs,
-            espeak_data_dir: espeak_abs,
-            text: text.clone(),
-            speaker,
-            length_scale,
-            volume: self.config.volume,
-        })?;
-
-        let wav_bytes = BASE64_STANDARD
-            .decode(bridge_result.audio_blob_base64.as_bytes())
-            .map_err(|err| {
-                PipelineError::new("FW_NODE_AI_TTS_BLOB", format!("failed to decode audio blob: {err}"))
-            })?;
-        let (word_timings, lipsync_payload) = build_lipsync_payload(
-            lipsync_mode,
-            &text,
-            bridge_result.duration_ms,
-            bridge_result.sample_rate,
-            &wav_bytes,
-        )?;
-
-        let needs_file = matches!(self.config.return_mode, ReturnMode::File | ReturnMode::Both);
-        let needs_blob = matches!(self.config.return_mode, ReturnMode::Blob | ReturnMode::Both);
-
-        let file = if needs_file {
-            let folder = if self.config.folder.trim().is_empty() { "audio" } else { self.config.folder.trim() };
-            let filename = self
-                .config
-                .filename
-                .as_deref()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .map(ToString::to_string)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let key = target_key(self.config.path.as_deref(), folder, &filename, "FW_NODE_AI_TTS_OUTPUT_PATH")?;
-            let final_rel = normalize_audio_output_rel_path(&key)?;
-            let store = open_store(platform, owner, project, self.config.store.as_deref())?;
-            let on_conflict = OnConflict::parse(self.config.on_conflict.as_deref(), OnConflict::Error, "FW_NODE_AI_TTS_FILE")?;
-            if on_conflict.allows(&store.fs, &final_rel, "FW_NODE_AI_TTS_FILE")? {
-                store.fs.put(&final_rel, &wav_bytes).map_err(|err| {
-                    PipelineError::new("FW_NODE_AI_TTS_FILE", format!("failed to write wav file: {err}"))
-                })?;
-                let leaf = final_rel.rsplit('/').next().unwrap_or(&final_rel).to_string();
-                store.file_ref(&final_rel, &leaf, "audio/wav", &wav_bytes, "ai.audio.generate", "generated")
-            } else {
-                // Skipped: the answer is the file already there, as it is.
-                store.stored_ref(&final_rel, "ai.audio.generate", "generated", "FW_NODE_AI_TTS_FILE")?
-            }
-        } else {
-            Value::Null
-        };
-
+        let synthesis = self.synthesise_piper(platform, owner, project, &secret)?;
+        let answer = self.deliver(platform, owner, project, synthesis)?;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
-                "audio": {
-                    "provider": provider,
-                    "format": "wav",
-                    "mime_type": "audio/wav",
-                    "file": file,
-                    "sample_rate": bridge_result.sample_rate,
-                    "samples": bridge_result.samples,
-                    "bytes": bridge_result.bytes,
-                    "duration_ms": bridge_result.duration_ms,
-                    "credential_id": credential_id,
-                    "blob_base64": if needs_blob { Value::String(bridge_result.audio_blob_base64) } else { Value::Null },
-                    "word_timings": word_timings,
-                    "lipsync": lipsync_payload
-                }
-            })),
+            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, answer),
             trace: vec![format!(
-                "node_kind={NODE_KIND} provider=piper credential={credential_id} lipsync={}",
-                lipsync_mode.as_str()
+                "node_kind={NODE_KIND} provider={provider} credential={credential_id} lipsync={}",
+                self.settings.lipsync.as_str()
             )],
         })
     }
@@ -760,32 +727,32 @@ fn run_piper_bridge(req: &PiperBridgeRequest) -> Result<PiperBridgeResult, Pipel
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| {
-            PipelineError::new("FW_NODE_AI_TTS_PIPER", format!("failed to start python3: {err}"))
+            PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_PIPER", format!("failed to start python3: {err}"))
         })?;
 
     {
         let Some(stdin) = child.stdin.as_mut() else {
             return Err(PipelineError::new(
-                "FW_NODE_AI_TTS_PIPER",
+                "FW_NODE_AI_AUDIO_GENERATE_PIPER",
                 "failed to open python stdin",
             ));
         };
         let payload = serde_json::to_vec(req).map_err(|err| {
             PipelineError::new(
-                "FW_NODE_AI_TTS_PIPER",
+                "FW_NODE_AI_AUDIO_GENERATE_PIPER",
                 format!("failed to serialize request: {err}"),
             )
         })?;
         stdin.write_all(&payload).map_err(|err| {
             PipelineError::new(
-                "FW_NODE_AI_TTS_PIPER",
+                "FW_NODE_AI_AUDIO_GENERATE_PIPER",
                 format!("failed to write python stdin: {err}"),
             )
         })?;
     }
 
     let output = child.wait_with_output().map_err(|err| {
-        PipelineError::new("FW_NODE_AI_TTS_PIPER", format!("failed waiting for python: {err}"))
+        PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_PIPER", format!("failed waiting for python: {err}"))
     })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -797,12 +764,12 @@ fn run_piper_bridge(req: &PiperBridgeRequest) -> Result<PiperBridgeResult, Pipel
         } else {
             format!("python exited with status {}", output.status)
         };
-        return Err(PipelineError::new("FW_NODE_AI_TTS_PIPER", detail));
+        return Err(PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_PIPER", detail));
     }
 
     serde_json::from_slice::<PiperBridgeResult>(&output.stdout).map_err(|err| {
         PipelineError::new(
-            "FW_NODE_AI_TTS_PIPER",
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
             format!("invalid python result payload: {err}"),
         )
     })
@@ -818,7 +785,7 @@ fn required_secret_str<'a>(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             PipelineError::new(
-                "FW_NODE_AI_TTS_CREDENTIAL_SECRET",
+                "FW_NODE_AI_AUDIO_GENERATE_CREDENTIAL_SECRET",
                 format!("tts credential secret must include non-empty '{field}'"),
             )
         })
@@ -827,8 +794,8 @@ fn required_secret_str<'a>(
 fn speed_to_length_scale(speed: f32) -> Result<Option<f32>, PipelineError> {
     if !speed.is_finite() || speed <= 0.0 {
         return Err(PipelineError::new(
-            "FW_NODE_AI_TTS_SPEED",
-            "speed must be a finite number greater than 0",
+            CONFIG_CODE,
+            "--speed must be a number greater than 0",
         ));
     }
     if (speed - 1.0).abs() < f32::EPSILON {
@@ -1481,7 +1448,7 @@ fn fallback_viseme(word: &str) -> &'static str {
 fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
     let normalized = raw.trim().replace('\\', "/");
     if normalized.is_empty() {
-        return Err(PipelineError::new("FW_NODE_AI_TTS_PATH", "path must not be empty"));
+        return Err(PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_PATH", "path must not be empty"));
     }
     let mut parts = Vec::new();
     for part in normalized.split('/') {
@@ -1491,7 +1458,7 @@ fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
         }
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
-                "FW_NODE_AI_TTS_PATH",
+                "FW_NODE_AI_AUDIO_GENERATE_PATH",
                 "path must stay inside project Zebflow FS",
             ));
         }
@@ -1499,7 +1466,7 @@ fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
     }
     if parts.is_empty() {
         return Err(PipelineError::new(
-            "FW_NODE_AI_TTS_PATH",
+            "FW_NODE_AI_AUDIO_GENERATE_PATH",
             "path must not resolve to the Zebflow FS root itself",
         ));
     }
@@ -1515,7 +1482,7 @@ fn normalize_audio_output_rel_path(raw: &str) -> Result<String, PipelineError> {
         .to_lowercase();
     if !ext.is_empty() && ext != "wav" {
         return Err(PipelineError::new(
-            "FW_NODE_AI_TTS_OUTPUT_PATH",
+            "FW_NODE_AI_AUDIO_GENERATE_OUTPUT_PATH",
             "output path must use .wav extension when an extension is provided",
         ));
     }
@@ -1535,7 +1502,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Config, LipSyncMode, Node, ReturnMode, WordTiming, basic_word_timings,
+        LipSyncMode, Node, Synthesis, WordTiming, basic_word_timings,
         build_audio_segmented_cues, expand_audio_guided_cues_for_word,
         normalize_audio_output_rel_path, reconcile_word_boundaries,
         speed_to_length_scale, split_word_into_viseme_segments, tokenize_words,
@@ -1597,6 +1564,122 @@ mod tests {
             .expect("length scale");
         assert!((value - 0.5).abs() < f32::EPSILON);
         assert!(speed_to_length_scale(0.0).is_err());
+    }
+
+    fn build(config: serde_json::Value) -> Result<Node, crate::pipeline::PipelineError> {
+        Node::build(&config, None, None)
+    }
+
+    /// The profile closes `--provider` and `--option`; `--return` takes its
+    /// two words; a mistyped option value is refused naming its type.
+    #[test]
+    fn the_profile_and_the_flags_are_checked_when_the_node_is_built() {
+        assert!(build(json!({ "provider": "piper", "credential_id": "c", "text": "hi" })).is_ok());
+        for (config, says) in [
+            (json!({ "provider": "polly", "text": "hi" }), "'polly' is not one of piper"),
+            (json!({ "provider": "piper", "text": "hi", "option": { "pitch": "2" } }), "'pitch' is not a setting of --provider piper; it takes volume, lipsync"),
+            (json!({ "provider": "piper", "text": "hi", "option": { "volume": "loud" } }), "--option volume='loud' is not a number"),
+            (json!({ "provider": "piper", "text": "hi", "option": { "lipsync": "timed" } }), "lipsync=none|basic|timed_words|audio_guided|audio_segmented"),
+            (json!({ "provider": "piper", "text": "hi", "return": "both" }), "--return 'both' must be one of inline, file"),
+            (json!({ "provider": "piper", "text": "hi", "voice": "alto" }), "--voice 'alto' is not a number"),
+            (json!({ "provider": "piper", "text": "hi", "speed": "0" }), "--speed must be a number greater than 0"),
+        ] {
+            let err = build(config).err().expect("refused");
+            assert_eq!(err.code, "FW_NODE_AI_AUDIO_GENERATE_CONFIG");
+            assert!(err.message.contains(says), "{}", err.message);
+        }
+        let node = build(json!({ "provider": "piper", "text": "hi", "voice": 3, "option": { "volume": "0.5", "lipsync": "basic" } })).expect("node");
+        assert_eq!(node.settings.voice, Some(3));
+        assert!((node.settings.volume - 0.5).abs() < f32::EPSILON);
+        assert_eq!(node.settings.lipsync, LipSyncMode::Basic);
+    }
+
+    /// The piper signature, generated from the definition and its profile.
+    #[test]
+    fn the_piper_signature_is_generated() {
+        assert_eq!(
+            crate::pipeline::nodes::provider_signature(&super::definition(), "piper").as_deref(),
+            Some("ai.audio.generate --provider piper --credential TEXT --text TEXT [--voice TEXT] [--speed N] [--option volume=N] [--option lipsync=none|basic|timed_words|audio_guided|audio_segmented] [--return inline|file] [--store TEXT] [--folder TEXT] [--filename TEXT] [--path TEXT] [--on-conflict error|skip|overwrite] → audio")
+        );
+    }
+
+    /// A short silent wav, standing in for what a provider synthesised.
+    fn synthesis() -> Synthesis {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&[0u8; 40]);
+        Synthesis { wav, sample_rate: 22050, samples: 22, duration_ms: 1 }
+    }
+
+    /// `--return file` writes the wav and answers its FileRef under `audio`;
+    /// `--return inline` writes nothing and answers the bytes. The payload is
+    /// kept either way.
+    #[test]
+    fn the_answer_is_audio_as_a_file_or_inline() {
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let file = build(json!({ "provider": "piper", "credential_id": "c", "text": "hi there", "filename": "greeting", "option": { "lipsync": "timed_words" } })).expect("node");
+        let answer = file.deliver(&platform, "superadmin", "default", synthesis()).expect("written");
+        let payload = crate::pipeline::nodes::shared::util::with_answer(&json!({ "kept": 1 }), answer);
+        assert_eq!(payload["kept"], 1);
+        let audio = &payload["audio"];
+        assert_eq!(audio["__zf_type"], "file_ref");
+        assert_eq!(audio["ref"], "audio/greeting.wav");
+        assert_eq!(audio["provider"], "piper");
+        assert_eq!(audio["mime_type"], "audio/wav");
+        assert!(audio["word_timings"].as_array().is_some_and(|w| w.len() == 2), "{audio}");
+        assert!(audio.get("base64").is_none());
+        let store = crate::pipeline::nodes::shared::project_store::open_store(&platform, "superadmin", "default", None).expect("store");
+        assert!(store.fs.head("audio/greeting.wav").is_ok(), "the wav is in the store");
+
+        let inline = build(json!({ "provider": "piper", "credential_id": "c", "text": "hi", "filename": "unused", "return": "inline" })).expect("node");
+        let answer = inline.deliver(&platform, "superadmin", "default", synthesis()).expect("answered");
+        let payload = crate::pipeline::nodes::shared::util::with_answer(&json!({ "kept": 1 }), answer);
+        assert_eq!(payload["kept"], 1);
+        let audio = &payload["audio"];
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, audio["base64"].as_str().expect("base64")).expect("decodes");
+        assert!(bytes.starts_with(b"RIFF"));
+        assert_eq!(audio["size"], 44);
+        assert!(audio.get("ref").is_none() && audio.get("word_timings").is_none(), "{audio}");
+        assert!(store.fs.head("audio/unused.wav").is_err(), "inline writes nothing");
+    }
+
+    /// A credential of a kind the provider's profile does not name is refused
+    /// before anything runs.
+    #[tokio::test]
+    async fn a_credential_of_another_kind_is_refused() {
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        platform
+            .credentials
+            .upsert_project_credential(
+                "superadmin",
+                "default",
+                &UpsertProjectCredentialRequest {
+                    credential_id: "llm".to_string(),
+                    title: "LLM".to_string(),
+                    kind: "openai".to_string(),
+                    secret: json!({ "api_key": uuid::Uuid::new_v4().to_string() }),
+                    notes: String::new(),
+                },
+            )
+            .expect("credential");
+        let node = Node::build(
+            &json!({ "provider": "piper", "credential_id": "llm", "text": "hi" }),
+            Some(platform.credentials.clone()),
+            Some((*platform).clone()),
+        )
+        .expect("node");
+        let err = node
+            .execute_async(NodeExecutionInput {
+                node_id: "a".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({}),
+                metadata: json!({ "owner": "superadmin", "project": "default", "pipeline": "t", "request_id": "r" }),
+                bus: None,
+            })
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(err.code, "FW_NODE_AI_AUDIO_GENERATE_CREDENTIAL");
+        assert!(err.message.contains("is kind 'openai'; --provider piper takes a credential of kind tts"), "{}", err.message);
     }
 
     /// One word per mode: the short aliases are gone.
@@ -1767,27 +1850,19 @@ mod tests {
             )
             .expect("credential");
 
-        let node = Node::new(
-            Config {
-                provider: "piper".to_string(),
-                credential_id: "narrator-tts".to_string(),
-                text: "Halo, ini Narrator dari node ai.audio.generate Zebflow.".to_string(),
-                path: Some("audio/narrator-node-smoke.wav".to_string()),
-                folder: String::new(),
-                filename: None,
-                store: None,
-                on_conflict: Some("overwrite".to_string()),
-    
-                return_mode: ReturnMode::Both,
-                speaker: None,
-                speed: 1.0,
-                volume: 1.0,
-                lipsync_mode: LipSyncMode::Basic,
-    
-            },
+        let node = Node::build(
+            &json!({
+                "provider": "piper",
+                "credential_id": "narrator-tts",
+                "text": "Halo, ini Narrator dari node ai.audio.generate Zebflow.",
+                "path": "audio/narrator-node-smoke.wav",
+                "on_conflict": "overwrite",
+                "option": { "lipsync": "basic" }
+            }),
             Some(platform.credentials.clone()),
             Some(platform.clone()),
-        );
+        )
+        .expect("node");
 
         let out = node
             .execute_async(NodeExecutionInput {
@@ -1806,20 +1881,13 @@ mod tests {
             .await
             .expect("execute");
 
-        let file_rel = out.payload["audio"]["file"]["ref"]
+        let file_rel = out.payload["audio"]["ref"]
             .as_str()
             .expect("audio file should be present");
         assert_eq!(file_rel, "audio/narrator-node-smoke.wav");
         assert!(
             layout.files_dir.join(file_rel).is_file(),
             "expected synthesized wav file to exist"
-        );
-        assert!(
-            out.payload["audio"]["blob_base64"]
-                .as_str()
-                .map(|value| !value.is_empty())
-                .unwrap_or(false),
-            "expected inline audio blob"
         );
         assert_eq!(
             out.payload["audio"]["lipsync"]["metadata"]["phoneme_method"],
@@ -1897,27 +1965,17 @@ mod tests {
             LipSyncMode::AudioGuided,
         ];
 
-        let warmup = Node::new(
-            Config {
-                provider: "piper".to_string(),
-                credential_id: "narrator-tts".to_string(),
-                text: "Warmup untuk benchmark lipsync Zebflow.".to_string(),
-                path: None,
-                folder: String::new(),
-                filename: None,
-                store: None,
-                on_conflict: None,
-    
-                return_mode: ReturnMode::Blob,
-                speaker: None,
-                speed: 1.0,
-                volume: 1.0,
-                lipsync_mode: LipSyncMode::None,
-    
-            },
+        let warmup = Node::build(
+            &json!({
+                "provider": "piper",
+                "credential_id": "narrator-tts",
+                "text": "Warmup untuk benchmark lipsync Zebflow.",
+                "return": "inline"
+            }),
             Some(platform.credentials.clone()),
             Some(platform.clone()),
-        );
+        )
+        .expect("node");
         let _ = warmup
             .execute_async(NodeExecutionInput {
                 node_id: "tts".to_string(),
@@ -1940,27 +1998,18 @@ mod tests {
         for sentence in sentences {
             let mut row = vec![sentence.to_string()];
             for mode in modes {
-                let node = Node::new(
-                    Config {
-                        provider: "piper".to_string(),
-                        credential_id: "narrator-tts".to_string(),
-                        text: sentence.to_string(),
-                        path: None,
-                folder: String::new(),
-                filename: None,
-                store: None,
-                on_conflict: None,
-            
-                        return_mode: ReturnMode::Blob,
-                        speaker: None,
-                        speed: 1.0,
-                        volume: 1.0,
-                        lipsync_mode: mode,
-            
-                    },
+                let node = Node::build(
+                    &json!({
+                        "provider": "piper",
+                        "credential_id": "narrator-tts",
+                        "text": sentence,
+                        "return": "inline",
+                        "option": { "lipsync": mode.as_str() }
+                    }),
                     Some(platform.credentials.clone()),
                     Some(platform.clone()),
-                );
+                )
+                .expect("node");
 
                 let started = Instant::now();
                 let out = node
@@ -1981,7 +2030,7 @@ mod tests {
                     .expect("execute");
                 let elapsed_ms = started.elapsed().as_millis();
                 if mode != LipSyncMode::None {
-                    assert!(out.payload["lipsync"].is_object());
+                    assert!(out.payload["audio"]["lipsync"].is_object());
                 }
                 row.push(format!("{elapsed_ms} ms"));
             }

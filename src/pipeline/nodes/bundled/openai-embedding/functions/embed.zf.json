@@ -20,7 +20,7 @@
         "id": "prepare",
         "kind": "javascript.script.run",
         "config": {
-          "source": "var a = input.function; var p = ctx.placeholder || {}; var text = [].concat(a.text === undefined || a.text === null ? [] : a.text); text = [].concat.apply([], text).map(function (t) { return t === null || t === undefined ? '' : String(t); }); if (text.length === 0 || text.some(function (t) { return t.trim() === ''; })) throw new Error('--text is empty; it needs the text to embed'); if (text.length > 2048) throw new Error('--text gives ' + text.length + ' texts; at most 2048 are embedded at once'); var model = a.model || p.MODEL || 'text-embedding-3-small'; return { model: String(model), input: text };"
+          "source": "var a = input.function; var p = ctx.placeholder || {}; var text = [].concat(a.text === undefined || a.text === null ? [] : a.text); text = [].concat.apply([], text).map(function (t) { return t === null || t === undefined ? '' : String(t); }); if (text.length === 0 || text.some(function (t) { return t.trim() === ''; })) throw new Error('--text is empty; it needs the text to embed'); if (text.length > 2048) throw new Error('--text gives ' + text.length + ' texts; at most 2048 are embedded at once'); var model = a.model || p.MODEL || (a.provider === 'openrouter' ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'); return { model: String(model), input: text };"
         },
         "input_pins": [
           "in"
@@ -34,7 +34,7 @@
         "kind": "http.response.fetch",
         "config": {
           "method": "POST",
-          "url": "{{ ($placeholder.BASE_URL || 'https://api.openai.com/v1').replace(/\\/$/, '') }}{{ $placeholder.EMBEDDING_PATH || '/embeddings' }}",
+          "url": "{{ ($placeholder.BASE_URL || (input.function.provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1')).replace(/\\/$/, '') }}{{ $placeholder.EMBEDDING_PATH || '/embeddings' }}",
           "headers": {
             "Authorization": "Bearer {{ $placeholder.API_KEY }}",
             "Content-Type": "application/json"

@@ -1398,24 +1398,16 @@ impl BasicPipelineEngine {
                     config,
                 })
             }
-            ai::agent::NODE_KIND => {
-                let config: ai::agent::Config = serde_json::from_value(node.config.clone())
-                    .map_err(|err| PipelineError::new("FW_NODE_AI_AGENT_CONFIG", err.to_string()))?;
-                Ok(NodeDispatch::Agent(ai::agent::Node::new(
-                    config,
-                    self.credentials.clone(),
-                    self.platform.clone(),
-                )))
-            }
-            ai::tts::NODE_KIND => {
-                let config: ai::tts::Config = serde_json::from_value(node.config.clone())
-                    .map_err(|err| PipelineError::new("FW_NODE_AI_TTS_CONFIG", err.to_string()))?;
-                Ok(NodeDispatch::AiTts(ai::tts::Node::new(
-                    config,
-                    self.credentials.clone(),
-                    self.platform.clone(),
-                )))
-            }
+            ai::agent::NODE_KIND => Ok(NodeDispatch::Agent(ai::agent::Node::build(
+                &node.config,
+                self.credentials.clone(),
+                self.platform.clone(),
+            )?)),
+            ai::tts::NODE_KIND => Ok(NodeDispatch::AiTts(ai::tts::Node::build(
+                &node.config,
+                self.credentials.clone(),
+                self.platform.clone(),
+            )?)),
             logic::if_::NODE_KIND => Ok(NodeDispatch::LogicIf(logic::if_::Node::new(
                 &node.id,
                 serde_json::from_value(node.config.clone())
@@ -1793,6 +1785,11 @@ impl PipelineEngine for BasicPipelineEngine {
             // those are resolved per-input at runtime, so type validation must happen there.
             if scan_exprs(&node.config).is_empty() {
                 self.build_node(node)?;
+            } else {
+                // A config still holding `{{ }}` is built per run, but its
+                // provider is literal and its profile's closed words are
+                // known now (`node-conventions.md` §11).
+                ai::check_profile_of(&node.kind, &node.config)?;
             }
         }
         build_nodes_retention_plan(graph)?;
@@ -2924,6 +2921,31 @@ mod tests {
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
     use crate::platform::shell::parser::build_pipeline_graph;
+
+    /// A swappable task's provider is literal and its profile closed
+    /// (`node-conventions.md` §11): a config still holding `{{ }}` is not
+    /// built until it runs, but its provider and its profile's closed words
+    /// are checked when the graph is validated.
+    #[test]
+    fn a_provider_profile_is_checked_when_the_graph_is_validated() {
+        let graph = |line: &str| {
+            build_pipeline_graph("profile-check", &format!("[a] trigger.manual\n[b] {line}\n[a] -> [b]")).expect("graph")
+        };
+        let engine = BasicPipelineEngine::default();
+        engine
+            .validate_graph(&graph(r#"ai.text.generate --provider openai --credential c --prompt "{{ input.manual.q }}""#))
+            .expect("a literal provider with a profile");
+        for (line, says) in [
+            (r#"ai.text.generate --provider "{{ input.manual.who }}" --credential c --prompt "{{ input.manual.q }}""#, "literal"),
+            (r#"ai.text.generate --provider mistral --credential c --prompt "{{ input.manual.q }}""#, "'mistral' is not one of openai, openrouter"),
+            (r#"ai.audio.generate --provider piper --credential c --text "{{ input.manual.q }}" --option pitch=2"#, "'pitch' is not a setting of --provider piper"),
+            (r#"ai.audio.generate --provider piper --credential c --text hi --option volume=loud"#, "not a number"),
+        ] {
+            let err = engine.validate_graph(&graph(line)).expect_err("refused");
+            assert!(matches!(err.code, "FW_NODE_AI_TEXT_GENERATE_CONFIG" | "FW_NODE_AI_AUDIO_GENERATE_CONFIG"), "{}", err.code);
+            assert!(err.message.contains(says), "{}", err.message);
+        }
+    }
 
     /// Compaction affects logs only, including across intermediate nodes. A
     /// zero override must preserve all array items while other caps still apply.

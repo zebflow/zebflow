@@ -33,22 +33,23 @@ an import job); this doc only reads it.
 ## `ai.text.generate` — how it takes input
 
 `--prompt` is the prompt, literal or `{{ expr }}`, resolved against the
-payload; a long one goes after `--`. Without `--prompt` the goal is read from
-the payload's `message`, `body`, `text` or `query`. Instructions that hold for
-every call (format, tone, constraints) go in `--system-prompt`.
+payload; a long one goes after `--`. It is the only source of the prompt: the
+node reads nothing else of the payload. Instructions that hold for every call
+(format, tone, constraints) go in `--system-prompt`.
 
 | Flag | Description |
 |------|-------------|
+| `--provider openai\|openrouter` | Who answers. Literal; each provider takes a credential of its own kind. |
+| `--credential <id>` | The provider's credential (kind `openai` or `openrouter`). |
 | `--prompt "…"` / `-- …` | The prompt; `{{ input.query.rows }}` and friends resolve before the call. |
 | `--system-prompt "…"` | Standing instructions, e.g. "reply with strict JSON only". |
-| `--credential <id>` | Credential of kind openai or openrouter; its kind is the provider. |
-| `--schema '{…}'` | JSON Schema the answer must satisfy; the parsed answer comes back as `data`. |
-| `--tools a,b` | Function pipeline slugs the model may call. None here: each run is one call. |
-| `--output-mode final_only` | Drop the step log, tool events and metrics. |
+| `--schema '{…}'` | JSON Schema the answer must satisfy; the parsed answer comes back as `text.data`. |
+| `--tool <name>` | A function pipeline the model may call, repeated. None here: each run is one call. |
+| `--answer-only` | Drop the step log, tool events and metrics. |
 
-Output is `{ response, verified, data? }`: `response` is the text, `data` the
-parsed JSON when `--schema` was given and passed. With `--schema` there is no
-`JSON.parse` step to write.
+The answer is `text: { value, verified, data? }`: `value` is the text, `data`
+the parsed JSON when `--schema` was given and passed. With `--schema` there is
+no `JSON.parse` step to write.
 
 ---
 
@@ -60,8 +61,8 @@ parsed JSON when `--schema` was given and passed. With `--schema` there is no
 | trigger.schedule --cron "0 * * * *"
 | javascript.script.run -- "return { cutoff: Date.now() - 3600000 }"
 | sekejap.query.run --param "1={{ input.script.cutoff }}" -- "SELECT * FROM events WHERE ts > $1"
-| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.query.rows }}
-| javascript.script.run -- "const r = input.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
+| ai.text.generate --provider openai --credential my-llm --answer-only --system-prompt "You are an operations analyst." --schema '{"type":"object","required":["summary","patterns","anomalies"],"properties":{"summary":{"type":"string"},"patterns":{"type":"array"},"anomalies":{"type":"array"}}}' -- Summarize these events, count patterns, and flag anything unusual. Events: {{ input.query.rows }}
+| javascript.script.run -- "const r = input.text.data; return { key: 'summary-' + Date.now(), summary: r.summary, patterns: r.patterns, anomalies: r.anomalies, period: 'hourly', generated_at: Date.now() }"
 | sekejap.query.run --write --param "1={{ input.script.key }}" --param "2={{ input.script.summary }}" --param "3={{ input.script.patterns }}" --param "4={{ input.script.anomalies }}" --param "5={{ input.script.period }}" --param "6={{ input.script.generated_at }}" -- "INSERT INTO ai_summaries (_key, summary, patterns, anomalies, period, generated_at) VALUES ($1, $2, $3, $4, $5, $6)"
 ```
 
@@ -71,13 +72,13 @@ parsed JSON when `--schema` was given and passed. With `--schema` there is no
 | trigger.schedule --cron "0 8 * * *"
 | javascript.script.run -- "return { cutoff: Date.now() - 86400000 }"
 | sekejap.query.run --param "1={{ input.script.cutoff }}" -- "SELECT * FROM ai_summaries WHERE generated_at > $1"
-| ai.text.generate --credential my-llm --output-mode final_only --system-prompt "Reply with the markdown report only, no commentary." -- Write a daily operations report in markdown from these hourly summaries — executive summary, key metrics, trends, recommendations. Summaries: {{ input.query.rows }}
+| ai.text.generate --provider openai --credential my-llm --answer-only --system-prompt "Reply with the markdown report only, no commentary." -- Write a daily operations report in markdown from these hourly summaries — executive summary, key metrics, trends, recommendations. Summaries: {{ input.query.rows }}
 | kv.entry.get --key report_webhook_url --durable
-| http.response.fetch --url "{{ input.entry.value }}" --method POST --body "{{ { report: input.response } }}"
+| http.response.fetch --url "{{ input.entry.value }}" --method POST --body "{{ { report: input.text.value } }}"
 ```
 
 `kv.entry.get` adds `entry: { key, value, found }` to the payload alongside
-`input.response` — nothing is lost. Set `report_webhook_url` once via
+`input.text` — nothing is lost. Set `report_webhook_url` once via
 `kv.entry.put --key report_webhook_url --value "https://hooks.example.com/reports"`
 (or a Settings page) before this pipeline runs; there is no `env` scope to read a
 URL from.
@@ -87,8 +88,8 @@ URL from.
 ```
 | trigger.schedule --cron "*/15 * * * *"
 | sekejap.query.run -- "SELECT * FROM incoming_queue WHERE processed = false LIMIT 10"
-| ai.text.generate --credential my-llm --output-mode final_only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.query.rows }}
-| logic.foreach --from "input.data"
+| ai.text.generate --provider openai --credential my-llm --answer-only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.query.rows }}
+| logic.foreach --from "input.text.data"
 | sekejap.query.run --write --param "1={{ $item.urgency }}" --param "2={{ $item.category }}" --param "3={{ $item.key }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
 ```
 
@@ -112,7 +113,7 @@ for every downstream node in that run even after `sekejap.query.run` replaces
 - `trigger.schedule` — cron-based scheduling (`0 * * * *` = hourly, `0 8 * * *` = daily 8am)
 - `sekejap.query.run` — SQL against Sekejap; output is `query: { columns, rows, row_count, truncated }`, plus `rows_affected` with `--write`
 - `javascript.script.run` — shape rows for insert; return value is added as `script`, the rest of the payload is kept
-- `ai.text.generate` — analysis, classification, report generation; `--schema` returns checked JSON as `data`
+- `ai.text.generate` — analysis, classification, report generation; `--schema` returns checked JSON as `text.data`
 - `logic.foreach` — one downstream run per classified item
 - `kv.entry.get --key <k>` / `kv.entry.put --key <k> --value <JSON>` — hold the webhook URL (there is no `env` scope); `kv.entry.get` answers `entry: { key, value, found }`
 - `http.response.fetch` — send the report to an external webhook

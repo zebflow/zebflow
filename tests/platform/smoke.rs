@@ -3638,7 +3638,7 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
 
     let dsl = r#"register pipelines/tests/tts-api
 [a] trigger.manual
-[b] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.manual.text }}" --filename "{{ input.manual.slug }}" --return both
+[b] ai.audio.generate --provider piper --credential narrator-tts --text "{{ input.manual.text }}" --filename "{{ input.manual.slug }}" --return file
 [a] -> [b]
 && activate pipelines/tests/tts-api.zf.json"#;
     let dsl_response = app
@@ -3691,20 +3691,11 @@ async fn platform_tts_upload_credential_and_execute_smoke() {
     let exec_json: Value = serde_json::from_str(&exec_body_text).expect("execute json");
     assert_eq!(exec_json["ok"], json!(true), "execute output: {exec_json}");
     let output = &exec_json["output"];
-    let file_path = output["audio"]["file"]["ref"]
+    let file_path = output["audio"]["ref"]
         .as_str()
-        .expect("audio.file should be present");
+        .expect("audio is the written wav's FileRef");
     let file_url = format!("/api/projects/superadmin/default/files/object?ref={file_path}");
-    let blob = output["audio_blob_base64"]
-        .as_str()
-        .expect("audio_blob_base64 should be present");
-    let blob_bytes = base64::engine::general_purpose::STANDARD
-        .decode(blob)
-        .expect("decode blob");
-    assert!(
-        blob_bytes.starts_with(b"RIFF"),
-        "expected WAV blob to start with RIFF"
-    );
+    assert_eq!(output["audio"]["provider"], json!("piper"));
     assert_eq!(file_path, "audio/narrator-api-smoke.wav");
 
     let file_response = app

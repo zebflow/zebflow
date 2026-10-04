@@ -39,8 +39,9 @@
 //! credential keys — a credential becomes the function's `$placeholder`
 //! values instead. `trigger.function` answers them under `function`, so the
 //! function reads `input.function.<config key>`. Before it runs, a required
-//! flag that resolved empty or a word outside a closed choice is refused with
-//! `FW_NODE_PACKAGE_CONFIG`.
+//! flag that resolved empty, a word outside a closed choice, a config off its
+//! provider's profile and a credential of another provider's kind are
+//! refused with `FW_NODE_PACKAGE_CONFIG`.
 //!
 //! Package discovery and validation live in
 //! `src/platform/services/node_registry.rs`.
@@ -116,6 +117,7 @@ pub(super) async fn execute_installed_node(
     }
 
     check_declared_flags(&kind, &manifest.definition, &config)?;
+    check_provider_profile(&kind, &manifest.definition, &config, &platform, &owner, &project)?;
 
     match manifest.source {
         NodePackageSource::Wasm => {
@@ -192,6 +194,37 @@ fn check_declared_flags(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// A bundle node with provider profiles (`node-conventions.md` §11): its
+/// resolved config against the chosen provider's profile, and the credential
+/// it names against the kinds that provider's key lives in — the rule a
+/// native node holds in its own build, held here for every bundle.
+fn check_provider_profile(
+    kind: &str,
+    definition: &NodeDefinition,
+    config: &Value,
+    platform: &Arc<crate::platform::services::PlatformService>,
+    owner: &str,
+    project: &str,
+) -> Result<(), PipelineError> {
+    use crate::pipeline::nodes::shared::profile::{CREDENTIAL_FLAG, check_credential, check_profile, chosen_profile};
+    if definition.profiles.is_empty() {
+        return Ok(());
+    }
+    let refused = |message: String| PipelineError::new("FW_NODE_PACKAGE_CONFIG", format!("{kind}: {message}"));
+    check_profile(definition, config).map_err(refused)?;
+    let provider = chosen_profile(definition, config).map_err(refused)?.provider.clone();
+    let Some(key) = definition.dsl_flags.iter().find(|f| f.flag == CREDENTIAL_FLAG).map(|f| f.config_key.as_str()) else {
+        return Ok(());
+    };
+    let Some(id) = config.get(key).and_then(Value::as_str).map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    if let Ok(Some(credential)) = platform.credentials.get_project_credential(owner, project, id) {
+        check_credential(definition, &provider, id, &credential.kind).map_err(refused)?;
     }
     Ok(())
 }
@@ -1546,11 +1579,10 @@ mod answer_tests {
         secret_check(&bundles.platform, "fresh", Some(&secret)).expect("the registered secret passes");
     }
 
-    #[tokio::test]
-    async fn the_embedding_answers_vectors_model_and_dims_under_embedding() {
-        let platform = test_platform();
-        install_stub(&platform);
-        let dir = nodes_dir(&platform).join("embedcopy");
+    /// The shipped embedding bundle as project bundle `embedcopy`, every
+    /// HTTP call through the stub.
+    fn install_embedding_copy(platform: &PlatformService) {
+        let dir = nodes_dir(platform).join("embedcopy");
         let definition = include_str!("../nodes/bundled/openai-embedding/definition.json")
             .replace("\"ai.embedding.generate\"", "\"x.embedcopy.embedding.generate\"")
             .replace("\"openai-embedding\"", "\"embedcopy\"");
@@ -1562,12 +1594,64 @@ mod answer_tests {
         for icon in ["icon.svg", "icons/embedding.svg"] {
             write(dir.join(icon), b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
         }
+    }
+
+    /// `--provider` is closed to the profiles, `--model` to the provider's
+    /// models, and a credential of the other provider's kind is refused
+    /// before the function runs.
+    #[tokio::test]
+    async fn the_embedding_holds_its_config_to_the_providers_profile() {
+        let platform = test_platform();
+        install_stub(&platform);
+        install_embedding_copy(&platform);
+        platform.node_registry.refresh_project(OWNER, PROJECT).expect("bundles register");
+        platform
+            .credentials
+            .upsert_project_credential(
+                OWNER,
+                PROJECT,
+                &crate::platform::model::UpsertProjectCredentialRequest {
+                    credential_id: "router".to_string(),
+                    title: "Router".to_string(),
+                    kind: "openrouter".to_string(),
+                    secret: json!({ "api_key": uuid::Uuid::new_v4().to_string() }),
+                    notes: String::new(),
+                },
+            )
+            .expect("credential");
+        for (config, says) in [
+            (json!({ "provider": "cohere", "credential_id": "router", "text": ["a"] }), "'cohere' is not one of openai, openrouter"),
+            (json!({ "provider": "openai", "credential_id": "none", "text": ["a"], "model": "nomic-embed-text" }), "takes --model text-embedding-3-small|text-embedding-3-large|text-embedding-ada-002"),
+            (json!({ "provider": "openai", "credential_id": "none", "text": ["a"], "option": { "dimensions": "256" } }), "'dimensions' is not a setting of --provider openai"),
+            (json!({ "provider": "openai", "credential_id": "router", "text": ["a"] }), "credential 'router' is kind 'openrouter'; --provider openai takes a credential of kind openai"),
+        ] {
+            let err = run(&platform, "x.embedcopy.embedding.generate", config, json!({})).await.err().expect("refused");
+            assert_eq!(err.code, "FW_NODE_PACKAGE_CONFIG");
+            assert!(err.message.contains(says), "{}", err.message);
+        }
+        let (pins, payload) = run(
+            &platform,
+            "x.embedcopy.embedding.generate",
+            json!({ "provider": "openrouter", "credential_id": "router", "text": ["ab"] }),
+            json!({}),
+        )
+        .await
+        .expect("runs");
+        assert_eq!(pins, ["out"], "{payload}");
+        assert_eq!(payload["embedding"]["model"], "openai/text-embedding-3-small", "the provider's default model");
+    }
+
+    #[tokio::test]
+    async fn the_embedding_answers_vectors_model_and_dims_under_embedding() {
+        let platform = test_platform();
+        install_stub(&platform);
+        install_embedding_copy(&platform);
         platform.node_registry.refresh_project(OWNER, PROJECT).expect("bundles register");
 
         let (pins, payload) = run(
             &platform,
             "x.embedcopy.embedding.generate",
-            json!({ "credential_id": "none", "text": ["ab", "abcde"] }),
+            json!({ "provider": "openai", "credential_id": "none", "text": ["ab", "abcde"] }),
             json!({ "kept": 1 }),
         )
         .await

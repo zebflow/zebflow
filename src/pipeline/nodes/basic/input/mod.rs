@@ -182,15 +182,26 @@ pub fn is_input_kind(kind: &str) -> bool {
 }
 
 /// `--accept` may be typed in the dialog as `csv,xlsx` or arrive from the DSL
-/// as a list; both are the same declaration.
+/// as a list, one word per `--accept`; both are the same declaration. A DSL
+/// value holding a comma is refused rather than read as one word that never
+/// matches.
 fn string_or_list<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<String>, D::Error> {
     let raw = Value::deserialize(de)?;
     Ok(match raw {
-        Value::Array(items) => items
-            .into_iter()
-            .filter_map(|v| v.as_str().map(|s| s.trim().to_ascii_lowercase()))
-            .filter(|s| !s.is_empty())
-            .collect(),
+        Value::Array(items) => {
+            let words: Vec<String> = items
+                .into_iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_ascii_lowercase()))
+                .filter(|s| !s.is_empty())
+                .collect();
+            if let Some(joined) = words.iter().find(|w| w.contains(',')) {
+                return Err(serde::de::Error::custom(format!(
+                    "--accept '{joined}' holds a comma; give one word per flag: --accept {}",
+                    joined.split(',').map(str::trim).collect::<Vec<_>>().join(" --accept ")
+                )));
+            }
+            words
+        }
         Value::String(s) => s
             .split(',')
             .map(|p| p.trim().to_ascii_lowercase())
@@ -502,16 +513,16 @@ fn example(kind: InputKind) -> NodeExample {
             .input(json!({ "manual": { "body": { "config": "{\"theme\":\"dark\"}" } } }))
             .output(json!({ "manual": { "body": { "config": "{\"theme\":\"dark\"}" } }, "config": { "theme": "dark" } }))
             .note("A JSON string in `body` is parsed; the node answers the object."),
-        InputKind::File => NodeExample::dsl("A spreadsheet or CSV", "input.file sheet --accept csv,xlsx")
+        InputKind::File => NodeExample::dsl("A spreadsheet or CSV", "input.file sheet --accept csv --accept xlsx")
             .input(json!({ "webhook": { "body": {}, "files": { "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } } } }))
             .output(json!({ "webhook": { "body": {}, "files": { "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } } }, "sheet": { "__zf_type": "file_ref", "filename": "q3.xlsx", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "spreadsheet", "size": 18211 } }))
             .note("`--accept` takes FileRef kinds, mimes (`image/png`, `image/`) or extensions."),
-        InputKind::Files => NodeExample::dsl("Up to five attachments", "input.files attachments --accept pdf,image --max 5 --optional")
+        InputKind::Files => NodeExample::dsl("Up to five attachments", "input.files attachments --accept pdf --accept image --max 5 --optional")
             .note("Answers `attachments`: the array of FileRefs, `[]` when none were sent."),
         InputKind::Image => NodeExample::dsl("A photo to process", "input.image photo")
             .input(json!({ "manual": { "body": {}, "files": { "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } } } }))
             .output(json!({ "manual": { "body": {}, "files": { "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } } }, "photo": { "__zf_type": "file_ref", "filename": "cat.png", "mime": "image/png", "kind": "image", "size": 4321 } }))
-            .note("`--accept` is preset to `image`; `--accept png,webp` narrows it. The next node takes `--from \"{{ input.photo }}\"`."),
+            .note("`--accept` is preset to `image`; `--accept png --accept webp` narrows it. The next node takes `--from \"{{ input.photo }}\"`."),
         InputKind::Audio => NodeExample::dsl("A recording", "input.audio clip --optional")
             .note("`--accept` is preset to `audio`."),
         InputKind::Video => NodeExample::dsl("A clip", "input.video clip --accept mp4,webm")
@@ -552,7 +563,7 @@ pub fn definition_for(kind: InputKind) -> NodeDefinition {
     }
     if kind.is_file() {
         let preset = kind.preset_accept().map(|k| format!(" Preset: `{k}`.")).unwrap_or_default();
-        dsl_flags.push(flag("--accept", "accept", &format!("FileRef kinds, mimes or extensions the file must match, comma-separated (`csv,xlsx`, `image/png`, `image/`).{preset}"), DslFlagKind::CommaSeparatedList));
+        dsl_flags.push(flag("--accept", "accept", &format!("FileRef kinds, mimes or extensions the file must match, one per flag, repeated (`--accept csv --accept xlsx`, `image/png`, `image/`).{preset}"), DslFlagKind::RepeatedList));
         fields.push(field("accept", "Accept", NodeFieldType::Text, &format!("Comma-separated FileRef kinds, mimes or extensions the file must match.{preset}")));
         properties["accept"] = json!({ "type": "array", "items": { "type": "string" }, "description": "What the file must match." });
     }

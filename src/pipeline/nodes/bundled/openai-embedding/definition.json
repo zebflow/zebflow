@@ -51,7 +51,7 @@
       {
         "kind": "ai.embedding.generate",
         "title": "AI Embedding",
-        "description": "Embeds text through an OpenAI-compatible /v1/embeddings endpoint (OpenAI, OpenRouter, or the credential's base URL). Answers `embedding: { vectors, model, dims, usage }` — one vector per `--text`, in order — and keeps the payload; a provider refusal delivers `error`.",
+        "description": "Embeds text through the provider's /embeddings endpoint: `--provider openai` (OpenAI, its embedding models) or `--provider openrouter`, each with a credential of its own kind (the credential's base URL, when set, replaces the provider's). Answers `embedding: { vectors, model, dims, usage }` — one vector per `--text`, in order — and keeps the payload; a provider refusal delivers `error`.",
         "icon": "icons/embedding.svg",
         "ui_category": "logic.ai",
         "ui_category_label": "AI",
@@ -73,6 +73,13 @@
           "config_schema": {
             "type": "object",
             "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "openai",
+                  "openrouter"
+                ]
+              },
               "credential_id": {
                 "type": "string"
               },
@@ -84,17 +91,32 @@
                   "array",
                   "string"
                 ]
+              },
+              "option": {
+                "type": "object"
               }
             }
           },
           "dsl_flags": [
+            {
+              "flag": "--provider",
+              "config_key": "provider",
+              "kind": "scalar",
+              "required": true,
+              "value": "text",
+              "choices": [
+                "openai",
+                "openrouter"
+              ],
+              "description": "Who embeds: openai or openrouter. Literal, never {{ }}."
+            },
             {
               "flag": "--credential",
               "config_key": "credential_id",
               "kind": "scalar",
               "required": true,
               "value": "text",
-              "description": "The openai or openrouter credential."
+              "description": "The provider's credential: kind openai for openai, openrouter for openrouter."
             },
             {
               "flag": "--model",
@@ -102,7 +124,7 @@
               "kind": "scalar",
               "required": false,
               "value": "text",
-              "description": "The embedding model, e.g. text-embedding-3-small. Omitted: the credential's model, else text-embedding-3-small."
+              "description": "The embedding model. openai takes text-embedding-3-small, text-embedding-3-large or text-embedding-ada-002. Omitted: the credential's model, else text-embedding-3-small (openai/text-embedding-3-small on openrouter)."
             },
             {
               "flag": "--text",
@@ -112,15 +134,39 @@
               "value": "text",
               "max_repeat": 2048,
               "description": "A text to embed — repeat for several, or one {{ [list] }}; each gets its own vector."
+            },
+            {
+              "flag": "--option",
+              "config_key": "option",
+              "kind": "key_value_pairs",
+              "required": false,
+              "value": "text",
+              "description": "A setting of the chosen provider, key=value, repeated. The keys and their types are the provider's profile; an unknown key is refused."
             }
           ],
           "fields": [
+            {
+              "name": "provider",
+              "label": "Provider",
+              "type": "select",
+              "options": [
+                {
+                  "value": "openai",
+                  "label": "OpenAI"
+                },
+                {
+                  "value": "openrouter",
+                  "label": "OpenRouter"
+                }
+              ],
+              "help": "Who embeds. The credential must be of this provider's kind."
+            },
             {
               "name": "credential_id",
               "label": "Credential",
               "type": "select",
               "data_source": "credentials_open_ai",
-              "help": "An OpenAI or OpenRouter credential."
+              "help": "A credential of the provider's kind: openai or openrouter."
             },
             {
               "name": "model",
@@ -134,12 +180,20 @@
               "type": "textarea",
               "rows": 3,
               "help": "The text to embed: a literal or {{ expr }}, or {{ [list] }} for several."
+            },
+            {
+              "name": "option",
+              "label": "Provider options",
+              "type": "key_value_pairs",
+              "help": "Settings of the chosen provider, key=value; only the keys its profile names."
             }
           ],
           "layout": [
+            "provider",
             "credential_id",
             "model",
-            "text"
+            "text",
+            "option"
           ],
           "output_schema": {
             "type": "object",
@@ -168,7 +222,26 @@
                 }
               }
             }
-          }
+          },
+          "profiles": [
+            {
+              "provider": "openai",
+              "credential_kinds": [
+                "openai"
+              ],
+              "models": [
+                "text-embedding-3-small",
+                "text-embedding-3-large",
+                "text-embedding-ada-002"
+              ]
+            },
+            {
+              "provider": "openrouter",
+              "credential_kinds": [
+                "openrouter"
+              ]
+            }
+          ]
         }
       }
     ]

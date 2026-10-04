@@ -123,6 +123,21 @@ password or a key: a run record masks it in the node's recorded config, as
 signature, its editor form and its save-time checks are generated
 ([Node Conventions](../../node-conventions.md) §2–§4).
 
+`profiles` — added 2026-10-04 for the 0.11 grammar, optional and additive —
+holds one entry per `--provider` word of a swappable task
+([Node Conventions](../../node-conventions.md) §11): `provider`,
+`credential_kinds` (the credential kinds its key lives in), `models` (the
+`--model` ids it takes; empty takes any), `roles` (the provider-specific
+flags it takes, each with `required` and `max_repeat`; a flag no profile names
+is shared by every provider), `choices` (a narrower word list per choice
+flag) and `options` (its `--option key=value` settings, each `key`, `value`
+from the value types above, `choices` and `description`). A kind with
+`--provider` has a profile for each of its words and no other, and takes
+`--option`. `check_profile` in `src/pipeline/nodes/shared/profile.rs` holds a
+config to its provider's profile, and each provider's signature in the help
+is generated from it. A bundle node declares the same field inside its
+`definition`.
+
 Every user-facing configuration property must be documented by a UI field or a
 DSL flag. Field names are unique. Layout entries may only reference declared
 fields. DSL flag names are unique. Two flags may target the same configuration

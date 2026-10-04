@@ -691,7 +691,6 @@ pub fn parse_node_config_with_positional(
     positional: Option<&str>,
 ) -> Result<(Value, Option<String>), String> {
     let mut config = serde_json::Map::new();
-    let mut list_modes = HashMap::<String, ListFlagMode>::new();
     let mut body: Option<String> = None;
     let mut i = 0;
 
@@ -734,10 +733,10 @@ pub fn parse_node_config_with_positional(
                     }
                     i += 2;
                 }
-                DslFlagKind::CommaSeparatedList | DslFlagKind::RepeatedList => {
+                DslFlagKind::RepeatedList => {
                     let val = tokens.get(i + 1).cloned().unwrap_or_default();
                     reject_unquoted_expression(&flag_str, &val)?;
-                    push_list_flag_value(&mut config, &mut list_modes, dsl_flag, &val)?;
+                    push_list_flag_value(&mut config, dsl_flag, &val);
                     i += 2;
                 }
                 DslFlagKind::Bool => {
@@ -809,56 +808,18 @@ pub fn parse_node_config_with_positional(
     Ok((Value::Object(config), body))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ListFlagMode {
-    Compact,
-    Repeated,
-}
-
-fn push_list_flag_value(
-    config: &mut serde_json::Map<String, Value>,
-    list_modes: &mut HashMap<String, ListFlagMode>,
-    flag: &DslFlag,
-    value: &str,
-) -> Result<(), String> {
-    let has_comma = value.contains(',');
-    let next_mode = if has_comma {
-        ListFlagMode::Compact
-    } else {
-        ListFlagMode::Repeated
-    };
-    let key = flag.config_key.clone();
-    if let Some(existing) = list_modes.get(&key) {
-        if *existing != next_mode || has_comma {
-            return Err(format!(
-                "list flag `{}` must use one style per node command: either `{0} a,b,c` or `{0} a {0} b`, not both",
-                flag.flag
-            ));
-        }
-    } else {
-        list_modes.insert(key.clone(), next_mode);
+/// One occurrence of a repeatable role is one value: a comma inside it is
+/// part of the value (`--case a,b` is one case, `--accept "a,b"` one word).
+fn push_list_flag_value(config: &mut serde_json::Map<String, Value>, flag: &DslFlag, value: &str) {
+    if value.trim().is_empty() {
+        return;
     }
-
-    let values = if has_comma {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| json!(s))
-            .collect::<Vec<_>>()
-    } else if value.trim().is_empty() {
-        Vec::new()
-    } else {
-        vec![json!(value)]
-    };
-
     let entry = config
-        .entry(key)
+        .entry(flag.config_key.clone())
         .or_insert_with(|| Value::Array(Vec::new()));
     if let Value::Array(existing) = entry {
-        existing.extend(values);
+        existing.push(json!(value));
     }
-    Ok(())
 }
 
 fn push_schema_field(
@@ -1701,7 +1662,7 @@ mod tests {
     /// and writes it back the same way, in both renderers.
     #[test]
     fn a_positional_field_name_round_trips_through_the_dsl() {
-        let dsl = r#"| trigger.manual | input.text prompt --label "What should happen?" --max 200 | input.image photo --optional | input.file sheet --accept csv,xlsx"#;
+        let dsl = r#"| trigger.manual | input.text prompt --label "What should happen?" --max 200 | input.image photo --optional | input.file sheet --accept csv --accept xlsx"#;
         let graph = build_pipeline_graph("parser-positional-test", dsl).expect("graph");
         let text = &graph.nodes[1];
         assert_eq!(text.kind, "input.text");
@@ -1715,7 +1676,7 @@ mod tests {
         let rendered = graph_to_dsl(&graph);
         assert!(rendered.contains(r#"input.text prompt --label "What should happen?" --max 200"#), "{rendered}");
         assert!(rendered.contains("input.image photo --optional"), "{rendered}");
-        assert!(rendered.contains("input.file sheet --accept csv,xlsx"), "{rendered}");
+        assert!(rendered.contains("input.file sheet --accept csv --accept xlsx"), "{rendered}");
         assert!(!rendered.contains("--name"), "{rendered}");
 
         let compact = node_to_segment_no_body(text);
@@ -1807,18 +1768,23 @@ mod tests {
         assert_eq!(again.nodes[1].output_pins, vec!["a", "b", "other"]);
     }
 
+    /// A repeatable role takes one value per occurrence: a comma inside a
+    /// value is part of it, never a second value.
     #[test]
-    fn list_flags_reject_mixed_compact_and_repeated_forms() {
+    fn a_comma_inside_a_repeated_value_stays_one_value() {
         let dsl = r#"
 [a] trigger.manual
-[b] ai.text.generate --credential c --tools lookup,search --tools notify -- Hello
+[b] logic.match --from "{{ input.kind }}" --case "a,b" --case c --default other
+[c] ai.text.generate --provider openai --credential c --tool lookup --tool notify -- Hello
 
 [a] -> [b]
+[b] -> [c]
 "#;
-
-        let err = build_pipeline_graph("parser-list-mixed-test", dsl)
-            .expect_err("mixed list syntax must fail");
-        assert!(err.contains("must use one style"));
+        let graph = build_pipeline_graph("parser-list-comma-test", dsl).expect("graph");
+        assert_eq!(graph.nodes[1].config["cases"], json!(["a,b", "c"]));
+        assert_eq!(graph.nodes[2].config["tool"], json!(["lookup", "notify"]));
+        let again = build_pipeline_graph("parser-list-comma-test", &graph_to_dsl(&graph)).expect("re-parse");
+        assert_eq!(again.nodes[1].config["cases"], json!(["a,b", "c"]));
     }
 
     #[test]
@@ -2402,19 +2368,6 @@ fn node_to_segment(node: &PipelineNode) -> String {
                     parts.push(flag.flag.clone());
                 }
             }
-            DslFlagKind::CommaSeparatedList => {
-                if let Some(arr) = val.as_array() {
-                    let csv = arr
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    if !csv.is_empty() {
-                        parts.push(flag.flag.clone());
-                        parts.push(csv);
-                    }
-                }
-            }
             DslFlagKind::RepeatedList => {
                 if let Some(arr) = val.as_array() {
                     for item in arr.iter().filter_map(repeated_list_item_to_string) {
@@ -2522,19 +2475,6 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             DslFlagKind::Bool => {
                 if val.as_bool().unwrap_or(false) {
                     parts.push(flag.flag.clone());
-                }
-            }
-            DslFlagKind::CommaSeparatedList => {
-                if let Some(arr) = val.as_array() {
-                    let csv = arr
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    if !csv.is_empty() {
-                        parts.push(flag.flag.clone());
-                        parts.push(csv);
-                    }
                 }
             }
             DslFlagKind::RepeatedList => {
@@ -2866,7 +2806,7 @@ mod register_shape_tests {
 
     #[test]
     fn a_body_key_that_is_also_a_flag_is_rendered_once() {
-        let g = build_pipeline_graph("p", "trigger.webhook --route /x | logic.if --when \"$trigger.query.who == 'm'\" | ai.text.generate --credential c --output-mode final_only -- Classify: {{ $trigger.body.review }}").expect("parse");
+        let g = build_pipeline_graph("p", "trigger.webhook --route /x | logic.if --when \"$trigger.query.who == 'm'\" | ai.text.generate --provider openai --credential c --answer-only -- Classify: {{ $trigger.body.review }}").expect("parse");
         let dsl = graph_to_dsl(&g);
         let if_line = dsl.lines().find(|l| l.contains("logic.if")).unwrap();
         assert_eq!(if_line.matches("$trigger.query.who").count(), 1, "{if_line}");

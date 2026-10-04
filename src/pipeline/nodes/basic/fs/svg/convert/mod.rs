@@ -2,7 +2,7 @@
 //!
 //! | Use | DSL |
 //! |---|---|
-//! | The SVG a model wrote, kept as a PNG | `\| ai.text.generate --credential openrouter --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' --prompt "…" \| fs.image.render --text "{{ input.data.svg }}" --folder posters --preview image` |
+//! | The SVG a model wrote, kept as a PNG | `\| ai.text.generate --provider openrouter --credential openrouter --schema '{"type":"object","required":["svg"],"properties":{"svg":{"type":"string"}}}' --prompt "…" \| fs.image.render --text "{{ input.text.data.svg }}" --folder posters --preview image` |
 //! | A stored SVG at a size | `\| fs.image.render --from "{{ input.file }}" --width 512 --height 512 --fit contain --format webp --folder logos` |
 //!
 //! # The source
@@ -230,7 +230,7 @@ pub fn definition() -> NodeDefinition {
         ],
         fields: vec![
             NodeFieldDef { name: "from".into(), label: "From".into(), field_type: NodeFieldType::Text, help: Some("A stored .svg, e.g. {{ input.file }}. Set From or Text.".into()), ..Default::default() },
-            NodeFieldDef { name: "text".into(), label: "Text".into(), field_type: NodeFieldType::Textarea, rows: Some(6), help: Some("The SVG markup, e.g. {{ input.data.svg }}. Set From or Text.".into()), ..Default::default() },
+            NodeFieldDef { name: "text".into(), label: "Text".into(), field_type: NodeFieldType::Textarea, rows: Some(6), help: Some("The SVG markup, e.g. {{ input.text.data.svg }}. Set From or Text.".into()), ..Default::default() },
             NodeFieldDef { name: "width".into(), label: "Width (px)".into(), field_type: NodeFieldType::Text, placeholder: Some("the SVG's own".into()), help: Some("Canvas width. Empty = the SVG's own width; alone, the height follows in proportion.".into()), ..Default::default() },
             NodeFieldDef { name: "height".into(), label: "Height (px)".into(), field_type: NodeFieldType::Text, placeholder: Some("the SVG's own".into()), help: Some("Canvas height. Empty = the SVG's own height; alone, the width follows in proportion.".into()), ..Default::default() },
             NodeFieldDef { name: "fit".into(), label: "Fit".into(), field_type: NodeFieldType::Select, default_value: Some(json!("cover")), help: Some("With both sides given: cover = fill the box and crop the middle; contain = fit inside it; fill = stretch.".into()), options: vec![
@@ -261,10 +261,10 @@ pub fn definition() -> NodeDefinition {
             NodeFailureSemantic { code: RASTER_CODE.into(), description: "resvg, the encoder or the store write failed.".into(), retryable: true, ..Default::default() },
         ],
         examples: vec![
-            NodeExample::dsl("A poster the model wrote, kept as a PNG", "fs.image.render --text \"{{ input.data.svg }}\" --folder sandbox/posters/out --preview image")
-                .input(json!({ "data": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1080\" height=\"1350\"><rect width=\"1080\" height=\"1350\" fill=\"#012169\"/><text x=\"540\" y=\"640\" font-family=\"Inter\" font-weight=\"800\" font-size=\"120\" fill=\"#fff\" text-anchor=\"middle\" inline-size=\"918\">RESEARCH SHOWCASE NIGHT</text></svg>" } }))
-                .output(json!({ "data": { "svg": "<svg …>" }, "image": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "sandbox/posters/out/9f2c….png", "filename": "9f2c….png", "mime": "image/png", "kind": "image", "size": 412300, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.image.render", "trust": "generated", "width": 1080, "height": 1350, "format": "png", "source_deleted": false } }))
-                .note("`ai.text.generate --schema '{\"type\":\"object\",\"required\":[\"svg\"],\"properties\":{\"svg\":{\"type\":\"string\"}}}'` before it answers the SVG as `data.svg`. `inline-size` wraps the headline; pictures are `<image href=\"sandbox/posters/photos/venue.jpg\">`."),
+            NodeExample::dsl("A poster the model wrote, kept as a PNG", "fs.image.render --text \"{{ input.text.data.svg }}\" --folder sandbox/posters/out --preview image")
+                .input(json!({ "text": { "data": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1080\" height=\"1350\"><rect width=\"1080\" height=\"1350\" fill=\"#012169\"/><text x=\"540\" y=\"640\" font-family=\"Inter\" font-weight=\"800\" font-size=\"120\" fill=\"#fff\" text-anchor=\"middle\" inline-size=\"918\">RESEARCH SHOWCASE NIGHT</text></svg>" } } }))
+                .output(json!({ "text": { "data": { "svg": "<svg …>" } }, "image": { "__zf_type": "file_ref", "backend": "zebfs", "store": "local", "ref": "sandbox/posters/out/9f2c….png", "filename": "9f2c….png", "mime": "image/png", "kind": "image", "size": 412300, "sha256": "sha256:…", "lifecycle": "durable", "origin": "fs.image.render", "trust": "generated", "width": 1080, "height": 1350, "format": "png", "source_deleted": false } }))
+                .note("`ai.text.generate --schema '{\"type\":\"object\",\"required\":[\"svg\"],\"properties\":{\"svg\":{\"type\":\"string\"}}}'` before it answers the SVG as `text.data.svg`. `inline-size` wraps the headline; pictures are `<image href=\"sandbox/posters/photos/venue.jpg\">`."),
             NodeExample::dsl("A certificate as a PDF, the name shrunk to its line", "fs.image.render --text \"{{ input.svg }}\" --format pdf --folder certificates --filename cert-2026-0412")
                 .input(json!({ "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1123\" height=\"794\">…<text x=\"561\" y=\"420\" font-family=\"Inter\" font-size=\"64\" text-anchor=\"middle\" inline-size=\"900\" data-fit=\"shrink\" data-min-size=\"28\">Alexandra Josephine Montgomery Whitfield</text>…</svg>" }))
                 .note("A `fs.file.get` of the template .svg and a `script` that fills the placeholders come before it. The name is real text in the PDF; a long one shrinks instead of wrapping. `--width/--height/--fit` are refused with pdf."),
