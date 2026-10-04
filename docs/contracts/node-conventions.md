@@ -62,6 +62,9 @@ logic.<verb>          control node   logic.if              logic.foreach
   collide. Everything after `x.<package>.` follows this contract, its answer
   key is its noun, and the engine places the function's result under that
   noun itself.
+- **`trigger.mcp` publishes app functions** as an MCP server on its `--route`
+  ([Published MCP](./published-mcp.md)); it is never the project's dev MCP and
+  never reaches it.
 - `logic.*` is closed: `if` `match` `foreach` `reduce` `collect` `retry`
   `concept` (a stand-in for a step not built yet; passes its input on).
 

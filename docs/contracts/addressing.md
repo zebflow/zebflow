@@ -40,7 +40,7 @@ A host that carries any custom route serves only its routes.
 | `files` — objects [`ZebFsAcl`](./kinds/zebfs-acl/README.md) exposes, through the ZebFS gateway | **off** | `/_files/…` when switched on; always on the project's file hosts (§2b) | — (no platform form) |
 | `static` — project assets, `_rwe/lib`, `_rwe/scripts` | on | `/_static/…` | `/static/{o}/{p}/…` |
 | `ms` — published map layers | **off** | `/_ms/…` | `/ms/{o}/{p}/…` |
-| `mcp` | **off** | `/_mcp` | `/api/projects/{o}/{p}/mcp` — always served on the platform address |
+| `mcp` — the project's **dev** MCP (builds the project; never the app's published functions, which are `pages` routes — [Published MCP](./published-mcp.md)) | **off** | `/_mcp` | `/api/projects/{o}/{p}/mcp` — always served on the platform address |
 
 `files` answers only what `ZebFsAcl` exposes, through the ZebFS gateway
 (inert, no cookie): always on the project's file host, and on a project host
