@@ -130,11 +130,40 @@ fn mcp_output(_: &Config, _: &RewriteContext) -> OldOutput {
     OldOutput::replace(&[("tool_name", "mcp.tool_name"), ("arguments", "mcp.arguments")], Some("mcp"))
 }
 
+/// A 0.10 MCP tool was listed on the project's dev MCP; a 0.11 one is
+/// published on an app route the owner names, behind the `--auth` they
+/// choose (`published-mcp.md`). Neither can be guessed: written on the 0.10
+/// node as `route` and `auth` (with `credential_id`, `role`), they carry
+/// over; missing, the node is unresolved.
 fn mcp(n: &mut NodeRewrite<'_>) {
     n.kind("trigger.mcp");
     n.rename("tool_name", "name");
     n.rename("tool_description", "description");
-    n.keep("parameters");
+    if let Some(Value::String(params)) = n.take("parameters") {
+        // 0.10's `name:type,…`, every one required.
+        let mut properties = serde_json::Map::new();
+        let mut required = Vec::new();
+        for pair in params.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (name, kind) = pair.split_once(':').map(|(n, k)| (n.trim(), k.trim())).unwrap_or((pair, "string"));
+            let kind = if ["string", "number", "integer", "boolean", "object", "array"].contains(&kind) { kind } else { "string" };
+            properties.insert(name.to_string(), json!({ "type": kind }));
+            required.push(Value::String(name.to_string()));
+        }
+        n.note(format!("parameters {params} → schema"));
+        n.set("schema", json!({ "type": "object", "properties": properties, "required": required }));
+    }
+    let had_route = n.has("route");
+    let had_auth = n.has("auth");
+    n.keep("route");
+    n.keep("auth");
+    n.keep("credential_id");
+    n.keep("role");
+    if !had_route || !had_auth {
+        n.unresolved(
+            "0.10 listed this tool on the project's dev MCP; 0.11 publishes it only on a route of the mcp surface, behind an auth the owner chooses. \
+             Set `route` (e.g. `/tools`) and `auth` (none, jwt or api_key, with `credential_id`) on this node, or remove the pipeline, then plan again",
+        );
+    }
 }
 
 fn weberror_output(_: &Config, _: &RewriteContext) -> OldOutput {

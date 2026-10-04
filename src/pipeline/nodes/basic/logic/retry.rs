@@ -713,9 +713,15 @@ impl Node {
             .get("error")
             .and_then(|e| e.get("code"))
             .and_then(Value::as_str);
+        let error_message = input
+            .payload
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if let Some(code) = error_code {
-            use crate::pipeline::error_class::{ErrorClass, class_of};
-            if class_of(code) == ErrorClass::Refused {
+            use crate::pipeline::error_class::{ErrorClass, class_of_error};
+            if class_of_error(code, error_message) == ErrorClass::Refused {
                 trace.push(format!("refused: {code} — retrying cannot help"));
                 return Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_FAILED.to_string()],

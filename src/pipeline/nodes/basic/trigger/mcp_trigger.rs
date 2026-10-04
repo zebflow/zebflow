@@ -1,50 +1,46 @@
-//! `trigger.mcp` — expose a pipeline as an MCP tool.
+//! `trigger.mcp` — publish a pipeline as one tool of an MCP server on an app
+//! route (`docs/contracts/published-mcp.md`).
 //!
-//! This node is a **routing declaration**, not an active processor.  At
-//! compile time the pipeline runtime extracts [`McpTriggerSpec`] from the
-//! node config.  When the MCP server receives `tools/list`, dynamic tools
-//! from active pipelines are merged with the static tool set.  When an
-//! agent calls the tool, the pipeline executes with the tool arguments as
-//! input.  The node answers one key, `mcp`: `{ tool_name, arguments }`.
+//! This node is a **routing declaration**. At activation the pipeline runtime
+//! extracts a `McpTriggerSpec` from it; every active `trigger.mcp` with the
+//! same `--route` in one project is one tool of the MCP server that route
+//! serves, on the `mcp` surface (`/_mcp/ROUTE` on the project's hosts,
+//! `/mcp/{owner}/{project}/ROUTE` on the platform; off by default). The
+//! project's dev MCP
+//! (`/api/projects/{o}/{p}/mcp`) never lists or calls these tools.
 //!
 //! # Config flags
 //!
-//! | Flag | Type | Required | Description |
-//! |---|---|---|---|
-//! | `--name` | string | yes | MCP tool name (e.g. `greet_user`) |
-//! | `--description` | string | no | Human-readable tool description |
-//! | `--params` | csv | no | Comma-separated `name:type` pairs (e.g. `name:string,age:number`) |
-//!
-//! # The answer: `mcp: { … }`
-//!
-//! The MCP dispatch handler builds the envelope before execution:
-//!
-//! | Field | Type | Description |
+//! | Flag | Required | Meaning |
 //! |---|---|---|
-//! | `tool_name` | string | The MCP tool name that was called |
-//! | `arguments` | object | The arguments passed by the AI agent |
+//! | `--route` | yes | the path the MCP server answers on; one route, one server |
+//! | `--name` | yes | the tool name, unique on its route |
+//! | `--description` | no | what the agent reads to decide when to call the tool |
+//! | `--parameter` | no | `name:type[!] "doc"`, repeated — the tool's arguments, as on `trigger.function` |
+//! | `--auth` | yes | `none`, `jwt` or `api_key` — the same on every tool of a route |
+//! | `--credential` | with `jwt` / `api_key` | the credential that verifies `--auth` |
+//! | `--role` | no | a JWT role allowed in, repeated |
+//! | `--errors` | no | `show` or `hide`: what a failed run reveals in the tool error |
 //!
-//! # Example pipelines
+//! # The answer: `mcp: { route, tool_name, arguments }`
 //!
-//! **Greeting tool:**
-//! ```text
-//! | trigger.mcp --name greet_user --description "Greet a user by name" --params name:string
-//! | javascript.script.run -- "return { greeting: 'Hello, ' + input.mcp.arguments.name + '!' };"
-//! | web.response.send
-//! ```
+//! The route's server builds the envelope before the run; `$trigger` is the
+//! same envelope. The tool result is what `web.response.send` answers (its
+//! `--body`), or the run's value without one; a status of 400 or more is a
+//! tool error with that body.
 //!
-//! **Database lookup tool:**
-//! ```text
-//! | trigger.mcp --name lookup_user --description "Look up user by email" --params email:string
-//! | postgres.query.run --credential main-db --param "1={{ input.mcp.arguments.email }}" -- "SELECT * FROM users WHERE email = $1"
-//! | web.response.send
-//! ```
+//! 0.11 seals the declaration — flags, answer, the save and activation
+//! checks. Serving the routes (the server, its auth at the door) lands in
+//! 0.11.1; until then the `mcp` surface answers 404.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
+use super::webhook;
+use crate::pipeline::model::{
+    DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef,
+};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -54,31 +50,118 @@ pub const NODE_KIND: &str = "trigger.mcp";
 const OUTPUT_PIN_OUT: &str = "out";
 /// The key this trigger answers under.
 pub const ANSWER_KEY: &str = "mcp";
+/// `--auth`: the closed words. `hmac` signs one request body for one sender,
+/// which no MCP client does, so a published route does not take it.
+pub const AUTH_MODES: [&str; 3] = ["none", "jwt", "api_key"];
+/// Raised when the flags of a `trigger.mcp` are refused at activation.
+pub const CONFIG_CODE: &str = "FW_NODE_TRIGGER_MCP_CONFIG";
 
 /// Return the [`NodeDefinition`] for `trigger.mcp`.
 pub fn definition() -> NodeDefinition {
+    let mut dsl_flags = vec![
+        DslFlag {
+            flag: "--route".to_string(),
+            config_key: "route".to_string(),
+            description: "The server's path under the mcp surface: `--route /shop` answers at /_mcp/shop on the project's hosts. Every active trigger.mcp with this route is one tool of that one server.".to_string(),
+            kind: DslFlagKind::Scalar,
+            required: true,
+            value: "text".to_string(),
+            ..Default::default()
+        },
+        DslFlag {
+            flag: "--name".to_string(),
+            config_key: "name".to_string(),
+            description: "The tool name agents call (letters, digits, `_`, `-`, `.`), unique on its route.".to_string(),
+            kind: DslFlagKind::Scalar,
+            required: true,
+            value: "text".to_string(),
+            ..Default::default()
+        },
+        DslFlag {
+            flag: "--description".to_string(),
+            config_key: "description".to_string(),
+            description: "What the tool does and when an agent should call it — the agent reads this to decide.".to_string(),
+            kind: DslFlagKind::Scalar,
+            value: "text".to_string(),
+            ..Default::default()
+        },
+        DslFlag {
+            flag: "--parameter".to_string(),
+            config_key: "schema".to_string(),
+            description: "One argument of the tool, repeated: name:type! plus an optional description, as on trigger.function. \
+                Example: --parameter q:string! \"The words to look for.\""
+                .to_string(),
+            kind: DslFlagKind::SchemaField,
+            value: "text".to_string(),
+            ..Default::default()
+        },
+    ];
+    let mut guard = webhook::auth_flags("the MCP server");
+    if let Some(auth) = guard.iter_mut().find(|f| f.flag == "--auth") {
+        auth.description = "Who may call the server: none (open — must be written), jwt or api_key (each needs --credential). Every trigger.mcp on one route declares the same.".to_string();
+        auth.required = true;
+        auth.choices = AUTH_MODES.iter().map(|w| w.to_string()).collect();
+    }
+    dsl_flags.extend(guard);
+    dsl_flags.push(DslFlag {
+        flag: "--errors".to_string(),
+        config_key: "errors".to_string(),
+        description: "show or hide: what a failed run reveals in the tool error, overriding the project's errors switch (Settings → Addressing). Absent: the project decides.".to_string(),
+        kind: DslFlagKind::Scalar,
+        value: "text".to_string(),
+        choices: webhook::ERRORS_MODES.iter().map(|w| w.to_string()).collect(),
+        ..Default::default()
+    });
+
+    let mut fields = vec![
+        NodeFieldDef { name: "route".to_string(), label: "Route".to_string(), field_type: NodeFieldType::Text, help: Some("The server's path under /_mcp, e.g. /shop.".to_string()), ..Default::default() },
+        NodeFieldDef { name: "__webhook_public_url".to_string(), label: "Server URL".to_string(), field_type: NodeFieldType::CopyUrl, help: Some("The URL an MCP client connects to.".to_string()), ..Default::default() },
+        NodeFieldDef { name: "name".to_string(), label: "Tool Name".to_string(), field_type: NodeFieldType::Text, help: Some("The tool name agents call; unique on its route.".to_string()), ..Default::default() },
+        NodeFieldDef { name: "description".to_string(), label: "Description".to_string(), field_type: NodeFieldType::Textarea, help: Some("What the tool does and when an agent should call it.".to_string()), rows: Some(3), span: Some("full".to_string()), ..Default::default() },
+        NodeFieldDef {
+            name: "schema".to_string(),
+            label: "Arguments".to_string(),
+            field_type: NodeFieldType::ParamsBuilder,
+            help: Some("The arguments the tool takes. Required ones are enforced before the run.".to_string()),
+            default_value: Some(json!({ "type": "object", "required": [], "properties": {} })),
+            span: Some("full".to_string()),
+            ..Default::default()
+        },
+    ];
+    for mut field in webhook::auth_fields("Refused before any run: 401, or 403 for a missing role.") {
+        if field.name == "auth" {
+            field.options.retain(|o| AUTH_MODES.contains(&o.value.as_str()));
+        }
+        fields.push(field);
+    }
+    fields.push(NodeFieldDef {
+        name: "errors".to_string(),
+        label: "Errors".to_string(),
+        field_type: NodeFieldType::Select,
+        options: vec![
+            SelectOptionDef { value: String::new(), label: "Project decides".to_string() },
+            SelectOptionDef { value: "show".to_string(), label: "show".to_string() },
+            SelectOptionDef { value: "hide".to_string(), label: "hide".to_string() },
+        ],
+        help: Some("What a failed run reveals in the tool error. Empty: the project's errors switch decides.".to_string()),
+        ..Default::default()
+    });
+
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "MCP Tool Trigger".to_string(),
-        description: "Makes this pipeline a tool on the project's MCP endpoint. Once active, `--name` appears in `tools/list` and an \
-            agent calling it runs the pipeline. Answers one key, `mcp`: `{ tool_name, arguments }` — an argument is \
-            `input.mcp.arguments.<param>` (`$trigger.arguments.<param>`). `--params` declares the \
-            arguments as `name:type` pairs (`string`, `number`, `boolean`, `object`, `array`); `--description` is what the agent \
-            reads to decide when to call it — write it as a trigger, not a label. The answer the agent receives is the last node's \
-            payload as JSON; do not end in a page."
+        description: "Publishes this pipeline as one tool of an MCP server on a route of its own, for outside agents (ChatGPT, Claude, any MCP client). \
+            Every active trigger.mcp with the same `--route` is one tool of that route's server; another route is another server. \
+            The server answers on the mcp surface, off by default — `/_mcp/ROUTE` on the project's hosts, `/mcp/{owner}/{project}/ROUTE` on the platform — \
+            and never on the project's dev MCP. `--auth` is required (`none` publishes openly) and is the app's own — a key or a token from its credentials, never a Zebflow account or session. \
+            Answers one key, `mcp`: `{ route, tool_name, arguments }` — an argument is `input.mcp.arguments.<name>` \
+            (`$trigger.arguments.<name>` later). The tool result is what `web.response.send` answers (its `--body`), or the run's value \
+            without one; a status of 400 or more is a tool error with that body. \
+            In 0.11 the declaration is checked at save and activation; the route is served from 0.11.1."
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "properties": {
-                "tool_name": {
-                    "type": "string",
-                    "description": "The MCP tool name that was called."
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "The arguments passed by the AI agent."
-                }
-            }
+            "description": "The envelope the route's server builds: route, tool_name, arguments."
         }),
         output_schema: json!({
             "type": "object",
@@ -86,6 +169,7 @@ pub fn definition() -> NodeDefinition {
                 "mcp": {
                     "type": "object",
                     "properties": {
+                        "route": { "type": "string" },
                         "tool_name": { "type": "string" },
                         "arguments": { "type": "object" }
                     }
@@ -98,92 +182,39 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: json!({
             "type": "object",
-            "required": ["name"],
+            "required": ["route", "name", "auth"],
             "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "MCP tool name. Must be a valid identifier (letters, digits, underscores). This is how AI agents will call this tool."
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Human-readable description shown to AI agents explaining what this tool does."
-                },
-                "parameters": {
-                    "type": "string",
-                    "description": "Comma-separated name:type pairs defining the tool input schema. Types: string, number, integer, boolean, object, array. Example: name:string,age:number,active:boolean"
-                }
+                "route": { "type": "string", "description": "The path the MCP server answers on. Starts with /; never /_…." },
+                "name": { "type": "string", "description": "The tool name, unique on its route." },
+                "description": { "type": "string", "description": "What the tool does and when an agent should call it." },
+                "schema": { "type": "object", "description": "JSON Schema object of the tool's arguments." },
+                "auth": { "type": "string", "enum": AUTH_MODES, "description": "none, jwt or api_key; the same on every tool of a route." },
+                "credential_id": { "type": "string", "description": "The credential that verifies --auth. Required unless auth is none." },
+                "role": { "type": "array", "items": { "type": "string" }, "description": "Roles allowed in; one entry of the JWT 'roles' claim must match." },
+                "errors": { "type": "string", "enum": webhook::ERRORS_MODES, "description": "What a failed run reveals in the tool error: show or hide. Absent: the project decides." }
             }
         }),
-        dsl_flags: vec![
-            DslFlag {
-                flag: "--name".to_string(),
-                config_key: "name".to_string(),
-                description: "MCP tool name (e.g. greet_user). Must be a valid identifier."
-                    .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-                value: "text".to_string(),
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--description".to_string(),
-                config_key: "description".to_string(),
-                description: "What the tool does and when an agent should call it.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                value: "text".to_string(),
-                ..Default::default()
-            },
-            DslFlag {
-                flag: "--params".to_string(),
-                config_key: "parameters".to_string(),
-                description:
-                    "Comma-separated name:type pairs. Types: string, number, integer, boolean, object, array. Example: name:string,age:number"
-                        .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-                value: "text".to_string(),
-                ..Default::default()
-            },
-        ],
-        fields: vec![
-            NodeFieldDef {
-                name: "name".to_string(),
-                label: "Tool Name".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some(
-                    "MCP tool identifier. AI agents will call this tool by this name.".to_string(),
-                ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "description".to_string(),
-                label: "Description".to_string(),
-                field_type: NodeFieldType::Textarea,
-                help: Some("Human-readable description shown to AI agents.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "parameters".to_string(),
-                label: "Parameters".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some(
-                    "Comma-separated name:type pairs (e.g. name:string,age:number).".to_string(),
-                ),
-                ..Default::default()
-            },
-        ],
+        dsl_flags,
+        fields,
         layout: vec![
+            LayoutItem::Field("route".to_string()),
+            LayoutItem::Field("__webhook_public_url".to_string()),
             LayoutItem::Field("name".to_string()),
             LayoutItem::Field("description".to_string()),
-            LayoutItem::Field("parameters".to_string()),
+            LayoutItem::Field("schema".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("auth".to_string()), LayoutItem::Field("credential_id".to_string())] },
+            LayoutItem::Field("role".to_string()),
+            LayoutItem::Field("errors".to_string()),
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("A tool that looks up stock", r#"trigger.mcp --name stock_lookup --description "Current stock level for one SKU. Use before promising availability." --params sku:string"#)
-                .input(serde_json::json!({ "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } }))
-                .output(serde_json::json!({ "mcp": { "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } } }))
-                .note("Then `| sekejap.query.run --param \"1={{ input.mcp.arguments.sku }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\"`."),
+            crate::pipeline::model::NodeExample::dsl(
+                "A tool on a protected server",
+                r#"trigger.mcp --route /shop --name stock_lookup --description "Current stock level for one SKU. Use before promising availability." --parameter sku:string! "The SKU to look up." --auth api_key --credential shop-mcp-key"#,
+            )
+            .input(json!({ "route": "/shop", "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } }))
+            .output(json!({ "mcp": { "route": "/shop", "tool_name": "stock_lookup", "arguments": { "sku": "MUG-01" } } }))
+            .note("Then `| sekejap.query.run --param \"1={{ input.mcp.arguments.sku }}\" -- \"SELECT sku, on_hand FROM stock WHERE sku = $1\" | web.response.send --body \"{{ input.query.rows }}\"`. An MCP client will connect to `/_mcp/shop` on the project's host with an `X-API-Key` header (served from 0.11.1)."),
         ],
         ..Default::default()
     }
@@ -192,22 +223,53 @@ pub fn definition() -> NodeDefinition {
 /// Configuration for `trigger.mcp`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// MCP tool name — the identifier used in `tools/list` and `tools/call`.
+    #[serde(default)]
+    pub route: String,
+    /// The tool name in `tools/list` and `tools/call`.
+    #[serde(default)]
     pub name: String,
-
-    /// Human-readable tool description shown to AI agents.
     #[serde(default)]
     pub description: String,
-
-    /// Comma-separated `name:type` pairs defining the input schema.
-    /// Example: `"name:string,age:number,active:boolean"`
+    /// JSON Schema object of the arguments (`--parameter`).
     #[serde(default)]
-    pub parameters: String,
+    pub schema: Value,
+    #[serde(default)]
+    pub auth: String,
+    #[serde(default)]
+    pub credential_id: String,
+    #[serde(default)]
+    pub role: Vec<String>,
+    #[serde(default)]
+    pub errors: String,
+}
+
+/// The tool's input schema: the declared `--parameter`s, an open object when
+/// none is declared — the same reading `trigger.function` gives its own.
+pub fn input_schema_from_config(config: &Value) -> Value {
+    super::function::input_schema_from_config(config)
+}
+
+/// `true` for a tool name MCP clients accept: 1–128 of letters, digits, `_`,
+/// `-` and `.`.
+pub fn valid_tool_name(name: &str) -> bool {
+    (1..=128).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+/// A route as the server compares it: a leading `/`, no trailing one.
+pub fn normalize_route(route: &str) -> String {
+    let trimmed = route.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
 }
 
 /// `trigger.mcp` node instance.
 pub struct Node {
-    #[allow(dead_code)]
     config: Config,
 }
 
@@ -233,63 +295,16 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        // The MCP dispatch handler built `{ tool_name, arguments }`.
+        // The route's server built `{ route, tool_name, arguments }`.
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: super::answer_under(ANSWER_KEY, input.payload),
-            trace: vec![format!("trigger.mcp: tool={}", self.config.name)],
+            trace: vec![format!(
+                "trigger.mcp: route={} tool={}",
+                self.config.route, self.config.name
+            )],
         })
     }
-}
-
-/// Parse a `name:type` parameter string into a JSON Schema object.
-///
-/// Input: `"name:string,age:number,active:boolean"`
-/// Output:
-/// ```json
-/// {
-///   "type": "object",
-///   "properties": {
-///     "name": {"type": "string"},
-///     "age": {"type": "number"},
-///     "active": {"type": "boolean"}
-///   },
-///   "required": ["name", "age", "active"]
-/// }
-/// ```
-pub fn params_to_json_schema(params: &str) -> serde_json::Value {
-    let mut properties = serde_json::Map::new();
-    let mut required = Vec::new();
-
-    for pair in params.split(',') {
-        let pair = pair.trim();
-        if pair.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = pair.splitn(2, ':').collect();
-        let name = parts[0].trim();
-        if name.is_empty() {
-            continue;
-        }
-        let type_str = if parts.len() > 1 {
-            parts[1].trim()
-        } else {
-            "string"
-        };
-        // Validate JSON Schema type
-        let json_type = match type_str {
-            "string" | "number" | "integer" | "boolean" | "object" | "array" => type_str,
-            _ => "string",
-        };
-        properties.insert(name.to_string(), json!({"type": json_type}));
-        required.push(serde_json::Value::String(name.to_string()));
-    }
-
-    json!({
-        "type": "object",
-        "properties": properties,
-        "required": required
-    })
 }
 
 #[cfg(test)]
@@ -297,27 +312,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn params_to_json_schema_parses_name_type_pairs() {
-        let schema = params_to_json_schema("name:string,age:number,active:boolean");
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["properties"]["name"]["type"], "string");
-        assert_eq!(schema["properties"]["age"]["type"], "number");
-        assert_eq!(schema["properties"]["active"]["type"], "boolean");
-        let required = schema["required"].as_array().unwrap();
-        assert_eq!(required.len(), 3);
+    fn parameters_become_the_tool_input_schema() {
+        let config = json!({
+            "schema": {
+                "type": "object",
+                "properties": { "q": { "type": "string", "description": "words" }, "limit": { "type": "integer" } },
+                "required": ["q"]
+            }
+        });
+        let schema = input_schema_from_config(&config);
+        assert_eq!(schema["properties"]["q"]["type"], "string");
+        assert_eq!(schema["required"], json!(["q"]));
+        assert_eq!(input_schema_from_config(&json!({}))["properties"], json!({}));
     }
 
     #[test]
-    fn params_to_json_schema_handles_empty_string() {
-        let schema = params_to_json_schema("");
-        assert_eq!(schema["type"], "object");
-        assert!(schema["properties"].as_object().unwrap().is_empty());
-        assert!(schema["required"].as_array().unwrap().is_empty());
+    fn tool_names_and_routes_are_read_one_way() {
+        assert!(valid_tool_name("search"));
+        assert!(valid_tool_name("catalog.search-v2"));
+        assert!(!valid_tool_name(""));
+        assert!(!valid_tool_name("two words"));
+        assert_eq!(normalize_route("/mcp/shop/"), "/mcp/shop");
+        assert_eq!(normalize_route("mcp/shop"), "/mcp/shop");
+        assert_eq!(normalize_route("/"), "/");
     }
 
     #[test]
-    fn params_to_json_schema_defaults_missing_type_to_string() {
-        let schema = params_to_json_schema("name");
-        assert_eq!(schema["properties"]["name"]["type"], "string");
+    fn auth_is_required_and_closed_without_hmac() {
+        let def = definition();
+        let auth = def.dsl_flags.iter().find(|f| f.flag == "--auth").expect("--auth");
+        assert!(auth.required);
+        assert_eq!(auth.choices, vec!["none", "jwt", "api_key"]);
+        assert!(def.dsl_flags.iter().all(|f| f.flag != "--params"));
     }
 }

@@ -24,6 +24,19 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "There is nothing at this address.").into_response()
 }
 
+/// A path with a segment starting with `.` names something no visitor asks
+/// for — the `.zebflow-static-site.json` manifest a generator writes names
+/// the site's template paths — so it answers like a missing file. Only
+/// `/.well-known/…` is a visitor's path (RFC 8615). Read after decoding, so
+/// `%2e` is a dot too.
+fn hidden_path(decoded: &str) -> bool {
+    decoded
+        .trim_start_matches('/')
+        .split('/')
+        .enumerate()
+        .any(|(index, segment)| segment.starts_with('.') && !(index == 0 && segment == ".well-known"))
+}
+
 fn object_response(rel: &str, bytes: Vec<u8>) -> Response {
     let mut resp = Response::new(Body::from(bytes));
     *resp.status_mut() = StatusCode::OK;
@@ -43,7 +56,11 @@ pub(super) async fn file_host_response(
     project: &str,
     path: &str,
 ) -> Response {
-    let Ok(rel) = normalize_object_path(&percent_decode(path)) else {
+    let decoded = percent_decode(path);
+    if hidden_path(&decoded) {
+        return not_found();
+    }
+    let Ok(rel) = normalize_object_path(&decoded) else {
         return not_found();
     };
     let layout = match state.platform.file.ensure_project_layout(owner, project) {
@@ -82,6 +99,9 @@ pub(super) fn execute_site_response(
     })?;
 
     let request_rel = percent_decode(path);
+    if hidden_path(&request_rel) {
+        return Some(not_found());
+    }
     let request_rel = request_rel.trim_start_matches('/');
     let zebfs = layout.open_files();
     for candidate in site_candidates(&folder, request_rel) {
@@ -148,9 +168,12 @@ fn percent_decode(path: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        // Read on bytes: a `%` before a multi-byte character is not an
+        // escape, and slicing the str there would split the character.
         if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(value) = u8::from_str_radix(&path[i + 1..i + 3], 16)
+            && i + 3 <= bytes.len()
+            && let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3])
+            && let Ok(value) = u8::from_str_radix(hex, 16)
         {
             out.push(value);
             i += 3;
@@ -164,7 +187,21 @@ fn percent_decode(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{origin_matches, percent_decode, site_candidates};
+    use super::{hidden_path, origin_matches, percent_decode, site_candidates};
+
+    #[test]
+    fn a_dot_segment_is_hidden_except_well_known() {
+        assert!(hidden_path("/.zebflow-static-site.json"));
+        assert!(hidden_path("/docs/.zebflow-static-site.json"));
+        assert!(hidden_path(&percent_decode("/%2Ezebflow-static-site.json")));
+        assert!(hidden_path("/a/.git/config"));
+        assert!(hidden_path("/.well-known/.hidden"));
+        assert!(!hidden_path("/.well-known/security.txt"));
+        assert!(!hidden_path("/docs/v1.2/index.html"));
+        assert!(!hidden_path("/"));
+        assert!(hidden_path(&percent_decode("/a/%2e")), "an escape at the very end decodes too");
+        assert_eq!(percent_decode("/caf%C3%A9/%é"), "/café/%é", "a % before a multi-byte character is kept");
+    }
 
     #[test]
     fn a_site_path_tries_the_object_then_its_index_then_html() {

@@ -80,7 +80,7 @@ impl Surface {
             Surface::Files => "/_files/",
             Surface::Static => "/_static/",
             Surface::Ms => "/_ms/",
-            Surface::Mcp => "/_mcp",
+            Surface::Mcp => "/_mcp/",
         }
     }
 
@@ -94,14 +94,16 @@ impl Surface {
             Surface::Files => return None,
             Surface::Static => format!("/static/{owner}/{project}"),
             Surface::Ms => format!("/ms/{owner}/{project}"),
-            Surface::Mcp => format!("/api/projects/{owner}/{project}/mcp"),
+            Surface::Mcp => format!("/mcp/{owner}/{project}"),
         })
     }
 
     /// Off unless the project turned it on: tiles need a published layer,
-    /// private files need a reason to be reachable at all, and the agent
-    /// endpoint on a public host is a door nobody asked for — agents work
-    /// through the platform address, which this switch never touches.
+    /// private files need a reason to be reachable at all, and a published
+    /// MCP server is a door to the app's functions, so publishing one takes
+    /// switching this on as well as declaring `--auth` on each route
+    /// (`published-mcp.md`). The switch governs both forms. The project's
+    /// dev MCP is not a surface: it answers only on the platform address.
     pub fn enabled_by_default(self) -> bool {
         !matches!(self, Surface::Ms | Surface::Files | Surface::Mcp)
     }
@@ -113,7 +115,7 @@ impl Surface {
             Surface::Files => "Exposed files (sandboxed)",
             Surface::Static => "Static assets and scripts",
             Surface::Ms => "Map tiles",
-            Surface::Mcp => "MCP",
+            Surface::Mcp => "Published MCP servers",
         }
     }
 }
@@ -236,7 +238,7 @@ impl Resolution {
         let prefix = self.surface.platform_prefix(&self.owner, &self.project)?;
         Some(if self.rest == "/" {
             match self.surface {
-                Surface::Pages | Surface::Mcp => prefix,
+                Surface::Pages => prefix,
                 _ => format!("{prefix}/"),
             }
         } else {
@@ -554,6 +556,7 @@ impl AddressingService {
             "ws" => Surface::Ws,
             "static" => Surface::Static,
             "ms" => Surface::Ms,
+            "mcp" => Surface::Mcp,
             _ => return false,
         };
         let project = project.split(['?', '#']).next().unwrap_or(project);
@@ -587,8 +590,8 @@ fn valid_host(host: &str) -> bool {
         })
 }
 
-/// A route path: starts with `/`; a prefix ends with `/` except the exact
-/// mounts (`/_mcp`); pages may only be `/`.
+/// A route path: starts with `/`; a prefix ends with `/`; pages may only be
+/// `/`.
 fn normalize_route_path(raw: &str, surface: Surface) -> Result<String, PlatformError> {
     let mut path = raw.trim().to_string();
     if path.is_empty() {
@@ -603,7 +606,7 @@ fn normalize_route_path(raw: &str, surface: Surface) -> Result<String, PlatformE
             "pages answer at the root of a host or not at all — a page's links are root-relative and would escape a sub-path",
         ));
     }
-    if surface != Surface::Pages && surface != Surface::Mcp && !path.ends_with('/') {
+    if surface != Surface::Pages && !path.ends_with('/') {
         path.push('/');
     }
     if path.contains("..") || path.contains('?') || path.contains('#') || path.contains(' ') {
@@ -656,8 +659,9 @@ mod tests {
     fn default_mounts_put_pages_at_the_root_and_surfaces_under_underscore() {
         assert!(path_matches("/book", "/"));
         assert!(path_matches("/_files/a.jpg", Surface::Files.default_path()));
-        assert!(path_matches("/_mcp", Surface::Mcp.default_path()));
+        assert!(path_matches("/_mcp/shop", Surface::Mcp.default_path()));
         assert!(!path_matches("/_mcpx", Surface::Mcp.default_path()));
+        assert_eq!(strip_prefix("/_mcp/shop", Surface::Mcp.default_path()), "/shop");
         assert_eq!(strip_prefix("/_files/a.jpg", "/_files/"), "/a.jpg");
         assert_eq!(strip_prefix("/_files", "/_files/"), "/");
         assert_eq!(strip_prefix("/service/tiles/1/2/3", "/service/"), "/tiles/1/2/3");
@@ -668,7 +672,7 @@ mod tests {
         assert!(normalize_route_path("/shop/", Surface::Pages).is_err());
         assert_eq!(normalize_route_path("service", Surface::Ms).unwrap(), "/service/");
         assert_eq!(normalize_route_path("", Surface::Files).unwrap(), "/");
-        assert_eq!(normalize_route_path("/_mcp", Surface::Mcp).unwrap(), "/_mcp");
+        assert_eq!(normalize_route_path("/agents", Surface::Mcp).unwrap(), "/agents/");
     }
 
     #[test]

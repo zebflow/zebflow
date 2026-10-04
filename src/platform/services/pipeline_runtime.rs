@@ -108,16 +108,39 @@ pub struct WsClientTriggerSpec {
     pub parse: String,
 }
 
-/// One extracted MCP trigger from an active compiled pipeline.
+/// One extracted `trigger.mcp` from an active compiled pipeline: one tool of
+/// the published MCP server on its route (`published-mcp.md`). Read only by
+/// that route's server, never by the project's dev MCP.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpTriggerSpec {
     pub node_id: String,
-    /// MCP tool name — the identifier used in `tools/list` and `tools/call`.
+    /// The route the server answers on, normalized (`/shop`), relative to
+    /// the `mcp` surface (`/_mcp/shop`, `/mcp/{o}/{p}/shop`).
+    pub route: String,
+    /// The tool name in `tools/list` and `tools/call`, unique on its route.
     pub tool_name: String,
-    /// Human-readable tool description shown to AI agents.
+    /// What the agent reads to decide when to call the tool.
     pub tool_description: String,
-    /// JSON Schema object describing the tool input parameters.
+    /// JSON Schema object of the tool's arguments (`--parameter`).
     pub input_schema: serde_json::Value,
+    /// `none`, `jwt` or `api_key` — the same on every tool of a route.
+    pub auth_type: String,
+    #[serde(default)]
+    pub auth_credential: String,
+    #[serde(default)]
+    pub auth_required_role: Vec<String>,
+    /// `show` or `hide`; empty means the project decides.
+    #[serde(default)]
+    pub errors: String,
+}
+
+impl McpTriggerSpec {
+    /// The guard of the route, compared across its tools: `(auth, credential, roles)`.
+    pub fn guard(&self) -> (String, String, Vec<String>) {
+        let mut roles = self.auth_required_role.clone();
+        roles.sort();
+        (self.auth_type.clone(), self.auth_credential.clone(), roles)
+    }
 }
 
 /// Execution-ready active pipeline entry.
@@ -356,35 +379,7 @@ impl CompiledPipeline {
                     }
                 }
                 "trigger.mcp" => {
-                    let tool_name = node
-                        .config
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let tool_description = node
-                        .config
-                        .get("description")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let params_str = node
-                        .config
-                        .get("parameters")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default();
-                    let input_schema =
-                        crate::pipeline::nodes::basic::trigger::mcp_trigger::params_to_json_schema(
-                            params_str,
-                        );
-                    if !tool_name.is_empty() {
-                        mcp_triggers.push(McpTriggerSpec {
-                            node_id: node.id.clone(),
-                            tool_name,
-                            tool_description,
-                            input_schema,
-                        });
-                    }
+                    mcp_triggers.push(mcp_trigger_spec(meta, node)?);
                 }
                 // Bundle-provided nodes declare their trigger role in the
                 // package manifest; a kind no manifest names is not a trigger.
@@ -527,6 +522,67 @@ fn check_trigger_flags(
         choice(&text("errors"), &webhook::ERRORS_MODES, "show", "--errors", code).map_err(refuse)?;
     }
     Ok(())
+}
+
+/// A `trigger.mcp` as its route's server reads it, refused at activation
+/// when it cannot publish: a route that is not a path, a tool name MCP
+/// clients refuse, `--auth` missing or outside its words (publishing is never
+/// implicit), a guard without its credential, a role without `jwt`.
+fn mcp_trigger_spec(
+    meta: &PipelineMeta,
+    node: &crate::pipeline::PipelineNode,
+) -> Result<McpTriggerSpec, PlatformError> {
+    use crate::pipeline::nodes::basic::trigger::{mcp_trigger, webhook};
+    use crate::pipeline::nodes::shared::limits::choice;
+    let code = mcp_trigger::CONFIG_CODE;
+    let refuse = |message: String| trigger_refused(meta, node, crate::pipeline::PipelineError::new(code, message));
+    let text = |key: &str| {
+        node.config
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let raw_route = text("route");
+    if !raw_route.starts_with('/') || raw_route.contains([':', '*', '?', '#', ' ']) || raw_route.contains("..") {
+        return Err(refuse(format!(
+            "--route '{raw_route}' must be a path starting with / and without parameters (`/shop`); it is served at /_mcp/… on the project's hosts"
+        )));
+    }
+    let tool_name = text("name");
+    if !mcp_trigger::valid_tool_name(&tool_name) {
+        return Err(refuse(format!(
+            "--name '{tool_name}' must be 1–128 letters, digits, `_`, `-` or `.` — the name MCP clients call"
+        )));
+    }
+    let auth = text("auth");
+    if auth.is_empty() {
+        return Err(refuse("--auth is required: none (open), jwt or api_key — publishing is never implicit".to_string()));
+    }
+    let auth = choice(&auth, &mcp_trigger::AUTH_MODES, "none", "--auth", code)
+        .map_err(|err| trigger_refused(meta, node, err))?
+        .to_string();
+    let (_, auth_credential, auth_required_role) = trigger_auth(&node.config);
+    if auth != "none" && auth_credential.trim().is_empty() {
+        return Err(refuse(format!("--auth {auth} needs --credential naming the credential that verifies it")));
+    }
+    if !auth_required_role.is_empty() && auth != "jwt" {
+        return Err(refuse("--role checks JWT claims: it needs --auth jwt".to_string()));
+    }
+    let errors = choice(&text("errors"), &webhook::ERRORS_MODES, "", "--errors", code)
+        .map_err(|err| trigger_refused(meta, node, err))?;
+    Ok(McpTriggerSpec {
+        node_id: node.id.clone(),
+        route: mcp_trigger::normalize_route(&raw_route),
+        tool_name,
+        tool_description: text("description"),
+        input_schema: mcp_trigger::input_schema_from_config(&node.config),
+        auth_type: auth,
+        auth_credential,
+        auth_required_role,
+        errors: errors.to_string(),
+    })
 }
 
 /// Production runtime registry for activated pipelines.
@@ -784,10 +840,12 @@ mod trigger_tests {
 
     #[test]
     fn mcp_topic_and_error_triggers_register_under_their_new_words() {
-        let compiled = compile("| trigger.mcp --name stock_lookup --description \"Stock for one SKU.\" --params sku:string").expect("compiles");
+        let compiled = compile("| trigger.mcp --route /shop/ --name stock_lookup --description \"Stock for one SKU.\" --parameter sku:string! \"The SKU.\" --auth api_key --credential shop-key").expect("compiles");
         let spec = &compiled.mcp_triggers[0];
-        assert_eq!((spec.tool_name.as_str(), spec.tool_description.as_str()), ("stock_lookup", "Stock for one SKU."));
+        assert_eq!((spec.route.as_str(), spec.tool_name.as_str(), spec.tool_description.as_str()), ("/shop", "stock_lookup", "Stock for one SKU."));
         assert_eq!(spec.input_schema["properties"]["sku"]["type"], "string");
+        assert_eq!(spec.input_schema["required"], serde_json::json!(["sku"]));
+        assert_eq!((spec.auth_type.as_str(), spec.auth_credential.as_str()), ("api_key", "shop-key"));
 
         let compiled = compile("| trigger.topic --topic order.placed").expect("compiles");
         assert_eq!(compiled.kv_subscribe_triggers[0].channel, "order.placed");
@@ -796,6 +854,26 @@ mod trigger_tests {
         assert_eq!(compiled.weberror_triggers[0].code, "404");
         let compiled = compile("| trigger.error --status 5xx").expect("compiles");
         assert_eq!(compiled.weberror_triggers[0].code, "5xx");
+    }
+
+    /// Publishing is never implicit: `--auth` is required, a guard needs its
+    /// credential, a role needs jwt, and a route is a plain path.
+    #[test]
+    fn a_published_tool_is_refused_at_activation_without_a_clear_guard() {
+        for dsl in [
+            "| trigger.mcp --route /shop --name search",
+            "| trigger.mcp --route /shop --name search --auth api_key",
+            "| trigger.mcp --route /shop --name search --auth none --role admin",
+            "| trigger.mcp --route /shop/:id --name search --auth none",
+            "| trigger.mcp --route /shop --name \"two words\" --auth none",
+        ] {
+            assert!(compile(dsl).is_err(), "{dsl} must be refused");
+        }
+        let err = compile("| trigger.mcp --route /shop --name search --auth hmac --credential k").err().expect("refused");
+        assert_eq!(err.code, "FW_NODE_TRIGGER_MCP_CONFIG", "hmac is not a word a published route takes");
+        let open = compile("| trigger.mcp --route /shop --name search --auth none").expect("none is written, so it publishes");
+        assert_eq!(open.mcp_triggers[0].auth_type, "none");
+        assert!(open.webhook_triggers.is_empty(), "a published tool is never a webhook route");
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! | `trigger.manual` | `manual: <the caller's input>` (the Run form sends `{ body, files }`) |
 //! | `trigger.schedule` | `schedule: { trigger, fired_at, node_id }` |
 //! | `trigger.function` | `function: <the caller's arguments>` |
-//! | `trigger.mcp` | `mcp: { tool_name, arguments }` |
+//! | `trigger.mcp` | `mcp: { route, tool_name, arguments }` |
 //! | `trigger.error` | `error: { error_code, error_message, original_path, path, method, request_id, … }` |
 //! | `trigger.room` | `room: { room_id, session_id, event, payload, auth? }` |
 //! | `trigger.socket` | `socket: { trigger, url, node_id, message }` |

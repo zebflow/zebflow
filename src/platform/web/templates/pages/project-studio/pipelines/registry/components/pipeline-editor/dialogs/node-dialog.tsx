@@ -174,13 +174,14 @@ export default function NodeDialog({
       .finally(() => setFunctionParamsLoading(false));
   }, [kind, formState.function]);
 
-  // Sync webhook URL field when the route changes
+  // Sync the URL field when the route changes: a webhook answers at the
+  // route, a published MCP server under the `mcp` surface (`/_mcp/ROUTE`).
   useEffect(() => {
-    if (kind !== "trigger.webhook") return;
+    if (kind !== "trigger.webhook" && kind !== "trigger.mcp") return;
     const path = String(formState.route || "/");
     const base = webhookBaseUrl || (typeof window !== "undefined" ? window.location.origin : "");
     const norm = path.startsWith("/") ? path : `/${path}`;
-    const url = norm === "/" ? base : `${base}${norm}`;
+    const url = kind === "trigger.mcp" ? `${base}/_mcp${norm === "/" ? "/" : norm}` : norm === "/" ? base : `${base}${norm}`;
     setFormState((prev) => ({ ...prev, __webhook_public_url: url }));
   }, [formState.route, kind]);
 

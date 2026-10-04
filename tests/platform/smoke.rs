@@ -6934,9 +6934,9 @@ async fn preview_refuses_a_subject_without_project_capabilities() {
 /// people's projects — and then deleted, with every refusal checked on the
 /// way and no footprint left at the end.
 /// docs/contracts/addressing.md §2: the dev host is the Studio's, a named
-/// host is the public's. On `research.test` the platform API and `/_mcp` are
-/// not there at all until the project switches `mcp` on; the dev host keeps
-/// serving them so the Studio's preview and an agent's session keep working.
+/// host is the public's. On `research.test` the platform API is not there at
+/// all until the project switches `api_on_hosts` on, and `/_mcp` (the app's
+/// published MCP servers) until it switches `mcp` on.
 #[tokio::test]
 async fn a_named_host_serves_only_the_site_until_mcp_is_switched_on() {
     let mut config = PlatformConfig::default();
@@ -6984,7 +6984,7 @@ async fn a_named_host_serves_only_the_site_until_mcp_is_switched_on() {
     let platform = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/pipelines").header(header::COOKIE, &cookie).body(Body::empty()).expect("request")).await.expect("platform");
     assert_eq!(platform.status(), StatusCode::OK);
 
-    // Switch api_on_hosts and mcp on: the named host now serves the API (still behind auth) and the agent endpoint.
+    // Switch api_on_hosts and mcp on: the named host now serves the API (still behind auth), never the dev MCP.
     let saved = app.clone().oneshot(Request::builder().uri("/api/projects/superadmin/default/settings/addressing").method("PUT")
         .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(json!({ "data": { "hosts": ["research.test"], "routes": [], "disabled": ["fs", "ms"], "api_on_hosts": true } }).to_string())).expect("request")).await.expect("addressing write");
@@ -6993,8 +6993,12 @@ async fn a_named_host_serves_only_the_site_until_mcp_is_switched_on() {
     assert_eq!(api_anon.status(), StatusCode::UNAUTHORIZED, "reachable now, and still authenticated");
     let api = app.clone().oneshot(status("research.test", "/api/projects/superadmin/default/pipelines", true)).await.expect("api");
     assert_eq!(api.status(), StatusCode::OK);
-    let mcp = app.clone().oneshot(status("research.test", "/_mcp", false)).await.expect("mcp");
-    assert_ne!(mcp.status(), StatusCode::NOT_FOUND, "/_mcp answers (and refuses without a bearer) once switched on");
+    // `/_mcp` is the published servers' mount, never the dev MCP: a route
+    // nothing publishes is still nothing.
+    let mcp = app.clone().oneshot(status("research.test", "/_mcp/tools", false)).await.expect("mcp");
+    assert_eq!(mcp.status(), StatusCode::NOT_FOUND, "no published server on that route");
+    let dev_mcp = app.clone().oneshot(status("research.test", "/api/projects/superadmin/default/mcp", false)).await.expect("dev mcp");
+    assert_eq!(dev_mcp.status(), StatusCode::NOT_FOUND, "the dev MCP never answers on a project host");
 }
 
 /// docs/contracts/project.md "Git": a conflict is a state the Studio resolves,

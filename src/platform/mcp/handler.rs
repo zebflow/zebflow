@@ -1600,185 +1600,12 @@ impl ZebflowMcpHandler {
             })
     }
 
-    // ── MCP trigger helpers ────────────────────────────────────────────────
-
     /// Extract session from RequestContext extensions (used by manual ServerHandler impl).
     fn session_from_context(&self, context: &RequestContext<RoleServer>) -> Option<McpSession> {
         context
             .extensions
             .get::<http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<McpSession>().cloned())
-    }
-
-    /// Convert an McpTriggerSpec into an rmcp Tool for tools/list.
-    fn mcp_trigger_spec_to_tool(
-        &self,
-        spec: &crate::platform::services::pipeline_runtime::McpTriggerSpec,
-    ) -> Tool {
-        let input_schema = spec.input_schema.as_object().cloned().unwrap_or_default();
-        Tool {
-            name: spec.tool_name.clone().into(),
-            title: None,
-            description: if spec.tool_description.is_empty() {
-                None
-            } else {
-                Some(spec.tool_description.clone().into())
-            },
-            input_schema: std::sync::Arc::new(input_schema),
-            output_schema: None,
-            annotations: None,
-            execution: None,
-            icons: None,
-            meta: None,
-        }
-    }
-
-    /// Dispatch an MCP tool call to a pipeline with a matching mcp_trigger.
-    async fn mcp_trigger_dispatch(
-        &self,
-        tool_name: &str,
-        arguments: Option<serde_json::Map<String, serde_json::Value>>,
-        context: &RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.session_from_context(context).ok_or_else(|| {
-            McpError::invalid_params("No active MCP session for dynamic tool dispatch", None)
-        })?;
-
-        // Find the pipeline containing this tool.
-        let pipelines = self
-            .platform
-            .pipeline_runtime
-            .list_project(&session.owner, &session.project);
-
-        let (compiled, _spec) = pipelines
-            .iter()
-            .find_map(|p| {
-                p.mcp_triggers
-                    .iter()
-                    .find(|s| s.tool_name == tool_name)
-                    .map(|s| (p, s))
-            })
-            .ok_or_else(|| McpError::invalid_params(format!("Unknown tool '{tool_name}'"), None))?;
-
-        // Build the pipeline engine (same pattern as webhook/manual dispatch).
-        let credentials = self.platform.credentials.clone();
-        let engine = crate::pipeline::engines::basic::BasicPipelineEngine::new(
-            std::sync::Arc::new(
-                self.platform
-                    .project_sandbox(&session.owner, &session.project),
-            ),
-            crate::rwe::resolve_engine_or_default(None),
-            Some(credentials),
-        )
-        .with_platform(self.platform.clone())
-        .with_template_cache(self.template_cache.clone())
-        .with_project_layout(
-            self.platform
-                .projects
-                .project_layout(&session.owner, &session.project)
-                .ok(),
-        )
-        .with_ws_hub(self.platform.ws_hub.clone())
-        .with_state_bus(self.platform.state_bus.clone())
-        .with_data_root(self.platform.config.data_root.clone());
-
-        let request_id = format!("mcp-{}", uuid::Uuid::new_v4());
-        let input_payload = serde_json::json!({
-            "tool_name": tool_name,
-            "arguments": arguments.unwrap_or_default(),
-        });
-
-        let ctx = crate::pipeline::model::PipelineContext {
-            owner: session.owner.clone(),
-            project: session.project.clone(),
-            pipeline: compiled.graph.id.clone(),
-            request_id: request_id.clone(),
-            route: Default::default(),
-            input: input_payload.clone(),
-            // `$trigger` is the envelope `trigger.mcp` answers under `mcp`,
-            // with where the call came from beside it.
-            trigger: Some(serde_json::json!({
-                "tool_name": tool_name,
-                "arguments": input_payload["arguments"].clone(),
-                "kind": "mcp",
-                "source": format!("tools/call:{tool_name}"),
-            })),
-            placeholder: None,
-        };
-
-        let exec_start = std::time::Instant::now();
-
-        match crate::pipeline::interface::PipelineEngine::execute_async(
-            &engine,
-            &compiled.graph,
-            &ctx,
-        )
-        .await
-        {
-            Ok(output) => {
-                self.platform.pipeline_hits.record_success(
-                    &session.owner,
-                    &session.project,
-                    &compiled.file_rel_path,
-                );
-                let _ = self.platform.data.log_pipeline_invocation(
-                    &session.owner,
-                    &session.project,
-                    &compiled.file_rel_path,
-                    &crate::platform::model::PipelineInvocationEntry {
-                        run_id: request_id,
-                        at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as i64,
-                        duration_ms: exec_start.elapsed().as_millis() as u64,
-                        status: "ok".to_string(),
-                        trigger: format!("mcp:{tool_name}"),
-                        error: None,
-                        trace: output.node_trace.clone(),
-                    },
-                    50,
-                    Some(86400),
-                );
-
-                let result_text = serde_json::to_string_pretty(&output.value)
-                    .unwrap_or_else(|_| format!("{:?}", output.value));
-                Ok(CallToolResult::success(vec![Content::text(result_text)]))
-            }
-            Err(err) => {
-                self.platform.pipeline_hits.record_failure(
-                    &session.owner,
-                    &session.project,
-                    &compiled.file_rel_path,
-                    &format!("mcp:{tool_name}"),
-                    err.code,
-                    &err.message,
-                );
-                let _ = self.platform.data.log_pipeline_invocation(
-                    &session.owner,
-                    &session.project,
-                    &compiled.file_rel_path,
-                    &crate::platform::model::PipelineInvocationEntry {
-                        run_id: request_id,
-                        at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as i64,
-                        duration_ms: exec_start.elapsed().as_millis() as u64,
-                        status: "error".to_string(),
-                        trigger: format!("mcp:{tool_name}"),
-                        error: Some(err.message.clone()),
-                        trace: err.node_trace.clone(),
-                    },
-                    50,
-                    Some(86400),
-                );
-                Err(McpError::internal_error(
-                    format!("Pipeline execution failed: {}", err.message),
-                    None,
-                ))
-            }
-        }
     }
 
     /// An owner-only tool: a session's capabilities are whatever its creator
@@ -1885,25 +1712,13 @@ impl ServerHandler for ZebflowMcpHandler {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let mut tools = self.tool_router.list_all();
-
-        // Merge dynamic MCP trigger tools from active pipelines.
-        if let Some(session) = self.session_from_context(&context) {
-            let pipelines = self
-                .platform
-                .pipeline_runtime
-                .list_project(&session.owner, &session.project);
-            for compiled in &pipelines {
-                for spec in &compiled.mcp_triggers {
-                    tools.push(self.mcp_trigger_spec_to_tool(spec));
-                }
-            }
-        }
-
+        // The dev tools and nothing else. A published `trigger.mcp` tool is
+        // the app's, served on its own route; this server never lists one
+        // (`published-mcp.md`).
         Ok(ListToolsResult {
-            tools,
+            tools: self.tool_router.list_all(),
             meta: None,
             next_cursor: None,
         })
@@ -1962,35 +1777,16 @@ impl ServerHandler for ZebflowMcpHandler {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Static tools — delegate to macro-generated tool router.
-        if self.tool_router.has_route(&request.name) {
-            let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-            return self.tool_router.call(tcc).await;
+        // The dev tools only: a published tool's name is unknown here.
+        if !self.tool_router.has_route(&request.name) {
+            return Err(McpError::invalid_params(format!("Unknown tool '{}'", request.name), None));
         }
-
-        // Dynamic MCP trigger tools — find matching pipeline and execute.
-        self.mcp_trigger_dispatch(&request.name, request.arguments, &context)
-            .await
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        // Check static router first.
-        if let Some(tool) = self.tool_router.get(name) {
-            return Some(tool.clone());
-        }
-
-        // Check dynamic MCP triggers — we don't have session context here,
-        // so scan all active pipelines. This is fine for validation purposes.
-        let all = self.platform.pipeline_runtime.list_all();
-        for compiled in &all {
-            for spec in &compiled.mcp_triggers {
-                if spec.tool_name == name {
-                    return Some(self.mcp_trigger_spec_to_tool(spec));
-                }
-            }
-        }
-
-        None
+        self.tool_router.get(name).cloned()
     }
 }
 

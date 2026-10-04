@@ -1187,6 +1187,56 @@ impl ProjectService {
         Ok(fs::read_to_string(abs)?)
     }
 
+    /// A published tool joins its route's server only if the route stays one
+    /// server (`published-mcp.md`): its name is not taken on that route by
+    /// another active pipeline, and every tool on the route declares the same
+    /// guard. Both refusals name both pipelines.
+    fn ensure_mcp_tools_publishable(
+        &self,
+        owner: &str,
+        project: &str,
+        candidate: &crate::platform::services::pipeline_runtime::CompiledPipeline,
+    ) -> Result<(), PlatformError> {
+        use crate::platform::services::pipeline_runtime::CompiledPipeline;
+        let mut published = Vec::new();
+        for meta in self.list_active_pipeline_meta(owner, project)? {
+            if meta.file_rel_path == candidate.file_rel_path {
+                continue;
+            }
+            let Ok(source) = self.read_active_pipeline_source(owner, project, &meta) else {
+                continue;
+            };
+            let Ok(other) = CompiledPipeline::from_active_meta(&meta, &source, None) else {
+                continue;
+            };
+            published.extend(other.mcp_triggers.into_iter().map(|spec| (meta.file_rel_path.clone(), spec)));
+        }
+        for spec in &candidate.mcp_triggers {
+            for (file, other) in published.iter().filter(|(_, other)| other.route == spec.route) {
+                if other.tool_name == spec.tool_name {
+                    return Err(PlatformError::new(
+                        "PLATFORM_PIPELINE_MCP_TOOL_TAKEN",
+                        format!(
+                            "MCP route {} already publishes a tool named '{}' from pipeline '{}'; pipeline '{}' cannot publish a second — rename one (--name)",
+                            spec.route, spec.tool_name, file, candidate.file_rel_path
+                        ),
+                    ));
+                }
+                if other.guard() != spec.guard() {
+                    return Err(PlatformError::new(
+                        "PLATFORM_PIPELINE_MCP_AUTH_MIXED",
+                        format!(
+                            "MCP route {} is one server with one guard: pipeline '{}' declares --auth {} and pipeline '{}' declares --auth {} (with --credential and --role compared too); declare the same on both",
+                            spec.route, file, describe_guard(other), candidate.file_rel_path, describe_guard(spec)
+                        ),
+                    ));
+                }
+            }
+            published.push((candidate.file_rel_path.clone(), spec.clone()));
+        }
+        Ok(())
+    }
+
     /// Promotes the current working-tree pipeline source to the production runtime snapshot.
     pub fn activate_pipeline_definition(
         &self,
@@ -1238,9 +1288,12 @@ impl ProjectService {
         // Compile before changing durable active state. The runtime registry
         // uses this same constructor after commit, so an invalid candidate can
         // never replace the last executable snapshot.
-        crate::platform::services::pipeline_runtime::CompiledPipeline::from_active_meta(
+        let compiled = crate::platform::services::pipeline_runtime::CompiledPipeline::from_active_meta(
             &meta, &source, None,
         )?;
+        if !compiled.mcp_triggers.is_empty() {
+            self.ensure_mcp_tools_publishable(&owner, &project, &compiled)?;
+        }
 
         let snapshot_path =
             self.runtime_pipeline_snapshot_path(&layout, &meta.file_rel_path, &current_hash)?;
@@ -3426,6 +3479,19 @@ fn path_remainder(current: &str, candidate: &str) -> Option<String> {
 
 fn stable_hash_hex(input: &str) -> String {
     format!("{:x}", Sha256::digest(input.as_bytes()))
+}
+
+/// A route's guard as a person reads it: `api_key (shop-key)`, `jwt (jwt_main, roles editor)`.
+fn describe_guard(spec: &crate::platform::services::pipeline_runtime::McpTriggerSpec) -> String {
+    let mut out = spec.auth_type.clone();
+    if !spec.auth_credential.is_empty() {
+        out.push_str(&format!(" ({}", spec.auth_credential));
+        if !spec.auth_required_role.is_empty() {
+            out.push_str(&format!(", roles {}", spec.auth_required_role.join(" ")));
+        }
+        out.push(')');
+    }
+    out
 }
 
 #[cfg(test)]

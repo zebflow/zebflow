@@ -6,3 +6,5 @@ mod path_containment;
 mod smoke;
 #[path = "platform/migration.rs"]
 mod migration;
+#[path = "platform/published_mcp.rs"]
+mod published_mcp;

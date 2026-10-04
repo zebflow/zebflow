@@ -176,6 +176,7 @@ pub fn start_here_way_in(node_count: usize) -> String {
          | where a file or URL lives, hosts, surfaces | `help topic=\"platform\"` |\n\
          | proving a route or page works | `skill_read name=\"zebflow-verify\"` |\n\
          | adding a Hub package | `skill_read name=\"zebflow-hub\"` |\n\
+         | publishing app functions to outside agents (an MCP server) | `skill_read name=\"zebflow-pipeline\"` — this session never lists or calls a published tool |\n\
          | anything else | `help_search query=\"…\"` |\n"
     )
 }
@@ -3055,13 +3056,9 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
             format!("trigger.topic {topic}")
         }
         "trigger.mcp" => {
-            let tool_name = node
-                .config
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or(&meta.name);
-            format!("trigger.mcp {tool_name}")
+            let text = |key: &str| node.config.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+            let tool_name = text("name").unwrap_or(&meta.name);
+            format!("trigger.mcp {} {tool_name}", text("route").unwrap_or("/"))
         }
         "trigger.function" => format!("trigger.function {}", meta.name),
         other => other.to_string(),

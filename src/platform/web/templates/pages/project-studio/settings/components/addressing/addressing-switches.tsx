@@ -23,6 +23,7 @@ export default function AddressingSwitches({ config, onChange, busy }) {
             disabled={busy}
           />
           <code className="font-mono text-[0.74rem] text-muted-foreground">/api/projects/…</code>
+          <span className="text-[0.74rem] text-muted-foreground">Never the dev MCP: it stays on the platform address.</span>
         </li>
         <li className="flex flex-wrap items-center gap-3 px-3 py-2">
           <Toggle

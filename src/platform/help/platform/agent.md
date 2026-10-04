@@ -118,8 +118,11 @@ Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 | `skill_list` / `skill_read` | the skills: the list, one body, one reference file |
 | `help`, `help_search`, `version` | knowledge and the platform version |
 
-Any active pipeline whose entry is `trigger.mcp` also appears here as a
-tool of its own, named by the pipeline.
+This server lists these tools and nothing else. A pipeline whose entry is
+`trigger.mcp` publishes a tool of the **app** on a route of the `mcp` surface
+(`/_mcp/ROUTE` on the project's hosts, off by default) for outside agents; it
+never appears here and cannot be called from here (`skill_read
+name="zebflow-pipeline"`, "Publishing an MCP server"; served from 0.11.1).
 
 ---
 

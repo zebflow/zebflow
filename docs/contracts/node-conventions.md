@@ -127,13 +127,13 @@ add a singular, unit-free noun.
 | --- | --- |
 | Who | `--credential` (a secret's id, never a value) `--provider` `--model` `--name` `--description` `--label` (what a person reads) `--auth` `--role` `--function` (a function pipeline, by name) |
 | Subject | `--from` (the subject, §2) `--id` (an existing object of this kind's noun: a message, record, layer) |
-| Typed inputs | `--image` `--video` `--audio` `--file` (repeat) · `--text` (text content) `--html` · `--body` (what goes over a wire) · `--value` (what a store write holds) · `--argument` (k=v: what a callable receives) · `--default` |
+| Typed inputs | `--image` `--video` `--audio` `--file` (repeat) · `--text` (text content) `--html` · `--body` (what goes over a wire) · `--value` (what a store write holds) · `--argument` (k=v: what a callable receives) `--parameter` (repeat, `name:type[!] "doc"`: what a callable declares) · `--default` |
 | Generation | `--prompt` `--system-prompt` `--seed` `--duration` `--aspect` `--first-frame` `--last-frame` `--mask` `--reference` (repeat) `--schema` (a JSON schema) `--tool` (repeat) `--budget` `--option` (k=v) |
 | Destination | `--folder` `--filename` `--path` `--store` `--on-conflict` (`error\|skip\|overwrite`) `--delete-source` `--recursive` |
 | Shape | `--format` (what is produced) `--parse` (how input is read, else sniffed) `--encoding` (how bytes are written as text: `text\|base64\|hex`, each node listing the ones it takes) `--width` `--height` `--fit` `--quality` `--color` (`#rgb`/`#rrggbb`) `--rows` (also answer the rows as JSON) `--return` (`inline\|file\|process`) |
 | Ceilings and time | `--timeout` `--ttl` `--delay` `--backoff` `--max-attempts` · `--max-size` `--max-length` `--max-items` (refusal ceilings) · `--limit` `--offset` (rows returned) · `--min` `--max` (numeric bounds) `--batch-size` · `--durable` (kept across restarts) `--batch` (applied on the next tick, not at once) `--optional` (may be absent) |
 | Selection | `--query` (a statement in the target's own language) `--param` (k=v bindings; `1=` for `$1`) `--filter` `--field` (repeat) `--accept` (allowed file kinds) `--kind` (a node kind) `--layer` `--when` `--template` `--write` `--cron` `--algorithm` |
-| Addressing | `--url` `--route` (a path this project serves) `--method` `--header` (k=v) `--status` `--room` `--connection` `--event` `--topic` |
+| Addressing | `--url` `--route` (a path this project serves) `--method` `--header` (k=v) `--status` `--errors` (`show\|hide`: what a failure on the route reveals) `--room` `--connection` `--event` `--topic` |
 | Messaging | `--recipient` (repeat: an address, a chat, a channel) `--sender` `--subject` |
 | Records | `--key` `--table` `--record` `--edge` `--issuer` `--audience` `--claim` (k=v) `--context` (k=v kept with a process) |
 

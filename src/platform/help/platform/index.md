@@ -20,7 +20,7 @@ What belongs to which:
 | the runtime and every node kind | its pipelines, pages, components, docs |
 | the Studio, at the platform address | its hosts and addressing switches |
 | `zeb/*` libraries, blessed skills, this help | its store (private; exposed only by Studio → Files), databases, credentials |
-| the `_` surfaces (`/_static`, `/_files`, `/_ws`, `/_ms`, `/_mcp`) | its `static/` (→ `/_static`), its project skills |
+| the `_` surfaces (`/_static`, `/_files`, `/_ws`, `/_ms`, `/_mcp` — the app's published MCP servers) | its `static/` (→ `/_static`), its project skills |
 
 ## What a project contains
 

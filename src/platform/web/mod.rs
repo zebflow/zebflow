@@ -1270,6 +1270,9 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             any(public_webhook_ingress)
                 .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
+        // `/mcp/{owner}/{project}/…` is the `mcp` surface's platform form,
+        // where published MCP servers will answer (`published-mcp.md`); no
+        // route serves it yet, so it answers 404. Never the dev MCP above.
         .route("/ms/{owner}/{project}", get(public_mapserver_ingress_root))
         .route("/ms/{owner}/{project}/", get(public_mapserver_ingress_root))
         .route("/ms/{owner}/{project}/{*tail}", get(public_mapserver_ingress))
@@ -1457,8 +1460,8 @@ async fn addressing_gate(
         // The platform forms for this very project stay valid on its host:
         // pages emit `/static/{o}/{p}/_rwe/…` and the Studio's API lives at
         // `/api/projects/{o}/{p}/…`; neither is an app path.
-        // The platform API (`/api/projects/{o}/{p}/…`, which includes the MCP
-        // platform form) answers on a project's hosts only when the project
+        // The platform API (`/api/projects/{o}/{p}/…`, never its dev MCP)
+        // answers on a project's hosts only when the project
         // switched `api_on_hosts` on — the dev host like any other, because
         // there is no dev mode (`addressing.md` §2a). The platform address
         // always serves it; that is where the Studio lives.
@@ -1473,7 +1476,14 @@ async fn addressing_gate(
             format!("/ws/{}/{}", resolution.owner, resolution.project),
             format!("/static/{}/{}", resolution.owner, resolution.project),
             format!("/ms/{}/{}", resolution.owner, resolution.project),
+            format!("/mcp/{}/{}", resolution.owner, resolution.project),
         ];
+        // The dev MCP is not a surface: it answers on the platform address
+        // only, whatever `api_on_hosts` says (`addressing.md` §2, §2a).
+        let dev_mcp = format!("/api/projects/{}/{}/mcp", resolution.owner, resolution.project);
+        if api_allowed && (path == dev_mcp || path.starts_with(&format!("{dev_mcp}/"))) {
+            return (StatusCode::NOT_FOUND, "the project's dev MCP answers on the platform address only").into_response();
+        }
         if api_allowed {
             own_prefixes.push(format!("/api/projects/{}/{}", resolution.owner, resolution.project));
         }
@@ -23422,7 +23432,9 @@ fn verify_webhook_auth(
                     AuthError::Internal("api_key credential missing 'key' field".to_string())
                 })?;
 
-            if provided != stored {
+            // Constant time: how long a wrong key takes to refuse must not
+            // say how much of it was right.
+            if !bool::from(subtle::ConstantTimeEq::ct_eq(provided.as_bytes(), stored.as_bytes())) {
                 return Err(AuthError::Unauthenticated {
                     message: "invalid API key".to_string(),
                     redirect_url: None,

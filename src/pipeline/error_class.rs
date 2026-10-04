@@ -605,10 +605,39 @@ pub fn class_of(code: &str) -> ErrorClass {
         .unwrap_or(ErrorClass::Failed)
 }
 
+/// The class of an error as it reached the run: a node that wraps a cause
+/// under its own code keeps the cause's text first (`ZEBFS_READ_ONLY: the
+/// store is read-only`, a `ZebFsError` shown through the node's code), and a
+/// registered cause named there is the more precise class — a write to a
+/// read-only store is refused whichever node tried it. Otherwise the code's.
+pub fn class_of_error(code: &str, message: &str) -> ErrorClass {
+    let cause = message
+        .split_once(": ")
+        .map(|(head, _)| head)
+        .filter(|head| head.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'));
+    cause.and_then(registered_class).unwrap_or_else(|| class_of(code))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// A read-only store refuses, whichever node's code carries it: the run
+    /// record says `refused`, and `logic.retry` does not spend attempts on it.
+    #[test]
+    fn a_read_only_store_is_a_refusal_even_wrapped_by_a_node() {
+        assert_eq!(class_of("ZEBFS_READ_ONLY"), ErrorClass::Refused);
+        let store = crate::zebfs::ZebFsError::new("ZEBFS_READ_ONLY", "the store is read-only");
+        // What `fs.file.put` raises for it (`put.rs`, `PipelineError::new(CODE, err.to_string())`).
+        let wrapped = crate::pipeline::PipelineError::new("FW_NODE_FS_FILE_PUT", store.to_string());
+        assert_eq!(class_of(wrapped.code), ErrorClass::Failed, "the node's own code alone says failed");
+        assert_eq!(class_of_error(wrapped.code, &wrapped.message), ErrorClass::Refused);
+        assert_eq!(class_of_error(wrapped.code, &wrapped.message).as_status_word(), "refused");
+        // A message without a registered cause keeps the code's class.
+        assert_eq!(class_of_error("FW_NODE_FS_FILE_PUT", "ZEBFS_IO: disk full"), ErrorClass::Failed);
+        assert_eq!(class_of_error("FW_NODE_FS_FILE_PUT", "Note: something else"), ErrorClass::Failed);
+    }
 
     /// A code is declared once. A duplicate row is how a class silently
     /// changes, so it fails the build.

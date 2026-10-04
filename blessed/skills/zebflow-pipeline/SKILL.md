@@ -144,6 +144,34 @@ is `stale` and traffic runs the old snapshot.
 
 To try a body without saving: `pipeline_run body="| trigger.function | …" input={…}`.
 
+## Publishing an MCP server
+
+An app can publish functions to outside agents (ChatGPT, Claude, any MCP
+client) as an MCP server — the app's, not this session's.
+
+```
+| trigger.mcp --route /shop --name search --description "Search the catalog by words. Use before quoting a product." --parameter q:string! "The words to look for." --auth api_key --credential shop-mcp-key
+| sekejap.query.run --param "1={{ input.mcp.arguments.q }}" -- "SELECT sku, name FROM products WHERE name LIKE '%' || $1 || '%'"
+| web.response.send --body "{{ input.query.rows }}"
+```
+
+- **A route is one server.** Every active `trigger.mcp` with the same
+  `--route` is one of its tools; `--name` is unique on the route (a second is
+  refused at activation). Another route is another server.
+- **`--auth` is required and the same on every tool of a route**: `none`
+  publishes openly and must be written; `api_key` or `jwt` take
+  `--credential` (an id from `credential_list`).
+- The arguments are `input.mcp.arguments.<name>` (`$trigger.arguments.<name>`
+  later); the tool result is what `web.response.send` answers, and a status of
+  400 or more is a tool error with that body.
+- It will answer at `/_mcp/shop` on the project's hosts
+  (`/mcp/{owner}/{project}/shop` on the platform), once the owner switches the
+  `mcp` surface on in Settings → Addressing; it is off by default. Ask; never
+  assume. **In 0.11 the declaration is checked (`pipeline_check`, activation)
+  but the route is not served yet** — serving lands in 0.11.1.
+- **This session never lists or calls a published tool.** Once served, a
+  published route is proven as a webhook is: by calling the route.
+
 ## When it fails
 
 - `unknown flag --x` — the node does not declare it; the refusal names the

@@ -1812,6 +1812,18 @@ mod tests {
         assert_eq!(again.nodes[1].config["cases"], json!(["a,b", "c"]));
     }
 
+    /// A kind whose schema has no `--schema` flag (`trigger.mcp`) writes its
+    /// `--parameter`s back one by one, so the rendered DSL parses again.
+    #[test]
+    fn parameters_render_back_as_parameters() {
+        let dsl = r#"| trigger.mcp --route /shop --name search --parameter q:string! "The words." --parameter tags:string[] --auth none"#;
+        let graph = build_pipeline_graph("parser-mcp-parameters", dsl).expect("graph");
+        let rendered = graph_to_dsl(&graph);
+        assert!(rendered.contains(r#"--parameter q:string! "The words.""#), "{rendered}");
+        let again = build_pipeline_graph("parser-mcp-parameters", &rendered).expect("re-parse");
+        assert_eq!(again.nodes[0].config["schema"], graph.nodes[0].config["schema"]);
+    }
+
     #[test]
     fn repeated_list_reconstructs_source_binding_objects() {
         let node = PipelineNode {
@@ -2428,12 +2440,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
                     }
                 }
             }
-            DslFlagKind::SchemaField => {
-                if let Ok(s) = serde_json::to_string(val) {
-                    parts.push(schema_flag_for(dsl_flags, flag));
-                    parts.push(quote_dsl_arg(&s));
-                }
-            }
+            DslFlagKind::SchemaField => parts.extend(schema_field_tokens(dsl_flags, flag, val)),
         }
     }
 
@@ -2536,12 +2543,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
                     }
                 }
             }
-            DslFlagKind::SchemaField => {
-                if let Ok(s) = serde_json::to_string(val) {
-                    parts.push(schema_flag_for(dsl_flags, flag));
-                    parts.push(quote_dsl_arg(&s));
-                }
-            }
+            DslFlagKind::SchemaField => parts.extend(schema_field_tokens(dsl_flags, flag, val)),
         }
     }
 
@@ -2551,6 +2553,69 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
 /// A schema built from repeated field declarations (`--parameter a:string!`)
 /// is written back whole, through the flag that takes the whole schema under
 /// the same config key (`--schema`); the field flag itself when none does.
+/// A schema-field flag's tokens: one `--parameter name:type! "doc"` per
+/// property when every property is one the flag can write back, else the
+/// whole schema as JSON on the kind's scalar flag for the same key
+/// (`--schema`), or on the field flag itself when there is none.
+fn schema_field_tokens(dsl_flags: &[DslFlag], flag: &DslFlag, schema: &Value) -> Vec<String> {
+    let has_scalar = dsl_flags
+        .iter()
+        .any(|other| other.config_key == flag.config_key && other.kind == DslFlagKind::Scalar);
+    if !has_scalar && let Some(fields) = schema_field_specs(schema) {
+        let mut parts = Vec::new();
+        for (spec, description) in fields {
+            parts.push(flag.flag.clone());
+            parts.push(quote_dsl_arg(&spec));
+            if let Some(description) = description {
+                parts.push(quote_dsl_arg(&description));
+            }
+        }
+        return parts;
+    }
+    match serde_json::to_string(schema) {
+        Ok(json) => vec![schema_flag_for(dsl_flags, flag), quote_dsl_arg(&json)],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `(name:type[!], description)` for each property, the inverse of
+/// [`schema_field_from_spec`]; `None` when one cannot be written that way.
+fn schema_field_specs(schema: &Value) -> Option<Vec<(String, Option<String>)>> {
+    fn type_word(property: &Value) -> Option<String> {
+        let obj = property.as_object()?;
+        // Anything a spec cannot say (`enum`, `default`, …) keeps the JSON.
+        if obj.keys().any(|k| !matches!(k.as_str(), "type" | "description" | "items" | "x-zebflow-type")) {
+            return None;
+        }
+        if let Some(word) = obj.get("x-zebflow-type").and_then(Value::as_str) {
+            return Some(word.to_string());
+        }
+        match obj.get("type").and_then(Value::as_str) {
+            None => Some("any".to_string()),
+            Some("array") => match obj.get("items") {
+                Some(items) => Some(format!("{}[]", type_word(items)?)),
+                None => Some("array".to_string()),
+            },
+            Some(word) => Some(word.to_string()),
+        }
+    }
+    let properties = schema.get("properties")?.as_object()?;
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    properties
+        .iter()
+        .map(|(name, property)| {
+            let word = type_word(property)?;
+            let bang = if required.contains(&name.as_str()) { "!" } else { "" };
+            let description = property.get("description").and_then(Value::as_str).map(str::to_string);
+            Some((format!("{name}:{word}{bang}"), description))
+        })
+        .collect()
+}
+
 fn schema_flag_for(dsl_flags: &[DslFlag], field_flag: &DslFlag) -> String {
     dsl_flags
         .iter()

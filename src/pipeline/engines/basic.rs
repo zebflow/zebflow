@@ -1869,7 +1869,7 @@ fn emit_node_fail(
         Some(json!({
             "duration_ms": duration_ms,
             "error_code": error.code,
-            "error_class": crate::pipeline::error_class::class_of(error.code).as_status_word(),
+            "error_class": crate::pipeline::error_class::class_of_error(error.code, &error.message).as_status_word(),
             "error": error.message,
         })),
         run_started,
@@ -2627,7 +2627,7 @@ impl BasicPipelineEngine {
             error: Some(e.message.clone()),
             status: match routed_status {
                 Some(word) => word.to_string(),
-                None => crate::pipeline::error_class::class_of(e.code).as_status_word().to_string(),
+                None => crate::pipeline::error_class::class_of_error(e.code, &e.message).as_status_word().to_string(),
             },
             error_code: Some(e.code.to_string()),
             preview_snapshot: None,
