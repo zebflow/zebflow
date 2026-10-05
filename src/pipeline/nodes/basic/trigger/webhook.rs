@@ -62,6 +62,21 @@ pub const ANSWER_KEY: &str = "webhook";
 
 /// `--method`: the closed words.
 pub const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+/// The method of a `trigger.webhook` written without `--method`. One word,
+/// read by the save check, the route table and the Studio alike.
+pub const DEFAULT_METHOD: &str = "GET";
+
+/// The method a webhook's config serves: its `--method`, upper-cased, or
+/// [`DEFAULT_METHOD`] when none (or an empty one) is written.
+pub fn method_of(config: &serde_json::Value) -> String {
+    config
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|method| !method.is_empty())
+        .unwrap_or(DEFAULT_METHOD)
+        .to_ascii_uppercase()
+}
 /// `--auth`: the closed words, shared with `trigger.room`.
 pub const AUTH_MODES: [&str; 4] = ["none", "jwt", "hmac", "api_key"];
 /// `--errors`: the closed words.
@@ -130,7 +145,7 @@ pub fn definition() -> NodeDefinition {
         DslFlag {
             flag: "--method".to_string(),
             config_key: "method".to_string(),
-            description: "HTTP method: GET (default), POST, PUT, PATCH, DELETE.".to_string(),
+            description: "HTTP method: GET (default when omitted, at save and at run alike), POST, PUT, PATCH, DELETE. A GET route also answers HEAD: the same run and headers, no body.".to_string(),
             kind: DslFlagKind::Scalar,
             value: "text".to_string(),
             choices: METHODS.iter().map(|w| w.to_string()).collect(),

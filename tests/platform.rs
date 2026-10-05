@@ -14,3 +14,9 @@ mod published_mcp_oauth;
 mod sekejap_nodes;
 #[path = "platform/site_generate.rs"]
 mod site_generate;
+#[path = "platform/stored_answer.rs"]
+mod stored_answer;
+#[path = "platform/page_privacy.rs"]
+mod page_privacy;
+#[path = "platform/webhook_routes.rs"]
+mod webhook_routes;

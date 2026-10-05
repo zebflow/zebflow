@@ -87,6 +87,12 @@ pub enum DslVerb {
 }
 
 /// Tokenize a DSL string respecting single and double quoted strings.
+///
+/// Inside double quotes a backslash escapes `"` and `\` — the rule of a
+/// POSIX shell's double quotes — so `"filename=\"a b.pdf\""` is
+/// `filename="a b.pdf"`; any other backslash is kept as written (`"\d+"` and
+/// `"C:\data"` mean what they say). Single quotes and backticks take every
+/// character literally.
 pub fn tokenize(s: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -94,7 +100,12 @@ pub fn tokenize(s: &str) -> Vec<String> {
     let mut in_double = false;
     let mut in_backtick = false;
 
-    for ch in s.chars() {
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_double && ch == '\\' && matches!(chars.peek(), Some('"') | Some('\\')) {
+            current.push(chars.next().unwrap_or(ch));
+            continue;
+        }
         match ch {
             '\'' if !in_double && !in_backtick => {
                 in_single = !in_single;
@@ -121,6 +132,13 @@ pub fn tokenize(s: &str) -> Vec<String> {
         tokens.push(current);
     }
     tokens
+}
+
+/// Whether `bytes[i]` starts an escaped pair inside double quotes (`\"` or
+/// `\\`, [`tokenize`]): a scanner skips both bytes so an escaped quote never
+/// closes the string.
+fn is_double_quote_escape(bytes: &[u8], i: usize) -> bool {
+    bytes[i] == b'\\' && matches!(bytes.get(i + 1), Some(b'"') | Some(b'\\'))
 }
 
 /// Split DSL string into individual commands.
@@ -151,6 +169,10 @@ pub fn split_commands(dsl: &str) -> Vec<String> {
             continue;
         }
 
+        if in_double && !in_opaque_body && is_double_quote_escape(bytes, i) {
+            i += 2;
+            continue;
+        }
         match bytes[i] {
             b'\'' if !in_opaque_body && !in_double && !in_backtick => in_single = !in_single,
             b'"' if !in_opaque_body && !in_single && !in_backtick => in_double = !in_double,
@@ -401,7 +423,16 @@ fn find_first_pipe_in_raw(raw: &str) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
     let mut in_backtick = false;
+    let mut escaped = false;
     for (i, ch) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_double && is_double_quote_escape(raw.as_bytes(), i) {
+            escaped = true;
+            continue;
+        }
         match ch {
             '\'' if !in_double && !in_backtick => in_single = !in_single,
             '"' if !in_single && !in_backtick => in_double = !in_double,
@@ -417,7 +448,16 @@ fn find_first_graph_marker_in_raw(raw: &str) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
     let mut in_backtick = false;
+    let mut escaped = false;
     for (i, ch) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_double && is_double_quote_escape(raw.as_bytes(), i) {
+            escaped = true;
+            continue;
+        }
         match ch {
             '\'' if !in_double && !in_backtick => in_single = !in_single,
             '"' if !in_single && !in_backtick => in_double = !in_double,
@@ -471,6 +511,10 @@ fn find_body_delimiter(raw: &str) -> Option<usize> {
     let mut in_backtick = false;
     let mut i = 0usize;
     while i < bytes.len() {
+        if in_double && is_double_quote_escape(bytes, i) {
+            i += 2;
+            continue;
+        }
         match bytes[i] {
             b'\'' if !in_double && !in_backtick => in_single = !in_single,
             b'"' if !in_single && !in_backtick => in_double = !in_double,
@@ -1234,8 +1278,17 @@ fn split_pipe_segments(body: &str) -> Vec<&str> {
     let mut in_double = false;
     let mut in_backtick = false;
     let mut in_opaque_body = false;
+    let mut escaped = false;
 
     for (byte_pos, ch) in body.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_double && !in_opaque_body && is_double_quote_escape(bytes, byte_pos) {
+            escaped = true;
+            continue;
+        }
         if !in_opaque_body
             && !in_single
             && !in_double
@@ -2638,9 +2691,12 @@ fn positional_segment_token(
     Some((key.to_string(), quote_dsl_arg(value)))
 }
 
+/// A value as one DSL argument: double-quoted when it holds whitespace, a
+/// quote or a backslash before a quote, with `\` and `"` escaped as
+/// [`tokenize`] reads them back.
 fn quote_dsl_arg(value: &str) -> String {
-    if value.chars().any(char::is_whitespace) || value.contains('"') {
-        format!("\"{}\"", value.replace('"', "\\\""))
+    if value.chars().any(char::is_whitespace) || value.contains('"') || value.contains('\\') {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
     } else {
         value.to_string()
     }
@@ -2866,6 +2922,44 @@ fn build_pipe_mode(
     };
     auto_tidy_pipeline_graph(&mut graph);
     Ok(graph)
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    /// Inside double quotes `\"` is a quote and `\\` a backslash; every
+    /// other backslash, and everything in single quotes, is as written.
+    #[test]
+    fn an_escaped_quote_stays_inside_its_value() {
+        assert_eq!(
+            tokenize(r#"web.response.send --header "Content-Disposition=attachment; filename=\"a b.pdf\"" --body ok"#),
+            vec!["web.response.send", "--header", r#"Content-Disposition=attachment; filename="a b.pdf""#, "--body", "ok"]
+        );
+        assert_eq!(tokenize(r#"--pattern "\d+\.\w" --dir "C:\data" --two "a\\b""#), vec!["--pattern", r"\d+\.\w", "--dir", r"C:\data", "--two", r"a\b"]);
+        assert_eq!(tokenize(r#"--dir "C:\\data\\" --next x"#), vec!["--dir", r"C:\data\", "--next", "x"]);
+        assert_eq!(tokenize(r#"--text 'say \"hi\"'"#), vec!["--text", r#"say \"hi\""#], "single quotes are literal");
+        assert_eq!(tokenize(r#"--when "input.a == \"b\" && input.c""#), vec!["--when", r#"input.a == "b" && input.c"#]);
+    }
+
+    /// Every scanner that looks for `|`, `[`, `--` or `&&` skips an escaped
+    /// quote, so the value does not end early and swallow the next node.
+    #[test]
+    fn an_escaped_quote_does_not_end_the_string_for_the_scanners() {
+        let body = r#"| trigger.webhook --route /dl | web.response.send --header "X-Note=a \"|\" b" --body ok"#;
+        assert_eq!(split_pipe_segments(body).len(), 2, "{:?}", split_pipe_segments(body));
+        assert_eq!(split_commands(r#"activate pipeline "a \"&&\" b" && activate pipeline c"#).len(), 2);
+        assert_eq!(find_first_pipe_in_raw(r#"register a --title "a \"|\" b" | x"#), Some(31));
+    }
+
+    /// The pipeline JSON written back as DSL reads back to the same values.
+    #[test]
+    fn a_quoted_value_round_trips() {
+        for value in [r#"attachment; filename="a b.pdf""#, r"C:\data\", r"\d+", r#"say \"x\""#, "plain", r#"a"b"#] {
+            let token = quote_dsl_arg(value);
+            assert_eq!(tokenize(&format!("--v {token}")), vec!["--v".to_string(), value.to_string()], "{value} as {token}");
+        }
+    }
 }
 
 #[cfg(test)]

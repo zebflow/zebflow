@@ -57,15 +57,18 @@ impl Config {
     /// Everything about the configuration that can be refused before a byte
     /// is read: at most one source, `--root` only with `--file`, and the head.
     pub fn check(&self) -> Result<Head, PipelineError> {
-        let sources = [self.body.is_some(), self.template.is_some(), self.file.is_some()];
+        let sources = [self.body.is_some(), self.template.is_some(), self.file.is_some(), self.path.is_some()];
         if sources.iter().filter(|given| **given).count() > 1 {
             return Err(PipelineError::new(
                 CODE_CONFIG,
-                "web.response.send answers one of --body, --template or --file",
+                "web.response.send answers one of --body, --template, --file or --path",
             ));
         }
         if self.root.is_some() && self.file.is_none() {
             return Err(PipelineError::new(CODE_CONFIG, "--root confines --file; give --file too"));
+        }
+        if self.filename.is_some() && self.file.is_none() && self.path.is_none() {
+            return Err(PipelineError::new(CODE_CONFIG, "--filename names a file download; give --file or --path too"));
         }
         self.head()
     }
@@ -207,11 +210,17 @@ mod tests {
             json!({ "body": "x", "template": "pages/a.tsx" }),
             json!({ "body": "x", "file": "a.txt" }),
             json!({ "template": "pages/a.tsx", "file": "a.txt" }),
+            json!({ "file": "{{ input.file }}", "path": "uploads/a.pdf" }),
+            json!({ "body": "x", "path": "uploads/a.pdf" }),
             json!({ "root": "pwa/icons" }),
+            json!({ "filename": "a.pdf" }),
+            json!({ "body": "x", "filename": "a.pdf" }),
         ] {
             assert_eq!(config(refused.clone()).check().unwrap_err().code, super::CODE_CONFIG, "{refused}");
         }
         assert!(config(json!({ "root": "pwa/icons", "file": "a.png" })).check().is_ok());
+        assert!(config(json!({ "path": "uploads/a.pdf", "filename": "a.pdf" })).check().is_ok());
+        assert!(config(json!({ "file": null })).check().is_ok(), "a --file that resolved to null is a 404 at run, not a config error");
     }
 
     #[test]

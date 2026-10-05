@@ -10,8 +10,10 @@
 
 pub(crate) mod embedded;
 mod file_host;
+mod host_verify;
 mod migration;
 mod published_mcp;
+mod stored_answer;
 mod webhook_url;
 mod ws_room;
 
@@ -1423,6 +1425,17 @@ pub struct ProjectHost {
     pub mount: Option<String>,
 }
 
+/// The path a visitor asked for on a project host, before the gate rewrote
+/// it to its platform form (`/book`, not `/wh/{o}/{p}/book`). A page renders
+/// with this as its route, so the platform form never reaches a page served
+/// on the project's own address.
+#[derive(Debug, Clone)]
+pub struct VisitorPath(pub String);
+
+/// The same path on a controller's call to the worker office that runs the
+/// project; read only on that controller-signed route.
+const VISITOR_PATH_HEADER: &str = "x-zebflow-visitor-path";
+
 /// Where a surface is mounted, read off a request: its path minus the path
 /// under the surface (`/_mcp/library` with `/library` → `/_mcp`).
 fn surface_mount(path: &str, rest: &str) -> String {
@@ -1448,6 +1461,15 @@ async fn addressing_gate(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
         .or_else(|| request.uri().authority().map(|a| a.to_string()));
+    // Settings → Addressing → Verify's probe, on any host of a project
+    // (`host_verify.rs`): proof the host reaches this project, given by a
+    // one-time token instead of a header naming it on every response.
+    if host_verify::is_probe(&path)
+        && let Some(host) = host.as_deref()
+        && let Some((owner, project, _)) = state.platform.addressing.project_of_host(host)
+    {
+        return host_verify::answer(&path, &owner, &project);
+    }
     // The project's file host answers stored files and nothing else — no
     // page, no API, no cookie (kinds/zebfs-acl §Resolution).
     if let Some(host) = host.as_deref()
@@ -1594,6 +1616,7 @@ async fn addressing_gate(
                     *request.uri_mut() = uri;
                 }
             }
+            request.extensions_mut().insert(VisitorPath(path.clone()));
         }
         request.extensions_mut().insert(ProjectHost {
             host: resolution.host.clone(),
@@ -1602,13 +1625,9 @@ async fn addressing_gate(
             dev_host: resolution.dev_host,
             mount,
         });
-        let mut response = next.run(request).await;
-        // The proof a proxy is wired right: Settings → Addressing → Verify
-        // reads this back through the public host.
-        if let Ok(value) = HeaderValue::from_str(&format!("{}/{}", resolution.owner, resolution.project)) {
-            response.headers_mut().insert("x-zebflow-project", value);
-        }
-        return response;
+        // No header names the owner or project on a public answer; Verify
+        // proves the host with a one-time probe (`host_verify.rs`).
+        return next.run(request).await;
     }
     if state.platform.addressing.platform_form_disabled(&path) {
         return (StatusCode::NOT_FOUND, "this surface is switched off for the project (Settings → Addressing)").into_response();
@@ -2791,7 +2810,13 @@ fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {
 /// src>`, a stylesheet — is unaffected. PDF keeps its viewer: the sandbox
 /// would block it, and its scripts never run on this origin.
 async fn harden_byte_response(mut resp: Response) -> Response {
-    let headers = resp.headers_mut();
+    harden_byte_headers(resp.headers_mut());
+    resp
+}
+
+/// [`harden_byte_response`] on the headers alone — also what a stored file
+/// answered by `web.response.send` gets (`stored_answer.rs`).
+fn harden_byte_headers(headers: &mut HeaderMap) {
     headers.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
@@ -2820,7 +2845,6 @@ async fn harden_byte_response(mut resp: Response) -> Response {
             headers.insert(CONTENT_DISPOSITION, value);
         }
     }
-    resp
 }
 
 /// The Studio's own preview read: as inert as [`harden_byte_response`], but an
@@ -4189,9 +4213,17 @@ async fn forward_runtime_webhook_to_worker(
     headers: &HeaderMap,
     body: &Bytes,
     worker_id: &str,
+    visitor_path: Option<&str>,
 ) -> Result<Response, PlatformError> {
     let path_and_query = webhook_url::worker_path_and_query(uri)?;
-    forward_to_worker(state, method, &path_and_query, headers, body, worker_id).await
+    // The visitor's own path rides along; one the visitor sent is never
+    // passed on as ours.
+    let mut headers = headers.clone();
+    headers.remove(VISITOR_PATH_HEADER);
+    if let Some(value) = visitor_path.and_then(|path| HeaderValue::from_str(path).ok()) {
+        headers.insert(VISITOR_PATH_HEADER, value);
+    }
+    forward_to_worker(state, method, &path_and_query, &headers, body, worker_id).await
 }
 
 /// Sends one request on to a worker office at `path_and_query`, signed as
@@ -10716,15 +10748,27 @@ async fn api_internal_runtime_webhook(
     if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
+    let visitor = controller_visitor_path(&headers);
     public_webhook_ingress(
         State(state),
         Path((owner, project, tail)),
         method,
         uri,
         headers,
+        visitor,
         body,
     )
     .await
+}
+
+/// The visitor's path a controller passed on (`VISITOR_PATH_HEADER`); only
+/// read once the call is proven to be the controller's.
+fn controller_visitor_path(headers: &HeaderMap) -> Option<axum::Extension<VisitorPath>> {
+    headers
+        .get(VISITOR_PATH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|path| path.starts_with('/'))
+        .map(|path| axum::Extension(VisitorPath(path.to_string())))
 }
 
 async fn api_internal_runtime_webhook_root(
@@ -10738,12 +10782,14 @@ async fn api_internal_runtime_webhook_root(
     if let Err(response) = require_controller_call(&state, &headers) {
         return response;
     }
+    let visitor = controller_visitor_path(&headers);
     public_webhook_ingress_root(
         State(state),
         Path((owner, project)),
         method,
         uri,
         headers,
+        visitor,
         body,
     )
     .await
@@ -17357,9 +17403,9 @@ struct AddressingCheckRequest {
 
 /// Does the world reach this project at `host`? Two facts, checked from the
 /// instance: what DNS says the host is, and what answers at it — verified by
-/// the `x-zebflow-project` header the addressing gate puts on every response
-/// it served for a project host. A proxy that drops the Host header shows up
-/// here as "answers, but not this project".
+/// a one-time `/_verify/{token}` probe the addressing gate answers 204 only
+/// for the project the token was minted for (`host_verify.rs`). A proxy that
+/// drops the Host header shows up here as "answers, but not this project".
 async fn api_check_addressing_host(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -17399,23 +17445,19 @@ async fn api_check_addressing_host(
         if let Ok(client) = client {
             let mut tried = Vec::new();
             for scheme in ["https", "http"] {
-                let url = format!("{scheme}://{host}/");
+                let token = host_verify::mint(&slug_segment(&owner), &slug_segment(&project));
+                let url = format!("{scheme}://{host}{}/{token}", host_verify::PREFIX);
                 match client.get(&url).send().await {
                     Ok(resp) => {
-                        let served = resp
-                            .headers()
-                            .get("x-zebflow-project")
-                            .and_then(|v| v.to_str().ok())
-                            .unwrap_or("")
-                            .to_string();
-                        let ok = served == expected;
-                        tried.push(json!({ "url": url, "status": resp.status().as_u16(), "project": served }));
+                        let ok = resp.status() == StatusCode::NO_CONTENT;
+                        let other = resp.headers().get("x-zebflow-verify").is_some();
+                        tried.push(json!({ "url": format!("{scheme}://{host}/"), "status": resp.status().as_u16() }));
                         if ok {
-                            verify = json!({ "ok": true, "url": format!("{scheme}://{host}/"), "status": resp.status().as_u16(), "tried": tried });
+                            verify = json!({ "ok": true, "url": format!("{scheme}://{host}/"), "status": 200, "tried": tried });
                             break;
                         }
                         if scheme == "http" {
-                            verify = json!({ "ok": false, "tried": tried, "reason": if served.is_empty() { "answers, but not from Zebflow — is the proxy passing the Host header?" } else { "answers for another project" } });
+                            verify = json!({ "ok": false, "tried": tried, "reason": if other { "answers for another project" } else { "answers, but not from Zebflow — is the proxy passing the Host header?" } });
                         }
                     }
                     Err(err) => {
@@ -23615,7 +23657,7 @@ async fn dispatch_weberror(
 
     // Answered as the webhook ingress answers an envelope — a page, bytes,
     // text, JSON or nothing, with its headers — under the error's status.
-    let mut response = zf_envelope_response(state, owner, project, &value);
+    let mut response = zf_envelope_response(state, owner, project, &value, None).await;
     *response.status_mut() = status;
     Some(response)
 }
@@ -23644,16 +23686,35 @@ async fn public_webhook_ingress(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
+    visitor: Option<axum::Extension<VisitorPath>>,
     body: Bytes,
 ) -> Response {
     let request_id = webhook_run_id(&headers);
-    let mut response = public_webhook_ingress_run(state, path, method, uri, headers, body, request_id.clone()).await;
+    let head = method == Method::HEAD;
+    let visitor_path = visitor.map(|axum::Extension(VisitorPath(path))| path);
+    let mut response = public_webhook_ingress_run(state, path, method, uri, headers, body, request_id.clone(), visitor_path).await;
     if let Ok(v) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert("x-request-id", v);
+    }
+    if head {
+        response = without_body(response).await;
     }
     response
 }
 
+/// A `HEAD` answer: every header the `GET` would carry, `Content-Length`
+/// included, and no body. A stored file already answered `HEAD` without
+/// opening the object (`stored_answer.rs`).
+async fn without_body(response: Response) -> Response {
+    let (mut parts, body) = response.into_parts();
+    if !parts.headers.contains_key(axum::http::header::CONTENT_LENGTH) {
+        let length = axum::body::to_bytes(body, usize::MAX).await.map(|b| b.len()).unwrap_or(0);
+        parts.headers.insert(axum::http::header::CONTENT_LENGTH, HeaderValue::from(length));
+    }
+    Response::from_parts(parts, Body::empty())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn public_webhook_ingress_run(
     State(state): State<PlatformAppState>,
     Path((owner, project, tail)): Path<(String, String, String)>,
@@ -23662,6 +23723,7 @@ async fn public_webhook_ingress_run(
     headers: HeaderMap,
     body: Bytes,
     request_id: String,
+    visitor_path: Option<String>,
 ) -> Response {
     let owner = crate::platform::model::slug_segment(&owner);
     let project = crate::platform::model::slug_segment(&project);
@@ -23696,7 +23758,7 @@ async fn public_webhook_ingress_run(
         if placement.target == ProjectRuntimePlacementTarget::Worker {
             if let Some(worker_id) = placement.worker_id.as_deref() {
                 return match forward_runtime_webhook_to_worker(
-                    &state, &method, &uri, &headers, &body, worker_id,
+                    &state, &method, &uri, &headers, &body, worker_id, visitor_path.as_deref(),
                 )
                 .await
                 {
@@ -23728,7 +23790,11 @@ async fn public_webhook_ingress_run(
         .list_project(&owner, &project)
     {
         for trigger in &compiled.webhook_triggers {
-            if !trigger.method.eq_ignore_ascii_case(&method_key) {
+            // A GET route answers HEAD too: the same run, the same headers,
+            // no body (RFC 9110 §9.3.2; the body is dropped on the way out).
+            let answers = trigger.method.eq_ignore_ascii_case(&method_key)
+                || (method_key == "HEAD" && trigger.method.eq_ignore_ascii_case("GET"));
+            if !answers {
                 continue;
             }
             let Some(path_match) = match_webhook_path(&trigger.path, &path) else {
@@ -23759,25 +23825,7 @@ async fn public_webhook_ingress_run(
     });
 
     let Some(selected) = candidates.into_iter().next() else {
-        if let Some(err_resp) = dispatch_weberror(
-            &state,
-            &owner,
-            &project,
-            404,
-            json!({"error": "not found", "path": path, "method": method_key, "request_id": request_id}),
-        )
-        .await
-        {
-            return err_resp;
-        }
-        if !accepts_json_only(&headers) {
-            return neutral_error_page(404, &request_id, None);
-        }
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": {"code": "not_found", "request_id": request_id}})),
-        )
-            .into_response();
+        return webhook_not_found(&state, &owner, &project, &headers, &path, &method_key, &request_id).await;
     };
     let retention = resolve_invocation_retention(&project_cfg, Some(&selected.compiled.graph));
     // A bundle trigger whose sender proves itself with a secret header
@@ -23980,8 +24028,10 @@ async fn public_webhook_ingress_run(
         // Preserve the original query for SSR URL hooks; the legacy query map
         // cannot represent repeated keys or distinguish encoded values.
         "search": uri.query().map(|query| format!("?{query}")).unwrap_or_default(),
-        // Page URL context is separate from the pipeline's relative route.
-        "pathname": webhook_url::pathname(&uri),
+        // Page URL context is separate from the pipeline's relative route:
+        // the path the visitor asked for, never the platform form a project
+        // host rewrote it to.
+        "pathname": visitor_path.clone().unwrap_or_else(|| webhook_url::pathname(&uri)),
         "headers": safe_headers(&headers),
     });
 
@@ -24108,6 +24158,7 @@ async fn public_webhook_ingress_run(
     // caller waits for the run, as before.
     let (responder, early_response) = crate::pipeline::model::Responder::channel();
     let options = ExecuteOptions { responder: Some(responder), ..Default::default() };
+    let asked = stored_answer::Asked { method: &method, headers: &headers };
     let record_platform = state.platform.clone();
     let record_scope = (owner.clone(), project.clone(), file_rel_path.clone(), request_id.clone());
     let error_bounds = project_cfg.configs.pipelines.logging.error_group_bounds();
@@ -24184,7 +24235,7 @@ async fn public_webhook_ingress_run(
     let run = tokio::select! {
         biased;
         Ok(envelope) = early_response => {
-            return zf_envelope_response(&state, &owner, &project, &envelope);
+            return zf_envelope_response(&state, &owner, &project, &envelope, Some(asked)).await;
         }
         joined = &mut run_task => joined.unwrap_or_else(|join_error| {
             Err(PipelineError::new("FW_ENGINE_RUNTIME", format!("the run's task ended early: {join_error}")))
@@ -24192,6 +24243,12 @@ async fn public_webhook_ingress_run(
     };
     let output = match run {
         Ok(output) => output,
+        // A stored file the answer named is not there (or the key was not
+        // one): the visitor's "no such file" is a 404, never a 500; the run
+        // record above keeps the reason.
+        Err(err) if err.code == crate::pipeline::nodes::basic::web::response::CODE_NOT_FOUND => {
+            return webhook_not_found(&state, &owner, &project, &headers, &path, &method_key, &request_id).await;
+        }
         Err(err) => {
             // What the caller learns about an uncaught failure is a switch,
             // never the host: the route's `--errors`, else the project's
@@ -24235,9 +24292,41 @@ async fn public_webhook_ingress_run(
     // the request body, credentials read into it, generated secrets — is
     // never sent implicitly (`node-conventions.md` §4).
     match output.response {
-        Some(resp_cfg) => zf_envelope_response(&state, &owner, &project, &resp_cfg),
+        Some(resp_cfg) => zf_envelope_response(&state, &owner, &project, &resp_cfg, Some(asked)).await,
         None => StatusCode::NO_CONTENT.into_response(),
     }
+}
+
+/// A webhook 404: the project's `trigger.error` page for 404 when it has
+/// one, else the neutral page, or JSON for a caller that only takes JSON.
+async fn webhook_not_found(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    headers: &HeaderMap,
+    path: &str,
+    method_key: &str,
+    request_id: &str,
+) -> Response {
+    if let Some(err_resp) = dispatch_weberror(
+        state,
+        owner,
+        project,
+        404,
+        json!({"error": "not found", "path": path, "method": method_key, "request_id": request_id}),
+    )
+    .await
+    {
+        return err_resp;
+    }
+    if !accepts_json_only(headers) {
+        return neutral_error_page(404, request_id, None);
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"ok": false, "error": {"code": "not_found", "request_id": request_id}})),
+    )
+        .into_response()
 }
 
 /// What a caller learns about an uncaught failure is a switch, never the
@@ -24262,6 +24351,7 @@ async fn public_webhook_ingress_root(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
+    visitor: Option<axum::Extension<VisitorPath>>,
     body: Bytes,
 ) -> Response {
     public_webhook_ingress(
@@ -24270,6 +24360,7 @@ async fn public_webhook_ingress_root(
         method,
         uri,
         headers,
+        visitor,
         body,
     )
     .await
@@ -26784,7 +26875,7 @@ fn validate_execute_trigger(
             let wanted_method = resolved
                 .webhook_method
                 .as_deref()
-                .unwrap_or("POST")
+                .unwrap_or(crate::pipeline::nodes::basic::trigger::webhook::DEFAULT_METHOD)
                 .trim()
                 .to_uppercase();
             let matched = crate::platform::services::project::webhook_triggers_from_graph(graph)
@@ -26883,20 +26974,26 @@ fn hydrate_template_markup(
 
 /// The HTTP response a `web.response.send` envelope describes
 /// (`pipeline/nodes/basic/web/response/answer.rs`): status, every header in
-/// order, and one body — a rendered page, bytes, text, JSON, or none.
-fn zf_envelope_response(
+/// order, and one body — a rendered page, a stored file streamed from its
+/// store (`stored_answer.rs`, which reads `asked` for `Range`, `HEAD` and the
+/// conditional headers), bytes, text, JSON, or none.
+async fn zf_envelope_response(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
     resp_cfg: &Value,
+    asked: Option<stored_answer::Asked<'_>>,
 ) -> axum::response::Response {
-    let status = resp_cfg
+    let declared_status = resp_cfg
         .get("status")
         .and_then(Value::as_u64)
-        .and_then(|c| StatusCode::from_u16(c as u16).ok())
-        .unwrap_or(StatusCode::OK);
+        .and_then(|c| StatusCode::from_u16(c as u16).ok());
+    let status = declared_status.unwrap_or(StatusCode::OK);
     let zf_headers = build_zf_headers(resp_cfg);
 
+    if let Some(stored) = resp_cfg.get(crate::pipeline::nodes::basic::web::response::STORED_KEY) {
+        return stored_answer::stored_response(state, owner, project, stored, declared_status, &zf_headers, asked).await;
+    }
     let mut resp = if let Some(html) = resp_cfg.get("html").and_then(Value::as_str) {
         // HTML (template mode)
         let mut html = html.to_string();

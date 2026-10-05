@@ -74,6 +74,24 @@ async fn get_and_head_answer_file_and_keep_the_payload() {
     assert_eq!(run(&p, HEAD_NODE_KIND, json!({ "from": "docs/none.md" }), json!({})).await.unwrap_err().code, "FW_NODE_FS_FILE_HEAD");
 }
 
+/// `--return file` answers the stored file's FileRef — store, digest, size —
+/// and puts none of its bytes in the payload.
+#[tokio::test]
+async fn get_can_answer_a_file_ref_instead_of_the_content() {
+    let p = platform();
+    store(&p).fs.put("reports/a1.pdf", b"%PDF-1.7 demo").unwrap();
+    let out = run(&p, GET_NODE_KIND, json!({ "from": "reports/a1.pdf", "return": "file" }), json!({})).await.unwrap();
+    let file = &out["file"];
+    crate::pipeline::nodes::shared::file_ref::validate_file_ref(file).expect("a whole FileRef");
+    assert_eq!((file["ref"].as_str(), file["store"].as_str(), file["size"].as_u64()), (Some("reports/a1.pdf"), Some("local"), Some(13)));
+    assert_eq!((file["mime"].as_str(), file["kind"].as_str()), (Some("application/pdf"), Some("pdf")));
+    assert!(file.get("content").is_none() && file.get("base64").is_none(), "no bytes in the run: {file}");
+    let bad = run(&p, GET_NODE_KIND, json!({ "from": "reports/a1.pdf", "return": "process" }), json!({})).await.unwrap_err();
+    assert_eq!(bad.code, "FW_NODE_FS_FILE_GET_CONFIG");
+    let gone = run(&p, GET_NODE_KIND, json!({ "from": "reports/none.pdf", "return": "file" }), json!({})).await.unwrap_err();
+    assert_eq!(gone.code, "FW_NODE_FS_FILE_GET");
+}
+
 #[tokio::test]
 async fn delete_answers_the_ref_it_removed() {
     let p = platform();
@@ -170,7 +188,7 @@ async fn folder_create_takes_folder_and_says_whether_it_made_it() {
 #[test]
 fn the_signatures_name_from_and_the_answer() {
     let sig = |def: NodeDefinition| crate::pipeline::nodes::node_signature(&def);
-    assert_eq!(sig(get_definition()), "fs.file.get --from FILE [--encoding text|base64] [--store TEXT] → file");
+    assert_eq!(sig(get_definition()), "fs.file.get --from FILE [--encoding text|base64] [--return inline|file] [--store TEXT] → file");
     assert_eq!(sig(head_definition()), "fs.file.head --from FILE [--store TEXT] → file");
     assert_eq!(sig(delete_definition()), "fs.file.delete --from FILE [--recursive] [--store TEXT] → file");
     assert_eq!(

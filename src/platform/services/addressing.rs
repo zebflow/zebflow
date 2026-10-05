@@ -479,18 +479,24 @@ impl AddressingService {
 
     /// Where a request for `host` + `path` goes, if the host is a project's.
     /// `None` means "not a project host — route as the platform".
-    pub fn resolve(&self, host: &str, path: &str) -> Option<Resolution> {
+    /// The project a host belongs to, whatever its routes: a dev host by its
+    /// name, a named host by the index. `(owner, project, dev_host)`.
+    pub fn project_of_host(&self, host: &str) -> Option<(String, String, bool)> {
         let host = normalize_host(host);
         if host.is_empty() {
             return None;
         }
-        let (owner, project, dev_host) = if let Some((o, p)) = Self::parse_dev_host(&host) {
-            (o, p, true)
-        } else {
-            let index = self.index.read().expect("addressing index poisoned");
-            let (o, p) = index.hosts.get(&host)?.clone();
-            (o, p, false)
-        };
+        if let Some((o, p)) = Self::parse_dev_host(&host) {
+            return Some((o, p, true));
+        }
+        let index = self.index.read().expect("addressing index poisoned");
+        let (o, p) = index.hosts.get(&host)?.clone();
+        Some((o, p, false))
+    }
+
+    pub fn resolve(&self, host: &str, path: &str) -> Option<Resolution> {
+        let (owner, project, dev_host) = self.project_of_host(host)?;
+        let host = normalize_host(host);
         let addressing = self.read(&owner, &project).unwrap_or_default();
         let path = if path.is_empty() { "/" } else { path };
 
@@ -762,11 +768,10 @@ pub fn server_configs(facts: &ProxyFacts<'_>) -> Vec<(&'static str, &'static str
 fn check_lines(facts: &ProxyFacts<'_>) -> String {
     let first = &facts.hosts[0];
     format!(
-        "# Check: every host must answer from this project.\n\
-         #   curl -sI https://{first}/ | grep -i x-zebflow-project     → x-zebflow-project: {owner}/{project}\n\
-         #   Settings → Addressing shows DNS ✓ and Verify ✓ for each host.",
-        owner = facts.owner,
-        project = facts.project
+        "# Check: every host must reach Zebflow with its Host header intact.\n\
+         #   curl -s -o /dev/null -w '%{{http_code}}\\n' https://{first}/_verify     → 204\n\
+         #   Settings → Addressing → Verify then proves each host answers for this project\n\
+         #   (a one-time probe; no response names the project)."
     )
 }
 
@@ -1014,7 +1019,8 @@ mod config_tests {
                 assert!(text.contains("127.0.0.1:10610"), "{id} points at the upstream");
             }
             assert!(text.to_lowercase().contains("host"), "{id} mentions the Host header");
-            assert!(text.contains("x-zebflow-project"), "{id} ends with its check");
+            assert!(text.contains("/_verify"), "{id} ends with its check");
+            assert!(!text.contains("x-zebflow-project"), "{id}: no header names the project");
         }
         assert!(server_configs(&ProxyFacts { hosts: &[], ..facts }).is_empty());
     }

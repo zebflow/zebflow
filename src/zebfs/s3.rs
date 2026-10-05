@@ -529,6 +529,20 @@ impl S3ZebFs {
         Ok(ZebFsStat { path: rel, size, modified, kind: ZebFsEntryKind::Object })
     }
 
+    /// `len` bytes of one object from `offset`, read as they arrive: a ranged
+    /// `GET` (RFC 9110 §14), its body handed back unread.
+    pub fn open_range(&self, path: &str, offset: u64, len: u64) -> Result<Box<dyn std::io::Read + Send>, ZebFsError> {
+        use std::io::Read;
+        let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
+        if len == 0 {
+            return Ok(Box::new(std::io::empty()));
+        }
+        let range = format!("bytes={offset}-{}", offset + len - 1);
+        let response = self.request("GET", &self.key_for(&rel), &[], None, &[("range", range.as_str())])?;
+        Ok(Box::new(response.into_reader().take(len)))
+    }
+
     /// Streams a local file into one object without holding it in memory:
     /// one pass to hash it for the signature, one to send it.
     pub fn put_from_file(&self, path: &str, src: &std::path::Path) -> Result<ZebFsStat, ZebFsError> {

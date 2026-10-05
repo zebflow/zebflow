@@ -100,6 +100,13 @@ mod tests {
 
     use super::answer_under;
 
+    /// The renderer strips the request from every trigger envelope it knows
+    /// (`rwe::core::page_state`); a source added here must be added there.
+    #[test]
+    fn the_renderer_knows_every_trigger_envelope() {
+        assert_eq!(super::SOURCE_KEYS, crate::rwe::core::page_state::TRIGGER_SOURCES);
+    }
+
     #[test]
     fn the_envelope_goes_under_the_source_and_private_keys_stay_at_the_root() {
         let out = answer_under(

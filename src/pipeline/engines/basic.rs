@@ -1384,7 +1384,9 @@ impl BasicPipelineEngine {
                         config,
                     })
                 } else {
-                    Ok(NodeDispatch::WebResponse(web::response::Node::new(config, self.template_root.clone())))
+                    Ok(NodeDispatch::WebResponse(
+                        web::response::Node::new(config, self.template_root.clone()).with_platform(self.platform.clone()),
+                    ))
                 }
             }
             web::site::NODE_KIND => {

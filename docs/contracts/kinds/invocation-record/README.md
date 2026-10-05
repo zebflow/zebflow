@@ -135,9 +135,9 @@ identifier.
 | Schedule, function, WebSocket, KV triggers | the run has the same `run_id`; nothing to answer, so no header |
 | The MCP endpoint | an agent's call is a request: the same header on its response |
 
-The name says nothing about the framework on purpose; `x-zebflow-project` is
-the operator's verification header (`addressing.md`) and is not sent to a
-visitor for tracing.
+The name says nothing about the framework on purpose. No response header
+names the owner or project (`addressing.md` §1); a host is verified with a
+one-time `/_verify` probe instead.
 
 ## Error group
 

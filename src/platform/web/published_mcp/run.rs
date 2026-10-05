@@ -137,7 +137,7 @@ fn response_result(envelope: &Value) -> CallToolResult {
         text.to_string()
     } else if let Some(html) = envelope.get("html").and_then(Value::as_str) {
         html.to_string()
-    } else if envelope.get("body_base64").is_some() {
+    } else if envelope.get("body_base64").is_some() || envelope.get("stored").is_some() {
         "(binary body — a tool answers text or JSON)".to_string()
     } else {
         String::new()

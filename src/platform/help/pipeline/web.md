@@ -219,3 +219,30 @@ register pipelines/pwa/icons    -- | trigger.webhook --route /pwa/{file} --metho
   or the `reasons` that stop it. Localhost is a secure origin, so all of this
   works on the dev host; only the install button itself needs a real
   (non-headless) Chrome.
+
+## A stored file — `--file <FileRef>`, `--path <key>`
+
+A file in the project's stores (an upload kept by `fs.file.put`, a generated
+report) is answered by handing `--file` its FileRef, or `--path` its store key
+(`--store` names the store; a FileRef names its own). The bytes stream from
+the store — never into the run — with the FileRef's type, `Accept-Ranges`,
+`Range` (206; 416 past the end), `HEAD`, `ETag` and `Last-Modified` (304 on
+`If-None-Match` / `If-Modified-Since`) and `Cache-Control: private, no-cache`.
+It shows inline; `--filename NAME` makes it a download under that name.
+
+```text
+| trigger.webhook --route /documents/:id --auth jwt --credential member-key
+| sekejap.query.run --param "1={{ input.webhook.params.id }}" --param "2={{ input.webhook.auth.sub }}" -- "SELECT path FROM documents WHERE _key = $1 AND owner = $2"
+| web.response.send --path "{{ input.query.rows[0]?.path ?? null }}"
+```
+
+- The query is the ownership check: the owner gets the bytes; anyone else
+  finds no row, `--path` resolves to null, and the route answers **404**.
+- A stored file that is not there — deleted, or a key that is not a key of
+  the stores (`..`, an absolute path, `.zebfs/`) — fails
+  `FW_NODE_WEB_RESPONSE_SEND_NOT_FOUND`: the visitor gets 404, the run keeps
+  the reason. Wire `:error` to answer your own page instead.
+- From a key in a record: `fs.file.get --from "{{ … }}" --return file` answers
+  the FileRef without reading the file; then `--file "{{ input.file }}"`.
+- HTML, SVG and XML are sent as downloads and every stored answer is
+  `nosniff` and sandboxed, as on the file host.

@@ -3028,7 +3028,7 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
                 .get("method")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or("GET");
+                .unwrap_or(crate::pipeline::nodes::basic::trigger::webhook::DEFAULT_METHOD);
             let route = node
                 .config
                 .get("route")

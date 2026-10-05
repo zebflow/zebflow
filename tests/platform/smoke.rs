@@ -7043,11 +7043,9 @@ async fn a_named_host_serves_only_the_site_until_mcp_is_switched_on() {
 
     // Named host, api_on_hosts off (the default): the site is there, the API and the agent endpoint are not.
     let site = app.clone().oneshot(status("research.test", "/", false)).await.expect("site");
-    assert_eq!(
-        site.headers().get("x-zebflow-project").and_then(|v| v.to_str().ok()),
-        Some("superadmin/default"),
-        "the host resolved to the project (the default project has no home page, so the status is 404)"
-    );
+    assert!(site.headers().get("x-zebflow-project").is_none(), "no public answer names the owner and project");
+    let probe = app.clone().oneshot(status("research.test", "/_verify", false)).await.expect("probe");
+    assert_eq!(probe.status(), StatusCode::NO_CONTENT, "the host resolved to a project: Verify's probe answers");
     let api = app.clone().oneshot(status("research.test", "/api/projects/superadmin/default/pipelines", true)).await.expect("api");
     assert_eq!(api.status(), StatusCode::NOT_FOUND, "the platform API is not on a public host by default, even with a session");
     let mcp = app.clone().oneshot(status("research.test", "/_mcp", false)).await.expect("mcp");

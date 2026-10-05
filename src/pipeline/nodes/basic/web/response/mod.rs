@@ -2,7 +2,9 @@
 //!
 //! One node for every response: without a source it answers the payload as
 //! JSON; `--body` answers a value (a string as text, anything else JSON);
-//! `--template` renders a TSX page; `--file` answers a project file. `--status`
+//! `--template` renders a TSX page; `--file` answers a project file, or a
+//! stored file when it is a FileRef; `--path` answers a store key (`stored.rs`,
+//! streamed by the HTTP layer with `Range`, `HEAD` and `304`). `--status`
 //! and `--header` (repeat; a repeated name is sent twice) shape any of them.
 //! It passes its payload on unchanged: what it answers travels to the HTTP
 //! layer beside the payload, never in it.
@@ -21,6 +23,8 @@
 //! | Serve a project file (manifest, robots, icon) | `\| web.response.send --file pwa/manifest.webmanifest` |
 //! | Serve a service worker | `\| web.response.send --file pwa/site.sw.ts --header Service-Worker-Allowed=/` |
 //! | Serve one file out of a folder by URL parameter | `\| web.response.send --root pwa/icons --file "{{ $trigger.params.file }}"` |
+//! | Serve a stored file (streamed, Range, 304) | `\| web.response.send --file "{{ input.file }}"` |
+//! | Serve a stored file as a download | `\| web.response.send --file "{{ input.file }}" --filename "report.pdf"` |
 //!
 //! Every header is sent as written, `Set-Cookie` included: a session cookie
 //! carries `Path=/; SameSite=Lax; HttpOnly` (and `Secure` behind HTTPS)
@@ -29,20 +33,25 @@
 mod answer;
 mod file;
 mod render;
+mod stored;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeFieldDataSource, NodeFieldDef, NodeFieldType};
-use crate::pipeline::nodes::shared::util::with_answer;
+use crate::pipeline::nodes::shared::project_store::store_flag;
+use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::pipeline::{NodeDefinition, PipelineError};
+use crate::platform::services::PlatformService;
 
 pub use answer::{Head, body_envelope};
 pub use file::{FileBody, FileResponse, resolve_file_rel_path};
 pub use render::{CompiledPage, compile_page, render_compiled_page};
+pub use stored::{CODE_NOT_FOUND, STORED_KEY, content_disposition};
 
 pub const NODE_KIND: &str = "web.response.send";
 const INPUT_PIN_IN: &str = "in";
@@ -91,7 +100,15 @@ pub fn definition() -> NodeDefinition {
              `--template pages/x.tsx` (exact `file_list` path, `.tsx` required): render the page with the payload as its `input`; \
              `--file pwa/manifest.webmanifest`: a project file, content type by extension, a `.ts` compiled to JavaScript \
              (a service worker: `--file pwa/site.sw.ts` behind `trigger.webhook --route /sw.js`); `--root pwa/icons --file \"{{ $trigger.params.file }}\"`: \
-             one file out of a folder, the name from the route, never outside it. `--status N`, `--header K=V` (repeat; a repeated name is sent twice). \
+             one file out of a folder, the name from the route, never outside it. \
+             A stored file: `--file \"{{ input.file }}\"` with a FileRef (fs.file.put, fs.file.get --return file, an upload, one kept in a record), \
+             or `--path KEY` (`--store`) with a store key — streamed from its store, never read into the run, typed by the FileRef's mime, \
+             with `Range` (206/416), `HEAD`, `ETag`/`Last-Modified` and `304`, `Cache-Control: private, no-cache` unless a header says otherwise, \
+             shown inline; `--filename NAME` makes it a download under that name. A stored file that is not there — or a `--file` / `--path` that resolved to null \
+             — fails FW_NODE_WEB_RESPONSE_SEND_NOT_FOUND, which the route answers 404 (the run keeps the reason) unless an `:error` edge takes it. \
+             A rendered page never carries the request into the browser: its hydration state has no request headers, cookies or trigger auth \
+             (SSR still reads them; copy a value into a key of your own upstream to show it). \
+             `--status N`, `--header K=V` (repeat; a repeated name is sent twice). \
              A redirect is `--status 303 --header \"Location=/home\"` — a Location without a 3xx, or a 3xx without a Location, is refused. \
              Every header is sent exactly as written, `Set-Cookie` too: nothing is added, so a session cookie writes its own attributes — \
              `--header \"Set-Cookie=zebflow_session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly\"`, plus `; Secure` behind HTTPS. There is no `--route`; the route is the trigger's `--route`. \
@@ -115,8 +132,14 @@ pub fn definition() -> NodeDefinition {
             },
             flag("--body", "body", "json", "The answer: a string answers text/plain, anything else JSON, e.g. \"{{ input.query.rows }}\"."),
             flag("--template", "template", "text", "A TSX page under the source root, ending .tsx, e.g. pages/home.tsx. The payload is its input."),
-            flag("--file", "file", "text", "A project file to answer, e.g. pwa/manifest.webmanifest or pwa/site.sw.ts (compiled). With --root, a bare filename inside it."),
+            flag("--file", "file", "text", "A project file to answer, e.g. pwa/manifest.webmanifest or pwa/site.sw.ts (compiled); with --root, a bare filename inside it. A FileRef (\"{{ input.file }}\") answers that stored file, streamed."),
             flag("--root", "root", "text", "The project folder --file must be directly inside (no subfolders, no ..), e.g. pwa/icons for a /pwa/{file} route."),
+            flag("--path", "path", "text", "A store key to answer, streamed from --store, e.g. \"reports/{{ input.query.rows[0].key }}\"."),
+            DslFlag {
+                description: "The store --path is read from: `local`, or the id of an `s3` credential. Saved explicitly when the pipeline is registered. A FileRef names its own store.".to_string(),
+                ..store_flag()
+            },
+            flag("--filename", "filename", "text", "Answer the file as a download under this name (Content-Disposition: attachment). Default: inline."),
             DslFlag {
                 kind: DslFlagKind::RepeatedList,
                 ..flag("--script", "scripts", "text", "An external script URL for the page (with --template); repeat for several. Each must match the project's RWE allow-list.")
@@ -132,6 +155,9 @@ pub fn definition() -> NodeDefinition {
             },
             field("file", "Project file", NodeFieldType::Text, "pwa/site.sw.ts", "Answer this project file; content type by extension, .ts compiled. With a root, a bare filename."),
             field("root", "Root", NodeFieldType::Text, "pwa/icons", "The file must be directly inside this project folder."),
+            field("path", "Store key", NodeFieldType::Text, "reports/a1.pdf", "Answer this stored file, streamed from the store."),
+            field("store", "Store", NodeFieldType::Text, "", "`local`, or the id of an s3 credential. Empty: the project's default, saved when the pipeline is registered."),
+            field("filename", "Download name", NodeFieldType::Text, "report.pdf", "Answer the file as a download under this name. Empty: shown inline."),
             field("scripts", "Scripts", NodeFieldType::Text, "https://cdn.example.com/app.js", "External script URLs for the page (template only)."),
         ],
         layout: vec![
@@ -142,6 +168,10 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row {
                 row: vec![LayoutItem::Field("root".to_string()), LayoutItem::Field("file".to_string())],
             },
+            LayoutItem::Row {
+                row: vec![LayoutItem::Field("path".to_string()), LayoutItem::Field("store".to_string())],
+            },
+            LayoutItem::Field("filename".to_string()),
             LayoutItem::Field("scripts".to_string()),
         ],
         ai_tool: Default::default(),
@@ -159,11 +189,19 @@ pub fn definition() -> NodeDefinition {
                 .note("Behind `--path /sw.js`. The file starts with `self.__ZF = { version, source }`; the page registers it once with `navigator.serviceWorker.register(\"/sw.js\")`."),
             crate::pipeline::model::NodeExample::dsl("One icon out of a folder", r#"web.response.send --root pwa/icons --file "{{ $trigger.params.file }}""#)
                 .note("Behind `--path /pwa/{file}`. The name may not leave the folder, so this is safe to expose."),
+            crate::pipeline::model::NodeExample::dsl("A member's own file, or 404", r#"web.response.send --path "{{ input.query.rows[0]?.path ?? null }}""#)
+                .note("After `trigger.webhook --auth jwt` and `sekejap.query.run … WHERE _key = $1 AND owner = $2` with `--param \"2={{ input.webhook.auth.sub }}\"`: the owner gets the bytes, anyone else finds no row and gets 404."),
+            crate::pipeline::model::NodeExample::dsl("A stored key as a download", r#"web.response.send --path "exports/{{ $trigger.params.id }}.csv" --filename "export.csv""#),
         ],
         failure_semantics: vec![
             crate::pipeline::model::NodeFailureSemantic {
                 code: CODE_FILE.to_string(),
-                description: "`--file` is missing, leaves the project or its `--root`, or does not exist.".to_string(),
+                description: "`--file` is missing, leaves the project or its `--root`, or does not exist; a stored file's store cannot be read, or the object no longer matches its FileRef.".to_string(),
+                ..Default::default()
+            },
+            crate::pipeline::model::NodeFailureSemantic {
+                code: CODE_NOT_FOUND.to_string(),
+                description: "The stored file `--file` or `--path` names is not in its store, or `--file` resolved to null. Unless an `:error` edge takes it, the route answers 404.".to_string(),
                 ..Default::default()
             },
             crate::pipeline::model::NodeFailureSemantic {
@@ -178,7 +216,7 @@ pub fn definition() -> NodeDefinition {
             },
             crate::pipeline::model::NodeFailureSemantic {
                 code: answer::CODE_CONFIG.to_string(),
-                description: "More than one of `--body`, `--template`, `--file`, or `--root` without `--file`.".to_string(),
+                description: "More than one of `--body`, `--template`, `--file`, `--path`; `--root` without `--file`; `--filename` without `--file` or `--path`.".to_string(),
                 ..Default::default()
             },
         ],
@@ -209,12 +247,42 @@ pub struct Config {
     /// External script URLs for the page (`--script`, repeat).
     #[serde(default)]
     pub scripts: Vec<String>,
-    /// A project file to answer (`file.rs`).
-    #[serde(default)]
-    pub file: Option<String>,
+    /// A project path (`file.rs`), or a FileRef — a stored file (`stored.rs`).
+    /// `Some(Value::Null)` is a `{{ }}` that resolved to nothing: a 404.
+    #[serde(default, deserialize_with = "present")]
+    pub file: Option<Value>,
     /// The folder `file` must be directly inside, when the name comes from the route.
     #[serde(default)]
     pub root: Option<String>,
+    /// A store key to answer (`stored.rs`); `Some(Value::Null)`, as for
+    /// `file`, is a `{{ }}` that resolved to nothing — a 404, never the
+    /// payload answered in its place.
+    #[serde(default, deserialize_with = "present")]
+    pub path: Option<Value>,
+    /// The store `path` is read from; saved explicitly at registration.
+    #[serde(default)]
+    pub store: Option<String>,
+    /// A download name: `Content-Disposition: attachment`.
+    #[serde(default)]
+    pub filename: Option<String>,
+}
+
+/// A key that is present is `Some`, `null` included — absent stays `None`
+/// through `#[serde(default)]`.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
+impl Config {
+    /// `--file` as a project path, when it is one.
+    fn repo_file(&self) -> Option<&str> {
+        self.file.as_ref().and_then(Value::as_str).filter(|_| self.path.is_none())
+    }
+
+    /// `--filename`, trimmed; empty is none.
+    fn download_name(&self) -> Option<&str> {
+        self.filename.as_deref().map(str::trim).filter(|n| !n.is_empty())
+    }
 }
 
 // ── Node (non-template path only) ────────────────────────────────────────────
@@ -224,17 +292,42 @@ pub struct Node {
     config: Config,
     /// The project source root `--file` resolves against; `None` outside a project.
     template_root: Option<PathBuf>,
+    /// The project's stores, for a stored file; `None` outside the platform.
+    platform: Option<Arc<PlatformService>>,
 }
 
 impl Node {
     pub fn new(config: Config, template_root: Option<PathBuf>) -> Self {
-        Self { config, template_root }
+        Self { config, template_root, platform: None }
+    }
+
+    /// The node with the platform its stored files are read through.
+    pub fn with_platform(mut self, platform: Option<Arc<PlatformService>>) -> Self {
+        self.platform = platform;
+        self
+    }
+
+    /// The `--file` FileRef or `--path` response: decided here, streamed by
+    /// the HTTP layer (`stored.rs`).
+    fn stored_envelope(&self, head: Head, metadata: &Value) -> Result<Value, PipelineError> {
+        let Some(platform) = &self.platform else {
+            return Err(PipelineError::new(CODE_FILE, "a stored file needs the platform; this engine has none"));
+        };
+        let (owner, project, _, _) = metadata_scope(metadata)?;
+        let source = match (&self.config.path, &self.config.file) {
+            (Some(Value::Null), _) => Value::Null,
+            (Some(Value::String(path)), _) => Value::String(path.clone()),
+            (Some(_), _) => return Err(PipelineError::new(CODE_FILE, "--path is a store key, a string")),
+            (None, Some(file)) => file.clone(),
+            (None, None) => Value::Null,
+        };
+        stored::stored_envelope(platform, owner, project, &source, self.config.store.as_deref(), self.config.download_name(), head)
     }
 
     /// The `--file` response: bytes read from the project, typed by extension,
     /// a script compiled and given its prelude.
     fn file_envelope(&self, mut head: Head) -> Result<Value, PipelineError> {
-        let rel = resolve_file_rel_path(self.config.root.as_deref(), self.config.file.as_deref().unwrap_or_default())?;
+        let rel = resolve_file_rel_path(self.config.root.as_deref(), self.config.repo_file().unwrap_or_default())?;
         let Some(root) = self.template_root.as_deref() else {
             return Err(PipelineError::new(CODE_FILE, "template_root is not configured on this pipeline engine"));
         };
@@ -243,6 +336,9 @@ impl Node {
         let served = FileResponse::from_bytes(&rel, bytes)?;
         head.default_header("Content-Type", served.content_type);
         head.default_header("Cache-Control", "no-cache");
+        if let Some(name) = self.config.download_name() {
+            head.default_header("Content-Disposition", &content_disposition("attachment", name));
+        }
         let mut envelope = head.envelope();
         match served.body {
             FileBody::Text(text) => envelope.insert("text".to_string(), Value::String(text)),
@@ -279,8 +375,12 @@ impl NodeHandler for Node {
         // before this node ran (docs/contracts/kinds/node-io).
         let head = self.config.check()?;
         let status = head.status;
-        let (envelope, what) = if self.config.file.is_some() {
-            (self.file_envelope(head)?, format!("file={}", self.config.file.as_deref().unwrap_or_default()))
+        let (envelope, what) = if let Some(rel) = self.config.repo_file() {
+            (self.file_envelope(head)?, format!("file={rel}"))
+        } else if self.config.file.is_some() || self.config.path.is_some() {
+            let envelope = self.stored_envelope(head, &input.metadata)?;
+            let what = format!("stored={}", envelope[STORED_KEY]["key"].as_str().unwrap_or_default());
+            (envelope, what)
         } else {
             (body_envelope(&self.config, &head, &input.payload), format!("status={status:?}"))
         };

@@ -12,6 +12,7 @@
 //!
 //! ```text
 //! fs.file.get      → file:   { path, size, modified, kind, content_type, content, base64 }
+//!                             (`--return file`: the file's durable FileRef, its bytes unread)
 //! fs.file.head     → file:   { path, size, modified, kind, content_type }
 //! fs.file.delete   → file:   { ref, deleted: true }   (+ recursive: true for a folder)
 //! fs.file.copy     → file:   the durable FileRef of the copy
@@ -58,6 +59,8 @@ const GET_UTF8_CODE: &str = "FW_NODE_FS_FILE_GET_UTF8";
 /// `fs.file.delete --from` names a folder that holds files, without `--recursive`.
 const DELETE_FOLDER_CODE: &str = "FW_NODE_FS_FILE_DELETE_FOLDER";
 const ENCODINGS: &[&str] = &["text", "base64"];
+/// `fs.file.get --return`: the content in the payload, or a FileRef to it.
+const RETURNS: &[&str] = &["inline", "file"];
 const ON_CONFLICT_WORDS: &[&str] = &["error", "skip", "overwrite"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +166,9 @@ pub struct Config {
     /// `fs.file.delete`: a store key naming a folder removes everything under it.
     #[serde(default)]
     pub recursive: bool,
+    /// `fs.file.get`: `inline` (default) or `file`.
+    #[serde(default, rename = "return")]
+    pub return_mode: String,
 }
 
 fn flag(name: &str, key: &str, description: &str, value: &str) -> DslFlag {
@@ -316,11 +322,17 @@ pub fn get_definition() -> NodeDefinition {
         "File Get",
         "Read the content of the file `--from` names — a FileRef, an upload or a store key. `--encoding text` (default) puts UTF-8 in `file.content`; \
          `--encoding base64` puts the bytes in `file.base64`. Adds `file: { path, size, modified, kind, content_type, content, base64 }` and keeps the rest of the payload. \
-         A binary file read as text fails with FW_NODE_FS_FILE_GET_UTF8; use base64.",
+         A binary file read as text fails with FW_NODE_FS_FILE_GET_UTF8; use base64. \
+         `--return file` reads nothing into the run: `file` is the file's durable FileRef (digested by streaming), what \
+         `web.response.send --file \"{{ input.file }}\"` streams to the caller.",
         ("file", schema),
         vec![
             from_flag("The file: a FileRef, an upload or a store key."),
             DslFlag { choices: words(ENCODINGS), ..flag("--encoding", "encoding", "text (default) or base64.", "") },
+            DslFlag {
+                choices: words(RETURNS),
+                ..flag("--return", "return", "inline (default) puts the content in `file`; file answers the file's FileRef and reads no bytes into the run. Literal.", "")
+            },
             read_store_flag(),
         ],
         vec![
@@ -331,11 +343,22 @@ pub fn get_definition() -> NodeDefinition {
                 options: ENCODINGS.iter().map(|v| SelectOptionDef { value: v.to_string(), label: v.to_string() }).collect(),
                 ..field("encoding", "Encoding", "UTF-8 text, or base64 for bytes.")
             },
+            NodeFieldDef {
+                field_type: NodeFieldType::Select,
+                default_value: Some(json!("inline")),
+                options: RETURNS.iter().map(|v| SelectOptionDef { value: v.to_string(), label: v.to_string() }).collect(),
+                ..field("return", "Return", "inline: the content in the payload. file: a FileRef, for web.response.send --file.")
+            },
             store_field(),
         ],
-        vec![NodeExample::dsl("Read a text file", "fs.file.get --from docs/notes.md").output(json!({
-            "file": { "path": "docs/notes.md", "size": 42, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "text/plain; charset=utf-8", "content": "# Notes\n…", "base64": null }
-        }))],
+        vec![
+            NodeExample::dsl("Read a text file", "fs.file.get --from docs/notes.md").output(json!({
+                "file": { "path": "docs/notes.md", "size": 42, "modified": "2026-09-13T04:00:00Z", "kind": "object", "content_type": "text/plain; charset=utf-8", "content": "# Notes\n…", "base64": null }
+            })),
+            NodeExample::dsl("Hand a stored file to the response", "fs.file.get --from reports/a1.pdf --return file")
+                .output(json!({ "file": stored("reports/a1.pdf", "application/pdf", "pdf", 52311, GET_NODE_KIND) }))
+                .note("Then `web.response.send --file \"{{ input.file }}\"` streams it, with Range, HEAD and 304."),
+        ],
     )
 }
 
@@ -492,8 +515,15 @@ impl Node {
     fn get(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
         let op = self.operation;
         let encoding = choice(&self.config.encoding, ENCODINGS, "text", "--encoding", op.config_code())?;
+        let return_mode = choice(&self.config.return_mode, RETURNS, "inline", "--return", op.config_code())?;
         let (store, key) = self.source(owner, project)?;
         let stat = store.fs.head(&key).map_err(|err| PipelineError::new(op.code(), format!("'{key}': {err}")))?;
+        if return_mode == "file" {
+            if stat.kind != ZebFsEntryKind::Object {
+                return Err(PipelineError::new(op.code(), format!("'{key}' is a folder, not a file")));
+            }
+            return Ok(json!({ "file": store.stored_ref(&key, GET_NODE_KIND, "untrusted", op.code())? }));
+        }
         // Capped like every node read: the bytes go into the payload.
         let bytes = read_capped(&store.fs, &key, op.code())?;
         let mut file = stat_json(&stat);

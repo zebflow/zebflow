@@ -32,6 +32,14 @@ skill is the order of work.
 4. Statements go in the body after `--`; values bind through `--param`; a
    node that changes data needs `--write`.
 5. Headers are sent exactly as written — a cookie writes its own attributes.
+   Inside double quotes `\"` is a quote and `\\` a backslash:
+   `--header "Content-Disposition=attachment; filename=\"a b.pdf\""`.
+6. A stored file is answered, never read into the run:
+   `web.response.send --file "{{ input.file }}"` (a FileRef) or `--path KEY`,
+   streamed with Range, HEAD and 304; `--filename NAME` makes it a download;
+   a missing file — or a `--file`/`--path` that resolved to null — is a 404.
+7. A page's browser state never holds the request (headers, cookies, trigger
+   `auth`); copy a value into your own key upstream to use it client-side.
 
 ## Before writing a line
 

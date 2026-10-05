@@ -72,6 +72,25 @@ impl ZebFs {
         }
     }
 
+    /// `len` bytes of one object from `offset`, as a blocking reader — what a
+    /// streamed answer pulls from (`web.response.send` with a stored file).
+    /// Nothing is held in memory; a bucket is asked for exactly that range.
+    pub fn open_range(&self, path: &str, offset: u64, len: u64) -> Result<Box<dyn std::io::Read + Send>, ZebFsError> {
+        match self {
+            Self::Local(s) => {
+                use std::io::{Read, Seek, SeekFrom};
+                let (_, abs) = s.resolve_object_path(path)?;
+                if !abs.is_file() {
+                    return Err(ZebFsError::new("ZEBFS_NOT_FOUND", "object not found"));
+                }
+                let mut file = std::fs::File::open(&abs)?;
+                file.seek(SeekFrom::Start(offset))?;
+                Ok(Box::new(file.take(len)))
+            }
+            Self::S3(s) => s.open_range(path, offset, len),
+        }
+    }
+
     /// Writes one object from a local file without holding it in memory.
     pub fn put_from_file(&self, path: &str, src: &Path) -> Result<ZebFsStat, ZebFsError> {
         match self {

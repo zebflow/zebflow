@@ -258,12 +258,8 @@ impl CompiledPipeline {
                             ),
                         ));
                     }
-                    let method = node
-                        .config
-                        .get("method")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("POST")
-                        .to_string();
+                    // The default the save check applies too (`webhook::DEFAULT_METHOD`).
+                    let method = crate::pipeline::nodes::basic::trigger::webhook::method_of(&node.config);
                     let (auth_type, auth_credential, auth_required_role) = trigger_auth(&node.config);
                     let auth_optional = node
                         .config
@@ -522,7 +518,7 @@ fn check_trigger_flags(
         return Err(refuse(crate::pipeline::PipelineError::new(code, "--role checks JWT claims: it needs --auth jwt")));
     }
     if node.kind == "trigger.webhook" {
-        choice(&text("method"), &webhook::METHODS, "GET", "--method", code).map_err(refuse)?;
+        choice(&text("method"), &webhook::METHODS, webhook::DEFAULT_METHOD, "--method", code).map_err(refuse)?;
         choice(&text("errors"), &webhook::ERRORS_MODES, "show", "--errors", code).map_err(refuse)?;
     }
     Ok(())
@@ -804,6 +800,17 @@ mod trigger_tests {
             updated_at: 0,
         };
         CompiledPipeline::from_active_meta(&meta, &source, None)
+    }
+
+    /// No `--method` is GET — the word the save check applies, not a second
+    /// default of the route table's own.
+    #[test]
+    fn a_webhook_without_a_method_serves_get() {
+        let compiled = compile("| trigger.webhook --route /no-method").expect("compiles");
+        assert_eq!(compiled.webhook_triggers[0].method, "GET");
+        assert_eq!(crate::platform::services::project::canonical_webhook_method(None), "GET");
+        let lower = compile("| trigger.webhook --route /lower --method post").expect("compiles");
+        assert_eq!(lower.webhook_triggers[0].method, "POST");
     }
 
     #[test]

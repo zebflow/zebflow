@@ -110,14 +110,23 @@ context merged in at the top level (never overwriting a key the pipeline set):
 
 | Key | Value |
 |---|---|
-| `route` | the path the request arrived on |
+| `route` | the path the visitor asked for (`/book` on the project's host) |
 | `params` | route parameters (`/posts/:slug` → `{ slug }`) |
 | `query` | parsed query string; `search` is the raw `?…` string |
-| `headers` | request headers |
+| `headers` | request headers — **server render only** |
 | `auth` | the verified token's public claims, when the trigger had `--auth-*` |
 
 So after `sekejap.query.run`, `input.query.rows` is the result; after `script -- "return { base: '/x' }"`,
 `input.base` is `/x`. There is no `input.state` or `input.request` wrapper.
+
+**The browser never receives the request.** The page's hydration state
+(`<script id="__rwe_payload">`) leaves out `headers`, cookies, and every
+trigger envelope's `headers`, `cookies` and `auth` (`input.webhook.headers`,
+`input.webhook.auth`). The server render still sees them, so a component that
+prints a header renders it into the HTML once — but in the browser the value
+is gone. A value the page needs in the browser is copied into a key of its own
+upstream (`javascript.script.run -- "return { lang: input.webhook.headers['accept-language'] }"`
+→ `input.script.lang`).
 
 Server data comes from `input`. Client state is `useState` (local) or
 `usePageState("key", default)` (shared across the page's components). See

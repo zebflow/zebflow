@@ -4,6 +4,7 @@ pub mod deno_worker;
 pub mod error;
 pub mod js_masker;
 pub mod model;
+pub mod page_state;
 pub mod render;
 pub mod security;
 pub mod source_check;

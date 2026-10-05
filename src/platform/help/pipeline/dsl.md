@@ -164,7 +164,11 @@ query node, the code of a script node, the prompt of `ai.text.generate`:
 
 **Quoting.** A value with a space or `{{ }}` is one double-quoted argument.
 `--header Location={{ input.url }}` unquoted is cut at the first space and
-refused with a message that says so. End a line with `\` to continue it.
+refused with a message that says so. Inside double quotes `\"` is a quote and
+`\\` a backslash, as in a shell — `--header "Content-Disposition=attachment;
+filename=\"a b.pdf\""`; any other backslash stays as written (`"\d+"`,
+`"C:\data"`). Single quotes take everything literally. End a line with `\` to
+continue it.
 
 ---
 

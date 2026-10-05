@@ -114,7 +114,7 @@ pub enum ProjectGitRepairMode {
 }
 
 pub fn canonical_webhook_method(raw: Option<&str>) -> String {
-    raw.unwrap_or("POST").trim().to_ascii_uppercase()
+    crate::pipeline::nodes::basic::trigger::webhook::method_of(&serde_json::json!({ "method": raw }))
 }
 
 pub fn canonical_webhook_path(raw: Option<&str>) -> String {

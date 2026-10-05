@@ -135,22 +135,13 @@ pub fn build_static_html(
 /// claims (`addressing.md` §0: a page never holds the project's own address,
 /// which `headers.host` is). A value the page should show is copied into a
 /// key of its own by an upstream node, where the pipeline says so.
+///
+/// One rule with every rendered page's hydration state: the same function
+/// (`rwe::core::page_state::browser_state`), here applied to the whole input
+/// because a generated page is never an answer to a request.
 pub fn page_input(payload: &Value) -> Value {
-    let mut input = payload.clone();
-    if let Some(map) = input.as_object_mut() {
-        for source in crate::pipeline::nodes::basic::trigger::SOURCE_KEYS {
-            if let Some(Value::Object(envelope)) = map.get_mut(source) {
-                for request_only in REQUEST_ONLY_KEYS {
-                    envelope.remove(request_only);
-                }
-            }
-        }
-    }
-    input
+    crate::rwe::core::page_state::browser_state(payload)
 }
-
-/// The parts of a trigger envelope that belong to the request, never to a page.
-pub const REQUEST_ONLY_KEYS: [&str; 3] = ["headers", "cookies", "auth"];
 
 /// What writing `contents` at `rel_path` would do under `on_conflict`, decided
 /// before anything is written: `Some("unchanged")` or `Some("skipped")` leave

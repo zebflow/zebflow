@@ -199,7 +199,9 @@ pub fn render(
         transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
     let ssr_ms = started.elapsed().as_millis();
 
-    let payload_json = serde_json::to_string(vars).map_err(|e| {
+    // The browser gets the page's state without the request
+    // (`page_state.rs`); the server render above had all of it.
+    let payload_json = serde_json::to_string(&super::page_state::browser_state(vars)).map_err(|e| {
         EngineError::new(
             "RWE_PAYLOAD_JSON",
             format!("failed serializing hydration payload: {e}"),

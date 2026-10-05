@@ -475,7 +475,7 @@ Tells the compiler to include those classes even though they're assembled dynami
 | `export const page = {}` | Page config (head, body, navigation mode) | ✅ |
 | `export default function Page(props)` | Props come from server render vars | ✅ |
 | SSR-first — all pages render on server | First response is full HTML, SEO-friendly | ✅ |
-| Hydration payload via `#__rwe_payload` | JSON injected into page for client hydration | ✅ |
+| Hydration payload via `#__rwe_payload` | JSON injected into page for client hydration — the render state **without the request**: no `headers`, cookies, or trigger envelope `headers` / `cookies` / `auth` (`core/page_state.rs`; SSR still reads them) | ✅ |
 | `server` / `client` script namespace | Explicit server data vs client state split | 🔮 M2 |
 | `expose` list for hydration payload | Control what server data reaches the client | 🔮 M2 |
 

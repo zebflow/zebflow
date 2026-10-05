@@ -542,6 +542,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_WEB_RESPONSE_SEND_CONFIG", ErrorClass::Refused),
     ("FW_NODE_WEB_RESPONSE_SEND_FILE", ErrorClass::Failed),
     ("FW_NODE_WEB_RESPONSE_SEND_HEADER", ErrorClass::Refused),
+    ("FW_NODE_WEB_RESPONSE_SEND_NOT_FOUND", ErrorClass::Refused),
     ("FW_NODE_WEB_RESPONSE_SEND_REDIRECT", ErrorClass::Refused),
     ("FW_NODE_WEB_RESPONSE_SEND_RENDER", ErrorClass::Failed),
     // `web.site.generate`, both modes and the shared site machinery.

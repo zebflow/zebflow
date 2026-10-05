@@ -22,9 +22,26 @@ neutral form
 A request whose `Host` is one of a project's hosts is that project's, and
 its path is an app path (`/book`). Browsers resolve `*.localhost` to loopback
 on their own — dev needs no DNS and no hosts file. A proxy in front passes
-`Host` through and does nothing else; every response served for a project
-host carries `x-zebflow-project: {owner}/{project}`, which is what Verify
-reads back through the public host.
+`Host` through and does nothing else. **No public response names the owner
+or project** — no header, and no page's hydration state (§1a). Verify proves a
+host with a one-time probe: it mints a token for the project and requests
+`/_verify/{token}` through the host, which answers `204` only when the host
+resolved to that project (`404` with `x-zebflow-verify: other` otherwise).
+`/_verify` alone answers `204` on any project host — the check a generated
+proxy config ends with (`web/host_verify.rs`).
+
+## 1a. What a page publishes
+
+A rendered page's hydration state (`<script id="__rwe_payload">`) never
+carries the request: no request headers (the visitor's address, a proxy's
+internal `x-forwarded-for` / `x-real-ip` chain, `host`, `cookie`, the user
+agent), no cookies, and no trigger envelope's `auth`; the root `auth` is only
+the claims the token marks `_zf_public`. Server-side rendering still reads
+them. A page's route is the path the visitor asked for — on a project host
+`/book`, never the `/wh/{o}/{p}/book` it is served as. One function decides
+this for every render and for `web.site.generate`
+(`rwe/core/page_state.rs`). A page that wants a request value in the browser
+copies it into its own key upstream.
 
 ## 2. Surfaces and routes
 
