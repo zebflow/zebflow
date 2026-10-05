@@ -33,6 +33,7 @@ tests/
 !src/platform/help/**/*.md
 !blessed/skills/**/*.md
 !blessed/skill-extras/**/*.md
+!blessed/rwe-libraries/**/*.md
 
 # Library READMEs / notes — not referenced by include_bytes!
 libraries/**/*.md
