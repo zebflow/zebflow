@@ -455,31 +455,46 @@
       if (aspect) style.aspectRatio = String(aspect).replace(':', ' / ');
       return style;
     }
-    globalThis.PotoruPlayer = function (props) {
+    globalThis.PotoPlayer = function (props) {
       var p = props || {};
       var libraries = Array.isArray(p.libraries) ? p.libraries : String(p.libraries || '').split(/[\s,]+/).filter(Boolean);
       var config = { src: p.src || '' };
       if (libraries.length) config.libraries = libraries;
-      ['controls', 'autoplay', 'muted', 'loop', 'captions'].forEach(function (k) { if (p[k]) config[k] = true; });
-      ['mode', 'renderer', 'height', 'aspect', 'fit', 'camera'].forEach(function (k) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') config[k] = p[k]; });
+      ['controls', 'autoplay', 'muted', 'loop', 'captions', 'still'].forEach(function (k) { if (p[k]) config[k] = true; });
+      ['time', 'mode', 'renderer', 'height', 'aspect', 'fit', 'camera'].forEach(function (k) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') config[k] = p[k]; });
       return h('div', {
         'data-zeb-lib': 'potoru',
-        'data-zeb-wrapper': 'PotoruPlayer',
+        'data-zeb-wrapper': 'PotoPlayer',
         'data-config': JSON.stringify(config),
         id: p.id,
         className: p.className,
         style: boxStyle(config.height, config.aspect),
       });
     };
-    globalThis.PotoruCompiler = function (props) {
+    globalThis.PotoSnapshot = function (props) {
       var p = props || {};
-      var config = { mode: p.mode === 'script' ? 'script' : 'files' };
-      if (p.files) config.files = p.files;
+      var libraries = Array.isArray(p.libraries) ? p.libraries : String(p.libraries || '').split(/[\s,]+/).filter(Boolean);
+      var config = { src: p.src || '' };
+      ['time', 'camera', 'fit', 'height', 'aspect'].forEach(function (k) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') config[k] = p[k]; });
+      if (libraries.length) config.libraries = libraries;
+      return h('div', {
+        'data-zeb-lib': 'potoru',
+        'data-zeb-wrapper': 'PotoSnapshot',
+        'data-config': JSON.stringify(config),
+        id: p.id,
+        className: p.className,
+        style: boxStyle(config.height, config.aspect),
+      });
+    };
+    globalThis.PotoEditor = function (props) {
+      var p = props || {};
+      var config = { mode: p.mode === 'script' ? 'script' : 'yaml' };
+      if (p.yaml) config.yaml = p.yaml;
       if (p.script) config.script = p.script;
       if (p.height) config.height = p.height;
       return h('div', {
         'data-zeb-lib': 'potoru',
-        'data-zeb-wrapper': 'PotoruCompiler',
+        'data-zeb-wrapper': 'PotoEditor',
         'data-config': JSON.stringify(config),
         id: p.id,
         className: p.className,
@@ -487,10 +502,11 @@
       });
     };
     var browserOnly = function () { return Promise.reject(new Error('zeb/potoru runs in the browser')); };
-    globalThis.mountPotoruPlayer = browserOnly;
-    globalThis.mountPotoruCompiler = browserOnly;
+    globalThis.mountPotoPlayer = browserOnly;
+    globalThis.mountPotoSnapshot = browserOnly;
+    globalThis.mountPotoEditor = browserOnly;
     globalThis.compile = globalThis.compile || browserOnly;
-    globalThis.potoru = { version: '0.1.0', get: function () { return undefined; }, getCompiler: function () { return undefined; }, mountPotoruPlayer: browserOnly, mountPotoruCompiler: browserOnly, compile: browserOnly, loadPlayer: browserOnly };
+    globalThis.potoru = { version: '0.1.1', get: function () { return undefined; }, getEditor: function () { return undefined; }, mountPotoPlayer: browserOnly, mountPotoSnapshot: browserOnly, mountPotoEditor: browserOnly, compile: browserOnly, loadPlayer: browserOnly };
   })();
 
   // ---------------------------------------------------------------------------

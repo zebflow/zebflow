@@ -12424,10 +12424,16 @@ mod tests {
         let (root, platform) = hub_publish_fixture("Blessed Upgrade");
         let package_id = "zebflow.codemirror";
         let carried = crate::platform::blessed::blessed_packages().unwrap();
-        for package in carried
-            .iter()
-            .filter(|package| package.asset_kind == "rwe_library")
-        {
+        // The libraries that shipped an unlicensed 0.1.1; a library first
+        // published later (zeb/potoru) never had that release to collide with.
+        const PRE_LICENSE: &[&str] = &[
+            "codemirror", "d3", "deckgl", "graphui", "livegeo", "markdown",
+            "pdf", "prosemirror", "threejs", "threejs-vrm", "use",
+        ];
+        for package in carried.iter().filter(|package| {
+            package.asset_kind == "rwe_library"
+                && PRE_LICENSE.iter().any(|name| package.package_id == format!("zebflow.{name}"))
+        }) {
             assert_ne!(
                 package.version, "0.1.1",
                 "{} must not reuse the pre-license coordinate",

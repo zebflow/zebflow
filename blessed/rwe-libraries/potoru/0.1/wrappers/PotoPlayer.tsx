@@ -1,11 +1,11 @@
 /**
- * PotoruPlayer — RWE wrapper for Potoru .poto stories (zeb/potoru).
+ * PotoPlayer — RWE wrapper for Potoru .poto stories (zeb/potoru).
  *
  * IMPORT in a TSX page:
- *   import { PotoruPlayer } from "zeb/potoru";
+ *   import { PotoPlayer } from "zeb/potoru";
  *
  * ─── Basic usage ──────────────────────────────────────────────────────────
- *   <PotoruPlayer src="/assets/stories/intro.poto" controls autoplay muted />
+ *   <PotoPlayer src="/assets/stories/intro.poto" controls autoplay muted />
  *
  * ─── Props ────────────────────────────────────────────────────────────────
  *   src        string             URL of a .poto package (same origin or CORS)
@@ -19,6 +19,8 @@
  *   renderer   "canvas" | "canvas-exact" | "svg"  default canvas
  *   height     string | number    CSS height (otherwise the story's aspect ratio)
  *   aspect     string             CSS aspect ratio of the box, e.g. "16 / 9"
+ *   still      boolean            show the frame at `time` and do not play
+ *   time       number             seconds, with `still` (for many thumbnails, PotoSnapshot is lighter)
  *   id         string             container id for window.__zebPotoru.get(id)
  *   className  string             classes on the container
  *
@@ -49,6 +51,8 @@ function playerConfig(props) {
   if (props.muted) config.muted = true;
   if (props.loop) config.loop = true;
   if (props.captions) config.captions = true;
+  if (props.still) config.still = true;
+  if (props.time !== undefined && props.time !== null && props.time !== "") config.time = props.time;
   if (props.mode) config.mode = props.mode;
   if (props.renderer) config.renderer = props.renderer;
   if (props.height) config.height = props.height;
@@ -58,7 +62,7 @@ function playerConfig(props) {
   return config;
 }
 
-export default function PotoruPlayer(props) {
+export default function PotoPlayer(props) {
   const config = playerConfig(props || {});
   const style = { width: "100%", display: "block", position: "relative" };
   if (config.height) style.height = typeof config.height === "number" ? `${config.height}px` : String(config.height);
@@ -66,7 +70,7 @@ export default function PotoruPlayer(props) {
   return (
     <div
       data-zeb-lib="potoru"
-      data-zeb-wrapper="PotoruPlayer"
+      data-zeb-wrapper="PotoPlayer"
       data-config={JSON.stringify(config)}
       id={props.id}
       className={props.className}

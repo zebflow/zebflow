@@ -5,8 +5,9 @@ import type { APIRequestContext, Page } from "@playwright/test";
 /**
  * zeb/potoru end to end, in a throwaway project: the library is enabled the
  * way the Studio enables it (a hub install, `.wasm` engines included), a
- * story is authored in the browser both ways, and the player plays the bytes
- * the compiler made — fetched same-origin from the project's own host.
+ * story is authored in the browser in both source modes (YAML and Script),
+ * and the player and the snapshot draw the bytes the compiler made — fetched
+ * same-origin from the project's own host.
  *
  * A placeholder that never mounts still answers 200 with correct markup, so
  * every case asserts what the runtime did: a compile result, a ready event,
@@ -40,7 +41,7 @@ const STORY: Record<string, string> = {
   ].join("\n"),
 };
 
-/** Way B: authoring-API JavaScript that returns a project. */
+/** Script mode: authoring-API JavaScript that returns a project. */
 const SCRIPT = [
   'const project = Project.create({ id: "dot", name: "Dot", format: 4 });',
   'project.scene("main", { stage: { width: 320, height: 180 }, duration: 1 }, (s) => {',
@@ -52,22 +53,32 @@ const SCRIPT = [
 ].join("\n");
 
 const PAGES: Record<string, string> = {
-  "files.tsx": `
-import { PotoruCompiler } from "zeb/potoru";
+  "yaml.tsx": `
+import { PotoEditor } from "zeb/potoru";
 const FILES = ${JSON.stringify(STORY)};
 export default function Page() {
-  return <main><PotoruCompiler id="lab" files={FILES} height="420px" /></main>;
+  return <main><PotoEditor id="lab" yaml={FILES} height="420px" /></main>;
 }`,
   "script.tsx": `
-import { PotoruCompiler } from "zeb/potoru";
+import { PotoEditor } from "zeb/potoru";
 const SCRIPT = ${JSON.stringify(SCRIPT)};
 export default function Page() {
-  return <main><PotoruCompiler id="lab" mode="script" script={SCRIPT} height="420px" /></main>;
+  return <main><PotoEditor id="lab" mode="script" script={SCRIPT} height="420px" /></main>;
 }`,
   "player.tsx": `
-import { PotoruPlayer } from "zeb/potoru";
+import { PotoPlayer } from "zeb/potoru";
 export default function Page() {
-  return <main style={{ width: "640px" }}><PotoruPlayer id="square" src="/_files/stories/square.poto" autoplay muted loop /></main>;
+  return <main style={{ width: "640px" }}><PotoPlayer id="square" src="/_files/stories/square.poto" autoplay muted loop /></main>;
+}`,
+  "still.tsx": `
+import { PotoPlayer } from "zeb/potoru";
+export default function Page() {
+  return <main style={{ width: "640px" }}><PotoPlayer id="frame" src="/_files/stories/square.poto" still time={1.5} /></main>;
+}`,
+  "snapshot.tsx": `
+import { PotoSnapshot } from "zeb/potoru";
+export default function Page() {
+  return <main style={{ width: "640px" }}><PotoSnapshot id="thumb" src="/_files/stories/square.poto" time={1} aspect="16 / 9" /></main>;
 }`,
 };
 
@@ -91,10 +102,10 @@ async function countColour(page: Page, selector: string, rgb: [number, number, n
   }, { png, rgb, tol });
 }
 
-/** The compile result the widget with this id last produced, or null. */
+/** The compile result the editor with this id last produced, or null. */
 async function lastResult(page: Page, id: string) {
   return page.evaluate((id) => {
-    const w = (window as any).__zebPotoruCompiler?.get(id);
+    const w = (window as any).__zebPotoEditor?.get(id);
     const r = w?.lastResult;
     return r ? { ok: !!r.ok, size: r.poto ? r.poto.length : 0, diagnostics: r.diagnostics ?? [] } : null;
   }, id);
@@ -154,19 +165,19 @@ test.describe.serial("zeb/potoru", () => {
     await request.dispose();
   });
 
-  test("Way A: the widget compiles a source folder and its preview plays", async ({ page, consoleErrors }) => {
-    const response = await page.goto(`${host}/files`);
+  test("YAML: the editor compiles a source folder and its preview plays", async ({ page, consoleErrors }) => {
+    const response = await page.goto(`${host}/yaml`);
     expect(response?.status()).toBe(200);
     expect(await page.content()).not.toContain("RWE component error");
 
-    // The widget compiles on mount; the preview paints the blue stage and the red square.
+    // The editor compiles on mount; the preview paints the blue stage and the red square.
     await expect.poll(() => lastResult(page, "lab"), { timeout: 20_000 }).toMatchObject({ ok: true });
     expect((await lastResult(page, "lab"))!.size).toBeGreaterThan(0);
     await expect.poll(() => countColour(page, "#lab", [0, 0, 255]), { timeout: 10_000 }).toBeGreaterThan(2000);
     await expect.poll(() => countColour(page, "#lab", [255, 0, 0]), { timeout: 10_000 }).toBeGreaterThan(200);
 
     // Keep the bytes: the player case plays exactly what the browser compiled.
-    const bytes = await page.evaluate(() => Array.from((window as any).__zebPotoruCompiler.get("lab").lastResult.poto as Uint8Array));
+    const bytes = await page.evaluate(() => Array.from((window as any).__zebPotoEditor.get("lab").lastResult.poto as Uint8Array));
     const uploaded = await request.post(`${api}/files/upload?path=stories`, {
       multipart: { file: { name: "square.poto", mimeType: "application/octet-stream", buffer: Buffer.from(bytes) } },
     });
@@ -174,16 +185,16 @@ test.describe.serial("zeb/potoru", () => {
     expect(consoleErrors).toEqual([]);
   });
 
-  test("Way A: broken YAML is reported with its file and line", async ({ page, consoleErrors }) => {
-    await page.goto(`${host}/files`);
+  test("YAML: broken YAML is reported with its file and line", async ({ page, consoleErrors }) => {
+    await page.goto(`${host}/yaml`);
     await expect.poll(() => lastResult(page, "lab"), { timeout: 20_000 }).toMatchObject({ ok: true });
 
     const result = await page.evaluate(async () => {
       const potoru = (window as any).potoru;
-      const widget = (window as any).__zebPotoruCompiler.get("lab");
-      const files = { ...widget.getFiles() };
-      files["scenes/scene-main/scene.yml"] += "\n  : not: [valid\n";
-      const r = await potoru.compile({ files });
+      const editor = (window as any).__zebPotoEditor.get("lab");
+      const yaml = { ...editor.getFiles() };
+      yaml["scenes/scene-main/scene.yml"] += "\n  : not: [valid\n";
+      const r = await potoru.compile({ yaml });
       return { ok: r.ok, diagnostics: r.diagnostics.map((d: any) => ({ file: d.file, line: d.line, code: d.code })) };
     });
     expect(result.ok).toBe(false);
@@ -193,7 +204,7 @@ test.describe.serial("zeb/potoru", () => {
     expect(consoleErrors).toEqual([]);
   });
 
-  test("PotoruPlayer plays a story served from the project's files", async ({ page, consoleErrors }) => {
+  test("PotoPlayer plays a story served from the project's files", async ({ page, consoleErrors }) => {
     // Recorded from the first script on, so a ready event that fires before
     // the test looks is still seen.
     await page.addInitScript(() => {
@@ -213,7 +224,54 @@ test.describe.serial("zeb/potoru", () => {
     expect(consoleErrors).toEqual([]);
   });
 
-  test("Way B: an authoring-API script compiles in the sandbox and plays", async ({ page, consoleErrors }) => {
+  test("PotoPlayer still shows one frame and does not play", async ({ page, consoleErrors }) => {
+    await page.addInitScript(() => {
+      document.addEventListener("zeb:potoru:ready", (e: any) => ((window as any).__ready ||= []).push(e.detail));
+      document.addEventListener("zeb:potoru:error", (e: any) => ((window as any).__errors ||= []).push(e.detail));
+    });
+    const response = await page.goto(`${host}/still`);
+    expect(response?.status()).toBe(200);
+    expect(await page.content()).not.toContain("RWE component error");
+
+    await expect.poll(() => page.evaluate(() => (window as any).__ready?.length ?? 0), { timeout: 20_000 }).toBe(1);
+    expect(await page.evaluate(() => (window as any).__errors ?? [])).toEqual([]);
+    await expect.poll(() => countColour(page, "#frame", [255, 0, 0]), { timeout: 10_000 }).toBeGreaterThan(500);
+    // Still: the clock stays where `time` put it.
+    const at = () => page.evaluate(() => {
+      const p = (window as any).__zebPotoru.get("frame");
+      return { time: p.currentTime(), paused: p.paused };
+    });
+    expect(await at()).toEqual({ time: 1.5, paused: true });
+    await page.waitForTimeout(500);
+    expect(await at()).toEqual({ time: 1.5, paused: true });
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("PotoSnapshot paints one frame without the action or score engines", async ({ page, consoleErrors }) => {
+    const fetched: string[] = [];
+    page.on("request", (r) => fetched.push(new URL(r.url()).pathname));
+    await page.addInitScript(() => {
+      document.addEventListener("zeb:potoru:ready", (e: any) => ((window as any).__ready ||= []).push(e.detail));
+      document.addEventListener("zeb:potoru:error", (e: any) => ((window as any).__errors ||= []).push(e.detail));
+    });
+    const response = await page.goto(`${host}/snapshot`);
+    expect(response?.status()).toBe(200);
+    expect(await page.content()).not.toContain("RWE component error");
+
+    await expect.poll(() => page.evaluate(() => (window as any).__ready?.length ?? 0), { timeout: 20_000 }).toBe(1);
+    expect(await page.evaluate(() => (window as any).__ready[0])).toMatchObject({ id: "thumb", kind: "snapshot", time: 1, duration: 2 });
+    expect(await page.evaluate(() => (window as any).__errors ?? [])).toEqual([]);
+    await expect.poll(() => countColour(page, "#thumb", [0, 0, 255]), { timeout: 10_000 }).toBeGreaterThan(5000);
+    await expect.poll(() => countColour(page, "#thumb", [255, 0, 0]), { timeout: 10_000 }).toBeGreaterThan(500);
+    expect(await page.evaluate(() => (window as any).__zebPotoru.get("thumb").kind)).toBe("snapshot");
+
+    // The snapshot code came, and nothing of the player's engines or the compiler.
+    expect(fetched.some((p) => /\/potoru\/0\.1\/runtime\/snapshot-[^/]+\.mjs$/.test(p))).toBe(true);
+    expect(fetched.filter((p) => /action-core-|score-wasm-|score-worker|\.wasm$|compiler-|potoru-authoring-sandbox/.test(p))).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("Script: an authoring-API script compiles in the sandbox and plays", async ({ page, consoleErrors }) => {
     const response = await page.goto(`${host}/script`);
     expect(response?.status()).toBe(200);
     expect(await page.content()).not.toContain("RWE component error");

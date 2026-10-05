@@ -3,34 +3,44 @@
   "version": "0.1",
   "symbols": [
     {
-      "name": "PotoruPlayer",
+      "name": "PotoPlayer",
       "kind": "wrapper",
-      "doc": "Play a .poto story: <PotoruPlayer src=\"/assets/x.poto\" controls autoplay muted />. Events zeb:potoru:ready / report / ended / error; window.__zebPotoru.get(id)."
+      "doc": "Play a .poto story: <PotoPlayer src=\"/assets/x.poto\" controls autoplay muted />; still + time shows one frame. Events zeb:potoru:ready / report / ended / error; window.__zebPotoru.get(id)."
     },
     {
-      "name": "PotoruCompiler",
+      "name": "PotoSnapshot",
       "kind": "wrapper",
-      "doc": "Authoring widget: <PotoruCompiler files={files} />. Events zeb:potoru-compiler:compiled / error; window.__zebPotoruCompiler.get(id)."
+      "doc": "A still frame of a story: <PotoSnapshot src=\"/assets/x.poto\" time={1.5} />. Thumbnails, galleries, storyboards; no engines, no sound. window.__zebPotoru.get(id).seek(t)."
+    },
+    {
+      "name": "PotoEditor",
+      "kind": "wrapper",
+      "doc": "Editor: <PotoEditor yaml={files} />, YAML / Script modes. Events zeb:potoru-editor:compiled / error; window.__zebPotoEditor.get(id)."
     },
     {
       "name": "potoru",
       "kind": "raw",
-      "doc": "zeb/potoru namespace: version, get(id), getCompiler(id), mountPotoruPlayer, mountPotoruCompiler, compile."
+      "doc": "zeb/potoru namespace: version, get(id), getEditor(id), mountPotoPlayer, mountPotoEditor, compile."
     },
     {
-      "name": "mountPotoruPlayer",
+      "name": "mountPotoPlayer",
       "kind": "raw",
-      "doc": "mountPotoruPlayer(host, { src, controls, autoplay, muted, loop, mode, height }) → Promise<instance>."
+      "doc": "mountPotoPlayer(host, { src, controls, autoplay, muted, loop, mode, height }) \u2192 Promise<instance>."
     },
     {
-      "name": "mountPotoruCompiler",
+      "name": "mountPotoSnapshot",
       "kind": "raw",
-      "doc": "mountPotoruCompiler(host, { files, mode, height }) → Promise<widget>."
+      "doc": "mountPotoSnapshot(host, { src, time, camera, fit, height }) \u2192 Promise<instance> (seek(t) redraws)."
+    },
+    {
+      "name": "mountPotoEditor",
+      "kind": "raw",
+      "doc": "mountPotoEditor(host, { yaml, mode, height }) \u2192 Promise<editor>."
     },
     {
       "name": "compile",
       "kind": "raw",
-      "doc": "compile({ files } | { script }) → Promise<{ ok, poto, diagnostics, files, sizes }>. Prefer potoru.compile (compile is a generic global name)."
+      "doc": "compile({ yaml } | { script, yaml? }) \u2192 Promise<{ ok, poto, diagnostics, files, sizes }>. Also potoru.compile."
     }
   ]
 }

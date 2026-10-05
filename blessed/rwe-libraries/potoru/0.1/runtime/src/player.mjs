@@ -17,7 +17,9 @@ const VALUE_ATTRIBUTES = ["mode", "renderer", "fit", "camera"];
 const SHADOW_STYLE = ":host{display:block;position:relative}potoru-player{display:block;width:100%}potoru-player[data-fill]{height:100%;aspect-ratio:auto}";
 
 function applyConfig(element, config, previous = {}) {
-  for (const name of BOOLEAN_ATTRIBUTES) if (Boolean(config[name]) !== Boolean(previous[name]) || !(name in previous)) element.toggleAttribute(name, Boolean(config[name]));
+  // `still`: show one frame and never start playing by itself.
+  const flag = (name) => Boolean(config[name]) && !(config.still && name === "autoplay");
+  for (const name of BOOLEAN_ATTRIBUTES) if (flag(name) !== Boolean(previous[name]) || !(name in previous)) element.toggleAttribute(name, flag(name));
   for (const name of VALUE_ATTRIBUTES) {
     const value = config[name];
     if (value === undefined || value === null || value === "") element.removeAttribute(name);
@@ -56,9 +58,16 @@ export function createPlayer(host, config, { id, emit }) {
   });
   root.append(style, element);
   customElements.upgrade(element);
+  // `still` + `time`: hold the frame at `time` once the story is ready (and when time changes).
+  const holdStill = () => {
+    if (!current.still) return;
+    try { element.pause(); element.seek(Math.max(0, Number(current.time) || 0)); } catch { /* not loaded yet */ }
+  };
+  element.addEventListener("potoru:ready", holdStill);
 
   const instance = {
     id,
+    kind: "player",
     host,
     element,
     version: PLAYER_VERSION,
@@ -87,10 +96,13 @@ export function createPlayer(host, config, { id, emit }) {
     configure(next) {
       const merged = { ...next };
       applyConfig(element, merged, current);
+      const refreeze = merged.still && (merged.time !== current.time || !current.still);
       current = merged;
+      if (refreeze) holdStill();
     },
     destroy() {
       for (const [type, listener] of listeners) element.removeEventListener(type, listener);
+      element.removeEventListener("potoru:ready", holdStill);
       try { element.pause(); } catch { /* not loaded yet */ }
       element.remove();
       style.remove();

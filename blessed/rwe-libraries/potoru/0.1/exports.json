@@ -4,29 +4,37 @@
   "raw": {
     "potoru": {
       "entry": "runtime/potoru.bundle.mjs",
-      "description": "Namespace: version, get(id), getCompiler(id), mountPotoruPlayer, mountPotoruCompiler, compile, loadPlayer."
+      "description": "Namespace: version, get(id) (players and snapshots), getEditor(id), mountPotoPlayer, mountPotoSnapshot, mountPotoEditor, compile, loadPlayer."
     },
-    "mountPotoruPlayer": {
+    "mountPotoPlayer": {
       "entry": "runtime/potoru.bundle.mjs",
       "description": "Mount a Potoru player into a host element (loads the player code on demand); resolves to the instance."
     },
-    "mountPotoruCompiler": {
+    "mountPotoSnapshot": {
       "entry": "runtime/potoru.bundle.mjs",
-      "description": "Mount the authoring widget into a host element (loads the compiler code on demand)."
+      "description": "Draw one still frame of a story into a host element (loads the light snapshot code on demand); resolves to the instance."
+    },
+    "mountPotoEditor": {
+      "entry": "runtime/potoru.bundle.mjs",
+      "description": "Mount the editor (YAML / Script toggle, files, diagnostics, preview) into a host element (loads the compiler code on demand)."
     },
     "compile": {
       "entry": "runtime/potoru.bundle.mjs",
-      "description": "Compile a source folder ({ files }) or an authoring-API script ({ script }, experimental) to .poto bytes with diagnostics."
+      "description": "Compile YAML ({ yaml }: a source folder as path → text) or a Script ({ script }: authoring-API JavaScript, experimental) to .poto bytes with diagnostics."
     }
   },
   "wrappers": {
-    "PotoruPlayer": {
-      "entry": "wrappers/PotoruPlayer.tsx",
-      "description": "TSX wrapper: server-rendered placeholder the runtime mounts a <potoru-player> into."
+    "PotoPlayer": {
+      "entry": "wrappers/PotoPlayer.tsx",
+      "description": "TSX wrapper: server-rendered placeholder the runtime mounts a <potoru-player> into (still + time shows one frame)."
     },
-    "PotoruCompiler": {
-      "entry": "wrappers/PotoruCompiler.tsx",
-      "description": "TSX wrapper: server-rendered placeholder for the authoring widget (files, editor, diagnostics, preview)."
+    "PotoSnapshot": {
+      "entry": "wrappers/PotoSnapshot.tsx",
+      "description": "TSX wrapper: server-rendered placeholder the runtime draws one still frame into (no controls, no sound, no engines)."
+    },
+    "PotoEditor": {
+      "entry": "wrappers/PotoEditor.tsx",
+      "description": "TSX wrapper: server-rendered placeholder for the editor (YAML / Script, files, diagnostics, live preview)."
     }
   }
 }

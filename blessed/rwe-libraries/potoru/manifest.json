@@ -6,12 +6,14 @@
   },
   "spec": {
     "name": "zeb/potoru",
-    "description": "Potoru 2D animation for RWE templates: a .poto player (canvas, slides, interactive stories, host bridge) and an in-browser compiler from Potoru source folders. Offline; player and compiler load on demand.",
+    "description": "Potoru 2D animation for RWE templates: PotoPlayer (.poto player: canvas, slides, interactive stories, host bridge), PotoSnapshot (a still frame for thumbnails) and PotoEditor (YAML / Script editor with live preview) and compile() (in-browser compiler for Potoru sources). Offline; each part loads on demand.",
     "exports": [
-      "PotoruPlayer",
-      "PotoruCompiler",
-      "mountPotoruPlayer",
-      "mountPotoruCompiler",
+      "PotoPlayer",
+      "PotoSnapshot",
+      "PotoEditor",
+      "mountPotoPlayer",
+      "mountPotoSnapshot",
+      "mountPotoEditor",
       "compile",
       "potoru"
     ],
@@ -19,9 +21,9 @@
       "0.1": {
         "entry": "0.1/runtime/potoru.bundle.mjs",
         "source": "offline",
-        "package_version": "0.1.0",
-        "size_bytes": 4495,
-        "integrity": "sha256:5a8025debd43ce01542778ddaa69cbabe55ad22603b885ec423d4ba5a089ed30",
+        "package_version": "0.1.1",
+        "size_bytes": 5568,
+        "integrity": "sha256:2d3b2e40ea90ac2a35f20a8e00af47095d36ad37bbfdac55eb69af0fc22f5d5c",
         "note": "Potoru web player 0.1.0 + format v4 compiler + authoring API (Potoru sources, Apache-2.0) via esbuild 0.28.1 with code splitting; lazy chunks, wasm engines, score-worker.js, potoru-authoring-sandbox.js and fonts/ sit next to the entry (new URL(..., import.meta.url)). Build: POTORU_SRC=<potoru>/designer/e3 node build/build.mjs (= esbuild --bundle --splitting --format=esm --minify --target=es2022 --outdir=0.1/runtime --entry-names=[name] --chunk-names=[name]-[hash] --out-extension:.js=.mjs entry.mjs, plus a worker build and an IIFE sandbox build; see NOTES.md). Every file: FILES-SHA256.txt."
       }
     },

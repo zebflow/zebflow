@@ -1,14 +1,14 @@
 /**
  * zeb/potoru — compiler part (loaded on demand by entry.mjs on the first `compile()` call or when a
- * PotoruCompiler mounts; bundled into `compiler-*.mjs` chunks).
+ * PotoEditor mounts; bundled into `compiler-*.mjs` chunks). Two modes:
  *
- * Way A: a format v4 source folder (a files map) → validate → compile → `.poto` bytes, with the same
+ * YAML:   a format v4 source folder (a files map) → validate → compile → `.poto` bytes, with the same
  *        Potoru format code the Studio and the `potoru` CLI use (`v4FromFiles`, `validateV4Project`,
  *        `compileV4Story`; linked libraries and font aliases through the authoring Project, as
  *        `potoru export` does). Option `profile: "presentation"` compiles every root State as a slide.
- * Way B (EXPERIMENTAL): JavaScript that uses the authoring API runs in a sandboxed iframe that holds
+ * Script (EXPERIMENTAL; JavaScript in 0.1, TypeScript later): JavaScript that uses the authoring API runs in a sandboxed iframe that holds
  *        only `potoru-authoring-sandbox.js`; it returns a Project, the iframe posts back the source
- *        folder's files map, and Way A compiles it.
+ *        folder's files map, and the YAML path compiles it.
  *
  * `@potoru-src/` is resolved by build/build.mjs to $POTORU_SRC (the Potoru `designer/e3` folder).
  * `fileOfPath` / `ownerFile` / `diagnosticFile` are adapted from $POTORU_SRC/authoring/src/cli.ts
@@ -24,7 +24,7 @@ import { fontAliasesUsed, resolveFontAliases } from "@potoru-src/app/src/runtime
 import { loadActionCore } from "@potoru-src/app/src/runtime/action-core.ts";
 import { isPotoruError } from "@potoru-src/app/src/core/diagnostics.ts";
 
-export { createCompilerWidget } from "./widget.mjs";
+export { createEditor } from "./widget.mjs";
 
 const SANDBOX_FILE = "potoru-authoring-sandbox.js";
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -36,16 +36,16 @@ export async function compile(input = {}) {
   const started = performance.now();
   try {
     if (typeof input.script === "string") {
-      const run = await runScript(input.script, normalizeFiles(input.files ?? {}), input);
+      const run = await runScript(input.script, normalizeFiles(input.yaml ?? {}), input);
       if (!run.ok) return finish({ ok: false, diagnostics: run.diagnostics }, started, run.files);
       const result = await compileFiles(normalizeFiles(run.files), input);
       return finish({ ...result, files: run.files }, started, run.files);
     }
-    if (input.files && typeof input.files === "object") {
-      const files = normalizeFiles(input.files);
+    if (input.yaml && typeof input.yaml === "object") {
+      const files = normalizeFiles(input.yaml);
       return finish(await compileFiles(files, input), started, files);
     }
-    return finish({ ok: false, diagnostics: [diag("usage", "compile() needs { files } (a source folder map) or { script } (authoring API JavaScript).", { fix: "pass { files: { \"potoru.project.yml\": \"…\", … } }" })] }, started);
+    return finish({ ok: false, diagnostics: [diag("usage", "compile() needs { yaml } (a source folder as a map of path → text) or { script } (authoring API JavaScript).", { fix: "pass { yaml: { \"potoru.project.yml\": \"…\", … } }" })] }, started);
   } catch (error) {
     return finish({ ok: false, diagnostics: [fromError(error, "compile-error")] }, started);
   }
@@ -63,7 +63,7 @@ function finish(result, started, files) {
   };
 }
 
-/* ── Way A ────────────────────────────────────────────────────────────────── */
+/* ── YAML ─────────────────────────────────────────────────────────────────── */
 
 function normalizeFiles(files) {
   const out = {};
@@ -284,7 +284,7 @@ function fromError(error, fallbackCode) {
   return diag(error?.code ?? fallbackCode, error instanceof Error ? error.message : String(error));
 }
 
-/* ── Way B: the authoring sandbox (EXPERIMENTAL) ──────────────────────────── */
+/* ── Script: the authoring sandbox (EXPERIMENTAL) ──────────────────────────── */
 
 let sandboxText;
 async function sandboxApi() {
@@ -370,7 +370,7 @@ send({ready:true});})();`;
       if (data.ok) { end({ ok: true, files: data.files }); return; }
       if (data.parse) {
         const errors = data.errors?.length ? data.errors : [{ message: "The script could not be parsed." }];
-        end({ ok: false, diagnostics: errors.map((entry) => diag("script-syntax", entry.message, { file: SCRIPT_FILE, line: toLine(entry.line) ?? 1, ...(entry.column ? { column: entry.column } : {}), ...(looksLikeTypeScript(source) ? { fix: "zeb/potoru 0.1 runs JavaScript only: remove TypeScript type annotations" } : {}) })) });
+        end({ ok: false, diagnostics: errors.map((entry) => diag("script-syntax", entry.message, { file: SCRIPT_FILE, line: toLine(entry.line) ?? 1, ...(entry.column ? { column: entry.column } : {}), ...(looksLikeTypeScript(source) ? { fix: "Script mode runs JavaScript in 0.1 (TypeScript later): remove the type annotations" } : {}) })) });
         return;
       }
       const error = data.error ?? {};

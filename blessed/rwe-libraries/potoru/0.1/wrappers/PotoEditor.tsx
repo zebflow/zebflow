@@ -1,45 +1,46 @@
 /**
- * PotoruCompiler — RWE wrapper for the Potoru authoring widget (zeb/potoru).
+ * PotoEditor — RWE wrapper for the Potoru editor (zeb/potoru).
  *
  * IMPORT in a TSX page:
- *   import { PotoruCompiler } from "zeb/potoru";
+ *   import { PotoEditor } from "zeb/potoru";
  *
  * ─── Basic usage ──────────────────────────────────────────────────────────
- *   <PotoruCompiler id="lab" files={sourceFiles} height="560px" />
+ *   <PotoEditor id="lab" yaml={sourceFiles} height="560px" />
  *
- * A file list, a plain editor, diagnostics linked to file and line, a live preview player, and
- * Compile / Download .poto buttons. The compiler code loads only when this widget mounts (or on
- * the first compile() call).
+ * A YAML / Script toggle, a file list, a plain editor, diagnostics linked to file and line, a live
+ * preview player, and Compile / Download .poto buttons. The compiler code loads only when this
+ * editor mounts (or on the first compile() call).
  *
  * ─── Props ────────────────────────────────────────────────────────────────
- *   files      { [path]: string }   a Potoru format v4 source folder (path → YAML text)
- *   mode       "files" | "script"    "script" (EXPERIMENTAL): JavaScript using the authoring API
- *   script     string               the script, in script mode
+ *   yaml       { [path]: string }   a Potoru format v4 source folder (path → YAML text)
+ *   mode       "yaml" | "script"    "script" (EXPERIMENTAL): JavaScript using the authoring API
+ *                                   (TypeScript later)
+ *   script     string               the script, in Script mode
  *   height     string | number      CSS height (default "560px")
- *   id         string               container id for window.__zebPotoruCompiler.get(id)
+ *   id         string               container id for window.__zebPotoEditor.get(id)
  *   className  string               classes on the container
  *
  * ─── Events (on the container, bubbling) ──────────────────────────────────
- *   zeb:potoru-compiler:compiled  { id, ok, poto, diagnostics, files, sizes }
- *   zeb:potoru-compiler:error     { id, ok: false, diagnostics, sizes }
+ *   zeb:potoru-editor:compiled  { id, ok, poto, diagnostics, files, sizes }
+ *   zeb:potoru-editor:error     { id, ok: false, diagnostics, sizes }
  *
  * ─── Imperative registry ──────────────────────────────────────────────────
- *   const lab = window.__zebPotoruCompiler.get("lab");
- *   lab.getFiles(); lab.setFiles(files); const result = await lab.compile();
+ *   const lab = window.__zebPotoEditor.get("lab");
+ *   lab.getFiles(); lab.setFiles(files); lab.setMode("script"); const result = await lab.compile();
  */
 export const app = {};
 
-export default function PotoruCompiler(props) {
+export default function PotoEditor(props) {
   const p = props || {};
-  const config = { mode: p.mode === "script" ? "script" : "files" };
-  if (p.files) config.files = p.files;
+  const config = { mode: p.mode === "script" ? "script" : "yaml" };
+  if (p.yaml) config.yaml = p.yaml;
   if (p.script) config.script = p.script;
   if (p.height) config.height = p.height;
   const height = p.height ? (typeof p.height === "number" ? `${p.height}px` : String(p.height)) : "560px";
   return (
     <div
       data-zeb-lib="potoru"
-      data-zeb-wrapper="PotoruCompiler"
+      data-zeb-wrapper="PotoEditor"
       data-config={JSON.stringify(config)}
       id={p.id}
       className={p.className}

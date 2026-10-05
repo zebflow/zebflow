@@ -3,7 +3,7 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
-  "description": "Potoru 2D animation for RWE templates. A .poto player (canvas renderer, play / slide / interactive modes, host bridge set / fire / report) and an in-browser compiler from Potoru format v4 source folders (plus an experimental sandboxed authoring-API script mode). The entry bundle is a small bridge; the player and the compiler load on demand from files next to it. Fully offline.",
+  "description": "Potoru 2D animation for RWE templates. PotoPlayer plays .poto stories (canvas renderer, play / slide / interactive modes, host bridge set / fire / report); PotoSnapshot draws one still frame (thumbnails, galleries, storyboards) without the interaction or music engines; PotoEditor and compile() compile Potoru sources in the browser in two modes: YAML (a format v4 source folder) and Script (experimental: authoring-API JavaScript in a sandbox). The entry bundle is a small bridge; each part loads on demand from files next to it. Fully offline.",
   "source": {
     "provider": "zebflow",
     "package": "@potoru/player + @potoru/authoring (built from Potoru sources; not on npm yet)",
@@ -20,13 +20,15 @@
   "exports": {
     "raw": [
       "potoru",
-      "mountPotoruPlayer",
-      "mountPotoruCompiler",
+      "mountPotoPlayer",
+      "mountPotoSnapshot",
+      "mountPotoEditor",
       "compile"
     ],
     "wrappers": [
-      "PotoruPlayer",
-      "PotoruCompiler"
+      "PotoPlayer",
+      "PotoSnapshot",
+      "PotoEditor"
     ]
   },
   "runtime": {
