@@ -179,8 +179,11 @@ This is a synchronous engine, without React's concurrent transition scheduling.
 This implements Zebflow's function-component API, not the complete React or
 Preact package APIs. Class components, Suspense, concurrent rendering,
 transitions, React synthetic events and streaming hydration
-are not implemented. Events follow native DOM semantics (for example, text
-input changes use `onInput`). IDs are scoped to RWE's single page root; consumers
+are not implemented. Events are native DOM events, with one React rule kept:
+`onChange` on an `<input>` or `<textarea>` fires on every input event (each
+keystroke), as React's does; on checkboxes, radios, file inputs and `<select>`
+it is the native `change` event. Save-on-commit belongs on `onBlur` or a form
+submit, never on `onChange`. IDs are scoped to RWE's single page root; consumers
 building multiple independent roots must provide their own ID namespace.
 Render functions must be synchronous and follow hook ordering rules. Functional
 state setters must be pure. Server and initial client output should agree;

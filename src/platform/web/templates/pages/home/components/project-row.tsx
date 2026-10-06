@@ -1,5 +1,6 @@
 import { Link } from "zeb/react";
 import Button from "@/components/ui/button";
+import ProjectRowMenu from "@/pages/home/components/project-row-menu";
 
 /**
  * One project in an office's list.
@@ -17,6 +18,7 @@ export default function ProjectRow({ item, remote, onOpenRemote }) {
         <p className="truncate text-[14px] font-medium text-foreground">{title}</p>
         <p className="truncate font-mono text-[11px] text-muted-foreground">
           {item?.owner}/{item?.project}
+          {remote && item?.office_label ? ` · ${item.office_label}` : ""}
         </p>
       </div>
       <div className="flex shrink-0 gap-2">
@@ -40,6 +42,7 @@ export default function ProjectRow({ item, remote, onOpenRemote }) {
                 Edit
               </Button>
             </Link>
+            <ProjectRowMenu item={item} />
           </>
         )}
       </div>

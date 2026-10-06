@@ -138,6 +138,28 @@ await test('hydration keeps the option the server selected from a select default
   equal(host.querySelector('select[name=c]').value, 'y', 'controlled select lost its value on hydration');
 });
 
+await test('onChange on text fields fires per input event; checkboxes and selects on change', async host => {
+  const seen = [];
+  function Form() {
+    const [text, setText] = useState('');
+    return h('form', null,
+      h('input', { name: 'q', value: text, onChange: e => { seen.push('q:' + e.type); setText(e.target.value); } }),
+      h('textarea', { name: 't', onChange: e => seen.push('t:' + e.type) }),
+      h('input', { name: 'c', type: 'checkbox', onChange: e => seen.push('c:' + e.type) }),
+      h('select', { name: 's', onChange: e => seen.push('s:' + e.type) }, h('option', { value: 'a' }, 'A')),
+      h('output', null, text));
+  }
+  render(h(Form), host); await tick();
+  const q = host.querySelector('[name=q]');
+  for (const ch of 'ab') { q.value += ch; q.dispatchEvent(new Event('input', { bubbles: true })); await tick(); }
+  equal(host.querySelector('output').textContent, 'ab', 'controlled input did not update per keystroke');
+  q.dispatchEvent(new Event('change', { bubbles: true }));
+  host.querySelector('[name=t]').dispatchEvent(new Event('input', { bubbles: true }));
+  host.querySelector('[name=c]').click();
+  host.querySelector('[name=s]').dispatchEvent(new Event('change', { bubbles: true }));
+  equal(seen, ['q:input', 'q:input', 't:input', 'c:change', 's:change'], 'onChange event mapping');
+});
+
 await test('hydration recovers missing and extra elements without losing matching siblings', async host => {
   host.innerHTML = '<div><b>keep</b><aside>obsolete</aside></div>';
   const kept = host.querySelector('b');

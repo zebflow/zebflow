@@ -151,3 +151,23 @@ valid project state available.
 
 Project tools must learn from committed contracts and generated definitions,
 not from old conversation history.
+
+## Home Listing
+
+*Hide from home* is a general project setting (Settings → General → Home, or
+the menu on the project's home card), offered to whoever may change the
+project's settings. A hidden project:
+
+- is left off the home page's project list, and off its office's row in a
+  controller's directory (`offices.md` §3a);
+- is listed under the home page's *Hidden projects* section, from which it is
+  shown again;
+- stays reachable by its address, in search and in quick-open, and runs
+  exactly as before — hiding changes what the home page lists, nothing else.
+
+The flag belongs to the office that holds the project, not to the project's
+files: it is not in `zebflow.yaml`, is not committed, and does not travel with
+a clone, an export or a transfer. HTTP: `GET` / `PUT
+/api/projects/{owner}/{project}/settings/home` with `{"data": {"hidden": true}}`;
+no commit message. The default is shown, except the starter project of an
+office that starts joined (`offices.md` §5).

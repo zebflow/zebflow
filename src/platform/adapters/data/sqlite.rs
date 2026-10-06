@@ -860,7 +860,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 23] {
+    fn migrations() -> [MigrationDef; 24] {
         [
             MigrationDef {
                 version: 1,
@@ -976,6 +976,11 @@ impl SqliteDataAdapter {
                 version: 23,
                 name: "mcp_session_granted_by",
                 apply: Self::apply_migration_0023_mcp_session_granted_by,
+            },
+            MigrationDef {
+                version: 24,
+                name: "project_hidden_from_home",
+                apply: Self::apply_migration_0024_project_hidden_from_home,
             },
         ]
     }
@@ -2962,6 +2967,14 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
 
     /// Who created an MCP session: an owner-only tool asks whether that user
     /// may do what the session's capabilities claim.
+    /// *Hide from home* (`project.md` § Home listing). Every existing project
+    /// reads as shown: the flag is a person's choice, never inferred.
+    fn apply_migration_0024_project_hidden_from_home(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_table_column(tx, "projects", "hidden", "INTEGER NOT NULL DEFAULT 0")
+    }
+
     fn apply_migration_0023_mcp_session_granted_by(tx: &Transaction<'_>) -> Result<(), PlatformError> {
         Self::ensure_table_column(tx, "mcp_sessions", "granted_by", "TEXT NOT NULL DEFAULT ''")
     }
@@ -3606,7 +3619,7 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<Option<PlatformProject>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT owner, project, project_id, owner_user_id, created_at, updated_at
+            "SELECT owner, project, project_id, owner_user_id, created_at, updated_at, hidden
              FROM projects WHERE owner = ?1 AND project = ?2",
             params![owner, project],
             |row| {
@@ -3618,6 +3631,7 @@ impl DataAdapter for SqliteDataAdapter {
                     title: String::new(), // populated from zebflow.yaml by ProjectService
                     created_at: row.get(4)?,
                     updated_at: row.get(5)?,
+                    hidden: row.get::<_, i64>(6)? != 0,
                 })
             },
         );
@@ -3631,20 +3645,22 @@ impl DataAdapter for SqliteDataAdapter {
     fn put_project(&self, project: &PlatformProject) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO projects (owner, project, project_id, owner_user_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO projects (owner, project, project_id, owner_user_id, created_at, updated_at, hidden)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(owner, project) DO UPDATE SET
                  project_id = excluded.project_id,
                  owner_user_id = excluded.owner_user_id,
                  created_at = excluded.created_at,
-                 updated_at = excluded.updated_at",
+                 updated_at = excluded.updated_at,
+                 hidden = excluded.hidden",
             params![
                 &project.owner,
                 &project.project,
                 &project.project_id,
                 &project.owner_user_id,
                 project.created_at,
-                project.updated_at
+                project.updated_at,
+                project.hidden as i64
             ],
         )
         .map_err(Self::qe)?;
@@ -3655,7 +3671,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, project_id, owner_user_id, created_at, updated_at
+                "SELECT owner, project, project_id, owner_user_id, created_at, updated_at, hidden
                  FROM projects WHERE owner = ?1 ORDER BY project ASC",
             )
             .map_err(Self::qe)?;
@@ -3669,6 +3685,7 @@ impl DataAdapter for SqliteDataAdapter {
                     title: String::new(),
                     created_at: row.get(4)?,
                     updated_at: row.get(5)?,
+                    hidden: row.get::<_, i64>(6)? != 0,
                 })
             })
             .map_err(Self::qe)?
@@ -7861,6 +7878,7 @@ mod tests {
                 owner_user_id: String::new(),
                 created_at: 1,
                 updated_at: 1,
+                hidden: false,
             })
             .expect("put project");
     }
@@ -8191,6 +8209,7 @@ mod tests {
                 title: "Doomed".to_string(),
                 created_at: 1,
                 updated_at: 1,
+                hidden: false,
             })
             .expect("put project");
         adapter

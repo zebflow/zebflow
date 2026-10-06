@@ -299,6 +299,9 @@
     if (name === 'tabIndex') return 'tabindex';
     return name;
   }
+  function typesAsYouGo(dom) {
+    return dom.tagName === 'TEXTAREA' || !/^(checkbox|radio|file)$/i.test(dom.type || '');
+  }
   function ignored(name) { return ['children', 'key', 'ref', 'dangerouslySetInnerHTML', 'suppressHydrationWarning'].includes(name); }
   function attrValue(name, value) {
     if (value == null || typeof value === 'function' || typeof value === 'symbol') return null;
@@ -316,8 +319,19 @@
       const id = event + ':' + capture;
       const listeners = dom.__zebListeners || (dom.__zebListeners = new Map());
       const previous = listeners.get(id);
-      if (previous) dom.removeEventListener(event, previous, capture);
-      if (typeof value === 'function') { dom.addEventListener(event, value, capture); listeners.set(id, value); }
+      if (previous) for (const name of previous.events) dom.removeEventListener(name, previous.fn, capture);
+      if (typeof value === 'function') {
+        // React's onChange on a text field is the input event: it fires per
+        // keystroke, not on blur. Checkboxes, radios, files and selects keep
+        // the native change event. Both are listened to and the wrapper asks
+        // the element at dispatch time, so a `type` set after the handler —
+        // or changed later — is still honoured.
+        const entry = event === 'change' && (dom.tagName === 'INPUT' || dom.tagName === 'TEXTAREA')
+          ? { fn: e => { if ((e.type === 'input') === typesAsYouGo(dom)) return value.call(dom, e); }, events: ['input', 'change'] }
+          : { fn: value, events: [event] };
+        for (const name of entry.events) dom.addEventListener(name, entry.fn, capture);
+        listeners.set(id, entry);
+      }
       else listeners.delete(id);
       return;
     }

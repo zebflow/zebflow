@@ -132,6 +132,17 @@ Server data comes from `input`. Client state is `useState` (local) or
 `usePageState("key", default)` (shared across the page's components). See
 `help("web/hooks")`.
 
+Form events are React's: `onChange` on an `<input>` or `<textarea>` fires on
+every keystroke, so a live search or a controlled field updates as it is typed.
+On a checkbox, radio, file input or `<select>` it fires when the choice
+changes. Save on `onBlur` or the form's `onSubmit`, never on a text field's
+`onChange` — that is one request per keystroke.
+
+```tsx
+<input value={q} onChange={(e) => setQ(e.target.value)} />        {/* per keystroke */}
+<input defaultValue={title} onBlur={(e) => save(e.target.value)} /> {/* once, on leaving */}
+```
+
 ---
 
 ## Hydration

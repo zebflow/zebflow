@@ -110,7 +110,6 @@ function TagsInput({ value, onChange, placeholder }: { value: string[]; onChange
         <Input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onInput={(e: any) => setText(e.target.value)}
           placeholder={placeholder || "Add role…"}
           className="flex-1"
           onKeyDown={(e: any) => { if (e.key === "Enter") { e.preventDefault(); addTag(); } }}
@@ -284,7 +283,6 @@ function DynamicField({ field, secret, onChange }: { field: any; secret: Record<
         <textarea
           value={value}
           onChange={(e) => onChange(field.key, e.target.value)}
-          onInput={(e: any) => onChange(field.key, e.target.value)}
           rows={field.rows || 4}
           placeholder={field.placeholder || ""}
           className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40 disabled:opacity-50"
@@ -316,7 +314,6 @@ function DynamicField({ field, secret, onChange }: { field: any; secret: Record<
             type={inputType}
             value={value}
             onChange={(e) => onChange(field.key, e.target.value)}
-            onInput={(e: any) => onChange(field.key, e.target.value)}
             placeholder={field.placeholder || ""}
             className="flex-1"
           />
@@ -332,7 +329,6 @@ function DynamicField({ field, secret, onChange }: { field: any; secret: Record<
         type={inputType}
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
-        onInput={(e: any) => onChange(field.key, e.target.value)}
         placeholder={field.placeholder || ""}
       />
     </Field>
@@ -529,7 +525,6 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
           <textarea
             value={requestBody}
             onChange={(e) => updateRequest({ body: e.target.value })}
-            onInput={(e: any) => updateRequest({ body: e.target.value })}
             rows={5}
             placeholder='{"user_id":"<USER_ID>","programme":"<PROGRAMME_CODE>"}'
             className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
@@ -550,7 +545,6 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
               <textarea
                 value={listToText(egress.allowed_hosts)}
                 onChange={(e) => updateEgress({ allowed_hosts: textToList(e.target.value) })}
-                onInput={(e: any) => updateEgress({ allowed_hosts: textToList(e.target.value) })}
                 rows={3}
                 placeholder={"internal-service\ninternal-service.namespace.svc.cluster.local"}
                 className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
@@ -560,7 +554,6 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
               <textarea
                 value={listToText(egress.allowed_paths)}
                 onChange={(e) => updateEgress({ allowed_paths: textToList(e.target.value) })}
-                onInput={(e: any) => updateEgress({ allowed_paths: textToList(e.target.value) })}
                 rows={3}
                 placeholder="/embed"
                 className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
@@ -570,7 +563,6 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
               <textarea
                 value={listToText(egress.allowed_methods)}
                 onChange={(e) => updateEgress({ allowed_methods: textToList(e.target.value).map((item) => item.toUpperCase()) })}
-                onInput={(e: any) => updateEgress({ allowed_methods: textToList(e.target.value).map((item) => item.toUpperCase()) })}
                 rows={3}
                 placeholder="POST"
                 className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
@@ -607,7 +599,6 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
         <textarea
           value={typeof secret === "object" ? JSON.stringify(secret, null, 2) : String(secret ?? "")}
           onChange={(e) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
-          onInput={(e: any) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
           rows={8}
           placeholder={'{\n  "key": "value"\n}'}
           className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
@@ -625,7 +616,6 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
         <textarea
           value={typeof secret === "object" ? JSON.stringify(secret, null, 2) : String(secret ?? "")}
           onChange={(e) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
-          onInput={(e: any) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
           rows={8}
           placeholder={'{\n  "key": "value"\n}'}
           className="flex w-full rounded-md border border-border bg-popover text-foreground px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
@@ -743,7 +733,6 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
                 <Input
                   value={credentialId}
                   onChange={(e) => setCredentialId(e.target.value)}
-                  onInput={(e: any) => setCredentialId(e.target.value)}
                   placeholder="pg-main"
                   disabled={mode === "edit" || busy}
                   required
@@ -758,7 +747,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
                 </Select>
               </Field>
               <Field label="Title" className="col-span-2">
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} onInput={(e: any) => setTitle(e.target.value)} placeholder="Main Postgres" required disabled={busy} />
+                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Main Postgres" required disabled={busy} />
               </Field>
             </div>
 
@@ -770,7 +759,6 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                onInput={(e: any) => setNotes(e.target.value)}
                 rows={2}
                 placeholder="Optional operational notes (no secrets here)"
                 disabled={busy}

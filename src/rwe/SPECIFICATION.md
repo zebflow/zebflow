@@ -349,6 +349,7 @@ static JS_CHANNEL: LazyLock<UnboundedSender<JsRequest>>
 | Conditional rendering `{x && <Y/>}` | Standard JSX patterns | ✅ |
 | List rendering `.map((x) => <Item/>)` | Standard JSX patterns | ✅ |
 | Event handlers `onClick`, `onInput`, etc. | Standard JSX events | ✅ |
+| `onChange` on `<input>` / `<textarea>` | Every input event, as React (checkbox, radio, file, `<select>`: native `change`) | ✅ |
 | Zeb React runtime | Developer imports the public API from `zeb` | ✅ |
 
 ---

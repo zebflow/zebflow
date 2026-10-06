@@ -114,9 +114,7 @@ export function InputOTPSlot({ index, className, ...props }) {
         disabled={otp?.disabled}
         onFocus={() => otp?.setActiveIndex?.(index)}
         onBlur={() => otp?.setActiveIndex?.(-1)}
-        onInput={(e) => {
-          // `onInput`, not `onChange`: on this engine `onChange` is the DOM
-          // change event, which a text input only fires on blur.
+        onChange={(e) => {
           const next = e.target.value.slice(-1);
           otp?.setChar?.(index, next);
           if (next) otp?.focus?.(index + 1);

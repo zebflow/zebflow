@@ -484,6 +484,28 @@ impl ProjectService {
         Ok(Some(p))
     }
 
+    /// Hides a project from this office's home project list, or shows it
+    /// again. Nothing else changes: the project keeps its URL, its search
+    /// entry and its repository, and hiding is not a commit.
+    pub fn set_project_hidden(
+        &self,
+        owner: &str,
+        project: &str,
+        hidden: bool,
+    ) -> Result<PlatformProject, PlatformError> {
+        let mut record = self
+            .data
+            .get_project(owner, project)?
+            .ok_or_else(|| PlatformError::new("PLATFORM_PROJECT_MISSING", "project not found"))?;
+        if record.hidden != hidden {
+            record.hidden = hidden;
+            record.updated_at = now_ts();
+            self.data.put_project(&record)?;
+        }
+        record.title = self.zebflow_cfg.get_project_title(owner, project)?;
+        Ok(record)
+    }
+
     /// Returns the ensured filesystem layout for one project.
     pub fn project_layout(
         &self,
@@ -720,6 +742,7 @@ impl ProjectService {
             title: title.clone(),
             created_at,
             updated_at: now,
+            hidden: existing.as_ref().is_some_and(|p| p.hidden),
         };
         self.data.put_project(&record)?;
         self.data.put_hub_authority(&HubAuthority {

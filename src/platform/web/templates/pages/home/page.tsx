@@ -123,7 +123,7 @@ export default function Page(input) {
               that is not in that list yet. */}
           <PendingInvitations />
 
-          <OfficeDirectory offices={offices} canOpenRemote={Boolean(input?.can_open_remote)} />
+          <OfficeDirectory offices={offices} hiddenProjects={input?.hidden_projects} canOpenRemote={Boolean(input?.can_open_remote)} />
         </section>
       </main>
 

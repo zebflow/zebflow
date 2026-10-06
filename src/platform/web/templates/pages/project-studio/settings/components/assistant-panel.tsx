@@ -14,10 +14,12 @@ export default function AssistantPanel({ api, credentials, initialConfig }) {
   const [generalModel, setGeneralModel] = useState(
     String(initialConfig?.llm_general_credential_id || "")
   );
-  const [maxSteps, setMaxSteps] = useState(Number(initialConfig?.max_steps ?? 50));
-  const [maxReplans, setMaxReplans] = useState(Number(initialConfig?.max_replans ?? 2));
+  // Kept as typed and read as numbers on save: onChange fires per keystroke,
+  // and coercing there turned a cleared field into a 0 under the cursor.
+  const [maxSteps, setMaxSteps] = useState(String(initialConfig?.max_steps ?? 50));
+  const [maxReplans, setMaxReplans] = useState(String(initialConfig?.max_replans ?? 2));
   const [historyPairs, setHistoryPairs] = useState(
-    Number(initialConfig?.chat_history_pairs ?? 10)
+    String(initialConfig?.chat_history_pairs ?? 10)
   );
   const [enabled, setEnabled] = useState(Boolean(initialConfig?.enabled));
   const [statusMsg, setStatusMsg] = useState("Ready.");
@@ -35,9 +37,9 @@ export default function AssistantPanel({ api, credentials, initialConfig }) {
         body: JSON.stringify({
           llm_high_credential_id: highModel.trim() || null,
           llm_general_credential_id: generalModel.trim() || null,
-          max_steps: maxSteps,
-          max_replans: maxReplans,
-          chat_history_pairs: historyPairs,
+          max_steps: Number(maxSteps),
+          max_replans: Number(maxReplans),
+          chat_history_pairs: Number(historyPairs),
           enabled,
         }),
       });
@@ -100,7 +102,7 @@ export default function AssistantPanel({ api, credentials, initialConfig }) {
             min={1}
             max={1000}
             value={maxSteps}
-            onChange={(e) => setMaxSteps(Number(e.target.value))}
+            onChange={(e) => setMaxSteps(e.target.value)}
           />
           <small className="pipeline-editor-field-help">Upper bound for future multi-step agent execution.</small>
         </label>
@@ -113,7 +115,7 @@ export default function AssistantPanel({ api, credentials, initialConfig }) {
             min={0}
             max={64}
             value={maxReplans}
-            onChange={(e) => setMaxReplans(Number(e.target.value))}
+            onChange={(e) => setMaxReplans(e.target.value)}
           />
           <small className="pipeline-editor-field-help">Maximum replanning attempts before stopping.</small>
         </label>
@@ -126,7 +128,7 @@ export default function AssistantPanel({ api, credentials, initialConfig }) {
             min={0}
             max={50}
             value={historyPairs}
-            onChange={(e) => setHistoryPairs(Number(e.target.value))}
+            onChange={(e) => setHistoryPairs(e.target.value)}
           />
           <small className="pipeline-editor-field-help">
             Number of previous user/assistant exchanges kept as context (0 = no history).

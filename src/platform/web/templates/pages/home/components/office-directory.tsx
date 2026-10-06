@@ -2,13 +2,15 @@ import { useState } from "zeb/react";
 import OfficeMeta from "@/pages/home/components/office-meta";
 import ProjectRow from "@/pages/home/components/project-row";
 import OpenRemoteDialog from "@/pages/home/components/open-remote-dialog";
+import HiddenProjects from "@/pages/home/components/hidden-projects";
 
 /**
  * The controller's one directory (`offices.md` §3a): each office on the left,
  * the projects it holds on the right. On an office that has not joined
- * anything, it is simply this office and its projects.
+ * anything, it is simply this office and its projects. Projects hidden from
+ * home are not in an office's list; they wait under the hidden section below.
  */
-export default function OfficeDirectory({ offices, canOpenRemote }) {
+export default function OfficeDirectory({ offices, hiddenProjects, canOpenRemote }) {
   const [target, setTarget] = useState(null);
   const rows = Array.isArray(offices) ? offices : [];
 
@@ -43,6 +45,7 @@ export default function OfficeDirectory({ offices, canOpenRemote }) {
           );
         })}
       </section>
+      <HiddenProjects items={hiddenProjects} />
       <OpenRemoteDialog target={target} onClose={() => setTarget(null)} />
     </>
   );

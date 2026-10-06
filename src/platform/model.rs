@@ -160,6 +160,12 @@ pub struct PlatformProject {
     pub created_at: i64,
     /// Unix timestamp seconds.
     pub updated_at: i64,
+    /// Left off this office's home project list ("Hide from home"). The
+    /// project stays reachable by URL and search, and is listed under the
+    /// home page's hidden section. Instance presentation, not project content:
+    /// it is not in `zebflow.yaml` and does not travel with the repository.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 // ---------------------------------------------------------------------------

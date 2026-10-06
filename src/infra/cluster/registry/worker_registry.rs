@@ -51,6 +51,10 @@ pub struct OfficeHeldProject {
     /// Display title.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// Hidden from home on that office: the controller's directory leaves it
+    /// out of the office's row and lists it under hidden projects instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// Snapshot of all known workers.

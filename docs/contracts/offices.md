@@ -77,6 +77,12 @@ the controller's own among them.
 - **An office is monitored, not opened.** Its entry shows status, address,
   version, last seen, capabilities and project count. What is opened is a
   project.
+- **A hidden project is reported, not listed.** The heartbeat carries every
+  project with its *Hide from home* flag (`project.md` § Home listing); the
+  directory leaves hidden ones out of the office's row and its count, and
+  lists them under *Hidden projects* with the office's name. The flag is the
+  office's, so it is changed in that project's settings, not on the
+  controller.
 - **Opening a project on another office is a vouch** (§2) that lands in that
   project. Management still runs at the office's own address; the controller
   carries none of it.
@@ -109,6 +115,13 @@ These are separable terms; the list is the whole agreement.
 **A fresh office** — the ordinary case — joins by presenting its token. Nothing
 is wiped, because there is nothing to wipe. Its local accounts, if any, are
 disabled for login; they are not deleted.
+
+**Its starter project is created hidden.** Every instance creates a `default`
+project on its first start. An office that starts joined (role `worker`)
+creates it with *Hide from home* set, so the controller's directory is not one
+"Default" row per office; a standalone instance or a controller shows its own.
+This is decided once, when the project is created: later boots keep whatever a
+person chose, and an install that predates the rule is not changed.
 
 **An office that already holds projects** may join, on one condition:
 

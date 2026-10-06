@@ -6,6 +6,7 @@ import GitBranchPanel from "@/pages/project-studio/settings/components/git-branc
 import AssistantPanel from "@/pages/project-studio/settings/components/assistant-panel";
 import ProjectConfigurationStatus from "@/pages/project-studio/settings/components/project-configuration-status";
 import ReIndexPanel from "@/pages/project-studio/settings/components/reindex-panel";
+import HomeVisibilityPanel from "@/pages/project-studio/settings/components/home-visibility-panel";
 import ProfilePanel from "@/pages/project-studio/settings/components/profile-panel";
 import DistributionPanel from "@/pages/project-studio/settings/components/distribution-panel";
 import RuntimeDefaultsPanel from "@/pages/project-studio/settings/components/runtime-defaults-panel";
@@ -101,6 +102,7 @@ export default function Page(input) {
                   <div className="flex flex-col">
                     <ProjectConfigurationStatus config={input?.project_configuration ?? {}} />
                     <ProfilePanel api={input?.profile?.api ?? ""} initialConfig={input?.profile?.config ?? {}} />
+                    <HomeVisibilityPanel api={input?.home?.api ?? ""} initialHidden={input?.home?.hidden} />
                     <DistributionPanel api={input?.distribution?.api ?? ""} initialConfig={input?.distribution?.config ?? {}} />
                     <ProjectTransferPanel
                       owner={input?.owner}

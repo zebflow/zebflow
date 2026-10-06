@@ -78,6 +78,11 @@ without an output or a verify simply has none — it does not invent one.
 7. **The same fact appears once**: not in an inline line *and* a note *and* the topic.
 8. **Zeb React and zeb/ui only** for any new or rewritten screen (`CLAUDE.md`
    Absolute UI Rule); one component per file, ≤ 400 lines.
+9. **Hidden is not gone.** A list that leaves something out says how many it
+   left out and lists them one click away, where they can be brought back —
+   the home page's *Hidden projects* (`project.md` § Home listing).
+10. **A text field's `onChange` is per keystroke** (React's meaning). Nothing
+    is saved from it; saving belongs to `onBlur`, a form submit or a button.
 
 ## 6. Not covered
 

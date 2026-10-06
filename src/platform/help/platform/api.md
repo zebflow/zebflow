@@ -121,6 +121,7 @@ Credential values are returned only to the owner's session (`GET /credentials/{i
 GET    /git/status  ·  /git/health  ·  /git/branches   POST /git/commit  ·  /git/repair  ·  /git/branches   GET|PUT /git/remote
 GET|POST /members  ·  /invites                    membership
 GET|PUT  /settings/{section}                       general · git · members · policy · automatons · logs
+GET|PUT  /settings/home   {"data":{"hidden":true}}  Hide from home: off the home list, still reachable; no commit
 GET    /nodes  ·  /nodes/by-kind/{kind}   POST /nodes/install  ·  /nodes/install/review  ·  /nodes/uninstall/{kind}
 GET    /rwe/libraries   POST /rwe/libraries/enable  ·  /rwe/libraries/remove
 GET    /install/catalog/ui   POST /install/ui   ·  /install/ui/review     the clone-to-own component catalog

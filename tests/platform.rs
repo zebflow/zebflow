@@ -20,3 +20,5 @@ mod stored_answer;
 mod page_privacy;
 #[path = "platform/webhook_routes.rs"]
 mod webhook_routes;
+#[path = "platform/home_hidden.rs"]
+mod home_hidden;

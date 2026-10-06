@@ -2989,13 +2989,19 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
         Ok(items) => items,
         Err(err) => return internal_error(err),
     };
-    let local_projects = match items
-        .into_iter()
-        .map(|item| home_project_card_json(&state, &owner, &item))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(projects) => projects,
-        Err(err) => return internal_error(err),
+    // A hidden project is left off the list, not out of reach: its URL,
+    // search and quick-open still find it, and the page's hidden section
+    // lists it so it can be shown again.
+    let (hidden_items, items): (Vec<_>, Vec<_>) = items.into_iter().partition(|item| item.hidden);
+    let cards = |items: Vec<crate::platform::model::PlatformProject>| {
+        items
+            .into_iter()
+            .map(|item| home_project_card_json(&state, &owner, &item))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let (local_projects, mut hidden_projects) = match (cards(items), cards(hidden_items)) {
+        (Ok(visible), Ok(hidden)) => (visible, hidden),
+        (Err(err), _) | (_, Err(err)) => return internal_error(err),
     };
     let bootstrap = &state.platform.cluster_bootstrap;
     // `offices.md` §3a: one directory, each office with the projects it
@@ -3027,6 +3033,11 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
         .unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
     for worker in workers {
+        hidden_projects.extend(worker.projects.iter().filter(|held| held.hidden).map(|held| {
+            let mut card = home_held_project_json(held);
+            card["office_label"] = json!(worker.label);
+            card
+        }));
         offices.push(home_office_row_json(&worker, now));
     }
     let runtime_targets = state
@@ -3062,6 +3073,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                 "install_review": format!("/api/users/{}/hub/install/review", owner),
             },
             "offices": offices,
+            "hidden_projects": hidden_projects,
             "can_open_remote": can_open_remote,
             "runtime_targets": runtime_targets,
             "app_version": APP_VERSION,
@@ -3115,14 +3127,8 @@ fn home_office_row_json(
     let projects = worker
         .projects
         .iter()
-        .map(|held| {
-            json!({
-                "owner": held.owner,
-                "project": held.project,
-                "title": if held.title.trim().is_empty() { held.project.clone() } else { held.title.clone() },
-                "path": format!("/projects/{}/{}", held.owner, held.project),
-            })
-        })
+        .filter(|held| !held.hidden)
+        .map(home_held_project_json)
         .collect::<Vec<_>>();
     json!({
         "id": worker.node_id,
@@ -3136,6 +3142,18 @@ fn home_office_row_json(
         "capabilities": capabilities,
         "project_count": projects.len(),
         "projects": projects,
+    })
+}
+
+/// A project another office reported on its heartbeat. Its home flag lives
+/// on that office, so the controller links to it but does not toggle it.
+fn home_held_project_json(held: &crate::infra::cluster::registry::OfficeHeldProject) -> Value {
+    json!({
+        "owner": held.owner,
+        "project": held.project,
+        "title": if held.title.trim().is_empty() { held.project.clone() } else { held.title.clone() },
+        "path": format!("/projects/{}/{}", held.owner, held.project),
+        "hidden": held.hidden,
     })
 }
 
@@ -3357,6 +3375,20 @@ fn home_project_card_json(
         "runtime_summary": runtime_summary,
         "office_label": office_label,
         "office_url": office_url,
+        "hidden": item.hidden,
+        // Hiding is a project setting; the card menu offers it to whoever may
+        // change this project's settings, and to no one else.
+        "home_api": state
+            .platform
+            .authz
+            .ensure_project_capability(
+                &ProjectAccessSubject::user(owner),
+                &item_owner,
+                &item.project,
+                ProjectCapability::SettingsWrite,
+            )
+            .is_ok()
+            .then(|| format!("/api/projects/{}/{}/settings/home", item_owner, item.project)),
     }))
 }
 
@@ -4766,6 +4798,7 @@ fn office_held_projects(
                 .unwrap_or_default(),
             owner: project.owner,
             project: project.project,
+            hidden: project.hidden,
         })
         .collect()
 }
@@ -6951,6 +6984,10 @@ async fn render_settings_tab_page(
                 "profile": {
                     "api": format!("/api/projects/{owner}/{project}/settings/profile"),
                     "config": zebflow_cfg.metadata
+                },
+                "home": {
+                    "api": format!("/api/projects/{owner}/{project}/settings/home"),
+                    "hidden": info.hidden
                 },
                 "rwe": {
                     "api": format!("/api/projects/{owner}/{project}/settings/rwe"),
@@ -17212,7 +17249,8 @@ async fn api_upsert_project_assistant_config(
 
 /// `GET /api/projects/{owner}/{project}/settings/{section}` — read one zebflow.yaml section.
 ///
-/// Supported sections: `profile`, `rwe`, `logging`, `assets`, and `distribution`.
+/// Supported sections: `profile`, `rwe`, `logging`, `assets`, and `distribution`,
+/// plus the instance-side `addressing` and `home`.
 async fn api_get_settings_section(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -17227,6 +17265,9 @@ async fn api_get_settings_section(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    if section == "home" {
+        return project_home_settings_response(&state, &owner, &project);
     }
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         return match forward_project_api_request_to_worker(
@@ -17623,6 +17664,65 @@ fn reject_unknown_settings_fields(
     Ok(())
 }
 
+
+/// The `home` settings section: whether this office's home page lists the
+/// project. Instance presentation kept on the project's row, not in
+/// `zebflow.yaml` — nothing is committed — and answered here even for a
+/// project placed on another office, because it is this office's home.
+fn project_home_settings_response(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Response {
+    match state.platform.projects.get_project(owner, project) {
+        Ok(Some(record)) => Json(json!({
+            "ok": true,
+            "section": "home",
+            "data": {"hidden": record.hidden}
+        }))
+        .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+fn upsert_project_home_settings(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    data: &Value,
+) -> Response {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct HomePayload {
+        hidden: bool,
+    }
+    let payload: HomePayload = match serde_json::from_value(data.clone()) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match state
+        .platform
+        .projects
+        .set_project_hidden(owner, project, payload.hidden)
+    {
+        Ok(record) => Json(json!({
+            "ok": true,
+            "section": "home",
+            "data": {"hidden": record.hidden}
+        }))
+        .into_response(),
+        Err(err) if err.code == "PLATFORM_PROJECT_MISSING" => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 /// `PUT /api/projects/{owner}/{project}/settings/{section}` — write one zebflow.yaml section
 /// and commit the change.
 ///
@@ -17644,6 +17744,9 @@ async fn api_upsert_settings_section(
         ProjectCapability::SettingsWrite,
     ) {
         return response;
+    }
+    if section == "home" {
+        return upsert_project_home_settings(&state, &owner, &project, &req.data);
     }
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         return match forward_project_json_request_to_worker(
@@ -29491,5 +29594,43 @@ mod offline_tests {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod home_directory_tests {
+    use super::*;
+    use crate::infra::execution::runner::RunnerCapabilities;
+
+    /// `offices.md` §3a: a project another office reports hidden is left out
+    /// of that office's row and its count, and still described for the
+    /// page's hidden section.
+    #[test]
+    fn a_hidden_project_is_reported_but_not_in_its_offices_row() {
+        let worker: crate::infra::cluster::registry::WorkerRegistryRecord =
+            serde_json::from_value(json!({
+                "node_id": "office-a",
+                "label": "Office A",
+                "base_url": "http://office.example:10610",
+                "status": "online",
+                "capabilities": RunnerCapabilities::default(),
+                "registered_at": 1,
+                "last_heartbeat_at": 1,
+                "projects": [
+                    {"owner": "superadmin", "project": "default", "title": "Default", "hidden": true},
+                    {"owner": "superadmin", "project": "catalog", "title": "Catalog"}
+                ]
+            }))
+            .expect("worker record");
+        let row = home_office_row_json(&worker, 2);
+        assert_eq!(row["project_count"], json!(1));
+        assert_eq!(row["projects"][0]["project"], json!("catalog"));
+        let hidden = home_held_project_json(&worker.projects[0]);
+        assert_eq!(hidden["hidden"], json!(true));
+        assert_eq!(hidden["path"], json!("/projects/superadmin/default"));
+        // The flag is omitted from a heartbeat when false, so an older
+        // controller reads the same bytes it always did.
+        let shown = serde_json::to_value(&worker.projects[1]).expect("serialize");
+        assert!(shown.get("hidden").is_none());
     }
 }

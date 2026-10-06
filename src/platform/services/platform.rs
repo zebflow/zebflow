@@ -689,6 +689,10 @@ impl PlatformService {
             }
         }
 
+        let first_boot = self
+            .projects
+            .get_project(&self.config.default_owner, &self.config.default_project)?
+            .is_none();
         self.projects.create_or_update_project(
             &self.config.default_owner,
             &CreateProjectRequest {
@@ -698,6 +702,18 @@ impl PlatformService {
                 runtime: Default::default(),
             },
         )?;
+        // A branch office is reached through its controller's directory, where
+        // the starter project of every office would be one more row reading
+        // "Default". It is created hidden there (`offices.md` §3a); a
+        // standalone instance or a controller shows its own. Only on creation:
+        // whatever a person later chooses is kept on every boot after.
+        if first_boot && self.cluster_bootstrap.is_worker() {
+            self.projects.set_project_hidden(
+                &self.config.default_owner,
+                &self.config.default_project,
+                true,
+            )?;
+        }
         // First boot is a person's new project, so it gets the starter files.
         // An import, a hub install and a clone do not — they arrive with their
         // own content and a sample would be a stray file in it.
@@ -710,6 +726,7 @@ impl PlatformService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::cluster::config::ClusterSettings;
     use crate::platform::model::PlatformConfig;
 
     #[test]
@@ -736,5 +753,73 @@ mod tests {
             compiled.resolved_config.local_fetch_root,
             layout.files_dir.display().to_string()
         );
+    }
+
+    fn first_boot(role: ClusterRole) -> (tempfile::TempDir, PlatformService) {
+        use crate::infra::cluster::security::{ControllerSigningKey, JoinToken};
+        let data_root = tempfile::tempdir().expect("temp data root");
+        // An office refuses to start without what a join needs; the controller
+        // address is unreachable on purpose — registration retries elsewhere.
+        let joined = role == ClusterRole::Worker;
+        let token = joined.then(|| {
+            let (_, key) = ControllerSigningKey::generate().expect("key");
+            JoinToken::mint("office-a", key.verify_key()).render()
+        });
+        let platform = PlatformService::from_config(PlatformConfig {
+            data_root: data_root.path().to_path_buf(),
+            default_password: "secret".to_string(),
+            cluster: ClusterSettings {
+                role,
+                master_url: joined.then(|| "http://127.0.0.1:1".to_string()),
+                advertise_url: joined.then(|| "http://office.example:10610".to_string()),
+                join_token: token,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("platform");
+        (data_root, platform)
+    }
+
+    fn default_hidden(platform: &PlatformService) -> bool {
+        platform
+            .projects
+            .get_project("superadmin", "default")
+            .expect("read")
+            .expect("default project")
+            .hidden
+    }
+
+    #[test]
+    fn a_joined_office_creates_its_starter_project_hidden_and_others_do_not() {
+        assert!(default_hidden(&first_boot(ClusterRole::Worker).1));
+        assert!(!default_hidden(&first_boot(ClusterRole::Standalone).1));
+        assert!(!default_hidden(&first_boot(ClusterRole::Master).1));
+    }
+
+    #[test]
+    fn hide_from_home_is_stored_and_survives_later_boots() {
+        let (_root, platform) = first_boot(ClusterRole::Standalone);
+        let record = platform
+            .projects
+            .set_project_hidden("superadmin", "default", true)
+            .expect("hide");
+        assert!(record.hidden);
+        assert_eq!(record.title, "Default", "the answer carries the title");
+        // A later boot re-upserts the default project; it must not unhide it.
+        platform.bootstrap_defaults().expect("second boot");
+        assert!(default_hidden(&platform));
+        let listed = platform.projects.list_projects("superadmin").expect("list");
+        assert!(listed.iter().any(|p| p.project == "default" && p.hidden));
+
+        platform
+            .projects
+            .set_project_hidden("superadmin", "default", false)
+            .expect("show");
+        platform.bootstrap_defaults().expect("third boot");
+        assert!(!default_hidden(&platform), "a person's choice is kept either way");
+
+        let missing = platform.projects.set_project_hidden("superadmin", "nope", true);
+        assert_eq!(missing.expect_err("no such project").code, "PLATFORM_PROJECT_MISSING");
     }
 }
