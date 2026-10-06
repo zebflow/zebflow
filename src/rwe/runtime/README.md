@@ -183,7 +183,9 @@ are not implemented. Events are native DOM events, with one React rule kept:
 `onChange` on an `<input>` or `<textarea>` fires on every input event (each
 keystroke), as React's does; on checkboxes, radios, file inputs and `<select>`
 it is the native `change` event. Save-on-commit belongs on `onBlur` or a form
-submit, never on `onChange`. IDs are scoped to RWE's single page root; consumers
+submit, never on `onChange`. `autoFocus` is React's too: an element that
+mounts with it after the page has loaded (a menu, a step, a portal) is focused
+once in the commit; hydration leaves focus where the user put it. IDs are scoped to RWE's single page root; consumers
 building multiple independent roots must provide their own ID namespace.
 Render functions must be synchronous and follow hook ordering rules. Functional
 state setters must be pure. Server and initial client output should agree;

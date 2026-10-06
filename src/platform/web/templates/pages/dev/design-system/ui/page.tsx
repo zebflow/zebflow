@@ -8,6 +8,8 @@ import ZebUiDisclosureSection from "@/pages/dev/design-system/sections/zeb-ui-di
 import ZebUiOverlaysSection from "@/pages/dev/design-system/sections/zeb-ui-overlays";
 import ZebUiOverlays2Section from "@/pages/dev/design-system/sections/zeb-ui-overlays-2";
 import ZebUiEditorSection from "@/pages/dev/design-system/sections/zeb-ui-editor";
+import ZebUiEditorExtensionsSection from "@/pages/dev/design-system/sections/zeb-ui-editor-extensions";
+import ZebUiEditorComponentsSection from "@/pages/dev/design-system/sections/zeb-ui-editor-components";
 import { initDesignSystemBehavior } from "@/pages/dev/design-system/design-system-behavior";
 
 /**
@@ -63,7 +65,7 @@ export default function Page() {
           <section hidden={group !== "display"}><ZebUiDisplaySection /><ZebUiDisplay2Section /></section>
           <section hidden={group !== "disclosure"}><ZebUiDisclosureSection /></section>
           <section hidden={group !== "overlays"}><ZebUiOverlaysSection /><ZebUiOverlays2Section /></section>
-          <section hidden={group !== "editor"}><ZebUiEditorSection /></section>
+          <section hidden={group !== "editor"}><ZebUiEditorSection /><ZebUiEditorExtensionsSection /><ZebUiEditorComponentsSection /></section>
         </>
       )}
     </GalleryShell>

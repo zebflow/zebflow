@@ -194,7 +194,13 @@ pub fn render(
         }
     };
     // Use detected_zeb_libs collected at compile time (includes libs from all inlined components).
-    let zeb_preamble = build_zeb_preamble(&compiled.detected_zeb_libs, enabled_libraries);
+    let mut zeb_preamble = build_zeb_preamble(&compiled.detected_zeb_libs, enabled_libraries);
+    zeb_preamble.push_str(&build_markup_loaders(
+        &compiled.detected_zeb_libs,
+        enabled_libraries,
+        &compiled.client_module_source,
+        &ssr.html,
+    ));
     let transpiled_client =
         transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
     let ssr_ms = started.elapsed().as_millis();
@@ -408,6 +414,65 @@ fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) ->
                 );
             }
         }
+    }
+    out
+}
+
+/// Libraries whose browser bundle mounts every `[data-zeb-lib="<marker>"]`
+/// element on its own (it watches the DOM), so the markup alone is enough to
+/// use them: `(marker, library)`.
+const MARKUP_MOUNTED_LIBS: &[(&str, &str)] = &[("potoru", "zeb/potoru")];
+
+/// Whether `text` holds a `data-zeb-lib` marker for `marker`, written as
+/// HTML (`data-zeb-lib="potoru"`), JSX or an object key (`"data-zeb-lib": "potoru"`).
+fn mentions_markup_lib(text: &str, marker: &str) -> bool {
+    text.match_indices("data-zeb-lib").any(|(at, key)| {
+        let rest = text[at + key.len()..]
+            .trim_start_matches(|c: char| c == '"' || c == '\'' || c == ':' || c == '=' || c.is_whitespace());
+        rest.strip_prefix(marker)
+            .is_some_and(|after| after.starts_with('"') || after.starts_with('\''))
+    })
+}
+
+/// Load a markup-mounted library on demand: a page that does not import it,
+/// but whose server HTML or client code can produce its placeholder (a
+/// document block that renders PotoPlayer's markup, say), gets a watcher that
+/// imports the bundle the first time such an element is in the DOM — and
+/// never, on a page where none appears. A page that imports the library
+/// already loads it up front; a project that lists its libraries must list it.
+fn build_markup_loaders(
+    detected_libs: &[String],
+    enabled_libraries: &[String],
+    client_source: &str,
+    ssr_html: &str,
+) -> String {
+    let mut out = String::new();
+    for (marker, lib) in MARKUP_MOUNTED_LIBS {
+        if detected_libs.iter().any(|d| d == lib) {
+            continue;
+        }
+        if !enabled_libraries.is_empty() && !enabled_libraries.iter().any(|e| e == lib) {
+            continue;
+        }
+        if !mentions_markup_lib(ssr_html, marker) && !mentions_markup_lib(client_source, marker) {
+            continue;
+        }
+        let Some(url) = zeb_bundle_url(lib) else { continue };
+        out.push_str(&format!(
+            "(function() {{\n\
+               var selector = '[data-zeb-lib=\"{marker}\"]';\n\
+               var started = false;\n\
+               var observer = new MutationObserver(function() {{ load(); }});\n\
+               function load() {{\n\
+                 if (started || !document.querySelector(selector)) return;\n\
+                 started = true;\n\
+                 observer.disconnect();\n\
+                 import('{url}').catch(function(err) {{ console.error('{lib} could not be loaded', err); }});\n\
+               }}\n\
+               observer.observe(document.documentElement, {{ childList: true, subtree: true }});\n\
+               load();\n\
+             }})();\n"
+        ));
     }
     out
 }
@@ -1452,6 +1517,33 @@ mod tests {
             preamble.contains("Object.assign(globalThis"),
             "expected zeb preamble to expose library exports on globalThis, got {preamble}"
         );
+    }
+
+    /// A markup-mounted library loads only where its placeholder can appear:
+    /// in the server HTML or in what the client code renders. Never twice,
+    /// never on a page without one, never past a project's library list.
+    #[test]
+    fn markup_mounted_libraries_load_only_where_their_markup_is() {
+        let none: Vec<String> = Vec::new();
+        let url = "/assets/libraries/zeb/potoru/0.1/runtime/potoru.bundle.mjs";
+        let html = "<figure><div data-zeb-lib=\"potoru\" data-zeb-wrapper=\"PotoPlayer\" data-config=\"{}\"></div></figure>";
+        let client = "return r.h(\"div\", { \"data-zeb-lib\": \"potoru\", \"data-config\": c });";
+
+        let from_html = build_markup_loaders(&none, &none, "", html);
+        assert!(from_html.contains(&format!("import('{url}')")), "{from_html}");
+        assert!(from_html.contains("'[data-zeb-lib=\"potoru\"]'"), "{from_html}");
+        assert!(!from_html.contains("await"), "the watcher never holds up hydration: {from_html}");
+        assert!(build_markup_loaders(&none, &none, client, "<main></main>").contains(url));
+
+        // Nothing on the page that could hold the placeholder: nothing at all.
+        assert_eq!(build_markup_loaders(&none, &none, "const potoru = 1;", "<p>potoru</p><div data-zeb-lib=\"markdown\"></div>"), "");
+        assert_eq!(build_markup_loaders(&none, &none, "", "<div data-zeb-lib=\"potoru-x\"></div>"), "");
+        // Imported by the page: the preamble already loads it up front.
+        assert_eq!(build_markup_loaders(&["zeb/potoru".to_string()], &none, client, html), "");
+        // A project that lists its libraries must list this one.
+        assert_eq!(build_markup_loaders(&none, &["zeb/prosemirror".to_string()], client, html), "");
+        let listed = build_markup_loaders(&none, &["zeb/prosemirror".to_string(), "zeb/potoru".to_string()], client, html);
+        assert!(listed.contains(url), "{listed}");
     }
 
     #[test]

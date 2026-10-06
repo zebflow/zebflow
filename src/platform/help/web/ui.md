@@ -71,7 +71,12 @@ documentText(doc).slice(0, 160)             // a teaser
 ```
 
 Without `uploadImage` the image block is not offered. `readOnly` shows the
-document without editing. The engine underneath is `zeb/prosemirror`
+document without editing.
+
+Callouts, tables, figures, embeds, mentions and citations are
+**extensions** — `extensions={[…]}` on the editor and on every renderer, kept
+in `shared/editor/extensions/`. Projects write their own with
+`defineExtension`. All of it: `help(topic="web/editor")`. The engine underneath is `zeb/prosemirror`
 (`help(topic="web/libraries")`) — the one runtime dependency in zeb/ui,
 loaded only on pages that import the editor. Code blocks are coloured by the
 same tokenizer as `zeb/ui/code-block`.

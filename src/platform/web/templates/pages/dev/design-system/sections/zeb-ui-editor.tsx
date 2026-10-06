@@ -13,7 +13,7 @@ const SAMPLE = {
       { type: "todo_item", attrs: { checked: true }, content: [{ type: "paragraph", content: [{ type: "text", text: "Register the webhook" }] }] },
       { type: "todo_item", attrs: { checked: false }, content: [{ type: "paragraph", content: [{ type: "text", text: "Approve the first member" }] }] },
     ] },
-    { type: "callout", attrs: { icon: "💡" }, content: [{ type: "paragraph", content: [{ type: "text", text: "The document is JSON. What you see on the right is " }, { type: "text", marks: [{ type: "code" }], text: "<DocumentView>" }, { type: "text", text: " rendering the same JSON — no editor involved." }] }] },
+    { type: "blockquote", content: [{ type: "paragraph", content: [{ type: "text", text: "The document is JSON. What you see on the right is " }, { type: "text", marks: [{ type: "code" }], text: "<DocumentView>" }, { type: "text", text: " rendering the same JSON — no editor involved." }] }] },
     { type: "code_block", attrs: { language: "tsx" }, content: [{ type: "text", text: 'import { Editor } from "zeb/ui/editor";\n\n<Editor value={doc} onChange={setDoc} />' }] },
   ],
 };
@@ -26,7 +26,7 @@ export default function ZebUiEditorSection() {
       <Entry
         name="Editor"
         file="zeb/ui/editor"
-        description="Left: the editor. Right: the same document rendered by DocumentView, live. Slash menu, bubble toolbar, Markdown shortcuts, to-dos, callouts, code blocks, drag handle."
+        description="Left: the editor. Right: the same document rendered by DocumentView, live. Slash menu, bubble toolbar, Markdown shortcuts, to-dos, quotes, code blocks, drag handle. Callouts, tables, figures and the rest are extensions — below."
         code={`import { Editor } from "zeb/ui/editor";
 import { DocumentView, renderDocumentHtml } from "zeb/ui/editor-render";
 

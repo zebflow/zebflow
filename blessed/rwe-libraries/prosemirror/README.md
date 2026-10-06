@@ -17,4 +17,15 @@ Upgrading ProseMirror: bump `build/package.json`, run `build/build.sh`, commit
 the bundle and the manifest together.
 
 Documents are ProseMirror JSON (`{ type: "doc", content: [...] }`). Store that;
-render HTML from it with `zeb/ui/editor`'s `renderDocumentHtml` / `<DocumentView>`.
+render HTML from it with `zeb/ui/editor-render`'s `renderDocumentHtml` / `<DocumentView>`.
+
+Extensions add nodes and marks: `createSchema(classes, extensions)` and
+`createEditor(mount, { extensions })` read each extension's `nodes`, `marks`,
+`trigger`, `panel`, and `commands` / `inputRules` / `keymap` / `plugins`
+(each `(schema, pm) =>`). `zeb/ui/editor-extension`'s `defineExtension` builds
+that object from one declaration. A name defined twice is an error. A stored
+node or mark the schema lacks is kept: `adoptDocument` wraps it in an
+`unknown_*` node on load and `restoreDocument` unwraps it on save.
+
+Tests: `node --test tests/rwe/runtime/editor.test.mjs` (this bundle with the
+shipped extensions).

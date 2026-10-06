@@ -17,6 +17,8 @@ Guards: `tests/rwe/zeb_ui.rs` — run `cargo test --test rwe zeb_ui`.
    live in a sibling file (`zeb/ui/hooks`) and are imported like a component.
    One exception, by name: `editor.tsx` imports `zeb/prosemirror`, its engine
    — a runtime library, loaded once and cached, not inlined into every page.
+   `editor-potoru.tsx` imports no library at all: it renders `zeb/potoru`'s
+   placeholder, and RWE loads that library only on a page that shows one.
 2. **Colour by role, never by palette.** `bg-primary`, `text-muted-foreground`,
    `border-input`, `ring-ring/50`. Never `bg-gray-900`, `text-white`,
    `bg-red-500`. `dark:` is allowed and means the `.dark` class.
@@ -105,4 +107,25 @@ Guards: `tests/rwe/zeb_ui.rs` — run `cargo test --test rwe zeb_ui`.
 | item.tsx | Item, ItemMedia, ItemContent, ItemActions, ItemGroup, ItemSeparator, ItemTitle, ItemDescription, ItemHeader, ItemFooter |
 | code-block.tsx | CodeBlock, tokenize |
 | editor.tsx | Editor |
-| editor-render.tsx | DocumentView, renderDocumentHtml, documentText, safeHref, EDITOR_CLASSES |
+| editor-render.tsx | DocumentView, renderDocumentHtml, documentText, EDITOR_CLASSES |
+| editor-extension.tsx | defineExtension, composeExtensions, routeSearch, safeHref, sanitizeAttrs, sanitizeTag, readAttrPath, writeAttrPath |
+| editor-picker.tsx | EditorPicker, editorMenuPlacement |
+| editor-panel.tsx | EditorNodePanel |
+| editor-callout.tsx | calloutExtension |
+| editor-table.tsx | tableExtension |
+| editor-figure.tsx | figureExtension |
+| editor-embed.tsx | embedExtension |
+| editor-mention.tsx | mentionExtension |
+| editor-citation.tsx | citationExtension |
+| editor-reference.tsx | referenceExtension |
+| editor-potoru.tsx | potoruExtension, potoruConfig, POTORU_MODES, PotoruBlock, PotoruBlockEditor |
+| editor-potoru-libraries.tsx | PotoruLibraries, potoruLibraryUrl, potoruLibraryName, mergePotoruLibraries |
+| editor-component.tsx | guardComponent, componentProps, componentElement, withNodeViews |
+
+The `editor-extension` and `editor-component` files and the extension files
+are plain JavaScript (no JSX): the server renderer, the browser and the
+ProseMirror engine load the same object, and
+`node --test tests/rwe/runtime/editor.test.mjs` loads them unchanged (with the
+real `zeb/react` runtime). `editor-component` is how an extension's
+`component` / `editComponent` are drawn: through the document allowlist on the
+page, as a live node view in the editor. Guide: `help("web/editor")`.

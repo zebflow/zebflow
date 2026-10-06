@@ -1,6 +1,6 @@
-import { test, expect } from "../fixtures";
+import { test, expect, countColour } from "../fixtures";
 import { OWNER, PASSWORD } from "../config";
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext } from "@playwright/test";
 
 /**
  * The bundled 3D and map libraries draw, not merely load. A library upgrade
@@ -8,26 +8,6 @@ import type { APIRequestContext, Page } from "@playwright/test";
  * luma.gl 9.4.0 left stale polygon triangles, a GeoJSON fill that props alone
  * never show — so each case counts the pixels it should have painted.
  */
-
-/** Pixels of the element's screenshot within `tol` of the RGB colour. */
-async function countColour(page: Page, selector: string, rgb: [number, number, number], tol = 40) {
-  const png = (await page.locator(selector).screenshot()).toString("base64");
-  return page.evaluate(async ({ png, rgb, tol }) => {
-    const img = new Image();
-    img.src = `data:image/png;base64,${png}`;
-    await img.decode();
-    const c = document.createElement("canvas");
-    c.width = img.width; c.height = img.height;
-    const ctx = c.getContext("2d")!;
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, c.width, c.height).data;
-    let n = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      if (Math.abs(d[i] - rgb[0]) < tol && Math.abs(d[i + 1] - rgb[1]) < tol && Math.abs(d[i + 2] - rgb[2]) < tol) n++;
-    }
-    return n;
-  }, { png, rgb, tol });
-}
 
 /** A throwaway project serving `source` at /wh/{owner}/{project}/page. */
 async function servePage(request: APIRequestContext, project: string, source: string) {

@@ -1,4 +1,5 @@
-import { test, expect } from "../fixtures";
+import { test, expect, countColour } from "../fixtures";
+import { STORY } from "../potoru-story";
 import { BASE_URL, OWNER, PASSWORD, STORAGE_STATE } from "../config";
 import type { APIRequestContext, Page } from "@playwright/test";
 
@@ -13,33 +14,6 @@ import type { APIRequestContext, Page } from "@playwright/test";
  * every case asserts what the runtime did: a compile result, a ready event,
  * painted pixels.
  */
-
-/** A Potoru format v4 source folder: a red square crossing a blue stage. */
-const STORY: Record<string, string> = {
-  "potoru.lock.yml": "lockVersion: 1\npackages: []\n",
-  "potoru.project.yml": [
-    "format: potoru", "kind: story", "assets: []", "composition:", "  id: composition-main", '  name: "Square"',
-    "entry: scene-main", "metadata:", "  id: square", '  name: "Square"', '  updatedAt: "2000-01-01T00:00:00.000Z"',
-    "objects: []", "requires:", "  - vector2d", "  - timeline", "  - tick-time", "scenes:", "  - scene-main",
-    "timebase:", "  tickRate: 1000", "versions:", "  runtime: 1", "  schema: 5", "  scoreLang: 1", "",
-  ].join("\n"),
-  "scenes/scene-main/scene.yml": [
-    "name: Square", "durationTicks: 2000", "fps: 30", "root: inline", "stage:", "  width: 320", "  height: 180",
-    "  background:", "    kind: color", '    color: "#0000ff"', "  clipContent: true", "",
-  ].join("\n"),
-  "scenes/scene-main/root/object.yml": [
-    "initialState: main", "parts:", "  - id: main-box", "    name: box", "    x: 20", "    y: 60", "    width: 60",
-    "    height: 60",
-    '    drawable: {kind: vector, geometry: {kind: rect}, paint: {fill: "#ff0000", stroke: transparent, strokeWidth: 0}}',
-    "states:", "  - main", "",
-  ].join("\n"),
-  "scenes/scene-main/root/states/main.yml": [
-    "name: main", 'summary: ""', "durationTicks: 2000", "fps: 30", "tracks:", "  - id: main-box-x",
-    "    label: main-box.x", "    kind: property", "    targetId: main-box", "    clips:",
-    "      - {id: main-box-x-1, label: x, property: x, startTicks: 0, durationTicks: 2000, easing: linear, from: 20, playback: once, to: 240, tone: blue}",
-    "",
-  ].join("\n"),
-};
 
 /** Script mode: authoring-API JavaScript that returns a project. */
 const SCRIPT = [
@@ -81,26 +55,6 @@ export default function Page() {
   return <main style={{ width: "640px" }}><PotoSnapshot id="thumb" src="/_files/stories/square.poto" time={1} aspect="16 / 9" /></main>;
 }`,
 };
-
-/** Pixels of the element's screenshot within `tol` of the RGB colour. */
-async function countColour(page: Page, selector: string, rgb: [number, number, number], tol = 40) {
-  const png = (await page.locator(selector).screenshot()).toString("base64");
-  return page.evaluate(async ({ png, rgb, tol }) => {
-    const img = new Image();
-    img.src = `data:image/png;base64,${png}`;
-    await img.decode();
-    const c = document.createElement("canvas");
-    c.width = img.width; c.height = img.height;
-    const ctx = c.getContext("2d")!;
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, c.width, c.height).data;
-    let n = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      if (Math.abs(d[i] - rgb[0]) < tol && Math.abs(d[i + 1] - rgb[1]) < tol && Math.abs(d[i + 2] - rgb[2]) < tol) n++;
-    }
-    return n;
-  }, { png, rgb, tol });
-}
 
 /** The compile result the editor with this id last produced, or null. */
 async function lastResult(page: Page, id: string) {

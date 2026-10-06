@@ -56,3 +56,23 @@ export async function clickUntil(
     await assertion();
   }).toPass({ timeout: 30_000 });
 }
+
+/** Pixels of the element's screenshot within `tol` of the RGB colour. */
+export async function countColour(page: Page, selector: string, rgb: [number, number, number], tol = 40) {
+  const png = (await page.locator(selector).screenshot()).toString("base64");
+  return page.evaluate(async ({ png, rgb, tol }) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${png}`;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.width; c.height = img.height;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (Math.abs(d[i] - rgb[0]) < tol && Math.abs(d[i + 1] - rgb[1]) < tol && Math.abs(d[i + 2] - rgb[2]) < tol) n++;
+    }
+    return n;
+  }, { png, rgb, tol });
+}

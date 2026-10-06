@@ -109,7 +109,7 @@ renders it into a `div` and exists only when the file imports it — it is not a
 global. There is no `prose` stylesheet; style headings, lists and code with
 your own CSS or wrap the output in a container with utilities. For rich text
 authored in the platform, prefer the editor's JSON document and
-`zeb/ui/editor-render` (`help("web/ui")`).
+`zeb/ui/editor-render` (`help("web/editor")`).
 
 ---
 
@@ -155,10 +155,14 @@ useEffect(() => {
   const editor = createEditor(mountRef.current, {
     doc: EMPTY_DOC,                       // a ProseMirror document (JSON)
     classes: { root: "outline-none", heading1: "text-3xl font-bold", … },
+    extensions: EXTENSIONS,               // zeb/ui/editor-extension objects (help("web/editor"))
     placeholder: "Write…",
     onChange: (doc) => save(doc),         // JSON, every transaction that changes the document
     onSlash: (s) => {},                   // { query, from, to, left, top, bottom } or null — draw your own menu
     onSelection: (s) => {},               // { from, to, left, top, bottom, marks, block, attrs, text } or null
+    onTrigger: (s) => {},                 // an extension's trigger ("@"): { name, query, from, to, left, top, bottom } or null
+    onNode: (s) => {},                    // the extension node under the caret: { extension, type, pos, attrs, left, top, bottom } or null
+    onError: (err) => {},                 // the document could not be loaded; the editor starts empty
     uploadImage: async (file) => url,     // pasted or dropped images; omit to refuse them
   });
   return () => editor.destroy();
@@ -166,11 +170,16 @@ useEffect(() => {
 
 editor.exec("heading", 2);  editor.exec("toggleBold");  editor.exec("list", "todo");
 editor.exec("image", { src, alt });  editor.exec("setLink", href);  editor.getJSON();  editor.setJSON(doc);
+editor.insertNode("figure", { src }, range);  editor.setNodeAttrs(pos, { credit });
 ```
 
-Blocks: paragraph, heading 1–3, blockquote, callout, code_block, image,
+Blocks: paragraph, heading 1–3, blockquote, code_block, image,
 bullet/ordered/todo lists, horizontal_rule. Marks: bold, italic, underline,
-strike, code, link. Markdown shortcuts, Mod-key bindings, history, drop
+strike, code, link. Everything else comes from extensions:
+`createSchema(classes, extensions)` appends their nodes and marks and refuses
+a name defined twice. A stored node the schema lacks is kept, not dropped:
+`adoptDocument(schema, json)` turns it into an `unknown_*` placeholder and
+`restoreDocument(json)` puts it back on save — `createEditor` does both. Markdown shortcuts, Mod-key bindings, history, drop
 cursor, a hover drag handle and to-do checkboxes are built in. Rendering a
 stored document without the engine is `zeb/ui/editor-render`
 (`DocumentView`, `renderDocumentHtml`, `documentText`). `pm` exports every

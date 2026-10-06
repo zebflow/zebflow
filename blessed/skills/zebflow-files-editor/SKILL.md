@@ -75,16 +75,27 @@ async function uploadImage(file) {                       // the page decides whe
 <Editor value={doc} onChange={setDoc} uploadImage={uploadImage} placeholder="Write…" />
 ```
 
-- **Store `body_json`** (the document). Derive `body_html = renderDocumentHtml(doc)`
-  at save time for feeds, e-mails and search, and `excerpt = documentText(doc).slice(0, 200)`.
-  Never store only the HTML — it cannot be edited faithfully again.
-- **Render** a stored document with `<DocumentView doc={row.body_json} />` on
-  the public page: server-rendered, no editor code shipped.
+- **Store `body_json`** (the document) — the only source of truth. Never
+  publish HTML a browser sent: the public page renders `body_json` on the
+  server. An `excerpt = documentText(doc).slice(0, 200)` is fine to keep.
+- **Render** a stored document with `<DocumentView doc={row.body_json} extensions={EXTENSIONS} />`
+  on the public page: server-rendered, sanitized, no editor code shipped.
+- **Extensions** (callout, table, figure, embed, mention, reference,
+  citation, Potoru story, your own) live in
+  `shared/editor/extensions/index.tsx` as one `EXTENSIONS` list, passed to
+  the editor and to every renderer. Mention/reference/citation/embed/story
+  pickers call a project route answering `[{ id, label, href, snapshot }]`;
+  which kinds exist (people, organizations, articles…), their routes and
+  their look are the project's — one extension per kind, each with its own
+  trigger (`help("web/editor")`). A node may be drawn by Zeb React
+  components (`component` on the page, `editComponent` in the editor); the
+  Potoru block takes default `libraries` (https or `/…` paths) that merge
+  with each block's own.
 - **Images** go through `uploadImage`, which the page wires to a real
   upload pipeline (above). Without it the image block is not offered.
 - **Saving** is a normal POST pipeline: the page submits `JSON.stringify(doc)`
   (a hidden input or a `fetch`), the pipeline validates it is an object with
-  `type: "doc"`, stores `body_json`, `body_html`, `excerpt`.
+  `type: "doc"`, stores `body_json` and `excerpt`.
 - **Legacy HTML** (a previous CMS) converts once with `htmlToDocument(html)`
   from `zeb/prosemirror`, in a migration job, then lives as JSON.
 

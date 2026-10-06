@@ -79,6 +79,22 @@ await test('context crosses memo boundaries and nested providers restore sibling
   setters.default(1); await tick(); equal(host.textContent, 'changed0inner0changed0default1', 'memo local update');
 });
 
+await test('autoFocus focuses a field that mounts after load, in place or in a portal', async host => {
+  let show;
+  function App() {
+    const [open, set] = useState(0); show = set;
+    return h('div', null, h('button', null, 'other'),
+      open === 1 ? h('input', { id: 'inline', autoFocus: true }) : null,
+      open === 2 ? createPortal(h('input', { id: 'portal', autoFocus: true }), document.body) : null);
+  }
+  render(h(App), host);
+  host.querySelector('button').focus();
+  show(1); await tick();
+  equal(document.activeElement && document.activeElement.id, 'inline', 'inline autoFocus');
+  show(2); await tick();
+  equal(document.activeElement && document.activeElement.id, 'portal', 'portal autoFocus');
+});
+
 await test('portals inherit context, coexist with host content, update and unmount', async host => {
   const C = createContext('none'), portal = document.createElement('div');
   portal.innerHTML = '<i>external</i>'; document.body.append(portal);

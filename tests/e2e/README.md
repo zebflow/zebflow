@@ -39,6 +39,19 @@ Credentials default to `superadmin` / `admin123` and can be overridden with
   row added in the grid; a query shows its rows; the relations graph draws the
   edge and selects it.
 
+- `specs/editor-extensions.spec.ts` — the composable editor in a throwaway
+  project with `shared/editor/extensions/`: type, insert a figure (upload,
+  caption, credit in its panel), mention through `@` against a picker route,
+  cite from the slash menu's search box, save the JSON; the view page renders
+  it on the server and the browser renders the same bytes; a hostile stored
+  document renders with nothing that runs.
+
+- `specs/editor-components.spec.ts` — an extension drawn by Zeb React
+  components: in the editor the node is its `editComponent` (a node view)
+  and its own select changes it through `update`; on the page it is its
+  `component`, the server's bytes equal the browser's `renderDocumentHtml`,
+  and the page hydrates it (its click handler runs).
+
 The lifecycle spec creates a real project and deletes it in `afterAll`, so a
 failed run leaves nothing behind.
 

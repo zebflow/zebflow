@@ -1,6 +1,10 @@
 import { cx, useEffect, useRef, useState, createPortal } from "zeb/react";
 import { createEditor } from "zeb/prosemirror";
 import { DocumentView, EDITOR_CLASSES } from "zeb/ui/editor-render";
+import { composeExtensions } from "zeb/ui/editor-extension";
+import { withNodeViews } from "zeb/ui/editor-component";
+import { EditorPicker, editorMenuPlacement } from "zeb/ui/editor-picker";
+import { EditorNodePanel } from "zeb/ui/editor-panel";
 import { Toggle } from "zeb/ui/toggle";
 
 /**
@@ -18,6 +22,17 @@ import { Toggle } from "zeb/ui/toggle";
  * which returns a URL or `{ src, ref, alt }`. Without it, images are refused.
  *
  *   <Editor value={doc} onChange={setDoc} placeholder="Write…" uploadImage={upload} />
+ *
+ * `extensions` adds blocks, inline nodes and marks (`zeb/ui/editor-extension`):
+ * their slash items, `@` pickers and node panels appear here, and the same
+ * list renders the document — `<DocumentView doc extensions>`. Build the list
+ * once, outside the component; the engine reads it when it mounts. A stored
+ * node no extension knows is kept as it is, never dropped. A node an extension
+ * draws with a component (`component` / `editComponent`) is that component,
+ * mounted in the document, live.
+ *
+ *   const EXTENSIONS = [calloutExtension(), tableExtension(), figureExtension()];
+ *   <Editor value={doc} onChange={setDoc} extensions={EXTENSIONS} />
  */
 
 const SLASH_ITEMS = [
@@ -29,7 +44,6 @@ const SLASH_ITEMS = [
   { id: "ordered", label: "Numbered list", hint: "1. item", keys: "ol number", run: (ed) => ed.exec("list", "ordered") },
   { id: "todo", label: "To-do list", hint: "☐ task", keys: "todo task check", run: (ed) => ed.exec("list", "todo") },
   { id: "quote", label: "Quote", hint: "A pulled line", keys: "quote blockquote", run: (ed) => ed.exec("blockquote") },
-  { id: "callout", label: "Callout", hint: "A box with an icon", keys: "callout note tip", run: (ed) => ed.exec("callout") },
   { id: "code", label: "Code", hint: "A code block", keys: "code pre", run: (ed) => ed.exec("codeBlock") },
   { id: "divider", label: "Divider", hint: "A horizontal rule", keys: "hr divider rule", run: (ed) => ed.exec("horizontalRule") },
   { id: "image", label: "Image", hint: "Upload a picture", keys: "image photo picture", needsUpload: true, run: null },
@@ -49,18 +63,24 @@ const MARK_BUTTONS = [
 function viewportWidth() {
   return typeof window === "undefined" ? 1280 : window.innerWidth;
 }
-function flipUp(bottom, height) {
-  return typeof window !== "undefined" && bottom + 6 + height > window.innerHeight && bottom > height;
+
+/** Normalize what `uploadImage` answered: a URL, or `{ src | url, ref, alt }`. */
+function uploadedImage(result, file) {
+  if (!result) return null;
+  return typeof result === "string" ? { src: result, alt: file.name, ref: null } : { src: result.src || result.url, ref: result.ref || null, alt: result.alt || file.name };
 }
 
 function isEmptyDoc(doc) {
   return !doc || !doc.content || (doc.content.length === 1 && doc.content[0].type === "paragraph" && !(doc.content[0].content || []).length);
 }
 
-export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' for blocks, or just write…", uploadImage, readOnly = false, className, minHeight = "12rem" }) {
+export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' for blocks, or just write…", uploadImage, readOnly = false, className, minHeight = "12rem", extensions }) {
   const mountRef = useRef(null);
   const editorRef = useRef(null);
   const fileRef = useRef(null);
+  // A pending `api.upload()` from an extension's slash item, resolved by the file input.
+  const uploadWaiter = useRef(null);
+  const registry = composeExtensions(extensions);
   // Every document the engine has emitted (or been given), by identity. The
   // controlled effect below sees each render's `value` in turn, and under
   // fast typing that is a stale one — A, after AB was already emitted.
@@ -72,6 +92,8 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
   const [slashIndex, setSlashIndex] = useState(0);
   const [selection, setSelection] = useState(null);
   const [linkDraft, setLinkDraft] = useState(null);
+  const [picker, setPicker] = useState(null);
+  const [nodePanel, setNodePanel] = useState(null);
   const [mounted, setMounted] = useState(false);
 
   // Mount the engine once; it owns the DOM under mountRef from here on.
@@ -83,6 +105,8 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
     const editor = createEditor(mount, {
       doc: initial,
       classes: EDITOR_CLASSES,
+      // A node drawn by a component gets a node view: the component, mounted in place.
+      extensions: registry.list.map((ext) => withNodeViews(ext, () => editorRef.current, readOnly)),
       placeholder,
       editable: !readOnly,
       uploadImage,
@@ -93,7 +117,10 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
         onChange?.(json);
       },
       onSlash: (state) => { setSlash(state); setSlashIndex(0); },
+      onTrigger: (state) => setPicker((open) => (state ? { ...state, searchable: false } : open && open.searchable ? open : null)),
+      onNode: setNodePanel,
       onSelection: setSelection,
+      onError: (err) => console.error("zeb/ui/editor: the document could not be loaded; the editor starts empty", err),
     });
     editorRef.current = editor;
     setMounted(true);
@@ -111,17 +138,45 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
     setEmpty(isEmptyDoc(value));
   }, [value]);
 
+  const allItems = [...SLASH_ITEMS, ...registry.list.flatMap((ext) => ext.insert.map((item) => ({ ...item, id: item.id || ext.name, ext })))];
   const slashItems = slash
-    ? SLASH_ITEMS.filter((item) => (!item.needsUpload || uploadImage) && (item.label + " " + item.keys).toLowerCase().includes(slash.query.toLowerCase()))
+    ? allItems.filter((item) => (!item.needsUpload || uploadImage) && (item.label + " " + (item.keys || "")).toLowerCase().includes(slash.query.toLowerCase()))
     : [];
+
+  // What an extension's slash item can do with the editor.
+  function extensionApi(ext) {
+    const editor = editorRef.current;
+    return {
+      editor,
+      canUpload: Boolean(uploadImage),
+      insert: (type, attrs) => editor.insertNode(type, attrs),
+      wrap: (type, attrs) => editor.exec(editor.pm.wrapIn(editor.schema.nodes[type], attrs || null)),
+      exec: (name, ...args) => editor.exec(name, ...args),
+      pick: () => {
+        const coords = editor.view.coordsAtPos(editor.view.state.selection.from);
+        setPicker({ name: ext.name, query: "", searchable: true, left: coords.left, top: coords.top, bottom: coords.bottom });
+      },
+      upload: () => new Promise((resolve) => { uploadWaiter.current = resolve; fileRef.current?.click(); }),
+    };
+  }
 
   function runSlash(item) {
     const editor = editorRef.current;
     if (!editor || !slash) return;
     editor.deleteSlash(slash);
     setSlash(null);
-    if (item.id === "image") fileRef.current?.click();
+    if (item.ext) item.run(extensionApi(item.ext));
+    else if (item.id === "image") fileRef.current?.click();
     else item.run(editor);
+  }
+
+  const pickerExt = picker ? registry.byName[picker.name] : null;
+  function pick(item) {
+    const editor = editorRef.current;
+    if (!editor || !picker || !pickerExt) return;
+    const range = picker.searchable ? undefined : { from: picker.from, to: picker.to };
+    setPicker(null);
+    editor.insertNode(pickerExt.picker.type || pickerExt.name, pickerExt.picker.toAttrs(item), range);
   }
 
   // The slash menu takes the arrow keys and Enter while it is open.
@@ -142,17 +197,18 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
     const file = event.target.files && event.target.files[0];
     event.target.value = "";
     const editor = editorRef.current;
+    const waiter = uploadWaiter.current;
+    uploadWaiter.current = null;
     if (!file || !editor || !uploadImage) return;
-    const result = await uploadImage(file);
-    if (!result) return;
-    const attrs = typeof result === "string" ? { src: result, alt: file.name } : { src: result.src || result.url, ref: result.ref || null, alt: result.alt || file.name };
-    editor.exec("image", attrs);
+    const attrs = uploadedImage(await uploadImage(file), file);
+    if (waiter) waiter(attrs);
+    else if (attrs) editor.exec("image", attrs);
   }
 
   const overlays = mounted && typeof document !== "undefined" ? createPortal(
     <>
       {slash && slashItems.length > 0 ? (
-        <div role="listbox" data-slot="editor-slash" className={cx("fixed z-50 w-64 overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md", flipUp(slash.bottom, slashItems.length * 44 + 8) ? "-translate-y-full" : "")} style={{ left: `${Math.max(8, Math.min(slash.left, viewportWidth() - 264))}px`, top: `${flipUp(slash.bottom, slashItems.length * 44 + 8) ? slash.top - 6 : slash.bottom + 6}px` }}>
+        <div role="listbox" data-slot="editor-slash" className={cx("fixed z-50 max-h-96 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md", editorMenuPlacement(slash, slashItems.length * 44 + 8).up ? "-translate-y-full" : "")} style={editorMenuPlacement(slash, slashItems.length * 44 + 8).style}>
           {slashItems.map((item, i) => (
             <button
               key={item.id}
@@ -188,6 +244,12 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
           )}
         </div>
       ) : null}
+      {picker && pickerExt && pickerExt.picker && !readOnly ? (
+        <EditorPicker key={`${picker.name}:${picker.searchable}`} picker={pickerExt.picker} query={picker.query} anchor={picker} searchable={picker.searchable} onPick={pick} onClose={() => { setPicker(null); editorRef.current?.focus(); }} />
+      ) : null}
+      {nodePanel && registry.byName[nodePanel.extension] && !readOnly && !picker ? (
+        <EditorNodePanel ext={registry.byName[nodePanel.extension]} node={nodePanel} editor={editorRef.current} onClose={() => setNodePanel(null)} />
+      ) : null}
     </>,
     document.body,
   ) : null;
@@ -199,7 +261,7 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
           children, so a re-render cannot patch ProseMirror's DOM. The static
           view is a sibling for the server (and the moment before mount). */}
       <div ref={mountRef} />
-      {!mounted ? <DocumentView doc={value ?? defaultValue} className={EDITOR_CLASSES.root} /> : null}
+      {!mounted ? <DocumentView doc={value ?? defaultValue} extensions={registry.list} className={EDITOR_CLASSES.root} /> : null}
       {uploadImage ? <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onFilePicked} /> : null}
       {overlays}
     </div>

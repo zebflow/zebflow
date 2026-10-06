@@ -38,12 +38,49 @@ export const pm = {
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 //
-// The Notion-basic block set. `classes` are supplied by the caller so the
-// class strings live in template source, where the Tailwind scan sees them.
+// The Notion-basic block set, plus whatever the caller's extensions add.
+// `classes` are supplied by the caller so the class strings live in template
+// source, where the Tailwind scan sees them.
+//
+// An extension is a plain object (zeb/ui/editor-extension builds one with
+// `defineExtension`); the engine reads only these keys:
+//
+//   name                      unique id
+//   nodes / marks             { typeName: ProseMirror spec } — toDOM included
+//   trigger                   one character that opens the caller's picker ("@")
+//   panel                     true when the caller shows a panel for its nodes
+//   commands(schema, pm)      { name: command } merged into instance.commands
+//   inputRules(schema, pm)    [InputRule]
+//   keymap(schema, pm)        { key: command }, consulted before the base keys
+//   plugins(schema, pm)       [Plugin]
 
 const NO_CLASSES = new Proxy({}, { get: () => "" });
 
-export function createSchema(classes = NO_CLASSES) {
+// What a document from a richer editor keeps when this one lacks its
+// extension: the node survives load and save unchanged, its text stays
+// editable where it has text, and it is shown as what it is.
+const UNKNOWN = {
+  unknown_block: {
+    attrs: { original: { default: null } }, content: "block*", group: "block", defining: true,
+    toDOM: (node) => ["div", { "data-unknown-node": node.attrs.original?.type || "" }, 0],
+  },
+  unknown_text: {
+    attrs: { original: { default: null } }, content: "inline*", group: "block", defining: true,
+    toDOM: (node) => ["div", { "data-unknown-node": node.attrs.original?.type || "" }, 0],
+  },
+  unknown_inline: {
+    attrs: { original: { default: null } }, inline: true, group: "inline", atom: true,
+    toDOM: (node) => ["span", { "data-unknown-node": node.attrs.original?.type || "", contenteditable: "false" }, plainText(node.attrs.original) || "?"],
+  },
+};
+
+function plainText(json) {
+  if (!json) return "";
+  if (json.type === "text") return json.text || "";
+  return (json.content || []).map(plainText).join("");
+}
+
+export function createSchema(classes = NO_CLASSES, extensions = []) {
   const c = classes;
   const nodes = {
     doc: { content: "block+" },
@@ -61,11 +98,6 @@ export function createSchema(classes = NO_CLASSES) {
       content: "block+", group: "block", defining: true,
       parseDOM: [{ tag: "blockquote" }],
       toDOM: () => ["blockquote", { class: c.blockquote }, 0],
-    },
-    callout: {
-      attrs: { icon: { default: "💡" } }, content: "block+", group: "block", defining: true,
-      parseDOM: [{ tag: "aside[data-callout]", getAttrs: (dom) => ({ icon: dom.getAttribute("data-icon") || "💡" }) }],
-      toDOM: (node) => ["aside", { class: c.callout, "data-callout": "", "data-icon": node.attrs.icon }, ["span", { class: c.calloutIcon, contenteditable: "false" }, node.attrs.icon], ["div", { class: c.calloutBody }, 0]],
     },
     code_block: {
       attrs: { language: { default: "" } }, content: "text*", marks: "", group: "block", code: true, defining: true,
@@ -127,7 +159,58 @@ export function createSchema(classes = NO_CLASSES) {
     strike: { parseDOM: [{ tag: "s" }, { tag: "del" }, { style: "text-decoration=line-through" }], toDOM: () => ["s", 0] },
     code: { parseDOM: [{ tag: "code" }], toDOM: () => ["code", { class: c.code }, 0] },
   };
+  Object.assign(nodes, UNKNOWN);
+  for (const ext of extensions) {
+    for (const [name, spec] of Object.entries(ext.nodes || {})) {
+      if (nodes[name] || marks[name]) throw new Error(`editor extension "${ext.name}" redefines "${name}"`);
+      nodes[name] = spec;
+    }
+    for (const [name, spec] of Object.entries(ext.marks || {})) {
+      if (nodes[name] || marks[name]) throw new Error(`editor extension "${ext.name}" redefines "${name}"`);
+      marks[name] = spec;
+    }
+  }
   return new Schema({ nodes, marks });
+}
+
+/**
+ * A stored document as this schema can hold it: a node or mark the schema
+ * does not know becomes an `unknown_*` node carrying the original, so loading
+ * and saving a document never loses what another editor wrote.
+ */
+export function adoptDocument(schema, json) {
+  const known = (type) => Object.prototype.hasOwnProperty.call(schema.nodes, type) && !type.startsWith("unknown_");
+  const inlineType = (type) => known(type) && schema.nodes[type].isInline;
+  const adopt = (node, inline) => {
+    if (!node || typeof node !== "object") return null;
+    const marksKnown = (node.marks || []).every((m) => Object.prototype.hasOwnProperty.call(schema.marks, m.type));
+    if (known(node.type) && marksKnown) {
+      if (!node.content) return node;
+      const inner = schema.nodes[node.type].inlineContent;
+      return { ...node, content: node.content.map((child) => adopt(child, inner)).filter(Boolean) };
+    }
+    if (inline || inlineType(node.type) || node.type === "text") return { type: "unknown_inline", attrs: { original: node } };
+    const { content, ...original } = node;
+    const children = content || [];
+    if (children.some((child) => child.type === "text" || inlineType(child.type))) {
+      return { type: "unknown_text", attrs: { original }, content: children.map((child) => adopt(child, true)).filter(Boolean) };
+    }
+    return { type: "unknown_block", attrs: { original }, content: children.map((child) => adopt(child, false)).filter(Boolean) };
+  };
+  return adopt(json, false);
+}
+
+/** The inverse of `adoptDocument`: every `unknown_*` node back to what it was. */
+export function restoreDocument(json) {
+  if (!json || typeof json !== "object") return json;
+  if (json.type === "unknown_inline") return json.attrs.original;
+  const content = json.content ? json.content.map(restoreDocument) : undefined;
+  if (json.type === "unknown_text" || json.type === "unknown_block") {
+    const original = { ...json.attrs.original };
+    if (content && content.length) original.content = content;
+    return original;
+  }
+  return content ? { ...json, content } : json;
 }
 
 /** The document a fresh editor starts with. */
@@ -149,7 +232,6 @@ function buildCommands(schema) {
     heading: (level) => setBlockType(n.heading, { level }),
     codeBlock: setBlockType(n.code_block),
     blockquote: wrapIn(n.blockquote),
-    callout: wrapIn(n.callout),
     list: (kind) => wrapInList(listOf[kind]),
     lift,
     undo,
@@ -177,31 +259,90 @@ function buildCommands(schema) {
 
 // ── Plugins ──────────────────────────────────────────────────────────────────
 
-const slashKey = new PluginKey("zebSlash");
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Tracks a `/query` typed at the start of an empty-ish text block. */
-function slashPlugin(onSlash) {
+/**
+ * Tracks a trigger character and the query typed after it, from the caret
+ * back to the character (which must start the block or follow a space).
+ * `rules` is `[{ name, pattern }]`; the pattern's group 1 is the query.
+ */
+function triggerPlugin(name, rules, report) {
+  const key = new PluginKey(name);
   return new Plugin({
-    key: slashKey,
+    key,
     state: {
       init: () => null,
       apply(tr, prev, _old, state) {
         const { $from, empty } = state.selection;
         if (!empty || !$from.parent.isTextblock || $from.parent.type.spec.code) return null;
         const text = $from.parent.textBetween(0, $from.parentOffset, undefined, "￼");
-        const match = /(?:^|\s)\/([\w-]*)$/.exec(text);
-        if (!match) return null;
-        return { query: match[1], from: $from.pos - match[1].length - 1, to: $from.pos };
+        for (const rule of rules) {
+          const match = rule.pattern.exec(text);
+          if (match) return { name: rule.name, query: match[1], from: $from.pos - match[1].length - 1, to: $from.pos };
+        }
+        return null;
       },
     },
     view: () => ({
       update(view, prevState) {
-        const cur = slashKey.getState(view.state);
-        const prev = slashKey.getState(prevState);
+        const cur = key.getState(view.state);
+        const prev = key.getState(prevState);
         if (cur === prev) return;
-        if (!cur) { onSlash(null); return; }
+        if (!cur) { report(null); return; }
         const coords = view.coordsAtPos(cur.from);
-        onSlash({ query: cur.query, from: cur.from, to: cur.to, left: coords.left, top: coords.top, bottom: coords.bottom });
+        report({ ...cur, left: coords.left, top: coords.top, bottom: coords.bottom });
+      },
+    }),
+  });
+}
+
+/** Tracks a `/query` typed at the start of an empty-ish text block. */
+function slashPlugin(onSlash) {
+  return triggerPlugin("zebSlash", [{ name: "slash", pattern: /(?:^|\s)\/([\w-]*)$/ }], (state) => onSlash(state && { query: state.query, from: state.from, to: state.to, left: state.left, top: state.top, bottom: state.bottom }));
+}
+
+/** `@ada` and the like: an extension's trigger character, then a short query. */
+function extensionTriggerPlugin(extensions, onTrigger) {
+  const rules = extensions.filter((ext) => ext.trigger).map((ext) => {
+    const c = escapeRegExp(ext.trigger);
+    return { name: ext.name, pattern: new RegExp(`(?:^|\\s)${c}((?:[^\\s${c}][^${c}\\n]{0,39})?)$`) };
+  });
+  return rules.length ? triggerPlugin("zebTrigger", rules, onTrigger) : null;
+}
+
+/**
+ * Reports the innermost node around the selection that belongs to an
+ * extension with a panel (`ext.panel`), so the caller can edit its attrs.
+ */
+function nodePlugin(extensions, onNode) {
+  const owner = new Map();
+  for (const ext of extensions) {
+    if (!ext.panel) continue;
+    for (const type of Object.keys(ext.nodes || {})) owner.set(type, ext.name);
+  }
+  if (owner.size === 0) return null;
+  const find = (state) => {
+    const sel = state.selection;
+    if (sel instanceof NodeSelection && owner.has(sel.node.type.name)) return { node: sel.node, pos: sel.from };
+    const $from = sel.$from;
+    for (let depth = $from.depth; depth > 0; depth--) {
+      const node = $from.node(depth);
+      if (owner.has(node.type.name)) return { node, pos: $from.before(depth) };
+    }
+    return null;
+  };
+  let last = "";
+  return new Plugin({
+    view: () => ({
+      update(view) {
+        const found = find(view.state);
+        const sig = found ? `${found.pos}:${found.node.type.name}:${JSON.stringify(found.node.attrs)}` : "";
+        if (sig === last) return;
+        last = sig;
+        if (!found) { onNode(null); return; }
+        const dom = view.nodeDOM(found.pos);
+        const rect = dom && dom.getBoundingClientRect ? dom.getBoundingClientRect() : view.coordsAtPos(found.pos);
+        onNode({ extension: owner.get(found.node.type.name), type: found.node.type.name, pos: found.pos, attrs: found.node.attrs, left: rect.left, top: rect.top, bottom: rect.bottom });
       },
     }),
   });
@@ -441,44 +582,66 @@ function buildKeymap(schema, cmd) {
 
 // ── createEditor ─────────────────────────────────────────────────────────────
 
+/** The document to load: adopted into the schema, or empty when it cannot be. */
+function loadDocument(schema, json, onError) {
+  try {
+    return PMNode.fromJSON(schema, adoptDocument(schema, json || EMPTY_DOC));
+  } catch (err) {
+    onError(err);
+    return PMNode.fromJSON(schema, EMPTY_DOC);
+  }
+}
+
 /**
  * Mount an editor into `mount`. Returns the instance; the caller renders every
  * piece of UI from the callbacks and drives edits through `instance.exec`.
  *
- * options: { doc, classes, placeholder, editable, onChange(json), onSlash(state|null),
- *            onSelection(state|null), onFocus(bool), uploadImage(file) → src | { src, ref, alt } }
+ * options: { doc, classes, extensions, placeholder, editable, onChange(json),
+ *            onSlash(state|null), onTrigger(state|null), onNode(state|null),
+ *            onSelection(state|null), onFocus(bool), onError(err),
+ *            uploadImage(file) → src | { src, ref, alt } }
  */
 export function createEditor(mount, options = {}) {
   const classes = options.classes || NO_CLASSES;
-  const schema = createSchema(classes);
+  const extensions = options.extensions || [];
+  const schema = createSchema(classes, extensions);
   const cmd = buildCommands(schema);
+  for (const ext of extensions) {
+    for (const [name, command] of Object.entries(ext.commands ? ext.commands(schema, pm) : {})) {
+      if (cmd[name]) throw new Error(`editor extension "${ext.name}" redefines command "${name}"`);
+      cmd[name] = command;
+    }
+  }
   const noop = () => {};
   const onChange = options.onChange || noop;
   const onSlash = options.onSlash || noop;
   const onSelection = options.onSelection || noop;
   const onFocus = options.onFocus || noop;
+  const onError = options.onError || noop;
+  const toJSON = (doc) => restoreDocument(doc.toJSON());
 
-  let doc;
-  try {
-    doc = PMNode.fromJSON(schema, options.doc || EMPTY_DOC);
-  } catch (_err) {
-    doc = PMNode.fromJSON(schema, EMPTY_DOC);
-  }
+  const doc = loadDocument(schema, options.doc, onError);
 
+  const extensionRules = extensions.flatMap((ext) => (ext.inputRules ? ext.inputRules(schema, pm) : []));
   const plugins = [
+    ...(extensionRules.length ? [inputRules({ rules: extensionRules })] : []),
     buildInputRules(schema),
+    ...extensions.filter((ext) => ext.keymap).map((ext) => keymap(ext.keymap(schema, pm))),
     buildKeymap(schema, cmd),
     keymap(baseKeymap),
     history(),
     dropCursor({ class: classes.dropCursor || undefined }),
     gapCursor(),
     slashPlugin(onSlash),
+    extensionTriggerPlugin(extensions, options.onTrigger || noop),
+    nodePlugin(extensions, options.onNode || noop),
     selectionPlugin(onSelection),
     placeholderPlugin(options.placeholder || "", classes.placeholder),
     handlePlugin(classes.handle),
     todoPlugin(schema),
     imagePlugin(schema, options.uploadImage),
-  ];
+    ...extensions.flatMap((ext) => (ext.plugins ? ext.plugins(schema, pm) : [])),
+  ].filter(Boolean);
 
   const state = EditorState.create({ doc, plugins });
   let view;
@@ -489,7 +652,7 @@ export function createEditor(mount, options = {}) {
     dispatchTransaction(tr) {
       const next = view.state.apply(tr);
       view.updateState(next);
-      if (tr.docChanged) onChange(next.doc.toJSON());
+      if (tr.docChanged) onChange(toJSON(next.doc));
     },
     handleDOMEvents: {
       focus: () => { onFocus(true); return false; },
@@ -509,18 +672,52 @@ export function createEditor(mount, options = {}) {
   return {
     view,
     schema,
+    pm,
     commands: cmd,
     exec,
     focus: () => view.focus(),
-    getJSON: () => view.state.doc.toJSON(),
+    getJSON: () => toJSON(view.state.doc),
     setJSON(json) {
-      const next = EditorState.create({ doc: PMNode.fromJSON(schema, json || EMPTY_DOC), plugins });
-      view.updateState(next);
+      view.updateState(EditorState.create({ doc: loadDocument(schema, json, onError), plugins }));
     },
-    /** Remove the `/query` text the slash menu was opened with. */
+    /** Remove the `/query` (or trigger) text a menu was opened with. */
     deleteSlash(slash) {
       view.dispatch(view.state.tr.delete(slash.from, slash.to));
       view.focus();
+    },
+    /**
+     * Insert a node of `type` in place of `range` (default: the selection).
+     * An inline node is followed by a space; a node with inline content takes
+     * the caret inside it, so a figure's caption is typed straight away.
+     */
+    insertNode(type, attrs, range) {
+      const nodeType = schema.nodes[type];
+      if (!nodeType) throw new Error(`the editor has no node "${type}"`);
+      const node = nodeType.createAndFill(attrs || null);
+      if (!node) throw new Error(`"${type}" cannot be created empty`);
+      const from = range ? range.from : view.state.selection.from;
+      const to = range ? range.to : view.state.selection.to;
+      const tr = view.state.tr.replaceRangeWith(from, to, node);
+      if (node.isInline) tr.insertText(" ");
+      else if (node.inlineContent) {
+        const at = tr.mapping.map(from, -1);
+        let inside = null;
+        tr.doc.nodesBetween(at, Math.min(tr.doc.content.size, at + node.nodeSize + 2), (child, pos) => {
+          if (inside === null && child.type === nodeType) inside = pos + 1;
+          return inside === null;
+        });
+        if (inside !== null) tr.setSelection(TextSelection.create(tr.doc, inside));
+      }
+      view.dispatch(tr.scrollIntoView());
+      view.focus();
+      return true;
+    },
+    /** Change some attrs of the node at `pos`, keeping the rest. Does not take focus. */
+    setNodeAttrs(pos, attrs) {
+      const node = view.state.doc.nodeAt(pos);
+      if (!node) return false;
+      view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, ...attrs }));
+      return true;
     },
     /** Serialize to HTML in the browser (the schema's toDOM). */
     getHTML() {
@@ -534,15 +731,15 @@ export function createEditor(mount, options = {}) {
       div.innerHTML = html;
       const parsed = DOMParser.fromSchema(schema).parse(div);
       view.updateState(EditorState.create({ doc: parsed, plugins }));
-      onChange(parsed.toJSON());
+      onChange(toJSON(parsed));
     },
     destroy: () => view.destroy(),
   };
 }
 
 /** Parse an HTML string into a document JSON (browser only; the schema's parseDOM). */
-export function htmlToDocument(html, classes) {
-  const schema = createSchema(classes);
+export function htmlToDocument(html, classes, extensions = []) {
+  const schema = createSchema(classes, extensions);
   const div = document.createElement("div");
   div.innerHTML = html;
   return DOMParser.fromSchema(schema).parse(div).toJSON();

@@ -3,7 +3,7 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
-  "description": "ProseMirror editing engine (view 1.42, model 1.25) under zeb/ui/editor: Zebflow's block schema, createEditor with callbacks and no UI of its own, the ProseMirror packages as `pm` for custom editors.",
+  "description": "ProseMirror editing engine (view 1.42, model 1.25) under zeb/ui/editor: Zebflow's block schema composed with a caller's extensions, createEditor with callbacks and no UI of its own, unknown nodes kept on load and save, the ProseMirror packages as `pm` for custom editors.",
   "source": {
     "provider": "zebflow",
     "package": "prosemirror-view",
@@ -22,6 +22,8 @@
       "pm",
       "createSchema",
       "createEditor",
+      "adoptDocument",
+      "restoreDocument",
       "htmlToDocument",
       "EMPTY_DOC"
     ],

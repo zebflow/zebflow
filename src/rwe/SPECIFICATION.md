@@ -290,6 +290,13 @@ CompiledTemplate + vars (JSON)
              │       old nav scripts removed, new module scripts executed
              │     history.pushState, popstate handler, rwe:nav event
              │     Progress bar (#__rwe_nav_bar, --rwe-nav-color CSS variable)
+             ├── await import(<bundle>) for each zeb/* library the page imports
+             ├── markup-mounted libraries (zeb/potoru) the page does NOT import,
+             │     but whose `data-zeb-lib` placeholder is in the server HTML or
+             │     can be drawn by the client code: a MutationObserver that
+             │     import()s the bundle the first time a placeholder is in the
+             │     DOM (not awaited; never on a page without one; a project
+             │     library list must include it)
              ├── base64-encode page module → data: URL import
              └── hydrate(<Page>, #__rwe_root)
 ```
@@ -350,6 +357,7 @@ static JS_CHANNEL: LazyLock<UnboundedSender<JsRequest>>
 | List rendering `.map((x) => <Item/>)` | Standard JSX patterns | ✅ |
 | Event handlers `onClick`, `onInput`, etc. | Standard JSX events | ✅ |
 | `onChange` on `<input>` / `<textarea>` | Every input event, as React (checkbox, radio, file, `<select>`: native `change`) | ✅ |
+| `autoFocus` | Focused once when the element mounts after load (in place or in a portal), as React; server markup keeps the native attribute and hydration leaves focus alone | ✅ |
 | Zeb React runtime | Developer imports the public API from `zeb` | ✅ |
 
 ---

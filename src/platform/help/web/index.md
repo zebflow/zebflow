@@ -193,6 +193,7 @@ imported with `@/scripts/<name>`; see `help("web/custom-scripts")`.
 
 - `help("web/hooks")` — everything `zeb/react` exports; `usePageState`, `useRouter`, `Link`, `cx`
 - `help("web/ui")` — zeb/ui: the shadcn component set, the editor, clone-to-own
+- `help("web/editor")` — rich text: the editor's extensions (callout, table, figure, embed, mention, citation), writing your own, server-rendered HTML
 - `help("web/tailwind")` — the Tailwind subset, theme tokens, `tw-variants`
 - `help("web/libraries")` — `zeb/*` runtime libraries: d3, deckgl, codemirror, markdown, pdf, prosemirror, threejs, graphui, livegeo
 - `help("web/custom-scripts")` — `.ts` modules and the compiler's refusals

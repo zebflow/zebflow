@@ -1,20 +1,30 @@
 {
   "package": "zeb/prosemirror",
-  "version": "0.2",
+  "version": "0.3",
   "raw": {
     "createEditor": {
       "kind": "function",
       "signature": "(mount: HTMLElement, options?) => EditorInstance",
-      "description": "Mount an editor. options: doc, classes, placeholder, editable, onChange(json), onSlash(state|null), onSelection(state|null), onFocus(bool), uploadImage(file). Instance: view, schema, commands, exec, applySlash, getJSON, setJSON, getHTML, setHTML, focus, destroy."
+      "description": "Mount an editor. options: doc, classes, extensions, placeholder, editable, onChange(json), onSlash(state|null), onTrigger(state|null), onNode(state|null), onSelection(state|null), onFocus(bool), onError(err), uploadImage(file). Instance: view, schema, pm, commands, exec, insertNode, setNodeAttrs, deleteSlash, getJSON, setJSON, getHTML, setHTML, focus, destroy."
     },
     "createSchema": {
       "kind": "function",
-      "signature": "(classes?) => Schema",
-      "description": "Zebflow's block schema: paragraph, heading 1-3, blockquote, callout, code_block, horizontal_rule, image, bullet/ordered/todo lists; marks bold, italic, underline, strike, code, link."
+      "signature": "(classes?, extensions?) => Schema",
+      "description": "Zebflow's block schema: paragraph, heading 1-3, blockquote, code_block, horizontal_rule, image, bullet/ordered/todo lists; marks bold, italic, underline, strike, code, link; unknown_block/unknown_text/unknown_inline keepers; then each extension's nodes and marks (a name defined twice is an error)."
+    },
+    "adoptDocument": {
+      "kind": "function",
+      "signature": "(schema, json) => DocumentJSON",
+      "description": "A stored document as the schema can hold it: nodes and marks it does not know become unknown_* nodes carrying the original."
+    },
+    "restoreDocument": {
+      "kind": "function",
+      "signature": "(json) => DocumentJSON",
+      "description": "The inverse of adoptDocument: every unknown_* node back to what it was."
     },
     "htmlToDocument": {
       "kind": "function",
-      "signature": "(html: string, classes?) => DocumentJSON",
+      "signature": "(html: string, classes?, extensions?) => DocumentJSON",
       "description": "Parse an HTML body into a document through the schema (browser only)."
     },
     "EMPTY_DOC": {

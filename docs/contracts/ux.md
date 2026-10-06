@@ -83,6 +83,8 @@ without an output or a verify simply has none — it does not invent one.
    the home page's *Hidden projects* (`project.md` § Home listing).
 10. **A text field's `onChange` is per keystroke** (React's meaning). Nothing
     is saved from it; saving belongs to `onBlur`, a form submit or a button.
+11. **A field that opens for typing has the caret.** A search box in a menu,
+    a link box in a toolbar: `autoFocus`, which focuses it when it appears.
 
 ## 6. Not covered
 

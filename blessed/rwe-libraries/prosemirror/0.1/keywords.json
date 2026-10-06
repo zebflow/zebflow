@@ -14,5 +14,11 @@
   "block editor",
   "notion",
   "createEditor",
-  "slash menu"
+  "slash menu",
+  "extensions",
+  "mention",
+  "citation",
+  "table",
+  "figure",
+  "embed"
 ]

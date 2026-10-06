@@ -494,6 +494,11 @@
           for (const option of dom.options) option.selected = props.value.some(v => String(v) === option.value);
         } else setProperty(dom, 'value', props.value, previous.value, svg, false);
       }
+      // React's autoFocus: focused once, when the element mounts. Browsers honor
+      // the attribute only while a page loads, so a field that appears later
+      // (a portal, a step, a menu) must be focused here, after it is attached.
+      // Server markup already had the attribute at load; hydration leaves focus alone.
+      if (fresh && !hydration && props.autoFocus) instance.root.refs.push({ owner: instance, attach: () => { if (dom.isConnected) dom.focus(); } });
       if (previous.ref !== props.ref) {
         if (previous.ref) instance.root.refs.push({ owner: instance, attach: () => setRef(previous.ref, null) });
         if (props.ref) instance.root.refs.push({ owner: instance, attach: () => setRef(props.ref, dom) });

@@ -16,3 +16,9 @@ mod worker_wedge;
 mod theme_tokens;
 #[path = "rwe/zeb_ui.rs"]
 mod zeb_ui;
+#[path = "rwe/zeb_ui_editor.rs"]
+mod zeb_ui_editor;
+#[path = "rwe/zeb_ui_editor_sources.rs"]
+mod zeb_ui_editor_sources;
+#[path = "rwe/zeb_ui_editor_components.rs"]
+mod zeb_ui_editor_components;
