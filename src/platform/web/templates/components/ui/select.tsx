@@ -21,9 +21,14 @@ export function Select(props) {
     }
   }, [props?.value]);
 
-  // Walk children (may be nested arrays from .map()), inject selected
+  // Walk children (may be nested arrays from .map()), inject selected.
+  // Only a select given a `value` is controlled: with none, every option
+  // marked not-selected leaves the box blank (selectedIndex -1), and a
+  // `required` one then refuses its form. Uncontrolled keeps the browser's
+  // default, the first option.
   function withSelected(children: any): any {
     if (children == null) return null;
+    if (props?.value == null) return children;
     if (Array.isArray(children)) return children.map(withSelected);
     if (typeof children === "object" && children.props) {
       const val = String(children.props.value ?? "");
@@ -58,7 +63,9 @@ export function Select(props) {
         name={props?.name}
         required={Boolean(props?.required)}
         disabled={Boolean(props?.disabled)}
-        value={props?.value}
+        // An absent value is left out, not passed as undefined: the runtime
+        // writes `select.value = ""` for that, which blanks the box too.
+        {...(props?.value != null ? { value: props.value } : {})}
         onChange={props?.onChange}
         className="flex h-9 w-full appearance-none rounded-md border border-border bg-popover text-foreground px-3 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 pr-8"
       >
@@ -75,7 +82,7 @@ export function Select(props) {
 
 export function SelectOption(props) {
   return (
-    <option value={props?.value} selected={Boolean(props?.selected)}>
+    <option value={props?.value} {...(props?.selected ? { selected: true } : {})}>
       {props.label}
       {props.children}
     </option>

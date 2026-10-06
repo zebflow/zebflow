@@ -1896,9 +1896,17 @@ impl ProjectService {
                 &page_pipeline,
             ),
         ] {
-            if layout.repo_dir.join(file).exists() {
+            // Registered is what counts, not present: a first boot that stopped
+            // after writing the file but before its row was kept leaves the
+            // file behind, and skipping it then left a sample nothing lists.
+            if self.get_pipeline_meta_by_file_id(&owner, &project, file)?.is_some() {
                 continue;
             }
+            // A file already there is registered as it stands, never replaced.
+            let source = match fs::read_to_string(layout.repo_dir.join(file)) {
+                Ok(existing) => existing,
+                Err(_) => serde_json::to_string_pretty(source).unwrap_or_default(),
+            };
             self.upsert_pipeline_definition(
                 &owner,
                 &project,
@@ -1906,7 +1914,7 @@ impl ProjectService {
                 title,
                 description,
                 trigger,
-                &serde_json::to_string_pretty(source).unwrap_or_default(),
+                &source,
             )?;
         }
         Ok(())
@@ -3606,6 +3614,29 @@ mod tests {
     /// repository root is as legal as one inside `docs/`. Before this there was
     /// no surface that could write one: templates were anchored at the source
     /// root and docs at the docs root, and neither could address `repo/`.
+    #[test]
+    fn a_sample_left_on_disk_without_its_row_is_registered_as_it_stands() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        // A first boot that wrote the file but whose row was not kept.
+        svc.write_starter_files("superadmin", "default").expect("first starter files");
+        let layout = svc.file.ensure_project_layout("superadmin", "default").expect("layout");
+        let path = layout.repo_dir.join("sample_api_pipeline.zf.json");
+        let kept = fs::read_to_string(&path).expect("sample written");
+        svc.data
+            .delete_pipeline_meta("superadmin", "default", "sample_api_pipeline.zf.json")
+            .expect("drop the row");
+        assert!(svc.get_pipeline_meta_by_file_id("superadmin", "default", "sample_api_pipeline.zf.json").unwrap().is_none());
+
+        svc.write_starter_files("superadmin", "default").expect("second starter files");
+        assert!(
+            svc.get_pipeline_meta_by_file_id("superadmin", "default", "sample_api_pipeline.zf.json").unwrap().is_some(),
+            "the sample is listed again"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), kept, "the file on disk is registered, not replaced");
+    }
+
     #[test]
     fn any_allowed_file_may_be_written_at_any_path_under_the_repository() {
         let tmp = tempfile::tempdir().expect("temp dir");
