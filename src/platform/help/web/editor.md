@@ -17,6 +17,9 @@ import { EXTENSIONS } from "@/shared/editor/extensions/index";
 <DocumentView doc={doc} extensions={EXTENSIONS} />        // elements — server-rendered
 renderDocumentHtml(doc, { extensions: EXTENSIONS })      // the same bytes as a string
 documentText(doc, { extensions: EXTENSIONS })            // plain text, for a teaser or search
+
+import { DocumentHtml } from "zeb/ui/editor-html";
+<DocumentHtml html={row.body_html} />                    // stored HTML, sanitized again — see "Stored HTML"
 ```
 
 The basics of the editor itself (slash menu, Markdown shortcuts, image
@@ -386,8 +389,82 @@ alike — passes one allowlist (`zeb/ui/editor-extension`):
 - Text is always escaped. A stored document can describe anything; it
   cannot make the page run anything.
 
-Store the JSON, never HTML a browser sent. Render on the server from the
-JSON, with the extension list.
+The JSON is the source of truth. HTML a browser sent may be stored beside
+it, but is only ever shown through `<DocumentHtml>`, which applies this
+allowlist again — see "Stored HTML".
+
+---
+
+## Stored HTML
+
+A project may keep the rendered HTML next to the JSON, in a `body_html`
+column: a page then shows a document without the extension list, a search
+index or a feed reads it, and nothing renders the JSON on every request.
+The JSON stays the source of truth — it is what the editor opens.
+
+**Saving.** The editor page renders the HTML when it saves and sends both;
+the save pipeline stores both, unchanged, in a table made once:
+
+```sql
+CREATE TABLE posts (_key TEXT PRIMARY KEY, body JSON, body_html TEXT)
+```
+
+```tsx
+import { renderDocumentHtml } from "zeb/ui/editor-render";
+import { EXTENSIONS } from "@/shared/editor/extensions/index";
+
+async function save() {
+  const body_html = renderDocumentHtml(doc, { extensions: EXTENSIONS });
+  await fetch("/posts/save", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, doc, body_html }) });
+}
+```
+
+```
+| trigger.webhook --route /posts/save --method POST --auth jwt
+| sekejap.query.run --write --param "1={{ input.webhook.body.key }}" --param "2={{ input.webhook.body.doc }}" --param "3={{ input.webhook.body.body_html }}" -- "INSERT INTO posts (_key, body, body_html) VALUES ($1, $2, $3)"
+| web.response.send --body "{{ { ok: true } }}"
+```
+
+**Showing.** The page reads the row and hands the string to
+`<DocumentHtml>`:
+
+```
+| trigger.webhook --route /posts/:key --method GET
+| sekejap.query.run --param "1={{ input.webhook.params.key }}" -- "SELECT body_html FROM posts WHERE _key = $1"
+| web.response.send --template pages/post.tsx
+```
+
+```tsx
+import { DocumentHtml } from "zeb/ui/editor-html";
+export default function Post(input) {
+  const row = input.query.rows[0];
+  return <article><DocumentHtml html={row && row.body_html} /></article>;
+}
+```
+
+**Why the server need not trust it.** `<DocumentHtml>` never sets the
+string as HTML. It parses it and rebuilds every element through the same
+allowlist `renderDocumentHtml` uses (see "Safety"), on the server and again
+in the browser — the same tree from the same string, so hydration matches.
+A row someone tampered with still cannot put a script, a style, an `on…`
+handler, an iframe or a `javascript:` link on the page. HTML that
+`renderDocumentHtml` wrote shows exactly as `<DocumentView>` shows its
+document, byte for byte.
+
+**Blocks.** A block whose library mounts from its markup — the story block's
+player — is in the server HTML, so the page loads that library only when
+such a block is there, and the player hydrates as it does under
+`<DocumentView>`. A block drawn by a component that needs its own event
+handlers on the page is markup only in stored HTML; show that document with
+`<DocumentView doc>` instead.
+
+This is the one door for document HTML. `dangerouslySetInnerHTML` stays
+refused on every page (`RWE_SECURITY_RAW_HTML`).
+
+When the extension list changes, stored HTML still shows what it showed
+when it was saved; render it again from the JSON (`renderDocumentHtml` in a
+page that saves, or open and save in the editor) to refresh it.
 
 ---
 
@@ -412,9 +489,14 @@ richer editor, or by an extension since removed. It is never dropped:
 - `node --test tests/rwe/runtime/editor.test.mjs` — the engine: schema
   composition, JSON round trip, table commands, component props and output
   sanitizing, story libraries.
-- `cd tests/e2e && npx playwright test editor-extensions editor-components editor-potoru` —
+- `node --test tests/rwe/runtime/editor-html.test.mjs` — `<DocumentHtml>`:
+  stored HTML shown byte for byte, a tampered row sanitized, the same tree
+  every time.
+- `cd tests/e2e && npx playwright test editor-extensions editor-components editor-potoru editor-html` —
   type, insert a figure, mention two kinds and link a document through
   routes, save the JSON, render the page; a component-drawn node edited
   through its own control and hydrated on the page; insert a story, add a
   library, preview it, and play it on the rendered page with both
-  libraries.
+  libraries; save a document's HTML beside its JSON in a table and show it
+  with `<DocumentHtml>`, the story's player hydrating and a tampered row
+  running nothing.

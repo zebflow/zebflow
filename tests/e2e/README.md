@@ -52,6 +52,12 @@ Credentials default to `superadmin` / `admin123` and can be overridden with
   `component`, the server's bytes equal the browser's `renderDocumentHtml`,
   and the page hydrates it (its click handler runs).
 
+- `specs/editor-html.spec.ts` — stored document HTML: the editor saves a
+  document with a figure and a Potoru story, and its `renderDocumentHtml`
+  beside the JSON, in a table; a page shows the stored HTML with
+  `<DocumentHtml>` — the server's bytes are what the editor rendered, the
+  player hydrates and plays — and a tampered row runs nothing.
+
 The lifecycle spec creates a real project and deletes it in `afterAll`, so a
 failed run leaves nothing behind.
 

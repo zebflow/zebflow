@@ -6,6 +6,7 @@ import CardContent from "@/components/ui/card-content";
 import CardFooter from "@/components/ui/card-footer";
 import Badge from "@/components/ui/badge";
 import Alert from "@/components/ui/alert";
+import MigrationNotice from "@/components/ui/migration-notice";
 import Button from "@/components/ui/button";
 import { StudioTable, StudioThead, StudioTh, StudioTd } from "@/components/ui/studio-data-table";
 import { Markdown } from "zeb/markdown";
@@ -110,6 +111,15 @@ export default function DataSection() {
           <Alert variant="warning">The signing key was regenerated; existing sessions are invalid.</Alert>
           <Alert variant="error">FW_NODE_SQLITE_QUERY_RUN: NOT NULL constraint failed: members.name</Alert>
         </div>
+      </Entry>
+
+      <Entry
+        name="MigrationNotice"
+        file="migration-notice.tsx"
+        description="A project the 0.11 migration at server start left for its owner, on the home and the project's dashboard. Links to the plan; renders nothing without a notice."
+        code={`<MigrationNotice notice={item.migration} />`}
+      >
+        <MigrationNotice notice={{ items: 3, plan_href: "/api/projects/demo/site-a/migration/0.11/plan?format=markdown" }} />
       </Entry>
 
       <Entry

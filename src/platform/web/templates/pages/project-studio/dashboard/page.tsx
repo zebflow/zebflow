@@ -2,6 +2,7 @@ import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { initDashboardBehavior } from "@/pages/project-studio/dashboard/dashboard-behavior";
 import { Link } from "zeb/react";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
+import MigrationNotice from "@/components/ui/migration-notice";
 
 export const page = {
   html: {
@@ -50,6 +51,7 @@ export default function Page(input) {
                 </div>
                 <span data-dash-status className="project-inline-chip"></span>
               </div>
+              <MigrationNotice notice={input?.migration} className="mt-3" />
             </section>
 
             <div

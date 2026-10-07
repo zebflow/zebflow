@@ -22,3 +22,5 @@ mod zeb_ui_editor;
 mod zeb_ui_editor_sources;
 #[path = "rwe/zeb_ui_editor_components.rs"]
 mod zeb_ui_editor_components;
+#[path = "rwe/zeb_ui_editor_html.rs"]
+mod zeb_ui_editor_html;

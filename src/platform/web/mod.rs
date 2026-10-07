@@ -1371,6 +1371,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         mcp_failures: Arc::new(published_mcp::FailureLimiter::default()),
     };
 
+    // An office upgraded from 0.10 migrates what it can before it serves a
+    // request; anything it cannot is logged and shown, never left silent.
+    migration::migrate_projects_at_start(&app_state).await;
+
     if app_state.platform.cluster_bootstrap.is_worker() {
         tokio::spawn(cluster_worker_registration_loop(app_state.clone()));
     }
@@ -3376,6 +3380,9 @@ fn home_project_card_json(
         "office_label": office_label,
         "office_url": office_url,
         "hidden": item.hidden,
+        // The 0.11 migration the startup left for the owner: "needs
+        // migration — N items to review", linking to the plan.
+        "migration": state.platform.migration_notices.get(&item_owner, &item.project),
         // Hiding is a project setting; the card menu offers it to whoever may
         // change this project's settings, and to no one else.
         "home_api": state
@@ -5849,7 +5856,11 @@ async fn project_dashboard_page(
                 "nav": nav,
                 "api": {
                     "system_info": "/api/system/info"
-                }
+                },
+                // Planned again here, so an owner who finished the migration
+                // by hand sees the notice go.
+                "migration": crate::platform::services::migration::MigrationService::new(state.platform.clone())
+                    .refresh_notice(&owner, &project),
             });
             match render_page(&state, "platform-project-dashboard", &route, input) {
                 Ok(html) => Html(html).into_response(),

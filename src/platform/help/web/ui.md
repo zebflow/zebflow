@@ -67,6 +67,7 @@ async function uploadImage(file) {
 <Editor value={doc} onChange={setDoc} uploadImage={uploadImage} placeholder="Write…" />
 <DocumentView doc={doc} />                  // elements, on the server too
 renderDocumentHtml(doc)                     // the HTML string for a body_html column
+<DocumentHtml html={row.body_html} />       // that string on a page, sanitized again (zeb/ui/editor-html)
 documentText(doc).slice(0, 160)             // a teaser
 ```
 

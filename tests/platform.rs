@@ -22,3 +22,5 @@ mod page_privacy;
 mod webhook_routes;
 #[path = "platform/home_hidden.rs"]
 mod home_hidden;
+#[path = "platform/migration_startup.rs"]
+mod migration_startup;

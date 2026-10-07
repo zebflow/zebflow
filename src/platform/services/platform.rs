@@ -106,6 +106,8 @@ pub struct PlatformService {
     pub hub: Arc<HubService>,
     /// Read/write service for per-project `repo/zeb.lock`.
     pub dependency_lock: Arc<DependencyLockService>,
+    /// Projects the 0.11 migration at startup left for their owner.
+    pub migration_notices: Arc<crate::platform::services::migration::MigrationNotices>,
 }
 
 impl PlatformService {
@@ -342,6 +344,7 @@ impl PlatformService {
             fonts,
             hub,
             dependency_lock,
+            migration_notices: Arc::new(Default::default()),
         };
         svc.bootstrap_local_office()?;
         // Role does not change what an office is made of. `offices.md` §4 keeps

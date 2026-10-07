@@ -14,6 +14,8 @@
 //! - [`MigrationService::apply_plan`] — that plan applied: pipelines off,
 //!   archived, replaced, on again; pages archived and replaced; a record in
 //!   `archive/0.10/MIGRATION.md`. Idempotent.
+//! - [`startup`] — the same apply at server start, for a project whose plan
+//!   is ready and holds nothing to review; any other is logged and noticed.
 //!
 //! The 0.10 behaviour modelled is the `v0.10.12` release's (what the offices
 //! run). The table of kinds is in [`kinds`].
@@ -29,6 +31,7 @@ pub mod plan;
 mod refs;
 mod report;
 mod service;
+pub mod startup;
 
 #[cfg(test)]
 mod tests;
@@ -39,6 +42,7 @@ pub use page::{PageContext, PageRewrite, Renderer, rewrite_page};
 pub use pipeline::{Item, Rewrite, is_old_document, rewrite_pipeline};
 pub use plan::{ARCHIVE_PREFIX, Checked, FileKind, PageSource, PipelineSource, Plan, PlanFile, PlanInputs, Status, plan_sources};
 pub use service::{ApplyReport, JOURNAL_FILE, MigrationService, PipelineSwitch, REPORT_FILE};
+pub use startup::{MigrationNotices, Notice, StartupOutcome};
 
 use graph::OldOutput;
 

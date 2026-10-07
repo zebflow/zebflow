@@ -851,8 +851,9 @@ impl ZebflowMcpHandler {
         description = "Plan moving this project from 0.10 to 0.11 — reads only. Every 0.10 pipeline rewritten for the 0.11 \
                        kinds, flags and answers and put through the save-time check, and every page a 0.10 pipeline renders \
                        rewritten for the payload it now receives: per file the changes, a diff, the check, behaviour notes \
-                       and what could not be mapped. Answers a fingerprint for migration_apply. Only for a session the \
-                       project's owner created."
+                       and what could not be mapped. Answers a fingerprint for migration_apply. A plan that is ready and holds \
+                       no review item was already applied when the server started; this is for the rest. Only for a \
+                       session the project's owner created."
     )]
     async fn migration_plan(
         &self,

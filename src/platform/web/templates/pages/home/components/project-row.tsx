@@ -1,5 +1,6 @@
 import { Link } from "zeb/react";
 import Button from "@/components/ui/button";
+import MigrationNotice from "@/components/ui/migration-notice";
 import ProjectRowMenu from "@/pages/home/components/project-row-menu";
 
 /**
@@ -20,6 +21,7 @@ export default function ProjectRow({ item, remote, onOpenRemote }) {
           {item?.owner}/{item?.project}
           {remote && item?.office_label ? ` · ${item.office_label}` : ""}
         </p>
+        <MigrationNotice notice={item?.migration} className="mt-1 px-2 py-0.5 text-[12px]" />
       </div>
       <div className="flex shrink-0 gap-2">
         {remote ? (

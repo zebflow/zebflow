@@ -108,6 +108,7 @@ Guards: `tests/rwe/zeb_ui.rs` — run `cargo test --test rwe zeb_ui`.
 | code-block.tsx | CodeBlock, tokenize |
 | editor.tsx | Editor |
 | editor-render.tsx | DocumentView, renderDocumentHtml, documentText, EDITOR_CLASSES |
+| editor-html.tsx | DocumentHtml, parseDocumentHtml |
 | editor-extension.tsx | defineExtension, composeExtensions, routeSearch, safeHref, sanitizeAttrs, sanitizeTag, readAttrPath, writeAttrPath |
 | editor-picker.tsx | EditorPicker, editorMenuPlacement |
 | editor-panel.tsx | EditorNodePanel |
@@ -126,6 +127,8 @@ The `editor-extension` and `editor-component` files and the extension files
 are plain JavaScript (no JSX): the server renderer, the browser and the
 ProseMirror engine load the same object, and
 `node --test tests/rwe/runtime/editor.test.mjs` loads them unchanged (with the
-real `zeb/react` runtime). `editor-component` is how an extension's
+real `zeb/react` runtime). `editor-html` shows stored document HTML: parsed and
+rebuilt through the same allowlist, never set as HTML
+(`node --test tests/rwe/runtime/editor-html.test.mjs`). `editor-component` is how an extension's
 `component` / `editComponent` are drawn: through the document allowlist on the
 page, as a live node view in the editor. Guide: `help("web/editor")`.

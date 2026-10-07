@@ -5,6 +5,10 @@
 //! - `POST /api/projects/{owner}/{project}/migration/0.11/apply` with
 //!   `{ "fingerprint": "<the plan's>" }` — applies that plan; refused when
 //!   the project changed since, or the plan is not ready.
+//!
+//! And at server start, [`migrate_projects_at_start`]: the same apply for
+//! every project this office holds whose plan is ready and holds nothing to
+//! review; every other project with 0.10 files left is logged and noticed.
 
 use async_trait::async_trait;
 use axum::Json;
@@ -24,7 +28,7 @@ use crate::infra::ws_client::WsClientManager;
 use crate::platform::services::PlatformService;
 use crate::platform::error::PlatformError;
 use crate::platform::model::ProjectCapability;
-use crate::platform::services::migration::{MigrationService, PipelineSwitch};
+use crate::platform::services::migration::{MigrationService, PipelineSwitch, StartupOutcome};
 
 /// Activation as the pipeline API does it: the runtime registry, the
 /// schedules, subscriptions and socket clients, and the lifecycle hooks.
@@ -128,5 +132,47 @@ pub async fn api_migration_apply(
         )
             .into_response(),
         Err(err) => internal_error(err),
+    }
+}
+
+/// The 0.11 migration as part of an upgrade (`services/migration/startup.rs`),
+/// over every project this office holds — any role: a project placed on
+/// another office is that office's to migrate at its own start. Runs after
+/// the pipeline switch is attached and before the first request.
+pub async fn migrate_projects_at_start(state: &PlatformAppState) {
+    let platform = &state.platform;
+    let mut projects = std::collections::BTreeSet::new();
+    for user in platform.users.list_users().unwrap_or_default() {
+        for item in platform.data.list_projects(&user.owner).unwrap_or_default() {
+            projects.insert((item.owner, item.project));
+        }
+    }
+    let service = MigrationService::new(platform.clone());
+    let (mut applied, mut named) = (0usize, 0usize);
+    for (owner, project) in projects {
+        if matches!(super::remote_project_worker_id(state, &owner, &project), Ok(Some(_))) {
+            continue;
+        }
+        match service.migrate_at_start(&owner, &project).await {
+            Ok(StartupOutcome::Nothing) => {}
+            Ok(StartupOutcome::Applied(report)) => {
+                applied += 1;
+                println!(
+                    "✅ 0.11 migration applied: {owner}/{project} — {} step(s); the record is archive/0.10/MIGRATION.md",
+                    report.done.len()
+                );
+            }
+            Ok(StartupOutcome::Named(notice)) => {
+                named += 1;
+                eprintln!("⚠️  {}", notice.line);
+            }
+            Err(err) => {
+                named += 1;
+                eprintln!("⚠️  0.11 migration could not be planned: {owner}/{project} — {}: {}", err.code, err.message);
+            }
+        }
+    }
+    if applied + named > 0 {
+        println!("0.11 migration at start: {applied} project(s) migrated, {named} left for their owner");
     }
 }

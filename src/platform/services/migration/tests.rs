@@ -304,7 +304,7 @@ fn a_webhook_without_a_response_answers_204_and_is_left_for_review() {
     assert_eq!(out.review[0].node, "pong");
     assert_eq!(
         out.review[0].text,
-        "0.10 answered the run's value here (`pong`'s answer, which replaced the payload); 0.11 answers 204 — add web.response.send with what the caller needs (the payload's keys: `script`, `webhook`)"
+        "this webhook answered its payload in 0.10; in 0.11 it answers 204 until it ends with web.response.send (0.10's caller received `pong`'s answer, which replaced the payload; the payload's keys: `script`, `webhook`)"
     );
 
     // A last node that added its key and kept the rest: the value was the
@@ -315,7 +315,7 @@ fn a_webhook_without_a_response_answers_204_and_is_left_for_review() {
     ]));
     assert_eq!(kept.review.len(), 1, "{:#?}", kept.review);
     assert!(
-        kept.review[0].text.starts_with("0.10 answered the run's value here (the payload this path carried); 0.11 answers 204"),
+        kept.review[0].text.starts_with("this webhook answered its payload in 0.10; in 0.11 it answers 204 until it ends with web.response.send (0.10's caller received the payload this path carried;"),
         "{:#?}",
         kept.review
     );

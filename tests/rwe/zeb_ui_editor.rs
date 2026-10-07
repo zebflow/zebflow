@@ -55,6 +55,11 @@ pub(super) fn render(page: &str, extra: &[(&str, &str)]) -> String {
 
 /// [`render`], plus the page's client script — what the browser runs.
 pub(super) fn render_with_script(page: &str, extra: &[(&str, &str)]) -> (String, String) {
+    render_with_input(page, extra, json!({}))
+}
+
+/// [`render_with_script`] with the page's `input` (what a pipeline hands it).
+pub(super) fn render_with_input(page: &str, extra: &[(&str, &str)], input: serde_json::Value) -> (String, String) {
     let tmp = tempfile::Builder::new().prefix("zeb-ui-editor-").tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     std::fs::create_dir_all(root.join("shared/editor/extensions")).unwrap();
@@ -83,7 +88,7 @@ pub(super) fn render_with_script(page: &str, extra: &[(&str, &str)]) -> (String,
     let rendered = engine
         .render(
             &compiled,
-            json!({}),
+            input,
             &language,
             &RenderContext { route: "/doc".to_string(), request_id: "req-doc".to_string(), metadata: json!({}), enabled_libraries: Vec::new() },
         )

@@ -52,6 +52,10 @@ impl MigrationService {
         Self { platform }
     }
 
+    pub(super) fn platform(&self) -> &PlatformService {
+        &self.platform
+    }
+
     fn read_text(&self, owner: &str, project: &str, repo_path: &str) -> Option<String> {
         self.platform.projects.read_repo_file_text(owner, project, repo_path).ok()
     }
@@ -256,6 +260,9 @@ impl MigrationService {
             });
             record.push_str(&report::apply_markdown(&plan, &done, &failed, &at));
             projects.write_repo_file(owner, project, REPORT_FILE, &record)?;
+        }
+        if failed.is_empty() {
+            self.platform.migration_notices.clear(owner, project);
         }
         Ok(ApplyReport { fingerprint: plan.fingerprint, ok: failed.is_empty(), done, failed })
     }

@@ -1,6 +1,7 @@
 import { useState } from "zeb/react";
 import { Editor } from "zeb/ui/editor";
 import { DocumentView, renderDocumentHtml } from "zeb/ui/editor-render";
+import { DocumentHtml } from "zeb/ui/editor-html";
 import { CodeBlock } from "zeb/ui/code-block";
 import { SectionHeading, Entry } from "@/pages/dev/design-system/components/gallery";
 
@@ -17,6 +18,9 @@ const SAMPLE = {
     { type: "code_block", attrs: { language: "tsx" }, content: [{ type: "text", text: 'import { Editor } from "zeb/ui/editor";\n\n<Editor value={doc} onChange={setDoc} />' }] },
   ],
 };
+
+// A stored row someone tampered with: DocumentHtml shows the text and nothing that runs.
+const TAMPERED = '<p onclick="alert(1)" style="color:red">Stored text</p><a href="javascript:alert(2)">a link</a><iframe src="https://example.com"></iframe>';
 
 export default function ZebUiEditorSection() {
   const [doc, setDoc] = useState(SAMPLE);
@@ -52,6 +56,23 @@ renderDocumentHtml(doc)               // or store body_html`}
         <div className="mt-6 grid gap-4 lg:grid-cols-2">
           <CodeBlock language="json" title="doc (what you store)" maxHeight="16rem" code={JSON.stringify(doc, null, 2)} />
           <CodeBlock language="tsx" title="renderDocumentHtml(doc)" maxHeight="16rem" code={renderDocumentHtml(doc)} />
+        </div>
+      </Entry>
+      <Entry
+        name="DocumentHtml"
+        file="zeb/ui/editor-html"
+        description="Stored document HTML on a page: the body_html a save stored beside the JSON, parsed and rebuilt through the document allowlist on the server and in the browser — never set as HTML. Left: the editor's document, stored and shown again. Right: a tampered row."
+        code={`import { DocumentHtml } from "zeb/ui/editor-html";
+
+<DocumentHtml html={row.body_html} />`}
+      >
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="rounded-lg border border-dashed border-border p-4">
+            <DocumentHtml html={renderDocumentHtml(doc)} />
+          </div>
+          <div className="rounded-lg border border-dashed border-border p-4">
+            <DocumentHtml html={TAMPERED} />
+          </div>
         </div>
       </Entry>
     </div>

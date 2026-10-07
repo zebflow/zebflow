@@ -62,7 +62,8 @@ destructive actions behind `AlertDialog`.
 
 Rich text is `Editor` from `zeb/ui/editor` with `DocumentView` /
 `renderDocumentHtml` from `zeb/ui/editor-render` — the JSON document is what
-you store (`zebflow-files-editor`). Extra blocks (callout, table, figure,
+you store (`zebflow-files-editor`); stored HTML is shown with `DocumentHtml`
+from `zeb/ui/editor-html`, which sanitizes it again. Extra blocks (callout, table, figure,
 embed, mention, reference, citation, Potoru story) are extensions passed to
 both (`help("web/editor")`). An extension may draw its node with Zeb React
 components — `component` for the page, `editComponent` for the editor — with

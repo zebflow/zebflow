@@ -75,9 +75,13 @@ async function uploadImage(file) {                       // the page decides whe
 <Editor value={doc} onChange={setDoc} uploadImage={uploadImage} placeholder="Write…" />
 ```
 
-- **Store `body_json`** (the document) — the only source of truth. Never
-  publish HTML a browser sent: the public page renders `body_json` on the
-  server. An `excerpt = documentText(doc).slice(0, 200)` is fine to keep.
+- **Store `body_json`** (the document) — the only source of truth. An
+  `excerpt = documentText(doc).slice(0, 200)` is fine to keep, and so is
+  `body_html = renderDocumentHtml(doc, { extensions: EXTENSIONS })` sent
+  beside the JSON at save time: show it only with
+  `<DocumentHtml html={row.body_html} />` from `zeb/ui/editor-html`, which
+  sanitizes it again on display, so a tampered row runs nothing ("Stored
+  HTML" in `help("web/editor")`). Never set it as raw HTML.
 - **Render** a stored document with `<DocumentView doc={row.body_json} extensions={EXTENSIONS} />`
   on the public page: server-rendered, sanitized, no editor code shipped.
 - **Extensions** (callout, table, figure, embed, mention, reference,
