@@ -10,9 +10,11 @@
 //! - **A `serve` origin** answers the one `public_execute` folder that names
 //!   it, at `/`, with scripts running. That host answers nothing else.
 
+use std::time::UNIX_EPOCH;
+
 use axum::body::Body;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::{PlatformAppState, content_type_for_path, harden_byte_response, internal_error};
@@ -37,15 +39,111 @@ fn hidden_path(decoded: &str) -> bool {
         .any(|(index, segment)| segment.starts_with('.') && !(index == 0 && segment == ".well-known"))
 }
 
-fn object_response(rel: &str, bytes: Vec<u8>) -> Response {
+/// What a reader may reuse without asking, and for how long.
+///
+/// `no-cache` is not "do not store": it stores the file and asks before
+/// reusing it. With the validator below, an unchanged file costs a 304 and no
+/// body, and a rebuilt one is never served from a reader's cache.
+///
+/// The header this replaced was `public, max-age=300` with no validator, so
+/// for five minutes after a build every page, every search chunk and every
+/// asset could be the previous build's — at addresses that never change. No
+/// path here is content-addressed, so there is nothing that may be held
+/// longer: a library's path carries its minor version (`zeb/markdown/0.1/…`)
+/// and that is rebuilt in place, so `immutable` would pin a reader to a
+/// superseded bundle until the cache evicted it. Long-lived caching wants
+/// hashed file names, not a longer guess.
+const REVALIDATE: HeaderValue = HeaderValue::from_static("no-cache");
+
+/// A validator for one stored object: its size and the second it was written.
+///
+/// Weak, because two writes inside one second are indistinguishable, and that
+/// is the trade every static file server makes rather than hashing the bytes
+/// of every response. It changes whenever a build rewrites the file, which is
+/// what this has to catch.
+fn object_validator(stat: &crate::zebfs::ZebFsStat) -> Option<(HeaderValue, Option<HeaderValue>)> {
+    let modified = stat.modified?;
+    let seconds = modified.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let etag = HeaderValue::from_str(&format!("W/\"{}-{}\"", stat.size, seconds)).ok()?;
+    Some((etag, http_date(seconds).and_then(|date| HeaderValue::from_str(&date).ok())))
+}
+
+/// `Sun, 06 Nov 1994 08:49:37 GMT` — the one date format HTTP requires
+/// (RFC 9110 §5.6.7). Civil-date arithmetic, as the sitemap's `lastmod` does,
+/// so no date crate is pulled in for one line.
+fn http_date(seconds: u64) -> Option<String> {
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let days = (seconds / 86_400) as i64;
+    let time = seconds % 86_400;
+    let weekday = DAYS[(days.rem_euclid(7)) as usize];
+
+    // civil_from_days (Howard Hinnant), shifted to a 1 March year start.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    Some(format!(
+        "{weekday}, {day:02} {} {year:04} {:02}:{:02}:{:02} GMT",
+        MONTHS[(month - 1) as usize],
+        time / 3_600,
+        (time % 3_600) / 60,
+        time % 60,
+    ))
+}
+
+/// Whether the reader already holds this exact version.
+///
+/// `If-None-Match` wins over `If-Modified-Since` when both are sent, which is
+/// what RFC 9110 §13.1.3 requires: the tag is the precise answer and the date
+/// only has one-second resolution.
+fn still_fresh(request: &HeaderMap, etag: &HeaderValue, last_modified: Option<&HeaderValue>) -> bool {
+    if let Some(sent) = request.get(IF_NONE_MATCH).and_then(|value| value.to_str().ok()) {
+        return sent.split(',').any(|candidate| {
+            let candidate = candidate.trim();
+            candidate == "*" || candidate.as_bytes() == etag.as_bytes()
+        });
+    }
+    match (request.get(IF_MODIFIED_SINCE), last_modified) {
+        (Some(sent), Some(known)) => sent.as_bytes() == known.as_bytes(),
+        _ => false,
+    }
+}
+
+fn object_response(rel: &str, bytes: Vec<u8>, stat: &crate::zebfs::ZebFsStat, request: &HeaderMap) -> Response {
+    let validator = object_validator(stat);
+    if let Some((etag, last_modified)) = validator.as_ref()
+        && still_fresh(request, etag, last_modified.as_ref())
+    {
+        let mut resp = Response::new(Body::empty());
+        *resp.status_mut() = StatusCode::NOT_MODIFIED;
+        write_cache_headers(resp.headers_mut(), validator.as_ref());
+        return resp;
+    }
+
     let mut resp = Response::new(Body::from(bytes));
     *resp.status_mut() = StatusCode::OK;
     if let Ok(value) = HeaderValue::from_str(content_type_for_path(std::path::Path::new(rel))) {
         resp.headers_mut().insert(CONTENT_TYPE, value);
     }
-    resp.headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
+    write_cache_headers(resp.headers_mut(), validator.as_ref());
     resp
+}
+
+fn write_cache_headers(headers: &mut HeaderMap, validator: Option<&(HeaderValue, Option<HeaderValue>)>) {
+    headers.insert(CACHE_CONTROL, REVALIDATE);
+    if let Some((etag, last_modified)) = validator {
+        headers.insert(ETAG, etag.clone());
+        if let Some(last_modified) = last_modified {
+            headers.insert(LAST_MODIFIED, last_modified.clone());
+        }
+    }
 }
 
 /// A request on the project's file host. An unexposed path answers exactly
@@ -55,6 +153,7 @@ pub(super) async fn file_host_response(
     owner: &str,
     project: &str,
     path: &str,
+    request: &HeaderMap,
 ) -> Response {
     let decoded = percent_decode(path);
     if hidden_path(&decoded) {
@@ -73,7 +172,7 @@ pub(super) async fn file_host_response(
         Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
     }
     match layout.open_files().get(&rel) {
-        Ok(object) => harden_byte_response(object_response(&rel, object.bytes)).await,
+        Ok(object) => harden_byte_response(object_response(&rel, object.bytes, &object.stat, request)).await,
         Err(err) if err.code == "ZEBFS_NOT_FOUND" || err.code == "ZEBFS_INVALID_PATH" => not_found(),
         Err(err) => internal_error(PlatformError::new(err.code, err.message)),
     }
@@ -88,6 +187,7 @@ pub(super) fn execute_site_response(
     request_host: &str,
     request_port: Option<&str>,
     path: &str,
+    request: &HeaderMap,
 ) -> Option<Response> {
     let layout = state.platform.file.ensure_project_layout(owner, project).ok()?;
     let store_dir = layout.data_store_dir();
@@ -117,7 +217,7 @@ pub(super) fn execute_site_response(
             _ => continue,
         }
         if let Ok(object) = zebfs.get(&rel) {
-            let mut resp = object_response(&rel, object.bytes);
+            let mut resp = object_response(&rel, object.bytes, &object.stat, request);
             resp.headers_mut().insert(
                 "x-content-type-options",
                 HeaderValue::from_static("nosniff"),
@@ -187,7 +287,26 @@ fn percent_decode(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hidden_path, origin_matches, percent_decode, site_candidates};
+    use super::{
+        hidden_path, http_date, object_response, object_validator, origin_matches, percent_decode,
+        site_candidates, still_fresh,
+    };
+    use axum::http::header::{CACHE_CONTROL, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn stat(size: u64, seconds: u64) -> crate::zebfs::ZebFsStat {
+        crate::zebfs::ZebFsStat {
+            path: "site/index.html".to_string(),
+            size,
+            modified: Some(UNIX_EPOCH + Duration::from_secs(seconds)),
+            kind: crate::zebfs::ZebFsEntryKind::Object,
+        }
+    }
+
+    fn header(response: &axum::response::Response, name: axum::http::HeaderName) -> String {
+        response.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string()
+    }
 
     #[test]
     fn a_dot_segment_is_hidden_except_well_known() {
@@ -220,6 +339,58 @@ mod tests {
         assert!(!origin_matches("https://site.example/", "www.site.example", None));
         assert!(origin_matches("http://d.o.localhost:10610/", "d.o.localhost", Some("10610")));
         assert!(!origin_matches("http://d.o.localhost:10610/", "d.o.localhost", Some("8080")));
+    }
+
+    /// A page at an address that never changes has to be checked before it is
+    /// reused, or a build is invisible to anyone who read the site before it.
+    #[test]
+    fn a_served_file_carries_a_validator_and_asks_before_it_is_reused() {
+        let stat = stat(1234, 1_762_000_000);
+        let response = object_response("site/index.html", b"<html></html>".to_vec(), &stat, &HeaderMap::new());
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, CACHE_CONTROL), "no-cache");
+        assert_eq!(header(&response, ETAG), "W/\"1234-1762000000\"");
+        assert!(!header(&response, LAST_MODIFIED).is_empty());
+    }
+
+    #[test]
+    fn a_reader_holding_this_version_is_told_so_and_sent_no_body() {
+        let stat = stat(1234, 1_762_000_000);
+        let mut request = HeaderMap::new();
+        request.insert(IF_NONE_MATCH, HeaderValue::from_static("W/\"1234-1762000000\""));
+        let response = object_response("site/index.html", b"<html></html>".to_vec(), &stat, &request);
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(header(&response, ETAG), "W/\"1234-1762000000\"");
+    }
+
+    /// The whole point: after a build the reader's copy stops matching.
+    #[test]
+    fn a_rebuilt_file_does_not_match_the_tag_the_reader_holds() {
+        let before = object_validator(&stat(1234, 1_762_000_000)).expect("validator").0;
+        let after = object_validator(&stat(1200, 1_762_000_900)).expect("validator").0;
+        assert_ne!(before, after);
+        let mut request = HeaderMap::new();
+        request.insert(IF_NONE_MATCH, before.clone());
+        assert!(!still_fresh(&request, &after, None));
+        assert!(still_fresh(&request, &before, None));
+    }
+
+    /// A tag is exact and a date is not, so the tag decides when both are sent
+    /// (RFC 9110 13.1.3).
+    #[test]
+    fn a_tag_decides_over_a_date() {
+        let (etag, last_modified) = object_validator(&stat(10, 1_762_000_000)).expect("validator");
+        let last_modified = last_modified.expect("a date");
+        let mut request = HeaderMap::new();
+        request.insert(IF_MODIFIED_SINCE, last_modified.clone());
+        request.insert(IF_NONE_MATCH, HeaderValue::from_static("W/\"999-1\""));
+        assert!(!still_fresh(&request, &etag, Some(&last_modified)));
+    }
+
+    #[test]
+    fn a_date_is_written_the_one_way_http_accepts() {
+        assert_eq!(http_date(784_111_777).as_deref(), Some("Sun, 06 Nov 1994 08:49:37 GMT"));
+        assert_eq!(http_date(0).as_deref(), Some("Thu, 01 Jan 1970 00:00:00 GMT"));
     }
 
     #[test]

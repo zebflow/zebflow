@@ -1,6 +1,6 @@
 # Publish metadata for the blessed local-hub seed.
 # The seeder publishes this package as the reserved `zebflow` publisher.
 id: zebflow.potoru
-version: 0.1.1
+version: 0.1.2
 title: zeb/potoru
 description: "Potoru 2D animation for RWE templates: PotoPlayer (.poto player: canvas, slides, interactive stories, host bridge), PotoSnapshot (a still frame for thumbnails) and PotoEditor (YAML / Script editor with live preview) and compile() (in-browser compiler for Potoru sources). Offline; each part loads on demand."

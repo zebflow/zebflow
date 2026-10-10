@@ -167,7 +167,11 @@ async fn a_docs_site_keeps_its_keys_manifest_and_scaffold() {
     assert_eq!(first["site"]["mode"], "docs");
     assert_eq!(first["site"]["folder"], "docs");
     assert_eq!(first["site"]["from"], "guide");
-    assert_eq!(first["site"]["generated_files"], 3);
+    // Two pages, each with its Markdown twin, the chunked search index (one
+    // metadata block, one chunk per first letter in use, the manifest) and the
+    // machine-readable surface (`discoverability.md` §3): sitemap, robots and
+    // the two llms files, written whether or not the folder has an address.
+    assert_eq!(first["site"]["generated_files"], 17);
     assert_eq!(
         site.keys("docs"),
         [
@@ -176,8 +180,22 @@ async fn a_docs_site_keeps_its_keys_manifest_and_scaffold() {
             "_assets/libraries/zeb/react/0.1/runtime/zeb_react.js",
             "_assets/libraries/zeb/react/0.1/runtime/zeb_react.mjs",
             "basic/query/index.html",
+            "basic/query/index.md",
             "index.html",
-            "search-index.json",
+            "index.md",
+            "llms-full.txt",
+            "llms.txt",
+            "robots.txt",
+            "search/m-0.json",
+            "search/manifest.json",
+            "search/t-h.json",
+            "search/t-q.json",
+            "search/t-s.json",
+            "search/t-u.json",
+            "search/t-w.json",
+            "search/x-0.json",
+            "search/x-1.json",
+            "sitemap.xml",
         ]
     );
     // Docs-built pages keep the generator label live manifests already carry.
@@ -189,7 +207,9 @@ async fn a_docs_site_keeps_its_keys_manifest_and_scaffold() {
     assert_eq!(scaffold, super::docs_scaffold::default_template_source(Some("Guide")));
 
     let again = site.run(config, json!({})).await;
-    assert_eq!((again["site"]["generated_files"].as_u64(), again["site"]["skipped_files"].as_u64()), (Some(0), Some(3)));
+    // A second build writes nothing: every one of the nine files — pages,
+    // twins, index and surface — is byte-identical, so each is skipped.
+    assert_eq!((again["site"]["generated_files"].as_u64(), again["site"]["skipped_files"].as_u64()), (Some(0), Some(17)));
 }
 
 #[tokio::test]

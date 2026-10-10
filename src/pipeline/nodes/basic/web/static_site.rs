@@ -625,7 +625,11 @@ fn collect_static_asset_refs(
             let end = tail
                 .find(|ch: char| {
                     ch.is_ascii_whitespace()
-                        || matches!(ch, '"' | '\'' | '<' | '>' | ')' | '(' | '\\' | ',')
+                        // `&` ends it because a URL inside an attribute that
+                        // carries JSON is escaped: the quote around it arrives
+                        // as `&quot;`, which holds none of the other stops and
+                        // was read as part of the path.
+                        || matches!(ch, '"' | '\'' | '<' | '>' | ')' | '(' | '\\' | ',' | '&')
                 })
                 .unwrap_or(tail.len());
             let candidate = &tail[..end];
@@ -1085,14 +1089,33 @@ mod tests {
         LocalizedStaticHtml, StaticAssetRecord, StaticAssetSources, StaticPageRecord,
         absolute_deploy_url, asset_group_id, localize_static_html_assets,
         normalize_deploy_base_path, normalize_page_output_path, normalize_site_root_rel_path,
-        page_rel_path_from_site_root, route_path_for_output_path, site_manifest_rel_path,
-        update_site_manifest, SiteStore, StaticSiteManifest, SITE_MANIFEST_FILE,
+        collect_static_asset_refs, page_rel_path_from_site_root, route_path_for_output_path,
+        site_manifest_rel_path, update_site_manifest, SiteStore, StaticSiteManifest,
+        SITE_MANIFEST_FILE,
     };
     use crate::zebfs::{LocalZebFs, ZebFs};
     use tempfile::tempdir;
 
     fn local_store(root: &std::path::Path) -> ZebFs {
         ZebFs::Local(LocalZebFs::new(root.to_path_buf()))
+    }
+
+    /// A component is handed its props as JSON inside an attribute, so the
+    /// quotes around an address arrive as `&quot;`. That holds none of the
+    /// characters that used to end a reference, so the entity was read as part
+    /// of the path and the file was reported missing under a name with
+    /// `&quot;` on the end.
+    #[test]
+    fn an_address_inside_an_escaped_attribute_ends_at_the_entity() {
+        let html = concat!(
+            r#"<div data-config="{&quot;src&quot;:&quot;/static/owner-a/project-a/stories/intro.poto&quot;,"#,
+            r#"&quot;controls&quot;:true}"></div>"#,
+        );
+        let refs = collect_static_asset_refs(html, Some("owner-a"), Some("project-a"));
+        assert_eq!(
+            refs.into_iter().collect::<Vec<_>>(),
+            vec!["/static/owner-a/project-a/stories/intro.poto".to_string()],
+        );
     }
 
     #[test]

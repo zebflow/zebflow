@@ -83,13 +83,46 @@ dompurify/dist/purify.es.mjs:
 // `g` is the internal marked variable (exported as `marked`).
 // `DOMPurify` is the IIFE-wrapped purifier instance.
 const marked = g;
+
+// Heading ids, by the same rule the server uses: lower case, runs of
+// non-alphanumerics become one dash, ends trimmed, empty becomes "section",
+// and a repeated slug takes a -1, -2 suffix. A heading that already carries an
+// id keeps it.
+function slugifyHeading(text) {
+  let out = "";
+  let lastDash = true;
+  for (const ch of String(text).toLowerCase()) {
+    if (/[a-z0-9]/.test(ch)) {
+      out += ch;
+      lastDash = false;
+    } else if (!lastDash) {
+      out += "-";
+      lastDash = true;
+    }
+  }
+  out = out.replace(/^-+|-+$/g, "");
+  return out || "section";
+}
+
+function addHeadingIds(html) {
+  const seen = new Map();
+  return html.replace(/<h([1-6])([^>]*)>([\s\S]*?)<\/h\1>/g, (match, level, attrs, inner) => {
+    if (/\sid=/.test(attrs)) return match;
+    const base = slugifyHeading(inner.replace(/<[^>]*>/g, ""));
+    const count = seen.get(base);
+    const id = count === undefined ? base : `${base}-${count + 1}`;
+    seen.set(base, count === undefined ? 0 : count + 1);
+    return `<h${level}${attrs} id="${id}">${inner}</h${level}>`;
+  });
+}
+
 export function renderMarkdown(text) {
   if (!text) return "";
   const raw = marked.parse(text, { async: false });
-  if (typeof DOMPurify === "undefined" || !DOMPurify.sanitize) return raw;
-  return DOMPurify.sanitize(raw, {
+  if (typeof DOMPurify === "undefined" || !DOMPurify.sanitize) return addHeadingIds(raw);
+  return addHeadingIds(DOMPurify.sanitize(raw, {
     FORBID_TAGS: ["script", "style", "iframe", "form", "input", "button"],
     FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus"],
     ADD_ATTR: ["target"],
-  });
+  }));
 }

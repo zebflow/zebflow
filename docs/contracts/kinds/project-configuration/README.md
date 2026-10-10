@@ -282,7 +282,7 @@ Omitted fields use these v1 meanings:
 | `spec.layout.sqlite_schema` | `schemas/sqlite` |
 | `spec.layout.node_interfaces` | `nodes` |
 | `spec.layout.initial_data` | `initial-data/sekejap`, `initial-data/sqlite`, `init/sekejap`, `init/sqlite`, `seeds/sekejap`, `seeds/sqlite`, each bound to the engine named in its own path |
-| `spec.layout.allowed_extensions` | `css`, `geojson`, `js`, `json`, `jsx`, `md`, `mjs`, `sql`, `ts`, `tsx`, `txt`, `webmanifest`, `xml`, `yaml`, `yml`, `csv`, `gif`, `ico`, `jpeg`, `jpg`, `mp3`, `mp4`, `pdf`, `png`, `svg`, `ttf`, `webp`, `woff`, `woff2` |
+| `spec.layout.allowed_extensions` | `css`, `geojson`, `js`, `json`, `jsx`, `md`, `mjs`, `sql`, `ts`, `tsx`, `txt`, `webmanifest`, `xml`, `yaml`, `yml`, `csv`, `gif`, `ico`, `jpeg`, `jpg`, `mp3`, `mp4`, `pdf`, `png`, `svg`, `ttf`, `webp`, `woff`, `woff2`, `poto`, `potolib` |
 | `spec.rwe.minify_html` | `false` |
 | `spec.rwe.strict_mode` | `true` |
 | `spec.pipelines.logging.max_invocations` | Runtime default of 20 |

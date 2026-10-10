@@ -556,6 +556,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_WEB_SITE_GENERATE_DELETE", ErrorClass::Failed),
     ("FW_NODE_WEB_SITE_GENERATE_DEPLOY_BASE_PATH", ErrorClass::Refused),
     ("FW_NODE_WEB_SITE_GENERATE_EMPTY", ErrorClass::Refused),
+    ("FW_NODE_WEB_SITE_GENERATE_LINKS", ErrorClass::Refused),
     ("FW_NODE_WEB_SITE_GENERATE_MANIFEST_SERIALIZE", ErrorClass::Failed),
     ("FW_NODE_WEB_SITE_GENERATE_META_READ", ErrorClass::Failed),
     ("FW_NODE_WEB_SITE_GENERATE_MODE", ErrorClass::Refused),

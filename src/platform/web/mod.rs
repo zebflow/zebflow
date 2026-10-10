@@ -1483,7 +1483,7 @@ async fn addressing_gate(
         if request.method() != Method::GET && request.method() != Method::HEAD {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
-        return file_host::file_host_response(&state, &owner, &project, &path).await;
+        return file_host::file_host_response(&state, &owner, &project, &path, request.headers()).await;
     }
     // A published MCP route's OAuth documents sit at the path-inserted
     // well-known URIs of its connect URL (RFC 9728 §3.1, RFC 8414 §3.1):
@@ -1526,8 +1526,14 @@ async fn addressing_gate(
             if request.method() != Method::GET && request.method() != Method::HEAD {
                 return StatusCode::METHOD_NOT_ALLOWED.into_response();
             }
-            return file_host::file_host_response(&state, &resolution.owner, &resolution.project, &resolution.rest)
-                .await;
+            return file_host::file_host_response(
+                &state,
+                &resolution.owner,
+                &resolution.project,
+                &resolution.rest,
+                request.headers(),
+            )
+            .await;
         }
         // A host a `public_execute` folder names in `serve` answers only that
         // folder, at `/`, with scripts running (kinds/zebfs-acl §Resolution).
@@ -1543,6 +1549,7 @@ async fn addressing_gate(
             &request_host,
             request_port,
             &path,
+            request.headers(),
         ) {
             return response;
         }
@@ -1603,6 +1610,7 @@ async fn addressing_gate(
                     &resolution.owner,
                     &resolution.project,
                     &resolution.rest,
+                    request.headers(),
                 )
                 .await;
             }
@@ -7928,6 +7936,11 @@ fn content_type_for_path(path: &FsPath) -> &'static str {
         Some("webp") => "image/webp",
         Some("ico") => "image/x-icon",
         Some("pdf") => "application/pdf",
+        // Potoru's own package format; the vendor tree, since it has no
+        // registered type. Naming it is what lets a project hold one at all
+        // (`DEFAULT_ALLOWED_FILE_EXTENSIONS`).
+        Some("poto") => "application/vnd.potoru.story",
+        Some("potolib") => "application/vnd.potoru.library",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         Some("wasm") => "application/wasm",

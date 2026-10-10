@@ -315,6 +315,7 @@ impl BasicPipelineEngine {
         let create_template = |rel: &str, content: &str| self.create_docs_template(ctx, template_root, rel, content);
         let mut docs = site::docs::load_site(config, template_root, &docs_root, &create_template)?;
         docs.set_origin(static_site::site_origin(self.platform.as_ref(), &ctx.owner, &ctx.project, &docs.site_root_rel));
+        docs.set_asset_base(&ctx.owner, &ctx.project);
         let compiled = self.compile_site_template(
             node_id,
             &docs.template_source,
@@ -347,12 +348,26 @@ impl BasicPipelineEngine {
             files.push((site::docs::output_rel_path(page, &docs.site_root_rel)?, html));
             rendered_pages.push(rendered.html);
         }
-        let sitemap_path = (!docs.sitemap_xml.trim().is_empty()).then(|| site::docs::sitemap_rel_path(&docs.site_root_rel));
-        if let Some(sitemap_rel) = &sitemap_path {
-            files.push((sitemap_rel.clone(), docs.sitemap_xml.clone()));
+        // Every page also answers as Markdown, beside its HTML: the source is
+        // already in hand, and it is what `llms-full.txt` and an agent read.
+        for page in docs.pages.iter() {
+            files.push((
+                site::docs::markdown_twin_rel_path(page, &docs.site_root_rel)?,
+                site::docs::markdown_twin_body(page),
+            ));
         }
-        let search_index_rel = site::docs::search_index_rel_path(&docs.site_root_rel);
-        files.push((search_index_rel.clone(), docs.search_index_json.clone()));
+        // The machine-readable surface (`discoverability.md` §3), written on
+        // every build whether or not the folder has an address yet.
+        let sitemap_path = site::docs::sitemap_rel_path(&docs.site_root_rel);
+        files.push((sitemap_path.clone(), docs.sitemap_xml.clone()));
+        files.push((site::docs::robots_rel_path(&docs.site_root_rel), docs.robots_txt.clone()));
+        files.push((site::docs::llms_rel_path(&docs.site_root_rel), docs.llms_txt.clone()));
+        files.push((site::docs::llms_full_rel_path(&docs.site_root_rel), docs.llms_full_txt.clone()));
+        // The search index, in chunks: the page fetches the ones its query
+        // names and nothing else (`docs_search.rs`).
+        for file in &docs.search_files {
+            files.push((site::docs::search_file_rel_path(&docs.site_root_rel, &file.rel_path), file.contents.clone()));
+        }
         let mut statuses = Vec::with_capacity(files.len());
         for (rel_path, contents) in &files {
             statuses.push(site::page::conflict_status(&zebfs, rel_path, contents, on_conflict.as_str())?);
@@ -420,7 +435,11 @@ impl BasicPipelineEngine {
                     "generated_files": written.generated,
                     "skipped_files": written.skipped,
                     "sitemap_path": sitemap_path,
-                    "search_index_path": search_index_rel,
+                    "robots_path": site::docs::robots_rel_path(&docs.site_root_rel),
+                    "llms_path": site::docs::llms_rel_path(&docs.site_root_rel),
+                    "llms_full_path": site::docs::llms_full_rel_path(&docs.site_root_rel),
+                    "search_manifest_path": site::docs::search_file_rel_path(&docs.site_root_rel, &site::docs_search::manifest_rel_path()),
+                    "search_files": docs.search_files.len(),
                     "routes": routes,
                 }
             })),

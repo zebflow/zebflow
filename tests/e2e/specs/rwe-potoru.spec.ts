@@ -44,6 +44,11 @@ import { PotoPlayer } from "zeb/potoru";
 export default function Page() {
   return <main style={{ width: "640px" }}><PotoPlayer id="square" src="/_files/stories/square.poto" autoplay muted loop /></main>;
 }`,
+  "fullscreen.tsx": `
+import { PotoPlayer } from "zeb/potoru";
+export default function Page() {
+  return <main style={{ width: "640px" }}><PotoPlayer id="fs" src="/_files/stories/square.poto" controls autoplay muted loop /></main>;
+}`,
   "still.tsx": `
 import { PotoPlayer } from "zeb/potoru";
 export default function Page() {
@@ -175,6 +180,62 @@ test.describe.serial("zeb/potoru", () => {
     expect(await page.evaluate(() => (window as any).__errors ?? [])).toEqual([]);
     await expect.poll(() => countColour(page, "#square", [0, 0, 255]), { timeout: 10_000 }).toBeGreaterThan(5000);
     await expect.poll(() => countColour(page, "#square", [255, 0, 0]), { timeout: 10_000 }).toBeGreaterThan(500);
+    expect(consoleErrors).toEqual([]);
+  });
+
+  // The player lives in the placeholder's shadow root, where
+  // `document.fullscreenElement` is the outer placeholder and never the
+  // player — so the player has to ask its own root. Asking `document` let it
+  // enter fullscreen and never see itself there: the button kept reading
+  // "Fullscreen" and the second click did nothing. Esc always worked, which
+  // is why it looked like a label bug rather than a stuck state.
+  // The player lives in the placeholder's shadow root, where
+  // `document.fullscreenElement` is the outer placeholder and never the
+  // player — so the player has to ask its own root. Asking `document` let it
+  // enter fullscreen and never see itself there: the button kept reading
+  // "Fullscreen" and the second click did nothing. Esc always worked, which
+  // is why it looked like a label bug rather than a stuck state.
+  //
+  // The hover is not decoration: a playing story hides its controls, and a
+  // hidden button has no box to click. This is the reader's own path in.
+  // The player lives in the placeholder's shadow root, where
+  // `document.fullscreenElement` is the outer placeholder and never the
+  // player — so the player has to ask its own root. Asking `document` let it
+  // enter fullscreen and never see itself there: the button kept reading
+  // "Fullscreen" and the second click did nothing. Esc always worked, which
+  // is why it read as a label bug rather than a stuck state.
+  //
+  // Its own page, because the bar is `display: none` without `controls` and
+  // a button with no box cannot be clicked. The wake() is the reader's path
+  // in: a playing story fades its bar until a pointer moves over it.
+  test("fullscreen is entered and left again from the same button", async ({ page, consoleErrors }) => {
+    await page.addInitScript(() => {
+      document.addEventListener("zeb:potoru:ready", (e: any) => ((window as any).__ready ||= []).push(e.detail));
+    });
+    expect((await page.goto(`${host}/fullscreen`))?.status()).toBe(200);
+    await expect.poll(() => page.evaluate(() => (window as any).__ready?.length ?? 0), { timeout: 20_000 }).toBe(1);
+
+    const player = page.locator("#fs");
+    const button = page.locator('[data-action="fullscreen"]');
+    // What the document sees: the placeholder, never the player. That it is
+    // set at all is proof the browser really went fullscreen.
+    const inFullscreen = () => page.evaluate(() => !!document.fullscreenElement);
+
+    await player.hover();
+    await expect(button).toHaveAttribute("aria-label", "Fullscreen");
+    expect(await inFullscreen()).toBe(false);
+
+    await button.click();
+    await expect(button).toHaveAttribute("aria-label", "Exit fullscreen");
+    // The label is the proof that matters: it is drawn from the player's own
+    // root, which is the getter that was wrong.
+    expect(await inFullscreen()).toBe(true);
+
+    // No second hover: in fullscreen the placeholder is the top-layer element
+    // and cannot be hovered, and the click above already woke the bar.
+    await button.click();
+    await expect(button).toHaveAttribute("aria-label", "Fullscreen");
+    expect(await inFullscreen()).toBe(false);
     expect(consoleErrors).toEqual([]);
   });
 

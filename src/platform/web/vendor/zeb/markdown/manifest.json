@@ -16,8 +16,8 @@
         "entry": "0.1/runtime/markdown.bundle.mjs",
         "source": "offline",
         "package_version": "0.1",
-        "size_bytes": 62745,
-        "integrity": "sha256:4d26b5bed3909b768b23c7d1a65990b3d98eb514c874e52275c3aee34bc25c8a"
+        "size_bytes": 63849,
+        "integrity": "sha256:db9fb789a0c682397d0bf82985a70d887a7d5ba4d96a5d1b3b861444fe84bde3"
       }
     },
     "license": {

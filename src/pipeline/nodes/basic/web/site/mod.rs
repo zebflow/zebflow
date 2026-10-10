@@ -10,7 +10,11 @@
 //! (`../static_site.rs`), and answer one key, `site`.
 
 pub mod docs;
+pub mod docs_blocks;
+pub mod docs_links;
+pub mod docs_math;
 mod docs_scaffold;
+pub mod docs_search;
 mod docs_text;
 #[cfg(test)]
 mod layout_tests;
@@ -45,6 +49,8 @@ pub const DOCS_MANIFEST_GENERATOR: &str = NODE_KIND;
 pub const CODE_CONFIG: &str = "FW_NODE_WEB_SITE_GENERATE_CONFIG";
 pub const CODE_MODE: &str = "FW_NODE_WEB_SITE_GENERATE_MODE";
 pub const CODE_CONFLICT: &str = "FW_NODE_WEB_SITE_GENERATE_CONFLICT";
+/// A docs build refused because the Markdown links somewhere it does not write.
+pub const CODE_LINKS: &str = "FW_NODE_WEB_SITE_GENERATE_LINKS";
 
 /// Typed configuration for `web.site.generate`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

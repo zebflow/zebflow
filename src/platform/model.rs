@@ -3225,7 +3225,8 @@ pub const DEFAULT_ALLOWED_FILE_EXTENSIONS: &[&str] = &[
     "css", "geojson", "js", "json", "jsx", "md", "mjs", "sql", "ts", "tsx", "txt", "webmanifest", "xml",
     "yaml", "yml", // Assets: what the asset route serves with a content type of its own.
     "csv", "gif", "ico", "jpeg", "jpg", "mp3", "mp4", "pdf", "png", "svg", "ttf", "webp", "woff",
-    "woff2",
+    "woff2", // Potoru: a story and a linked library, played by `zeb/potoru`.
+    "poto", "potolib",
 ];
 /// Files a package may write whatever the extension set says, matched on the
 /// whole file name.

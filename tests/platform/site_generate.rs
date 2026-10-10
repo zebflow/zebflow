@@ -418,8 +418,14 @@ async fn handbook(app: &axum::Router, cookie: &str) {
     publish(app, cookie, "docs-build", "| trigger.manual | web.site.generate --from handbook --folder handbook-site").await;
 }
 
-fn search_hrefs(index: &str) -> Vec<String> {
-    parse(index).as_array().expect("search index").iter().filter_map(|e| e["href"].as_str().map(str::to_string)).collect()
+/// The addresses in the index's first metadata block, in page order — the
+/// reading order the whole build follows.
+fn search_hrefs(metadata: &str) -> Vec<String> {
+    let block = parse(metadata);
+    let entries = block.as_object().expect("a metadata block");
+    let mut indexes: Vec<usize> = entries.keys().filter_map(|key| key.parse().ok()).collect();
+    indexes.sort_unstable();
+    indexes.iter().filter_map(|i| entries[&i.to_string()]["href"].as_str().map(str::to_string)).collect()
 }
 
 /// The sidebar is the server-rendered `<nav>` between "Contents" and `<main`.
@@ -448,8 +454,12 @@ async fn a_docs_folder_becomes_a_served_site_in_meta_order() {
     assert_eq!(first["from"], json!("handbook"), "{first}");
     assert_eq!(first["folder"], json!("handbook-site"), "{first}");
     assert_eq!(first["page_count"], json!(4), "{first}");
-    assert_eq!(first["search_index_path"], json!("handbook-site/search-index.json"), "{first}");
-    assert_eq!(first["sitemap_path"], json!(null), "no serve origin, no sitemap: {first}");
+    assert_eq!(first["search_manifest_path"], json!("handbook-site/search/manifest.json"), "{first}");
+    // The machine-readable surface is written from the first build; before the
+    // folder is served its addresses are the routes themselves.
+    assert_eq!(first["sitemap_path"], json!("handbook-site/sitemap.xml"), "{first}");
+    assert_eq!(first["robots_path"], json!("handbook-site/robots.txt"), "{first}");
+    assert_eq!(first["llms_path"], json!("handbook-site/llms.txt"), "{first}");
 
     let (status, template) = repo_file_status(&app, &cookie, site::DEFAULT_DOCS_TEMPLATE).await;
     assert_eq!(status, StatusCode::OK, "the scaffold was written");
@@ -480,9 +490,28 @@ async fn a_docs_folder_becomes_a_served_site_in_meta_order() {
     assert!(at("Setup") < at("Advanced"), "folder order from _meta.yaml: {nav}");
     assert!(at("Install") < at("Configure"), "page order from front matter: {nav}");
 
-    let (status, _, index) = visit(&app, SITE_HOST, "/search-index.json").await;
-    assert_eq!(status, StatusCode::OK, "{index}");
-    assert_eq!(search_hrefs(&index), vec!["/", "/setup/install/", "/setup/configure/", "/advanced/tuning/"], "reading order: {index}");
+    let (status, _, metadata) = visit(&app, SITE_HOST, "/search/m-0.json").await;
+    assert_eq!(status, StatusCode::OK, "{metadata}");
+    assert_eq!(search_hrefs(&metadata), vec!["/", "/setup/install/", "/setup/configure/", "/advanced/tuning/"], "reading order: {metadata}");
+    // A word from a page's body is findable, in the chunk its first letter
+    // names — which the manifest lists, and the page only ever fetches from.
+    let (status, _, manifest) = visit(&app, SITE_HOST, "/search/manifest.json").await;
+    assert_eq!(status, StatusCode::OK, "{manifest}");
+    assert!(parse(&manifest)["term_chunks"].as_array().expect("chunks").iter().any(|id| id == "c"), "{manifest}");
+    let (status, _, chunk) = visit(&app, SITE_HOST, "/search/t-c.json").await;
+    assert_eq!(status, StatusCode::OK, "{chunk}");
+    assert!(parse(&chunk).get("cache").is_some(), "a body word is in the index: {chunk}");
+
+    // Every page also answers as Markdown, and the answer-engine files exist.
+    let (status, _, twin) = visit(&app, SITE_HOST, "/setup/install/index.md").await;
+    assert_eq!(status, StatusCode::OK, "{twin}");
+    assert!(twin.contains("Install the demo app."), "{twin}");
+    let (status, _, robots) = visit(&app, SITE_HOST, "/robots.txt").await;
+    assert_eq!(status, StatusCode::OK, "{robots}");
+    assert!(robots.contains(&format!("Sitemap: {SITE_ORIGIN}/sitemap.xml")), "{robots}");
+    let (status, _, llms) = visit(&app, SITE_HOST, "/llms.txt").await;
+    assert_eq!(status, StatusCode::OK, "{llms}");
+    assert!(llms.contains("[Install]"), "{llms}");
 
     let (status, _, sitemap) = visit(&app, SITE_HOST, "/sitemap.xml").await;
     assert_eq!(status, StatusCode::OK, "{sitemap}");
@@ -517,8 +546,8 @@ async fn a_removed_or_renamed_page_leaves_the_index_sitemap_and_manifest() {
     let rebuilt = generate(&app, &cookie, "docs-build", json!({})).await;
     assert_eq!(rebuilt["page_count"], json!(3), "{rebuilt}");
 
-    let (_, _, index) = visit(&app, SITE_HOST, "/search-index.json").await;
-    assert_eq!(search_hrefs(&index), vec!["/", "/setup/install/", "/setup/settings/"], "{index}");
+    let (_, _, metadata) = visit(&app, SITE_HOST, "/search/m-0.json").await;
+    assert_eq!(search_hrefs(&metadata), vec!["/", "/setup/install/", "/setup/settings/"], "{metadata}");
     let (_, _, sitemap) = visit(&app, SITE_HOST, "/sitemap.xml").await;
     assert!(!sitemap.contains("/advanced/tuning/") && !sitemap.contains("/setup/configure/"), "{sitemap}");
     let (status, _, renamed) = visit(&app, SITE_HOST, "/setup/settings/").await;

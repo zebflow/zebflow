@@ -23,6 +23,9 @@ pub struct FolderMeta {
     pub order: Option<i64>,
     pub collapsed: Option<bool>,
     pub nav: Vec<String>,
+    /// `numbered: true`, read from the **root** `_meta.yaml` only: a site is
+    /// a book or it is not, and half a book numbered is neither.
+    pub numbered: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +147,7 @@ pub(super) fn parse_folder_meta(raw: &str) -> FolderMeta {
         order: map_i64(&map, "order"),
         collapsed: map_optional_bool(&map, "collapsed"),
         nav: map_string_list(&map, "nav"),
+        numbered: map_optional_bool(&map, "numbered"),
     }
 }
 
@@ -285,17 +289,10 @@ pub(super) fn first_paragraph(markdown: &str) -> String {
     lines.join(" ")
 }
 
-pub(super) fn excerpt_for_search(markdown: &str) -> String {
-    plain_text_from_markdown(markdown)
-        .split_whitespace()
-        .take(48)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-pub(super) fn plain_text_from_markdown(markdown: &str) -> String {
+pub(crate) fn plain_text_from_markdown(markdown: &str) -> String {
     markdown
         .lines()
+        .map(without_directive_marker)
         .map(|line| {
             line.trim()
                 .trim_start_matches('#')
@@ -314,7 +311,24 @@ pub(super) fn plain_text_from_markdown(markdown: &str) -> String {
         .join(" ")
 }
 
-pub(super) fn titleize_segment(raw: &str) -> String {
+/// A directive's opening line without its marker: `:::warning Read this
+/// first` is the words "Read this first", and `:::code-group` is nothing. The
+/// name is the author choosing a component, not something a reader searches
+/// for, so it does not belong in the index or in a snippet.
+fn without_directive_marker(line: &str) -> &str {
+    let trimmed = line.trim();
+    let colons = trimmed.chars().take_while(|c| *c == ':').count();
+    if colons < 3 {
+        return line;
+    }
+    let rest = trimmed[colons..].trim_start();
+    match rest.find(char::is_whitespace) {
+        Some(end) => rest[end..].trim_start(),
+        None => "",
+    }
+}
+
+pub(crate) fn titleize_segment(raw: &str) -> String {
     raw.split(['-', '_', ' '])
         .filter(|segment| !segment.is_empty())
         .map(|segment| {
@@ -367,7 +381,7 @@ pub(super) fn unique_slug(base: String, seen: &mut HashMap<String, usize>) -> St
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_headings, parse_folder_meta, split_frontmatter};
+    use super::{extract_headings, parse_folder_meta, plain_text_from_markdown, split_frontmatter};
 
     #[test]
     fn parses_frontmatter_and_markdown_body() {
@@ -390,6 +404,15 @@ mod tests {
         assert_eq!(meta.title.as_deref(), Some("Basic"));
         assert_eq!(meta.collapsed, Some(true));
         assert_eq!(meta.nav, vec!["index".to_string(), "query".to_string()]);
+    }
+
+    /// A reader searches for the words an author wrote, not for the name of
+    /// the component the author reached for.
+    #[test]
+    fn a_directive_name_is_not_part_of_a_page_s_text() {
+        let text = plain_text_from_markdown(":::warning Read this first\nBe careful.\n:::\n");
+        assert_eq!(text, "Read this first Be careful.");
+        assert!(!plain_text_from_markdown(":::code-group\nhello\n:::\n").contains("code-group"));
     }
 
     #[test]

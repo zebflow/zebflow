@@ -21,9 +21,9 @@
       "0.1": {
         "entry": "0.1/runtime/potoru.bundle.mjs",
         "source": "offline",
-        "package_version": "0.1.1",
+        "package_version": "0.1.2",
         "size_bytes": 5568,
-        "integrity": "sha256:2d3b2e40ea90ac2a35f20a8e00af47095d36ad37bbfdac55eb69af0fc22f5d5c",
+        "integrity": "sha256:6b5596662a9f07a0ba09b49de2ca6b0707667b2c49270c934658717ccad6fa9d",
         "note": "Potoru web player 0.1.0 + format v4 compiler + authoring API (Potoru sources, Apache-2.0) via esbuild 0.28.1 with code splitting; lazy chunks, wasm engines, score-worker.js, potoru-authoring-sandbox.js and fonts/ sit next to the entry (new URL(..., import.meta.url)). Build: POTORU_SRC=<potoru>/designer/e3 node build/build.mjs (= esbuild --bundle --splitting --format=esm --minify --target=es2022 --outdir=0.1/runtime --entry-names=[name] --chunk-names=[name]-[hash] --out-extension:.js=.mjs entry.mjs, plus a worker build and an IIFE sandbox build; see NOTES.md). Every file: FILES-SHA256.txt."
       }
     },

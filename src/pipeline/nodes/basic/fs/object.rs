@@ -713,6 +713,8 @@ fn content_type_for_path(path: &str) -> &'static str {
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
         "parquet" => "application/vnd.apache.parquet",
+        "poto" => "application/vnd.potoru.story",
+        "potolib" => "application/vnd.potoru.library",
         _ => "application/octet-stream",
     }
 }

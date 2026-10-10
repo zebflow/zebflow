@@ -138,6 +138,20 @@ pub fn read_repo_file(root: &std::path::Path, rel: &str, code: &'static str) -> 
     std::fs::read(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))
 }
 
+/// When a repository file was last written, in seconds since the epoch — what
+/// a sitemap's `lastmod` may honestly say. Same reader as [`read_repo_file`]:
+/// the key is normalised and no segment may be a link. `None` when the
+/// filesystem does not keep one, never an invented time.
+pub fn repo_file_modified(root: &std::path::Path, rel: &str, code: &'static str) -> Result<Option<i64>, PipelineError> {
+    let (rel, path) = repo_path_without_links(root, rel, code)?;
+    let meta = std::fs::metadata(&path).map_err(|err| PipelineError::new(code, format!("'{rel}': {err}")))?;
+    Ok(meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_secs() as i64))
+}
+
 /// One entry of a repository folder, as [`list_repo_folder`] answers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEntry {

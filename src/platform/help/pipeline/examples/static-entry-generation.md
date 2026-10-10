@@ -155,8 +155,9 @@ return {
 
 The same node builds a documentation site from a Markdown folder under
 `docs/`: one page per `.md`, a sidebar from the tree (each folder's
-`_meta.yaml` gives its `title`, `order`, `collapsed` and `nav`), a search
-index, and a sitemap once the folder is served.
+`_meta.yaml` gives its `title`, `order`, `collapsed` and `nav`), components
+from fenced directives, math, a search index, and the site's machine-readable
+surface.
 
 ```zf
 | trigger.schedule --cron "0 3 * * *"
@@ -170,10 +171,146 @@ search index; the root `index.md` is first, a folder's `index.md` before its
 pages. A page whose Markdown was removed or renamed leaves the site on the
 next build: its file, its manifest entry, its sitemap and index lines.
 
+`numbered: true` in the **root** `_meta.yaml` makes the site a book: the
+sidebar carries `1`, `1.1`, `1.4.1`, as deep as the folders go. The number is
+counted from that same single order, so it can never disagree with prev/next
+or the search index, and the root `index.md` carries none — it is the front
+door a reader lands on, not the first chapter. The switch is read at the root
+only: a site is a book or it is not.
+
 `--template` is the page template under the source root (default
 `docs.template.tsx`); when the file does not exist it is written from a
 scaffold, and edited from then on. `--path` and `--from` choose the mode —
 give one, never both.
+
+### What a docs build writes besides the pages
+
+Every build, with no flag and nothing authored by hand
+(`contracts/discoverability.md` §1 and §3):
+
+| File | What it holds |
+|---|---|
+| `sitemap.xml` | every page that is not `noindex`, each with a `lastmod` from the date its Markdown was last written |
+| `robots.txt` | the sitemap's address, and a `Disallow` per `noindex` page |
+| `llms.txt` | the site in one page: title, summary, and every page as a link with its description |
+| `llms-full.txt` | the same order, with every page's Markdown |
+| `<route>/index.md` | each page's Markdown twin, beside its HTML |
+| `search/…` | the search index, in chunks (below) |
+
+Addresses in those files are absolute once the folder is served on an
+address, and the page's own route before then; the next build rewrites them.
+Each page's head also carries `canonical`, the `og:*` and `twitter:*` set
+(defaults from its own title and description), a `TechArticle` and
+`BreadcrumbList` in JSON-LD, and a `rel="alternate" type="text/markdown"`
+link to its twin.
+
+### Components in Markdown, without MDX
+
+A page is handed to its template as blocks, not as one string. Plain Markdown
+is one `markdown` block; a fenced directive is a block of its own, and the
+template renders each one with a component of its own. The set is closed — a
+directive cannot name anything that is not in the list, and nothing in a `.md`
+file becomes code the page runs:
+
+| Written | Block | Rendered by |
+|---|---|---|
+| `:::note` `:::tip` `:::info` `:::warning` `:::caution` `:::danger`, with an optional title on the opening line | `admonition` | `Admonition` |
+| `:::tab Label`, one per pane; consecutive panes are one tab set, and a `::::tabs` wrapper is optional | `tabs` | `TabbedPanes` |
+| `:::cards` holding an ordinary Markdown list, `- [Title](./page.md) — description` | `cards` | `CardGrid` |
+| `:::code-group` holding one fenced block per language, labelled by `title="npm"` or `[npm]` | `code_group` | `CodeGroup` |
+| a fenced code block at the left margin | `code` | `CodeBlock` |
+
+Restyle every admonition on the site by editing one component in the
+template. Directives nest by colon count — the outer one takes four colons,
+the one it holds three. A directive inside a fenced code block stays text, so
+a page can document the syntax. An unknown name (`:::carousel`) renders its
+content plainly rather than nothing, and never as markup.
+
+### Code blocks
+
+A fenced block at the left margin is a block of its own, and its info string
+says what the page draws around it: `ts title="server.ts" {3,7-9}`.
+
+| Written | What it does |
+|---|---|
+| `title="server.ts"`, or `[server.ts]` | a filename header above the code |
+| `{3,7-9}` | those lines tinted, numbered from one |
+| the language `diff` | `+` and `-` drawn in a column of their own, the lines tinted |
+
+Every block has a copy button and a wrap toggle. Wrapping is off by default,
+because a wrapped command line is a misread command line, and the toggle is
+per block rather than per site.
+
+The copy button copies code, never markup: a `+` is a mark on the line and not
+part of its text, so copying a diff gives the file after the change — its
+removed lines and its `@@` headers are shown and not copied.
+
+A fence **indented inside a list item** belongs to that list and stays in the
+Markdown that holds it, where the Markdown renderer draws it. Pulling it out
+would end the list at the fence and start a new one after it.
+
+### Math, without a math library
+
+`$…$` and `$$…$$` are rendered while the site is built, into **MathML** — the
+notation every current browser draws itself. The folder stays a folder of
+pages: no JavaScript library to download, no stylesheet, and no font
+directory. An equation is text a reader can select and a screen reader can
+read aloud.
+
+```md
+The probability of $a$ is
+
+$$P(a) = |\langle a|\psi\rangle|^2$$
+```
+
+What is understood is the subset a documentation page reaches for: fractions,
+roots, sub- and superscripts, sums and integrals with their limits, matrices
+(`\begin{pmatrix}`), `\left…\right` delimiters, accents, the Greek alphabet
+and the usual operators and function names. Nothing is guessed at — a command
+outside that set leaves the author's own `$…$` source on the page, so one
+unusual macro never costs a build.
+
+A `$` is only math when it reads like math: the opening one must be followed
+by something other than a space and the closing one preceded by the same, so
+"it costs $5 and $7" is two prices. `\$` is a dollar sign, and a `$` inside a
+code span or a fenced block is left alone, so a page can document the syntax.
+
+The source — not the MathML — is what goes into the Markdown twin,
+`llms-full.txt` and the search index, and a heading keeps its slug from its
+own text, so an equation in a heading never becomes an unreadable anchor.
+
+### Links are checked before the site is written
+
+Every internal link and `#anchor` in the Markdown is resolved against the
+routes and headings the build is about to write. A link to a page that is not
+there, an anchor for a heading that was renamed, or a path climbing out of the
+docs folder refuses the build and names every one of them at once — nothing is
+written. External links (`http`, `https`, `mailto`, `tel`) are never fetched
+and never checked, and a link inside a fenced code block is left alone.
+
+### Search without a server
+
+The index is split, so a query fetches the part its own terms live in:
+
+| File | What it holds |
+|---|---|
+| `search/manifest.json` | the chunk ids — the only names the page may fetch |
+| `search/t-<prefix>.json` | the pages each term appears in, with a weight; keyed by the term's first letter, split to two letters once a letter holds more than 400 terms |
+| `search/m-<block>.json` | the result card (title, address, section, description) for 64 pages |
+| `search/x-<page>.json` | one page's text, for the matched line under a result |
+
+A two-term query over sixty pages costs about 20 KB: the manifest, two term
+chunks, one card block, and the text of only the results shown. A thousand
+pages cost the same, which is the point of the split.
+
+The page tokenises a query exactly as the build tokenised the Markdown — lower
+case, split on everything that is not a letter or a digit, two characters to
+thirty-two. A term chooses its chunk **from the manifest's list**; it never
+spells a file name, so no query can name a path. The query is capped at 128
+characters and 8 terms, prefix matching is bounded inside one already-fetched
+chunk, nothing is compiled into a regular expression, and the matched line is
+located by index and rendered as text — a page whose Markdown contains markup
+cannot write markup into a result.
 
 ---
 
