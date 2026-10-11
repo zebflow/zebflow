@@ -545,6 +545,7 @@ fn validate_relative_file(path: &str, value: &str) -> Result<(), ContractError> 
         || value.contains('\\')
         || value.chars().any(char::is_control)
         || value_path.is_absolute()
+        || crate::infra::io::path::rel_path_names_git_dir(value)
         || value_path.components().any(|component| {
             matches!(
                 component,

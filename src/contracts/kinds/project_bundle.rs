@@ -20,6 +20,10 @@ pub const PROJECT_BUNDLE_MANIFEST_FILE: &str = "manifest.json";
 /// cannot be fetched again from their recorded source
 /// (`distribution.md` §5 reproducibility table).
 pub const PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR: &str = "carried-dependencies";
+/// Archive-root file holding the repository's git history as a `git bundle`:
+/// commits and refs only, never a `.git` directory, so nothing of the
+/// sender's git config or hooks can travel with it.
+pub const PROJECT_BUNDLE_HISTORY_FILE: &str = "repo.history.bundle";
 
 /// Canonical archive-root envelope for every whole-project movement.
 pub struct ProjectBundleContract;
@@ -111,6 +115,11 @@ pub struct ProjectBundleSpec {
     /// production set is rebuilt on import. Only with the `repo` class.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_pipelines: Vec<ProjectBundleActivePipeline>,
+    /// SHA-256 of [`PROJECT_BUNDLE_HISTORY_FILE`] when the archive carries the
+    /// repository's git history. Only with the `repo` class; absent, the
+    /// import starts the repository with one commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_digest: Option<String>,
 }
 
 /// One pipeline that was active when the archive was exported.
@@ -194,6 +203,15 @@ impl ProjectBundleSpec {
                 "ZF_PROJECT_BUNDLE_EXPORTED_AT",
                 "spec.exported_at must be a positive unix timestamp",
             ));
+        }
+        if let Some(digest) = &self.history_digest {
+            if !self.carries(ProjectBundleClass::Repo) {
+                return Err(ContractError::violation(
+                    "ZF_PROJECT_BUNDLE_HISTORY",
+                    "spec.history_digest is only carried with the repo class",
+                ));
+            }
+            validate_sha256_digest("spec.history_digest", digest)?;
         }
         if let Some(office) = &self.source_office_id
             && (office.trim().is_empty() || office.chars().any(char::is_control))

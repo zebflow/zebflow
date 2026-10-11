@@ -7089,6 +7089,14 @@ async fn a_git_conflict_is_resolved_in_the_studio_not_locally() {
     let data_root = config.data_root.clone();
     let app = build_router(config).await.expect("platform router");
     let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    // The Studio's commits carry the signed-in user's git identity. Without
+    // one they fall back to `<project>@zebflow.local`, which a developer's
+    // pre-push privacy hook reads as a personal address and refuses.
+    let profile = app.clone().oneshot(Request::builder().uri("/api/profile").method("PUT")
+        .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"git_name": "Studio", "git_email": "studio@example.test"}).to_string())).expect("request"))
+        .await.expect("response");
+    assert_eq!(profile.status(), StatusCode::OK);
 
     let git = |dir: &std::path::Path, args: &[&str]| {
         let out = std::process::Command::new("git")
@@ -7097,8 +7105,12 @@ async fn a_git_conflict_is_resolved_in_the_studio_not_locally() {
         assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).to_string()
     };
-    let bare = data_root.join("remote.git");
-    git(&data_root, &["init", "--bare", "--initial-branch=main", bare.to_str().unwrap()]);
+    // The remote lives outside the data root: a file:// remote inside it is
+    // refused, because that is where every other project's repository is.
+    let remote_root = temp_test_dir("git-sync-conflict-remote");
+    std::fs::create_dir_all(&*remote_root).expect("remote root");
+    let bare = remote_root.join("remote.git");
+    git(&remote_root, &["init", "--bare", "--initial-branch=main", bare.to_str().unwrap()]);
     let remote_url = format!("file://{}", bare.display());
 
     let post = |path: &'static str, body: serde_json::Value| {

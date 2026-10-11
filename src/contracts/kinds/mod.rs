@@ -53,7 +53,7 @@ pub use pipeline::{
     validate_pipeline_activation, validate_pipeline_graph,
 };
 pub use project_bundle::{
-    PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR, PROJECT_BUNDLE_MANIFEST_FILE,
+    PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR, PROJECT_BUNDLE_HISTORY_FILE, PROJECT_BUNDLE_MANIFEST_FILE,
     ProjectBundleActivePipeline, ProjectBundleCarriedDependency, ProjectBundleClass, ProjectBundleContract, ProjectBundleCounts,
     ProjectBundleSpec,
 };
@@ -61,6 +61,7 @@ pub use project_configuration::{
     LEGACY_PROJECT_CONFIGURATION_FILE, PROJECT_CONFIGURATION_BACKUP_FILE,
     PROJECT_CONFIGURATION_FILE, ProjectConfigurationContract, ProjectConfigurationSpec,
     ProjectInitialDataDirSpec, ProjectLayoutSpec, decode_legacy_project_configuration,
+    is_git_branch_name,
 };
 pub use rwe_library_manifest::RweLibraryManifestContract;
 pub use zebfs_acl::ZebFsAclContract;

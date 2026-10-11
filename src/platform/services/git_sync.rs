@@ -20,6 +20,12 @@
 //!   the repository's config; the token travels as an `http.extraheader` on
 //!   the one command that needs it, so it never lands in `.git/config` or a
 //!   log line.
+//! - **Every git runs hardened** ([`git_command`]). A repository's own
+//!   config was written by whoever wrote the repository, so the settings
+//!   that make git start a program are pinned on the command line, where it
+//!   cannot override them; a ref from a request is never read as an option
+//!   (`--end-of-options`); and a `file://` remote never reaches into the data
+//!   root, where every other project's repository lives.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -142,6 +148,7 @@ impl GitSyncService {
         if repo_url.is_empty() {
             return Err(PlatformError::new("GIT_NO_REMOTE", "No remote configured. Connect a remote in the Git panel first."));
         }
+        refuse_remote_in_data_root(repo_url, &self.platform.config.data_root)?;
         let current = run(repo, &[], &["remote", "get-url", "origin"]).ok();
         match current {
             Some(url) if url.trim() == repo_url => Ok(()),
@@ -164,7 +171,7 @@ impl GitSyncService {
         let (ahead, behind) = if repo_url.is_empty() {
             (None, None)
         } else {
-            match run(&repo, &[], &["rev-list", "--left-right", "--count", &format!("HEAD...origin/{remote_branch}")]) {
+            match run(&repo, &[], &["rev-list", "--left-right", "--count", "--end-of-options", &format!("HEAD...origin/{remote_branch}")]) {
                 Ok(s) => {
                     let mut it = s.split_whitespace();
                     (it.next().and_then(|a| a.parse().ok()), it.next().and_then(|b| b.parse().ok()))
@@ -182,7 +189,7 @@ impl GitSyncService {
         let (repo_url, cred, remote_branch) = self.remote(owner, project)?;
         self.ensure_origin(&repo, &repo_url)?;
         let auth = self.auth_args(owner, project, &cred, &repo_url);
-        match run(&repo, &auth, &["fetch", "origin", &remote_branch]) {
+        match run(&repo, &auth, &["fetch", "--end-of-options", "origin", &remote_branch]) {
             Ok(_) => {}
             // An empty remote has no branch yet: nothing to fetch, nothing to
             // rebase on; the first push creates it. Every other failure is real.
@@ -209,7 +216,7 @@ impl GitSyncService {
         let (_, _, remote_branch) = self.remote(owner, project)?;
         // A project always has uncommitted files (its scaffold, a draft page);
         // `--autostash` sets them aside for the rebase and brings them back.
-        match run_env(&repo, &identity, &["rebase", "--autostash", &format!("origin/{remote_branch}")], &[("GIT_EDITOR", "true")]) {
+        match run_env(&repo, &identity, &["rebase", "--autostash", "--end-of-options", &format!("origin/{remote_branch}")], &[("GIT_EDITOR", "true")]) {
             Ok(_) => Ok(SyncOutcome::Ok { state: self.state(owner, project)? }),
             Err(err) => {
                 let state = self.state(owner, project)?;
@@ -234,7 +241,7 @@ impl GitSyncService {
             return Err(PlatformError::new("GIT_CONFLICT", "a rebase is in progress — resolve the conflicts and continue, or abort"));
         }
         let auth = self.auth_args(owner, project, &cred, &repo_url);
-        match run(&repo, &auth, &["push", "--set-upstream", "origin", &format!("HEAD:{remote_branch}")]) {
+        match run(&repo, &auth, &["push", "--set-upstream", "--end-of-options", "origin", &format!("HEAD:{remote_branch}")]) {
             Ok(_) => self.fetch(owner, project),
             Err(err) => {
                 let msg = err.message.to_lowercase();
@@ -315,12 +322,51 @@ impl GitSyncService {
     }
 }
 
+/// The settings pinned on every git this platform runs. Command-line `-c`
+/// outranks every config file, so a `.git/config` planted by a clone, a
+/// bundle or an import cannot name a hook, a file-system monitor or an
+/// `ext::` transport to run. `core.symlinks=false` makes a clone, a sync or
+/// a checkout write a committed symlink as a plain file holding its target:
+/// a project's files are served without a login, and a link would serve
+/// whatever it points at.
+const HARDENED_CONFIG: &[&str] = &[
+    "core.hooksPath=/dev/null",
+    "core.fsmonitor=false",
+    "core.symlinks=false",
+    "protocol.ext.allow=never",
+];
+
+/// A `git` process with [`HARDENED_CONFIG`] applied and no terminal prompt.
+/// Every git the platform starts is built here; add arguments after it.
+pub fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    for setting in HARDENED_CONFIG {
+        cmd.arg("-c").arg(setting);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
+/// A `file://` remote is a repository on this machine. One inside the data
+/// root is another project's repository (or this one's), never a remote.
+pub fn refuse_remote_in_data_root(repo_url: &str, data_root: &Path) -> Result<(), PlatformError> {
+    let Some(rest) = repo_url.strip_prefix("file://") else {
+        return Ok(());
+    };
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let target = canonical(Path::new(rest));
+    if target.starts_with(canonical(data_root)) || Path::new(rest).starts_with(data_root) {
+        return Err(PlatformError::new("GIT_REMOTE_REFUSED", "a file:// remote cannot point inside the platform's data root"));
+    }
+    Ok(())
+}
+
 fn run(repo: &Path, pre: &[String], args: &[&str]) -> Result<String, PlatformError> {
     run_env(repo, pre, args, &[])
 }
 
 fn run_env(repo: &Path, pre: &[String], args: &[&str], env: &[(&str, &str)]) -> Result<String, PlatformError> {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command();
     for p in pre {
         cmd.arg(p);
     }
@@ -383,6 +429,45 @@ mod tests {
         assert_eq!(s.word(), "no-remote");
         let fresh = SyncState { remote_configured: true, ..Default::default() };
         assert_eq!(fresh.word(), "unknown");
+    }
+
+    #[test]
+    fn a_file_remote_never_reaches_into_the_data_root() {
+        let root = std::env::temp_dir().join(format!("zf-git-root-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("tenants/a/b/repo")).unwrap();
+        let inside = format!("file://{}", root.join("tenants/a/b/repo").display());
+        let dotted = format!("file://{}/tenants/../tenants/a/b/repo", root.display());
+        assert!(refuse_remote_in_data_root(&inside, &root).is_err());
+        assert!(refuse_remote_in_data_root(&dotted, &root).is_err());
+        assert!(refuse_remote_in_data_root("file:///srv/remotes/site-a.git", &root).is_ok());
+        assert!(refuse_remote_in_data_root("https://git.example.com/a.git", &root).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_planted_hook_never_runs() {
+        let repo = std::env::temp_dir().join(format!("zf-git-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git_command().arg("init").arg("-q").arg(&repo).status().unwrap().success());
+        let marker = repo.join("hook-ran");
+        let hook = repo.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ok = git_command()
+            .args(["-c", "user.name=a", "-c", "user.email=a@example.com", "-C"])
+            .arg(&repo)
+            .args(["commit", "-q", "--allow-empty", "-m", "one"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        assert!(!marker.exists(), "the repository's own hook ran");
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

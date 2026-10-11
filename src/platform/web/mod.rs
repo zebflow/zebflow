@@ -2694,8 +2694,11 @@ async fn project_asset(
     if !abs.starts_with(&root) {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
     }
+    // Lexical containment is not enough here: this route needs no login, and
+    // `is_file` and `read` follow a symlink wherever it points.
+    use crate::infra::io::path::real_path_within;
     // Try compiled web-assets first; fall back to the layout's static dir (`repo/static/` by default).
-    let (serve_bytes, serve_path) = if abs.is_file() {
+    let (serve_bytes, serve_path) = if abs.is_file() && real_path_within(&root, &abs) {
         match std::fs::read(&abs) {
             Ok(b) => (b, abs),
             Err(err) => {
@@ -2705,7 +2708,10 @@ async fn project_asset(
     } else {
         let static_root = layout.repo_static_dir();
         let static_abs = static_root.join(&normalized);
-        if !static_abs.starts_with(&static_root) || !static_abs.is_file() {
+        if !static_abs.starts_with(&static_root)
+            || !static_abs.is_file()
+            || !real_path_within(&static_root, &static_abs)
+        {
             return (StatusCode::NOT_FOUND, "asset not found").into_response();
         }
         match std::fs::read(&static_abs) {
@@ -2781,7 +2787,8 @@ async fn project_static_asset(
     if !abs.starts_with(&assets_root) {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
     }
-    if !abs.is_file() {
+    // This route needs no login, and `is_file` and `read` follow a symlink.
+    if !abs.is_file() || !crate::infra::io::path::real_path_within(&assets_root, &abs) {
         return (StatusCode::NOT_FOUND, "asset not found").into_response();
     }
     let bytes = match std::fs::read(&abs) {
@@ -3796,7 +3803,13 @@ async fn home_clone_project_submit(
         let b = req.remote_branch.trim().to_string();
         if b.is_empty() { "main".to_string() } else { b }
     };
-    let mut clone_cmd = std::process::Command::new("git");
+    let local_branch = req.local_branch.trim();
+    if !crate::contracts::kinds::is_git_branch_name(&remote_branch)
+        || (!local_branch.is_empty() && !crate::contracts::kinds::is_git_branch_name(local_branch))
+    {
+        return (StatusCode::BAD_REQUEST, "not a valid branch name").into_response();
+    }
+    let mut clone_cmd = crate::platform::services::git_sync::git_command();
     clone_cmd.arg("clone");
     if !remote_branch.is_empty() {
         clone_cmd.arg("-b").arg(&remote_branch);
@@ -3830,18 +3843,19 @@ async fn home_clone_project_submit(
         }
     };
     if effective_local != remote_branch {
-        let _ = std::process::Command::new("git")
+        let _ = crate::platform::services::git_sync::git_command()
             .arg("-C")
             .arg(&repo_dir)
             .arg("branch")
             .arg("-m")
+            .arg("--end-of-options")
             .arg(&remote_branch)
             .arg(&effective_local)
             .output();
     }
 
     // Detect whether the cloned repo has any commits (empty remote repos have no HEAD)
-    let has_commits = std::process::Command::new("git")
+    let has_commits = crate::platform::services::git_sync::git_command()
         .arg("-C")
         .arg(&repo_dir)
         .arg("rev-parse")
@@ -3935,14 +3949,14 @@ async fn home_clone_project_submit(
         };
 
         // Stage everything scaffolded by create_or_update_project
-        let _ = std::process::Command::new("git")
+        let _ = crate::platform::services::git_sync::git_command()
             .arg("-C")
             .arg(&repo_dir)
             .arg("add")
             .arg("-A")
             .output();
 
-        let commit_out = std::process::Command::new("git")
+        let commit_out = crate::platform::services::git_sync::git_command()
             .arg("-c")
             .arg(format!("user.name={identity_fallback_name}"))
             .arg("-c")
@@ -3956,11 +3970,12 @@ async fn home_clone_project_submit(
 
         if commit_out.map(|o| o.status.success()).unwrap_or(false) {
             // Push to establish the default branch on the remote
-            let push_out = std::process::Command::new("git")
+            let push_out = crate::platform::services::git_sync::git_command()
                 .arg("-C")
                 .arg(&repo_dir)
                 .arg("push")
                 .arg("--set-upstream")
+                .arg("--end-of-options")
                 .arg(&auth_url)
                 .arg(format!("HEAD:{}", effective_local))
                 .output();
@@ -10903,6 +10918,7 @@ async fn api_internal_project_transfer_export(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, raw_kind)): Path<(String, String, String)>,
+    Query(query): Query<ProjectTransferExportQuery>,
 ) -> Response {
     if let Err(response) = require_controller_call(&state, &headers) {
         return response;
@@ -10930,6 +10946,7 @@ async fn api_internal_project_transfer_export(
         kind.classes(),
         local_office_id(&state).as_deref(),
         &active,
+        query.history,
         &output_path,
     );
     match export {
@@ -11087,10 +11104,19 @@ async fn api_project_transfer_operations(
     }
 }
 
+/// `?history=false` leaves the repository's git history out of an export;
+/// it travels by default.
+#[derive(serde::Deserialize)]
+struct ProjectTransferExportQuery {
+    #[serde(default = "default_true")]
+    history: bool,
+}
+
 async fn api_project_transfer_export(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, raw_kind)): Path<(String, String, String)>,
+    Query(query): Query<ProjectTransferExportQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -11153,11 +11179,12 @@ async fn api_project_transfer_export(
             Err(err) => return internal_error(err),
         };
         let url = format!(
-            "{}/api/internal/project-transfer/{}/{}/export/{}",
+            "{}/api/internal/project-transfer/{}/{}/export/{}?history={}",
             worker.base_url.trim_end_matches('/'),
             owner,
             project,
-            kind.key()
+            kind.key(),
+            query.history
         );
         match state
             .http_client
@@ -11198,6 +11225,7 @@ async fn api_project_transfer_export(
                     kind.classes(),
                     local_office_id(&state).as_deref(),
                     &active,
+                    query.history,
                     &artifact_path,
                 )
             }) {
@@ -12692,7 +12720,7 @@ async fn api_pipeline_lock_toggle(
     let actor_user = session_owner(&state, &headers);
     let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let _ = {
-        let mut add_cmd = std::process::Command::new("git");
+        let mut add_cmd = crate::platform::services::git_sync::git_command();
         add_cmd
             .arg("-C")
             .arg(&layout.repo_dir)
@@ -12702,7 +12730,7 @@ async fn api_pipeline_lock_toggle(
         add_cmd.output()
     };
     let _ = {
-        let mut commit_cmd = std::process::Command::new("git");
+        let mut commit_cmd = crate::platform::services::git_sync::git_command();
         for arg in &identity_args {
             commit_cmd.arg(arg);
         }
@@ -12772,7 +12800,7 @@ async fn api_template_lock_toggle(
     let actor_user = session_owner(&state, &headers);
     let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let _ = {
-        let mut add_cmd = std::process::Command::new("git");
+        let mut add_cmd = crate::platform::services::git_sync::git_command();
         add_cmd
             .arg("-C")
             .arg(&layout.repo_dir)
@@ -12782,7 +12810,7 @@ async fn api_template_lock_toggle(
         add_cmd.output()
     };
     let _ = {
-        let mut commit_cmd = std::process::Command::new("git");
+        let mut commit_cmd = crate::platform::services::git_sync::git_command();
         for arg in &identity_args {
             commit_cmd.arg(arg);
         }
@@ -13124,7 +13152,7 @@ async fn api_git_commit(
         Err(err) => return internal_error(err),
     };
     // git add <files>
-    let mut add_cmd = std::process::Command::new("git");
+    let mut add_cmd = crate::platform::services::git_sync::git_command();
     add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--");
     for f in &req.files {
         add_cmd.arg(f);
@@ -13149,7 +13177,7 @@ async fn api_git_commit(
     // git commit -m <message>
     let actor_user = session_owner(&state, &headers);
     let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
-    let mut commit_cmd = std::process::Command::new("git");
+    let mut commit_cmd = crate::platform::services::git_sync::git_command();
     for arg in &identity_args {
         commit_cmd.arg(arg);
     }
@@ -13183,6 +13211,16 @@ async fn api_git_commit(
         let svc = git_sync_service(&state);
         if !req.repo_url.clone().unwrap_or_default().trim().is_empty() || !req.credential_id.clone().unwrap_or_default().trim().is_empty() || !req.branch.clone().unwrap_or_default().trim().is_empty() {
             // The request may carry a remote the project has not saved yet (the panel's first sync).
+            // Saving a remote is a settings change, whichever route carries it.
+            if let Err(response) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::SettingsWrite) {
+                return response;
+            }
+            if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+                req.repo_url.as_deref().unwrap_or_default().trim(),
+                &state.platform.config.data_root,
+            ) {
+                return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+            }
             let branch = req.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "main".to_string());
             if let Err(e) = state.platform.zebflow_cfg.update(&owner_slug, &project_slug, |cfg| {
                 if let Some(u) = req.repo_url.clone().filter(|u| !u.trim().is_empty()) { cfg.configs.git.remote.repo_url = u.trim().to_string(); }
@@ -13387,6 +13425,12 @@ async fn api_git_put_remote(
     } else {
         req.branch.trim().to_string()
     };
+    if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+        req.repo_url.trim(),
+        &state.platform.config.data_root,
+    ) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+    }
     match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
         cfg.configs.git.remote.credential_id = req.credential_id.trim().to_string();
         cfg.configs.git.remote.repo_url = req.repo_url.trim().to_string();
@@ -18185,7 +18229,7 @@ async fn api_upsert_settings_section(
         {
             Err(_) => (false, Some("could not resolve project layout".to_string())),
             Ok(layout) => {
-                let add_ok = std::process::Command::new("git")
+                let add_ok = crate::platform::services::git_sync::git_command()
                     .arg("-C")
                     .arg(&layout.repo_dir)
                     .arg("add")
@@ -18197,7 +18241,7 @@ async fn api_upsert_settings_section(
                 if !add_ok {
                     (false, Some("git add failed".to_string()))
                 } else {
-                    let mut commit_cmd = std::process::Command::new("git");
+                    let mut commit_cmd = crate::platform::services::git_sync::git_command();
                     for arg in &identity_args {
                         commit_cmd.arg(arg);
                     }
@@ -18687,7 +18731,7 @@ fn rwe_library_git_commit(
         .file
         .ensure_project_layout(&owner_slug, &project_slug)
         .map_err(|_| ())?;
-    let add_ok = std::process::Command::new("git")
+    let add_ok = crate::platform::services::git_sync::git_command()
         .arg("-C")
         .arg(&layout.repo_dir)
         .arg("add")
@@ -18700,7 +18744,7 @@ fn rwe_library_git_commit(
         return Err(());
     }
     let identity_args = git_identity_args(state, actor_user, &project_slug);
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = crate::platform::services::git_sync::git_command();
     for arg in &identity_args {
         cmd.arg(arg);
     }

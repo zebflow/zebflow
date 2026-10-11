@@ -81,11 +81,13 @@ fn pick_email(user_email: &str, project_slug: &str) -> String {
     }
 }
 
-fn fallback_name(project_slug: &str) -> String {
+/// The author name a project commits under when no user profile names one.
+pub fn fallback_name(project_slug: &str) -> String {
     slug_segment(project_slug)
 }
 
-fn fallback_email(project_slug: &str) -> String {
+/// The author email a project commits under when no user profile names one.
+pub fn fallback_email(project_slug: &str) -> String {
     format!("{}@zebflow.local", slug_segment(project_slug))
 }
 

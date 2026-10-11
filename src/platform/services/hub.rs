@@ -5607,6 +5607,12 @@ fn sanitize_install_repo_path(
             format!("artifact path '{rel_path}' escaped repo root"),
         ));
     }
+    if crate::infra::io::path::rel_path_names_git_dir(rel_path) {
+        return Err(PlatformError::new(
+            "HUB_INSTALL",
+            format!("artifact path '{rel_path}' writes into .git"),
+        ));
+    }
     let abs = layout.repo_dir.join(normalize_repo_rel(rel_path));
     if !abs.starts_with(&layout.repo_dir) {
         return Err(PlatformError::new(

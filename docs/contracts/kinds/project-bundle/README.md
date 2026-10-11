@@ -24,6 +24,13 @@ declares which classes the archive carries:
 
 Fixed rules, riding on sealed ground elsewhere:
 
+- `repo/.git` never travels as a directory — its config and hooks are the
+  sender's and would run on the receiver. An archive entry inside any `.git`
+  is refused. Git history travels, when the exporter keeps the default, as
+  `repo.history.bundle` (a `git bundle` of every ref) beside the classes,
+  declared by `spec.history_digest`. Import starts a fresh repository and
+  fetches the bundle into it; without one, it commits the delivered tree once.
+  Hub `project_bundle` assets never carry history.
 - `data/cache/` never travels — rebuildable (`instance-directory.md`).
 - `data/store/addressing.json` never travels — where a project answers is the
   instance's (`addressing.md` §0). Export leaves it out; import keeps the

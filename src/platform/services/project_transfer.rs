@@ -23,8 +23,8 @@ use sha2::{Digest, Sha256};
 
 use crate::contracts::kinds::{
     DEPENDENCY_LOCK_FILE, DependencyLockContract, DependencyLockSource,
-    PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR, PROJECT_BUNDLE_MANIFEST_FILE,
-    PROJECT_CONFIGURATION_FILE, ProjectBundleActivePipeline, ProjectBundleCarriedDependency, ProjectBundleClass,
+    PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR, PROJECT_BUNDLE_HISTORY_FILE,
+    PROJECT_BUNDLE_MANIFEST_FILE, PROJECT_CONFIGURATION_FILE, ProjectBundleActivePipeline, ProjectBundleCarriedDependency, ProjectBundleClass,
     ProjectBundleContract, ProjectBundleCounts, ProjectBundleSpec, ProjectConfigurationContract,
 };
 use crate::contracts::{
@@ -34,6 +34,7 @@ use crate::contracts::{
 use crate::infra::io::durable::directory_tree_sha256;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::error::PlatformError;
+use crate::platform::services::git_sync::git_command;
 use crate::platform::model::{
     ProjectFileLayout, ProjectTransferArtifactKind, now_ts, recovery_date_stamp, slug_segment,
 };
@@ -167,6 +168,7 @@ impl ProjectTransferService {
         classes: &[ProjectBundleClass],
         source_office_id: Option<&str>,
         active_pipelines: &[ProjectBundleActivePipeline],
+        history: bool,
         output_path: &Path,
     ) -> Result<ContractDocument<ProjectBundleSpec>, PlatformError> {
         let owner = slug_segment(owner);
@@ -211,6 +213,11 @@ impl ProjectTransferService {
                 let beside = [sekejap::BACKUP_SUFFIX, sekejap::STAGING_SUFFIX, legacy.as_str()]
                     .map(|suffix| format!("{}{suffix}", sekejap::STORE_DIR));
                 copy_dir_skipping(&source, &staged, &beside)?
+            } else if *class == ProjectBundleClass::Repo {
+                // `.git` never travels as a directory: its config and hooks
+                // are the sender's, and would run on the receiver. History,
+                // when asked for, travels as a git bundle beside the class.
+                copy_dir_without_git(&source, &staged)?
             } else {
                 copy_dir_recursive(&source, &staged)?
             };
@@ -283,6 +290,14 @@ impl ProjectTransferService {
         }
 
         let classes_carry_repo = classes.contains(&ProjectBundleClass::Repo);
+        let history_digest = if history && classes_carry_repo {
+            write_history_bundle(&layout.repo_dir, &staging.join(PROJECT_BUNDLE_HISTORY_FILE))?
+                .then(|| self.sha256_hex(&staging.join(PROJECT_BUNDLE_HISTORY_FILE)))
+                .transpose()?
+                .map(|hex| format!("sha256:{hex}"))
+        } else {
+            None
+        };
         let spec = ProjectBundleSpec {
             classes,
             exported_at: now_ts(),
@@ -300,6 +315,7 @@ impl ProjectTransferService {
             } else {
                 Vec::new()
             },
+            history_digest,
         };
         let metadata = ContractMetadata::named(format!("{owner}/{project}"));
         write_contract::<ProjectBundleContract>(
@@ -363,6 +379,7 @@ impl ProjectTransferService {
             let declared = name == PROJECT_BUNDLE_MANIFEST_FILE
                 || (name == PROJECT_BUNDLE_CARRIED_DEPENDENCIES_DIR
                     && document.spec.carries(ProjectBundleClass::Repo))
+                || (name == PROJECT_BUNDLE_HISTORY_FILE && document.spec.history_digest.is_some())
                 || ProjectBundleClass::parse(&name)
                     .is_some_and(|class| document.spec.carries(class));
             if !declared {
@@ -396,6 +413,23 @@ impl ProjectTransferService {
                         "class '{class}' does not match its declared digest: expected \
                          {expected}, archive contains {actual}"
                     ),
+                ));
+            }
+        }
+
+        if let Some(expected) = &document.spec.history_digest {
+            let path = dir.join(PROJECT_BUNDLE_HISTORY_FILE);
+            if !path.is_file() {
+                return Err(PlatformError::new(
+                    "PROJECT_TRANSFER_HISTORY",
+                    format!("the manifest declares git history but {PROJECT_BUNDLE_HISTORY_FILE} is missing"),
+                ));
+            }
+            let actual = format!("sha256:{}", self.sha256_hex(&path)?);
+            if &actual != expected {
+                return Err(PlatformError::new(
+                    "PROJECT_TRANSFER_DIGEST_MISMATCH",
+                    format!("{PROJECT_BUNDLE_HISTORY_FILE} does not match its declared digest"),
                 ));
             }
         }
@@ -532,7 +566,17 @@ impl ProjectTransferService {
 
         // The imported repository brings its own zebflow.yaml; scaffold any
         // directory the incoming layout expects but the archive left empty.
-        let _ = self.file.ensure_project_layout(&owner, &project)?;
+        // That includes `.git`: the archive never carries one, so the layout
+        // starts a fresh repository, written by this machine's git.
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        if staging.carries(ProjectBundleClass::Repo) {
+            let history = staging.dir.join(PROJECT_BUNDLE_HISTORY_FILE);
+            if staging.document.spec.history_digest.is_some() {
+                restore_history_bundle(&layout.repo_dir, &history)?;
+            } else {
+                commit_imported_tree(&layout.repo_dir, &project, &staging.document.metadata.name)?;
+            }
+        }
         Ok(ProjectImportOutcome {
             provenance: staging.document.metadata.name.clone(),
             classes: staging.document.spec.classes.clone(),
@@ -1029,6 +1073,15 @@ pub(crate) fn validate_archive_entry_names(archive_path: &Path) -> Result<(), Pl
     let listing = String::from_utf8_lossy(&output.stdout);
     for name in listing.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
         let path = Path::new(name);
+        if crate::infra::io::path::rel_path_names_git_dir(name) {
+            return Err(PlatformError::new(
+                "PROJECT_TRANSFER_PATH_ESCAPE",
+                format!(
+                    "archive entry '{name}' is inside a .git directory; git history travels \
+                     as {PROJECT_BUNDLE_HISTORY_FILE}, never as .git"
+                ),
+            ));
+        }
         let escapes = name.contains('\\')
             || path.components().any(|component| {
                 matches!(
@@ -1105,6 +1158,149 @@ fn extract_tar_archive(archive_path: &Path, output_dir: &Path) -> Result<(), Pla
         "PROJECT_TRANSFER_EXTRACT",
         String::from_utf8_lossy(&output.stderr).trim().to_string(),
     ))
+}
+
+/// `copy_dir_recursive`, leaving out every `.git` at any depth (any case).
+fn copy_dir_without_git(source: &Path, target: &Path) -> Result<DirectoryStats, PlatformError> {
+    let mut stats = DirectoryStats::default();
+    fs::create_dir_all(target)?;
+    if !source.exists() {
+        return Ok(stats);
+    }
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().eq_ignore_ascii_case(".git") {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        let target_path = target.join(entry.file_name());
+        if file_type.is_dir() {
+            let child = copy_dir_without_git(&entry.path(), &target_path)?;
+            stats.file_count += child.file_count;
+            stats.total_bytes += child.total_bytes;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target_path)?;
+            stats.file_count += 1;
+            stats.total_bytes += entry.metadata()?.len();
+        }
+    }
+    Ok(stats)
+}
+
+/// Writes the repository's history as a `git bundle` of every ref. A
+/// repository with no commit has no history to carry: `false`, no file.
+fn write_history_bundle(repo_dir: &Path, bundle_path: &Path) -> Result<bool, PlatformError> {
+    let has_commit = git_command()
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .is_ok_and(|out| out.status.success());
+    if !has_commit {
+        return Ok(false);
+    }
+    let out = git_command()
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["bundle", "create", "--quiet"])
+        .arg(bundle_path)
+        .arg("--all")
+        .output()?;
+    if !out.status.success() {
+        return Err(PlatformError::new(
+            "PROJECT_TRANSFER_HISTORY",
+            format!("git bundle failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        ));
+    }
+    Ok(true)
+}
+
+/// Gives a freshly initialized repository the bundle's history: every branch
+/// and tag, `HEAD` on the branch the bundle's `HEAD` named, and the index
+/// matching it. The working tree is left as the archive delivered it, so
+/// changes that were uncommitted at export are uncommitted here too.
+fn restore_history_bundle(repo_dir: &Path, bundle_path: &Path) -> Result<(), PlatformError> {
+    let git = |args: &[&str]| -> Result<String, PlatformError> {
+        let out = git_command().arg("-C").arg(repo_dir).args(args).output()?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        } else {
+            Err(PlatformError::new(
+                "PROJECT_TRANSFER_HISTORY",
+                format!("git {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr).trim()),
+            ))
+        }
+    };
+    let bundle = bundle_path.to_string_lossy().to_string();
+    let heads = git(&["bundle", "list-heads", "--end-of-options", &bundle])?;
+    git(&[
+        "fetch",
+        "--quiet",
+        "--update-head-ok",
+        "--end-of-options",
+        &bundle,
+        "+refs/heads/*:refs/heads/*",
+        "+refs/tags/*:refs/tags/*",
+    ])?;
+    let mut head_sha = None;
+    let mut branches = Vec::new();
+    for line in heads.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(sha), Some(name)) = (parts.next(), parts.next()) else { continue };
+        if name == "HEAD" {
+            head_sha = Some(sha.to_string());
+        } else if let Some(branch) = name.strip_prefix("refs/heads/") {
+            branches.push((sha.to_string(), branch.to_string()));
+        }
+    }
+    let branch = branches
+        .iter()
+        .find(|(sha, _)| Some(sha) == head_sha.as_ref())
+        .or_else(|| branches.first())
+        .map(|(_, branch)| branch.clone())
+        .ok_or_else(|| PlatformError::new("PROJECT_TRANSFER_HISTORY", "the history bundle has no branch"))?;
+    if !crate::contracts::kinds::is_git_branch_name(&branch) {
+        return Err(PlatformError::new(
+            "PROJECT_TRANSFER_HISTORY",
+            format!("the history bundle's branch '{branch}' is not a valid branch name"),
+        ));
+    }
+    git(&["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])?;
+    git(&["reset", "--quiet"])?;
+    Ok(())
+}
+
+/// An archive without history starts the repository with one commit of
+/// everything it delivered, under the project's fallback git identity.
+fn commit_imported_tree(repo_dir: &Path, project: &str, provenance: &str) -> Result<(), PlatformError> {
+    use crate::platform::services::access::git_identity::{fallback_email, fallback_name};
+    let identity = [
+        "-c".to_string(),
+        format!("user.name={}", fallback_name(project)),
+        "-c".to_string(),
+        format!("user.email={}", fallback_email(project)),
+    ];
+    let add = git_command().arg("-C").arg(repo_dir).args(["add", "--all"]).output()?;
+    if !add.status.success() {
+        return Err(PlatformError::new(
+            "PROJECT_TRANSFER_IMPORT",
+            format!("git add failed: {}", String::from_utf8_lossy(&add.stderr).trim()),
+        ));
+    }
+    let out = git_command()
+        .args(&identity)
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["commit", "--quiet", "--allow-empty", "-m"])
+        .arg(format!("Import {provenance}"))
+        .output()?;
+    if !out.status.success() {
+        return Err(PlatformError::new(
+            "PROJECT_TRANSFER_IMPORT",
+            format!("git commit failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        ));
+    }
+    Ok(())
 }
 
 /// `copy_dir_recursive`, leaving out the entries directly under `source`
@@ -1222,6 +1418,98 @@ mod tests {
         bytes.extend(std::iter::repeat_n(0_u8, 1024));
     }
 
+    fn git_in(repo: &Path, args: &[&str]) -> String {
+        let out = git_command()
+            .args(["-c", "user.name=Author", "-c", "user.email=author@example.test", "-C"])
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A source project with two commits on a branch named `trunk`, a tag, an
+    /// uncommitted edit, and a `.git/config` that names a program to run.
+    fn project_with_history(instance: &TestInstance, project: &str) -> PathBuf {
+        instance.config.ensure_initialized("owner", project, "History").unwrap();
+        let repo = instance.file.ensure_project_layout("owner", project).unwrap().repo_dir;
+        git_in(&repo, &["checkout", "-q", "-b", "trunk"]);
+        fs::write(repo.join("README.md"), "one\n").unwrap();
+        git_in(&repo, &["add", "--all"]);
+        git_in(&repo, &["commit", "-q", "-m", "first"]);
+        fs::write(repo.join("README.md"), "two\n").unwrap();
+        git_in(&repo, &["commit", "-q", "-am", "second"]);
+        git_in(&repo, &["tag", "v1"]);
+        fs::write(repo.join("README.md"), "uncommitted\n").unwrap();
+        git_in(&repo, &["config", "filter.planted.clean", "touch /tmp/planted"]);
+        repo
+    }
+
+    #[test]
+    fn git_history_travels_as_a_bundle_never_as_dot_git() {
+        let root = tempfile::tempdir().unwrap();
+        let instance = instance(root.path());
+        project_with_history(&instance, "source");
+        let archive = root.path().join("history.tar");
+        let document = instance
+            .transfer
+            .export_project("owner", "source", &[ProjectBundleClass::Repo], None, &[], true, &archive)
+            .unwrap();
+        assert!(document.spec.history_digest.is_some());
+
+        let listing = Command::new("tar").arg("-tf").arg(&archive).output().unwrap();
+        let listing = String::from_utf8_lossy(&listing.stdout);
+        assert!(!listing.lines().any(crate::infra::io::path::rel_path_names_git_dir), "{listing}");
+        assert!(listing.lines().any(|l| l.trim_start_matches("./") == PROJECT_BUNDLE_HISTORY_FILE), "{listing}");
+
+        instance.config.ensure_initialized("owner", "target", "Target").unwrap();
+        instance.transfer.import_project("owner", "target", None, &archive).unwrap();
+        let repo = instance.file.ensure_project_layout("owner", "target").unwrap().repo_dir;
+        assert_eq!(git_in(&repo, &["log", "--format=%s"]), "second\nfirst");
+        assert_eq!(git_in(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]), "trunk");
+        assert_eq!(git_in(&repo, &["tag"]), "v1");
+        // Uncommitted at export, uncommitted here.
+        assert_eq!(fs::read_to_string(repo.join("README.md")).unwrap(), "uncommitted\n");
+        assert!(git_in(&repo, &["status", "--porcelain"]).contains("README.md"));
+        // The sender's git config stayed behind.
+        let config = fs::read_to_string(repo.join(".git/config")).unwrap();
+        assert!(!config.contains("planted"), "{config}");
+    }
+
+    #[test]
+    fn without_history_the_import_starts_with_one_commit() {
+        let root = tempfile::tempdir().unwrap();
+        let instance = instance(root.path());
+        project_with_history(&instance, "source");
+        let archive = root.path().join("no-history.tar");
+        let document = instance
+            .transfer
+            .export_project("owner", "source", &[ProjectBundleClass::Repo], None, &[], false, &archive)
+            .unwrap();
+        assert!(document.spec.history_digest.is_none());
+
+        instance.config.ensure_initialized("owner", "target", "Target").unwrap();
+        instance.transfer.import_project("owner", "target", None, &archive).unwrap();
+        let repo = instance.file.ensure_project_layout("owner", "target").unwrap().repo_dir;
+        assert_eq!(git_in(&repo, &["log", "--format=%s"]), "Import owner/source");
+        assert_eq!(fs::read_to_string(repo.join("README.md")).unwrap(), "uncommitted\n");
+        assert_eq!(git_in(&repo, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn an_archive_carrying_dot_git_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let instance = instance(root.path());
+        let mut bytes = Vec::new();
+        append_tar_entry(&mut bytes, "repo/.git/config", b"[filter \"x\"]\n\tclean = touch /tmp/x\n");
+        finish_tar(&mut bytes);
+        let archive = root.path().join("dot-git.tar");
+        fs::write(&archive, bytes).unwrap();
+        let err = instance.transfer.stage_archive(&archive).unwrap_err();
+        assert_eq!(err.code, "PROJECT_TRANSFER_PATH_ESCAPE", "{err:?}");
+    }
+
     /// S7 regression. A live SQLite database keeps recent commits in `-wal`
     /// until a checkpoint folds them in. The export walked `data/store/` with
     /// `copy_dir_recursive` and copied `local.db`, `local.db-wal`, and
@@ -1271,6 +1559,7 @@ mod tests {
                 &[ProjectBundleClass::Repo, ProjectBundleClass::Store],
                 None,
                 &[],
+                true,
                 &archive,
             )
             .unwrap();
@@ -1391,6 +1680,7 @@ mod tests {
                 ProjectTransferArtifactKind::Bundle.classes(),
                 Some("source-office"),
                 &[],
+                true,
                 &archive,
             )
             .unwrap();
@@ -1467,6 +1757,7 @@ mod tests {
                 ProjectTransferArtifactKind::Bundle.classes(),
                 None,
                 &[],
+                true,
                 &archive,
             )
             .unwrap();
@@ -1549,6 +1840,7 @@ mod tests {
                 ProjectTransferArtifactKind::Bundle.classes(),
                 None,
                 &[],
+                true,
                 &archive,
             )
             .unwrap();
@@ -1707,6 +1999,7 @@ mod tests {
                 ProjectTransferArtifactKind::Files.classes(),
                 None,
                 &[],
+                true,
                 &archive,
             )
             .unwrap();
@@ -1739,6 +2032,7 @@ mod tests {
                 ProjectTransferArtifactKind::Files.classes(),
                 None,
                 &[],
+                true,
                 &archive,
             )
             .unwrap();

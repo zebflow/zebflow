@@ -1,5 +1,6 @@
 import { useState } from "zeb/react";
 import Button from "@/components/ui/button";
+import CheckboxField from "@/components/ui/checkbox-field";
 import Field from "@/components/ui/field";
 import { requestJson } from "@/components/lib/http";
 
@@ -23,9 +24,11 @@ const KINDS = [
 export default function TransferActionsGrid({ api, onOperationsChanged, onStatus }) {
   const [picked, setPicked] = useState({ bundle: null, files: null, full: null });
   const [busyKey, setBusyKey] = useState("");
+  const [withHistory, setWithHistory] = useState(true);
 
   async function send(direction, kind) {
-    const url = api?.[`${direction}_${kind}`];
+    const base = api?.[`${direction}_${kind}`];
+    const url = base && direction === "export" && !withHistory ? `${base}?history=false` : base;
     const file = picked[kind];
     if (!url || (direction === "import" && !file)) return;
 
@@ -65,6 +68,14 @@ export default function TransferActionsGrid({ api, onOperationsChanged, onStatus
           Credentials and DB connections stay platform-managed. Caches, installed hub content, logs,
           and recovery copies stay home and rebuild or regenerate.
         </p>
+        <CheckboxField
+          className="mt-3"
+          label="Include git history"
+          description="Commits, branches and tags travel as a git bundle. Leave it off to share the files without what was ever committed; the import then starts with one commit."
+          checked={withHistory}
+          disabled={busyKey !== ""}
+          onChange={(event) => setWithHistory(!!event?.target?.checked)}
+        />
         <div className="mt-4 flex flex-wrap gap-2">
           {KINDS.map((kind) => (
             <Button

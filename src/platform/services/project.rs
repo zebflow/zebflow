@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -299,7 +298,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), PlatformError> {
 }
 
 fn init_git_repo(repo_dir: &Path) -> Result<(), PlatformError> {
-    let status = Command::new("git")
+    let status = crate::platform::services::git_sync::git_command()
         .arg("init")
         .arg("-q")
         .arg("--initial-branch=main")
@@ -760,12 +759,16 @@ impl ProjectService {
         // Safe even with no commits — git branch -m works on an unborn branch.
         if let Some(ref branch) = req.local_branch {
             let branch = branch.trim();
-            if !branch.is_empty() && branch != "main" {
-                let _ = Command::new("git")
+            if !branch.is_empty()
+                && branch != "main"
+                && crate::contracts::kinds::is_git_branch_name(branch)
+            {
+                let _ = crate::platform::services::git_sync::git_command()
                     .arg("-C")
                     .arg(&layout.repo_dir)
                     .arg("branch")
                     .arg("-m")
+                    .arg("--end-of-options")
                     .arg("main")
                     .arg(branch)
                     .output();
@@ -2458,7 +2461,7 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
-        let output = Command::new("git")
+        let output = crate::platform::services::git_sync::git_command()
             .arg("-C")
             .arg(&layout.repo_dir)
             .arg("status")
@@ -2519,7 +2522,7 @@ impl ProjectService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
-        let output = Command::new("git")
+        let output = crate::platform::services::git_sync::git_command()
             .arg("-C")
             .arg(&layout.repo_dir)
             .arg("status")
@@ -2581,7 +2584,7 @@ impl ProjectService {
         let config_exists = git_dir.join("config").is_file();
         let objects_exists = git_dir.join("objects").is_dir();
         let refs_exists = git_dir.join("refs").is_dir();
-        let rev_parse = Command::new("git")
+        let rev_parse = crate::platform::services::git_sync::git_command()
             .arg("-C")
             .arg(&layout.repo_dir)
             .arg("rev-parse")
@@ -2670,7 +2673,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let out = Command::new("git")
+        let out = crate::platform::services::git_sync::git_command()
             .arg("-C")
             .arg(&layout.repo_dir)
             .arg("rev-parse")
@@ -2694,7 +2697,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let out = Command::new("git")
+        let out = crate::platform::services::git_sync::git_command()
             .arg("-C")
             .arg(&layout.repo_dir)
             .arg("branch")
@@ -2725,13 +2728,22 @@ impl ProjectService {
     ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(&layout.repo_dir).arg("checkout");
-        if create {
-            cmd.arg("-b");
+        if !crate::contracts::kinds::is_git_branch_name(branch) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_GIT_CHECKOUT",
+                format!("'{branch}' is not a valid branch name"),
+            ));
         }
-        cmd.arg(branch);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let mut cmd = crate::platform::services::git_sync::git_command();
+        cmd.arg("-C").arg(&layout.repo_dir).arg("checkout");
+        // `--` after the branch: a branch that shares a name with a file is
+        // still the branch, never a path to overwrite.
+        if create {
+            cmd.arg("-b").arg(branch);
+        } else {
+            cmd.arg("--end-of-options").arg(branch).arg("--");
+        }
         let out = cmd
             .output()
             .map_err(|e| PlatformError::new("PLATFORM_REPO_GIT", e.to_string()))?;
@@ -3234,13 +3246,28 @@ fn resolve_repo_entry(
             "repository path must not be empty",
         ));
     }
+    // Files and folders alike: a folder moved over `.git`, or `.git` deleted,
+    // is as much a write into git's directory as a file saved there.
+    if crate::infra::io::path::rel_path_names_git_dir(&rel) {
+        return Err(PlatformError::new(
+            "PLATFORM_REPO_PATH",
+            "the repository's .git directory belongs to git",
+        ));
+    }
+    let abs = layout.repo_dir.join(&rel);
+    if !crate::infra::io::path::real_path_within(&layout.repo_dir, &abs) {
+        return Err(PlatformError::new(
+            "PLATFORM_REPO_PATH",
+            "repository path must stay inside the repository",
+        ));
+    }
     if is_file && let Some(reason) = layout.repo_layout.refused_file_type(&rel) {
         return Err(PlatformError::new(
             "PLATFORM_REPO_FILE_TYPE",
             format!("this project does not accept {reason} ('{rel}')"),
         ));
     }
-    Ok((rel.clone(), layout.repo_dir.join(&rel)))
+    Ok((rel, abs))
 }
 
 /// Whether a repository entry is the platform's to write, not the author's.

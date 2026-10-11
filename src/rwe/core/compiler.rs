@@ -234,7 +234,7 @@ fn runtime_import_refusal(import: &str) -> Option<EngineError> {
 
 fn validate_import_allowlist(
     imports: &[String],
-    _options: &CompileOptions,
+    options: &CompileOptions,
 ) -> Result<(), EngineError> {
     for import in imports {
         if import == "zeb" {
@@ -260,10 +260,15 @@ fn validate_import_allowlist(
         if is_external_specifier(import) {
             continue;
         }
-        // Absolute paths are the resolved form of @/ imports, written to disk by
-        // prepare_template_root() before compile() is called. Never
-        // user-authored.
+        // An absolute path is the resolved form of an @/ import, written to
+        // disk by prepare_template_root() before compile() is called — and
+        // also what an author can type. Only the first is inside a root.
         if import.starts_with('/') {
+            ensure_bundle_read_allowed(
+                import,
+                options.template_root.as_deref(),
+                &options.library_roots,
+            )?;
             continue;
         }
         return Err(EngineError::new(
@@ -684,6 +689,35 @@ fn resolve_style_path(base: &Path) -> Result<PathBuf, EngineError> {
     Ok(base.to_path_buf())
 }
 
+/// Whether the bundler may read `path`: only a file under the template root
+/// or a library root. Every module and stylesheet the bundle inlines passes
+/// here before it is read, so an absolute import an author typed —
+/// another project's source, a server file — is refused, and the refusal
+/// says nothing about whether that file exists.
+fn ensure_bundle_read_allowed(
+    path: &str,
+    template_root: Option<&str>,
+    library_roots: &std::collections::BTreeMap<String, String>,
+) -> Result<(), EngineError> {
+    let target = canonical_module_identity(path)?;
+    let inside = template_root
+        .into_iter()
+        .chain(library_roots.values().map(String::as_str))
+        .filter_map(|root| canonical_or_current(Path::new(root)).ok())
+        .any(|root| target.starts_with(normalize_path(&root)));
+    if inside {
+        Ok(())
+    } else {
+        Err(EngineError::new(
+            "RWE_IMPORT_BOUNDARY",
+            format!(
+                "import '{path}' is outside the template root and the libraries; \
+                 address a template as \"@/…\" and a library as \"zeb/…\""
+            ),
+        ))
+    }
+}
+
 fn ensure_within_root(path: &Path, root: &Path) -> Result<(), EngineError> {
     if path.starts_with(root) {
         Ok(())
@@ -799,7 +833,7 @@ fn bundle_for_client(
     for edge in imports {
         let path = edge.resolved.as_deref().unwrap_or(&edge.source);
         if path.starts_with('/') && path.ends_with(".css") {
-            collect_inline_style(path, &mut inline_styles, &mut visited)?;
+            collect_inline_style(path, &mut inline_styles, &mut visited, template_root, library_roots)?;
         } else if path.starts_with('/') && !is_rwe_runtime_path(path) {
             collect_inlined_module(
                 path,
@@ -866,6 +900,7 @@ fn collect_inlined_module(
     declared: &mut std::collections::HashMap<String, String>,
     sources: &mut std::collections::HashMap<String, String>,
 ) -> Result<(), EngineError> {
+    ensure_bundle_read_allowed(path, template_root, library_roots)?;
     let canonical_path = canonical_module_identity(path)?;
     let visit_key = canonical_path.to_string_lossy().to_string();
 
@@ -912,7 +947,7 @@ fn collect_inlined_module(
     let sub_paths = extract_filesystem_import_paths(&content);
     for sub_path in &sub_paths {
         if sub_path.ends_with(".css") {
-            collect_inline_style(sub_path, inline_styles, visited)?;
+            collect_inline_style(sub_path, inline_styles, visited, template_root, library_roots)?;
         } else {
             collect_inlined_module(
                 sub_path,
@@ -971,7 +1006,10 @@ fn collect_inline_style(
     path: &str,
     inline_styles: &mut Vec<String>,
     visited: &mut HashSet<String>,
+    template_root: Option<&str>,
+    library_roots: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), EngineError> {
+    ensure_bundle_read_allowed(path, template_root, library_roots)?;
     let canonical_path = canonical_module_identity(path)?;
     let visit_key = canonical_path.to_string_lossy().to_string();
     if visited.contains(&visit_key) {
@@ -1616,6 +1654,57 @@ export default function Page() { return <div />; }"#;
             rewritten.contains(r#"from "zeb/react""#),
             "zeb/react imports must stay logical, got: {rewritten}"
         );
+    }
+
+    #[test]
+    fn an_absolute_import_outside_the_roots_is_never_read() {
+        let (_tmp, root) = temp_root("rwe-absolute-import-test");
+        let (_other_tmp, other) = temp_root("rwe-absolute-import-other");
+        fs::create_dir_all(root.join("components")).expect("create components dir");
+        fs::write(
+            root.join("components/ok.tsx"),
+            "export default function Ok() { return <b>ok</b>; }",
+        )
+        .expect("write component");
+        // Another project's source, and a stylesheet beside it.
+        fs::write(
+            other.join("secret.tsx"),
+            "export default function Secret() { return <i>secret</i>; }",
+        )
+        .expect("write other");
+        fs::write(other.join("secret.css"), ".secret { color: red; }").expect("write css");
+        let options = || CompileOptions {
+            template_root: Some(root.display().to_string()),
+            file_path: Some(root.join("page.tsx").display().to_string()),
+            ..Default::default()
+        };
+
+        for import in [
+            format!("import Secret from \"{}\";", other.join("secret.tsx").display()),
+            format!("import \"{}\";", other.join("secret.css").display()),
+            format!("import Secret from \"{}/../{}/secret.tsx\";", root.display(), other.file_name().unwrap().to_string_lossy()),
+        ] {
+            let page = format!("{import}\nexport default function Page() {{ return <div />; }}");
+            let err = compile(&page, options()).expect_err("an absolute import outside the roots");
+            assert_eq!(err.code, "RWE_IMPORT_BOUNDARY", "{import}: {err:?}");
+        }
+
+        // A component that imports outside the roots is refused too, not only the page.
+        fs::write(
+            root.join("components/leak.tsx"),
+            format!(
+                "import Secret from \"{}\";\nexport default function Leak() {{ return <Secret />; }}",
+                other.join("secret.tsx").display()
+            ),
+        )
+        .expect("write leaking component");
+        let page = "import Leak from \"@/components/leak\";\nexport default function Page() { return <Leak />; }";
+        let err = compile(page, options()).expect_err("a component's absolute import");
+        assert_eq!(err.code, "RWE_IMPORT_BOUNDARY", "{err:?}");
+
+        let page = "import Ok from \"@/components/ok\";\nexport default function Page() { return <Ok />; }";
+        let compiled = compile(page, options()).expect("an @/ import still compiles");
+        assert!(compiled.client_module_source.contains("ok"));
     }
 
     #[test]

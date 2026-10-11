@@ -66,9 +66,76 @@ pub fn rel_path_escapes_root(raw: &str) -> bool {
     })
 }
 
+/// Whether `raw` names git's own directory, `.git`, at any depth and in any
+/// case (a case-insensitive disk reads `.GIT` as `.git`).
+///
+/// A repository's `.git` belongs to git: a file written there is a hook, a
+/// config that names a program, or a ref. Nothing a person, a package or an
+/// agent asks to write in a repository goes there.
+pub fn rel_path_names_git_dir(raw: &str) -> bool {
+    raw.split(['/', '\\'])
+        .any(|segment| segment.trim().eq_ignore_ascii_case(".git"))
+}
+
+/// Whether `path` really lies under `root`, with every symlink followed.
+///
+/// [`contained_rel_path`] decides containment on the string, which a symlink
+/// inside the root defeats: `root/static/x` that links to `/etc` is lexically
+/// inside and really outside. A path that does not exist yet is judged by its
+/// nearest existing ancestor, which is where a write would land; a dangling
+/// link is refused outright, because writing through it creates its target.
+pub fn real_path_within(root: &Path, path: &Path) -> bool {
+    let Ok(real_root) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    let mut probe = path;
+    loop {
+        match std::fs::canonicalize(probe) {
+            Ok(real) => return real.starts_with(&real_root),
+            Err(_) if probe.symlink_metadata().is_ok() => return false,
+            Err(_) => match probe.parent() {
+                Some(parent) => probe = parent,
+                None => return false,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{contained_rel_path, rel_path_escapes_root};
+    use super::{contained_rel_path, real_path_within, rel_path_escapes_root, rel_path_names_git_dir};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_root_is_outside() {
+        let base = std::env::temp_dir().join(format!("zf-real-path-{}", std::process::id()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(root.join("static")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("static/out")).unwrap();
+        std::os::unix::fs::symlink(base.join("missing"), root.join("dangling")).unwrap();
+        std::fs::write(root.join("static/ok.txt"), "ok").unwrap();
+
+        assert!(real_path_within(&root, &root.join("static/ok.txt")));
+        assert!(real_path_within(&root, &root.join("static/new/file.txt")));
+        assert!(!real_path_within(&root, &root.join("static/out/secret")));
+        assert!(!real_path_within(&root, &root.join("static/out/new.txt")));
+        assert!(!real_path_within(&root, &root.join("dangling")));
+        assert!(!real_path_within(&root, &root.join("dangling/x")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_git_directory_is_named_in_any_case_at_any_depth() {
+        for raw in [".git", ".git/config", "a/.git/hooks/pre-commit", ".GIT/config", "a\\.Git\\x"] {
+            assert!(rel_path_names_git_dir(raw), "{raw}");
+        }
+        for raw in [".github/workflows/ci.yml", ".gitignore", "docs/git.md", "a.git/b"] {
+            assert!(!rel_path_names_git_dir(raw), "{raw}");
+        }
+    }
 
     #[test]
     fn traversal_cannot_survive_normalization() {

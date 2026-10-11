@@ -412,8 +412,22 @@ fn validate_git_url(value: &str) -> Result<(), ContractError> {
 }
 
 fn validate_git_branch(value: &str) -> Result<(), ContractError> {
+    if !is_git_branch_name(value) {
+        return Err(ContractError::invalid(
+            "spec.git.remote.branch is not a valid Git branch name",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `value` may be handed to git as a branch name. Beyond git's own
+/// ref rules, a leading `-` is refused: git reads such an argument as an
+/// option, and `--upload-pack=<program>` runs a program. Every caller that
+/// takes a branch from a request checks it here before git sees it.
+pub fn is_git_branch_name(value: &str) -> bool {
     let invalid = value.is_empty()
         || value.len() > 255
+        || value.starts_with('-')
         || value.starts_with('.')
         || value.ends_with('.')
         || value.ends_with('/')
@@ -423,12 +437,7 @@ fn validate_git_branch(value: &str) -> Result<(), ContractError> {
         || value
             .chars()
             .any(|character| character.is_control() || " ~^:?*[\\".contains(character));
-    if invalid {
-        return Err(ContractError::invalid(
-            "spec.git.remote.branch is not a valid Git branch name",
-        ));
-    }
-    Ok(())
+    !invalid
 }
 
 fn validate_optional_range(
@@ -1854,6 +1863,21 @@ mod tests {
             )
             .is_err()
         );
+
+        for branch in ["--upload-pack=touch /tmp/x", "-b", "main..x", ".hidden"] {
+            let mut spec = ProjectConfigurationSpec::default();
+            spec.git.remote.repo_url = "https://git.example.com/project.git".to_string();
+            spec.git.remote.branch = branch.to_string();
+            assert!(
+                encode_contract::<ProjectConfigurationContract>(
+                    ContractMetadata::named("project"),
+                    spec
+                )
+                .is_err(),
+                "branch {branch:?} must be refused"
+            );
+        }
+        assert!(is_git_branch_name("feature/a-b"));
 
         let mut spec = ProjectConfigurationSpec::default();
         spec.rwe.allow_list = vec![

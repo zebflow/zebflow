@@ -1549,7 +1549,7 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
         };
 
-        let mut cmd = std::process::Command::new("git");
+        let mut cmd = crate::platform::services::git_sync::git_command();
 
         // On commit: inject committer identity from user profile.
         // git global options (-c) must come BEFORE the subcommand.

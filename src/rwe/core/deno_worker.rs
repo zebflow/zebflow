@@ -613,6 +613,12 @@ fn load_sync(specifier: &ModuleSpecifier) -> Result<ModuleSource, JsErrorBox> {
     let path = specifier
         .to_file_path()
         .map_err(|_| JsErrorBox::generic(format!("invalid file URL: {specifier}")))?;
+    if !is_own_render_module(&path) {
+        return Err(JsErrorBox::generic(format!(
+            "RWE module loader loads only the page module; '{specifier}' is not one — \
+             templates and libraries are bundled at compile time, never imported at render"
+        )));
+    }
 
     let source = std::fs::read_to_string(&path)
         .map_err(|e| JsErrorBox::generic(format!("failed reading {}: {e}", path.display())))?;
@@ -795,6 +801,17 @@ pub fn cleanup_temp_modules() {
     }
 }
 
+/// Whether `path` is a module this worker wrote with [`write_temp_module`].
+/// The compiler inlines every template and library into that one module, so
+/// it is the only file a render ever loads; anything else is a dynamic
+/// `import()` a template wrote, and a template reads no files.
+fn is_own_render_module(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    path.parent() == Some(std::env::temp_dir().as_path())
+        && name.starts_with("rwe-module-")
+        && name.ends_with(".js")
+}
+
 fn write_temp_module(js: &str) -> Result<std::path::PathBuf, EngineError> {
     use std::io::Write;
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -849,6 +866,27 @@ mod tests {
             second_render.page_config,
             Some(json!({ "title": "Second" }))
         );
+    }
+
+    #[test]
+    fn a_template_imports_no_file_at_render() {
+        let secret = std::env::temp_dir().join(format!("rwe-secret-{}.js", std::process::id()));
+        std::fs::write(&secret, "export const leaked = 'SERVER_FILE_CONTENT';").expect("write");
+        let source = format!(
+            r#"
+            const mod = await import("{}");
+            export default function Page() {{
+                return <main>{{mod.leaked}}</main>;
+            }}
+        "#,
+            secret.display()
+        );
+        let rendered = render_ssr(&source, &json!({}), 10_000);
+        let _ = std::fs::remove_file(&secret);
+        match rendered {
+            Ok(out) => assert!(!out.html.contains("SERVER_FILE_CONTENT"), "{}", out.html),
+            Err(err) => assert!(err.message.contains("loads only the page module"), "{err:?}"),
+        }
     }
 
     #[test]

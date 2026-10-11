@@ -4,7 +4,7 @@ pub mod selection;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::{fs, process::Command};
+use std::fs;
 
 use crate::infra::io::durable::migrate_tier_entry;
 use crate::platform::adapters::data::DataAdapter;
@@ -211,7 +211,7 @@ impl FilesystemFileAdapter {
         if git_dir.exists() {
             return Ok(());
         }
-        let status = Command::new("git")
+        let status = crate::platform::services::git_sync::git_command()
             .arg("init")
             .arg("-q")
             .arg("--initial-branch=main")
