@@ -64,6 +64,17 @@ async fn login(app: &axum::Router) -> String {
         .to_string()
 }
 
+/// The decrypted secret as the runtime reads it. The API never returns it
+/// (`GET` answers it masked), so decryption is proven through the service.
+fn stored_secret(platform: &PlatformService, credential_id: &str) -> Value {
+    platform
+        .credentials
+        .get_project_credential("superadmin", "default", credential_id)
+        .expect("read")
+        .expect("credential exists")
+        .secret
+}
+
 async fn call(app: &axum::Router, method: &str, uri: &str, cookie: &str, body: Value) -> Value {
     let request = Request::builder()
         .uri(uri)
@@ -174,7 +185,11 @@ async fn a_credential_saved_through_the_api_appears_nowhere_in_the_data_root_as_
     // The notes are not the secret half, and are stored as they are.
     assert!(!files_containing(&data_root, "billing account 4").is_empty());
 
-    // (b) The same credential reads back through the API, whole.
+    // (b) The same credential decrypts whole for the runtime...
+    let secret = stored_secret(&platform, "prod-db");
+    assert_eq!(secret["password"], json!(SECRET));
+    assert_eq!(secret["host"], json!(HOST));
+    // ...and reads back through the API with its secret masked.
     let read = call(
         &app,
         "GET",
@@ -183,9 +198,27 @@ async fn a_credential_saved_through_the_api_appears_nowhere_in_the_data_root_as_
         Value::Null,
     )
     .await;
-    assert_eq!(read["credential"]["secret"]["password"], json!(SECRET));
+    assert_eq!(read["credential"]["secret"]["password"], json!(zebflow::platform::services::credential::SECRET_MASK));
     assert_eq!(read["credential"]["secret"]["host"], json!(HOST));
     assert_eq!(read["credential"]["kind"], json!("postgres"));
+    assert!(!read.to_string().contains(SECRET), "the API answered the secret");
+
+    // What the edit dialog does: send the masked credential back with one
+    // field changed. The mask means "keep", so the password survives.
+    let mut edited = read["credential"].clone();
+    edited["secret"]["host"] = json!("db-2.example.com");
+    let saved = call(
+        &app,
+        "PUT",
+        "/api/projects/superadmin/default/credentials/prod-db",
+        &cookie,
+        edited,
+    )
+    .await;
+    assert!(!saved.to_string().contains(SECRET), "the save answered the secret");
+    let secret = stored_secret(&platform, "prod-db");
+    assert_eq!(secret["password"], json!(SECRET));
+    assert_eq!(secret["host"], json!("db-2.example.com"));
 
     // The listing still says a secret is there without carrying one.
     let listed = call(
@@ -302,15 +335,7 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
         ("first", "sealed-under-one"),
         ("second", "sealed-under-two"),
     ] {
-        let read = call(
-            &app,
-            "GET",
-            &format!("/api/projects/superadmin/default/credentials/{id}"),
-            &cookie,
-            Value::Null,
-        )
-        .await;
-        assert_eq!(read["credential"]["secret"]["key"], json!(expected));
+        assert_eq!(stored_secret(&platform, id)["key"], json!(expected));
     }
 
     // The sweep is the separate operation that retires a generation.
@@ -348,18 +373,7 @@ async fn rotation_and_rekey_are_online_and_leave_every_credential_readable() {
     .await;
     let after = std::fs::read_to_string(&key_path).expect("key file");
     assert_ne!(before, after);
-    let read = call(
-        &app,
-        "GET",
-        "/api/projects/superadmin/default/credentials/first",
-        &cookie,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(
-        read["credential"]["secret"]["key"],
-        json!("sealed-under-one")
-    );
+    assert_eq!(stored_secret(&platform, "first")["key"], json!("sealed-under-one"));
 
     // Nothing here is reachable without being superadmin.
     for uri in [
@@ -454,14 +468,6 @@ async fn an_instance_restarted_without_its_key_refuses_to_start() {
     restored.default_password = "test-pass".to_string();
     let platform = Arc::new(PlatformService::from_config(restored).expect("restored"));
     let app = zebflow::platform::web::router(platform.clone()).await;
-    let cookie = login(&app).await;
-    let read = call(
-        &app,
-        "GET",
-        "/api/projects/superadmin/default/credentials/prod-db",
-        &cookie,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(read["credential"]["secret"]["password"], json!(SECRET));
+    let _ = login(&app).await;
+    assert_eq!(stored_secret(&platform, "prod-db")["password"], json!(SECRET));
 }

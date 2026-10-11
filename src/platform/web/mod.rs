@@ -16830,7 +16830,7 @@ async fn api_get_credential(
         .credentials
         .get_project_credential(&owner, &project, &credential_id)
     {
-        Ok(Some(credential)) => Json(json!({"ok": true, "credential": credential})).into_response(),
+        Ok(Some(credential)) => Json(json!({"ok": true, "credential": crate::platform::services::credential::redacted(credential)})).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": {"code":"PLATFORM_CREDENTIAL_MISSING","message":"credential not found"}}))).into_response(),
         Err(err) => internal_error(err),
     }
@@ -16872,7 +16872,7 @@ async fn api_upsert_credential(
         .credentials
         .upsert_project_credential(&owner, &project, &req)
     {
-        Ok(credential) => Json(json!({"ok": true, "credential": credential})).into_response(),
+        Ok(credential) => Json(json!({"ok": true, "credential": crate::platform::services::credential::redacted(credential)})).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -16914,7 +16914,7 @@ async fn api_upsert_credential_by_path(
         .credentials
         .upsert_project_credential(&owner, &project, &req)
     {
-        Ok(credential) => Json(json!({"ok": true, "credential": credential})).into_response(),
+        Ok(credential) => Json(json!({"ok": true, "credential": crate::platform::services::credential::redacted(credential)})).into_response(),
         Err(err) => internal_error(err),
     }
 }

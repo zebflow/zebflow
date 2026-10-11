@@ -13,6 +13,88 @@ use crate::platform::model::{
     now_ts, slug_segment,
 };
 
+/// What a reader sees in place of a secret value. Sent back unchanged in an
+/// update, it means "keep the stored value", so an edit form can show a
+/// credential without the server ever handing its secrets out.
+pub const SECRET_MASK: &str = "__zebflow_secret_unchanged__";
+
+/// The top-level secret keys of `kind` that are safe to show: the fields its
+/// type declares as text, select, number or tags. Everything else — password
+/// and textarea fields, and any key the type does not declare — is masked.
+/// The kinds whose Studio form is hand-written name their plain keys here.
+fn plain_secret_keys(kind: &str) -> HashSet<String> {
+    let mut keys: HashSet<String> = builtin_credential_types()
+        .into_iter()
+        .filter(|def| def.kind == kind)
+        .flat_map(|def| def.fields)
+        .filter(|field| matches!(field.field_type.as_str(), "text" | "select" | "number" | "tags"))
+        .map(|field| field.key)
+        .collect();
+    let hand_written: &[&str] = match kind {
+        "oauth2" => &["provider", "client_id", "authorize_url", "token_url", "scopes", "redirect_uri", "expires_at", "token_type"],
+        "hmac" => &["provider", "signature_header", "signature_encoding", "signature_prefix", "algorithm", "replay_tolerance"],
+        "secure_request" => &["request", "variables", "egress"],
+        "github" | "gitlab" => &["repo_url", "instance_url"],
+        _ => &[],
+    };
+    keys.extend(hand_written.iter().map(|key| key.to_string()));
+    keys
+}
+
+fn mask_leaves(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), mask_leaves(v))).collect(),
+        Value::Array(items) => items.iter().map(mask_leaves).collect(),
+        // Unset stays visibly unset: the form shows an empty field, not a mask.
+        Value::Null => Value::Null,
+        Value::String(text) if text.is_empty() => Value::String(String::new()),
+        _ => Value::String(SECRET_MASK.to_string()),
+    }
+}
+
+/// The credential as a reader may see it: every secret value replaced by
+/// [`SECRET_MASK`]. Keys stay, so the form still knows which fields are set.
+pub fn redacted(mut credential: ProjectCredential) -> ProjectCredential {
+    let plain = plain_secret_keys(&credential.kind);
+    credential.secret = match &credential.secret {
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| (k.clone(), if plain.contains(k) { v.clone() } else { mask_leaves(v) }))
+            .collect(),
+        other => mask_leaves(other),
+    };
+    credential
+}
+
+/// `incoming` with every [`SECRET_MASK`] replaced by the stored value at the
+/// same place. A mask with nothing stored behind it — a new credential, or a
+/// key renamed in the form — is refused rather than saved as the mask text.
+fn restore_masked(incoming: &Value, stored: Option<&Value>, path: &str) -> Result<Value, PlatformError> {
+    match incoming {
+        Value::String(text) if text == SECRET_MASK => stored.cloned().ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_CREDENTIAL_INVALID",
+                format!("{path} has no stored value to keep; enter it again"),
+            )
+        }),
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| {
+                restore_masked(v, stored.and_then(|s| s.get(k)), &format!("{path}.{k}"))
+                    .map(|value| (k.clone(), value))
+            })
+            .collect::<Result<serde_json::Map<_, _>, _>>()
+            .map(Value::Object),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| restore_masked(v, stored.and_then(|s| s.get(i)), &format!("{path}[{i}]")))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        other => Ok(other.clone()),
+    }
+}
+
 /// Project-scoped credentials stored in the metadata catalog.
 // ---------------------------------------------------------------------------
 // Confidential value registry — `kinds/invocation-record` rule 3
@@ -240,6 +322,7 @@ impl CredentialService {
             .data
             .get_project_credential(&owner, &project, &credential_id)?;
         let created_at = existing.as_ref().map(|row| row.created_at).unwrap_or(now);
+        let secret = restore_masked(&req.secret, existing.as_ref().map(|row| &row.secret), "secret")?;
         let credential = ProjectCredential {
             owner: owner.clone(),
             project: project.clone(),
@@ -250,7 +333,7 @@ impl CredentialService {
                 req.title.trim().to_string()
             },
             kind,
-            secret: req.secret.clone(),
+            secret,
             notes: req.notes.trim().to_string(),
             created_at,
             updated_at: now,
@@ -991,4 +1074,64 @@ fn extract_secure_request_vars(secret: &Value) -> Vec<SecureRequestVariableDefin
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn credential(kind: &str, secret: Value) -> ProjectCredential {
+        ProjectCredential {
+            owner: "owner".into(),
+            project: "demo".into(),
+            credential_id: "main".into(),
+            title: "Main".into(),
+            kind: kind.into(),
+            secret,
+            notes: String::new(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn a_reader_sees_the_fields_but_never_the_secrets() {
+        let shown = redacted(credential(
+            "postgres",
+            json!({"host": "db.example.com", "port": "5432", "user": "app", "password": "<stored-password>", "extra": "x"}),
+        ));
+        assert_eq!(shown.secret["host"], "db.example.com");
+        assert_eq!(shown.secret["user"], "app");
+        assert_eq!(shown.secret["password"], SECRET_MASK);
+        // A key the type does not declare is not known to be safe.
+        assert_eq!(shown.secret["extra"], SECRET_MASK);
+
+        let shown = redacted(credential(
+            "secure_request",
+            json!({"request": {"url": "https://partner.example/login?id=<ID>"}, "secrets": {"SHARED": "s3cret", "EMPTY": ""}}),
+        ));
+        assert_eq!(shown.secret["request"]["url"], "https://partner.example/login?id=<ID>");
+        assert_eq!(shown.secret["secrets"]["SHARED"], SECRET_MASK);
+        assert_eq!(shown.secret["secrets"]["EMPTY"], "");
+
+        let shown = redacted(credential("custom", json!({"anything": {"deep": ["a", 1]}})));
+        assert_eq!(shown.secret, json!({"anything": {"deep": [SECRET_MASK, SECRET_MASK]}}));
+        let all = serde_json::to_string(&shown).unwrap();
+        assert!(!all.contains("\"a\""));
+    }
+
+    #[test]
+    fn a_mask_sent_back_keeps_the_stored_value() {
+        let stored = json!({"host": "db", "password": "<stored-password>", "secrets": {"A": "1", "B": "2"}});
+        let incoming = json!({"host": "db2", "password": SECRET_MASK, "secrets": {"A": SECRET_MASK, "B": "changed"}});
+        let merged = restore_masked(&incoming, Some(&stored), "secret").unwrap();
+        assert_eq!(merged, json!({"host": "db2", "password": "<stored-password>", "secrets": {"A": "1", "B": "changed"}}));
+
+        // Renamed in the form: nothing stored behind the mask.
+        let renamed = json!({"secrets": {"C": SECRET_MASK}});
+        assert!(restore_masked(&renamed, Some(&stored), "secret").is_err());
+        // A new credential cannot be saved holding the mask text.
+        assert!(restore_masked(&json!({"password": SECRET_MASK}), None, "secret").is_err());
+    }
 }
