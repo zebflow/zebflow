@@ -311,6 +311,9 @@ pub fn css_family(name: &str) -> String {
     if name.contains('\'') { format!("\"{name}\"") } else { format!("'{name}'") }
 }
 
+/// An attribute value, safe between either quote: the value replaces one
+/// written as `font-family='Inter'` as often as `font-family="Inter"`, and
+/// the quoted family name must not end either.
 pub fn escape_attr_into(out: &mut String, text: &str) {
     for ch in text.chars() {
         match ch {
@@ -318,6 +321,7 @@ pub fn escape_attr_into(out: &mut String, text: &str) {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
             _ => out.push(ch),
         }
     }
@@ -334,9 +338,9 @@ mod tests {
         let doc = Document::parse(svg).unwrap();
         let out = prepare(&doc, &fonts).unwrap();
         assert!(!out.contains("inline-size"), "{out}");
-        assert!(out.contains(r#"<g font-family="'Inter 24pt'" font-weight="800">"#), "{out}");
+        assert!(out.contains(r#"<g font-family="&#39;Inter 24pt&#39;" font-weight="800">"#), "{out}");
         assert!(out.contains(r#"<tspan x="540" dy="0">"#) && out.contains(r#"<tspan x="540" dy="96">"#), "{out}");
-        assert!(out.contains(r#"<text x="10" y="500" font-family="'Inter 24pt'">left alone</text>"#), "{out}");
+        assert!(out.contains(r#"<text x="10" y="500" font-family="&#39;Inter 24pt&#39;">left alone</text>"#), "{out}");
         let m = TextMeasurer::new(&fonts);
         let family = fonts.resolve("Inter").unwrap();
         let lines: Vec<&str> = out.split("<tspan").skip(1).map(|s| s.split_once('>').unwrap().1.split("</tspan>").next().unwrap()).collect();
@@ -354,9 +358,9 @@ mod tests {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><text x="20 30" y="40" style="font-size: 20px; inline-size: 100px; line-height: 30px; font-family: sans-serif">one two three four five six seven eight</text><rect style="fill:#000; font-family: 'Inter'"/></svg>"#;
         let doc = Document::parse(svg).unwrap();
         let out = prepare(&doc, &fonts).unwrap();
-        assert!(out.contains(r#"style="font-size: 20px; line-height: 30px; font-family: 'Inter 24pt'""#), "{out}");
+        assert!(out.contains(r#"style="font-size: 20px; line-height: 30px; font-family: &#39;Inter 24pt&#39;""#), "{out}");
         assert!(out.contains(r#"<tspan x="20" dy="30">"#), "{out}");
-        assert!(out.contains(r#"<rect style="fill:#000; font-family: 'Inter 24pt'"/>"#), "{out}");
+        assert!(out.contains(r#"<rect style="fill:#000; font-family: &#39;Inter 24pt&#39;"/>"#), "{out}");
     }
 
     #[test]
@@ -406,6 +410,11 @@ mod tests {
         let m = TextMeasurer { opt: usvg::Options { font_family: "no such family".into(), ..fonts.options() }, widths: RefCell::new(HashMap::new()), calls: std::cell::Cell::new(0) };
         assert!(m.width("Inter", "Inter 24pt", 400, 40.0, 0.0) > 0.0);
         assert_eq!(css_family("Source Serif 4 Display"), "'Source Serif 4 Display'");
+        // Written into an attribute in single quotes — the form a template
+        // literal produces — the quoted name stays inside it and still parses.
+        let single = prepare(&Document::parse(r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50"><text x='0' y='40' font-family='Inter' style='font-family: Inter'>x</text><text x='0' y='40' font-family='Inter' inline-size='100'>y z</text></svg>"#).unwrap(), &fonts).unwrap();
+        let tree = usvg::Tree::from_str(&single, &opt).unwrap_or_else(|e| panic!("{e}: {single}"));
+        assert_eq!(tree.root().children().len(), 2, "{single}");
         assert_eq!(css_family("O'Brien Sans"), "\"O'Brien Sans\"");
     }
 
