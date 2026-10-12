@@ -6,7 +6,10 @@
 //! element with none. So every `font-family` (attribute or `style`) is
 //! rewritten to the name the font database registers (`Inter` →
 //! `Inter 24pt`), a stack to its first known family, and a family nobody
-//! has is refused with the list. See [`FontSet::resolve_stack`].
+//! has is refused with the list. See [`FontSet::resolve_stack`]. The name is
+//! written quoted ([`css_family`]): unquoted, a name with a word that is not a
+//! CSS identifier (`Source Serif 4 Display`) fails to parse, and usvg draws
+//! the default family in its place.
 //!
 //! **Wrapping.** SVG 2 gives a `<text>` a width with `inline-size`; resvg
 //! does not implement it, so the element becomes one `<tspan>` per line,
@@ -66,7 +69,7 @@ impl<'a> TextMeasurer<'a> {
         self.calls.set(self.calls.get() + 1);
         let mut svg = String::with_capacity(text.len() + 160);
         let _ = write!(svg, r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text x="0" y="0" font-family=""#);
-        escape_attr_into(&mut svg, family);
+        escape_attr_into(&mut svg, &css_family(family));
         let _ = write!(svg, r#"" font-weight="{weight}" font-size="{size}" letter-spacing="{letter_spacing}">"#);
         escape_into(&mut svg, text);
         svg.push_str("</text></svg>");
@@ -169,12 +172,12 @@ pub fn prepare(doc: &Document<'_>, fonts: &FontSet) -> Result<String, ConvertErr
         for attr in node.attributes() {
             if attr.name() == "font-family" {
                 let mut v = String::new();
-                escape_attr_into(&mut v, fonts.resolve_stack(attr.value())?);
+                escape_attr_into(&mut v, &css_family(fonts.resolve_stack(attr.value())?));
                 edits.push((attr.range_value(), v));
             } else if attr.name() == "style" {
                 if let Some(stack) = style_decl(attr.value(), "font-family") {
                     let mut v = String::new();
-                    escape_attr_into(&mut v, &style_with(attr.value(), "font-family", Some(fonts.resolve_stack(&stack)?)));
+                    escape_attr_into(&mut v, &style_with(attr.value(), "font-family", Some(&css_family(fonts.resolve_stack(&stack)?))));
                     edits.push((attr.range_value(), v));
                 }
             }
@@ -233,7 +236,7 @@ pub fn prepare(doc: &Document<'_>, fonts: &FontSet) -> Result<String, ConvertErr
             }
             out.push_str(name);
             let value = match name {
-                "font-family" => family.to_string(),
+                "font-family" => css_family(family),
                 "font-size" if shrink => {
                     wrote_size = true;
                     size.to_string()
@@ -241,7 +244,7 @@ pub fn prepare(doc: &Document<'_>, fonts: &FontSet) -> Result<String, ConvertErr
                 "style" => {
                     let mut s = style_with(attr.value(), "inline-size", None);
                     if style_decl(&s, "font-family").is_some() {
-                        s = style_with(&s, "font-family", Some(family));
+                        s = style_with(&s, "font-family", Some(&css_family(family)));
                     }
                     if shrink && style_decl(&s, "font-size").is_some() {
                         wrote_size = true;
@@ -300,6 +303,14 @@ pub fn escape_into(out: &mut String, text: &str) {
     }
 }
 
+/// A registered family name as a CSS string, the form usvg reads whatever the
+/// name holds. svgtypes parses an unquoted name as CSS identifiers, and `4`
+/// or `24pt` is not one: `font-family="Source Serif 4 Display"` fails to
+/// parse and draws the default family instead.
+pub fn css_family(name: &str) -> String {
+    if name.contains('\'') { format!("\"{name}\"") } else { format!("'{name}'") }
+}
+
 pub fn escape_attr_into(out: &mut String, text: &str) {
     for ch in text.chars() {
         match ch {
@@ -323,9 +334,9 @@ mod tests {
         let doc = Document::parse(svg).unwrap();
         let out = prepare(&doc, &fonts).unwrap();
         assert!(!out.contains("inline-size"), "{out}");
-        assert!(out.contains(r#"<g font-family="Inter 24pt" font-weight="800">"#), "{out}");
+        assert!(out.contains(r#"<g font-family="'Inter 24pt'" font-weight="800">"#), "{out}");
         assert!(out.contains(r#"<tspan x="540" dy="0">"#) && out.contains(r#"<tspan x="540" dy="96">"#), "{out}");
-        assert!(out.contains(r#"<text x="10" y="500" font-family="Inter 24pt">left alone</text>"#), "{out}");
+        assert!(out.contains(r#"<text x="10" y="500" font-family="'Inter 24pt'">left alone</text>"#), "{out}");
         let m = TextMeasurer::new(&fonts);
         let family = fonts.resolve("Inter").unwrap();
         let lines: Vec<&str> = out.split("<tspan").skip(1).map(|s| s.split_once('>').unwrap().1.split("</tspan>").next().unwrap()).collect();
@@ -343,9 +354,9 @@ mod tests {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><text x="20 30" y="40" style="font-size: 20px; inline-size: 100px; line-height: 30px; font-family: sans-serif">one two three four five six seven eight</text><rect style="fill:#000; font-family: 'Inter'"/></svg>"#;
         let doc = Document::parse(svg).unwrap();
         let out = prepare(&doc, &fonts).unwrap();
-        assert!(out.contains(r#"style="font-size: 20px; line-height: 30px; font-family: Inter 24pt""#), "{out}");
+        assert!(out.contains(r#"style="font-size: 20px; line-height: 30px; font-family: 'Inter 24pt'""#), "{out}");
         assert!(out.contains(r#"<tspan x="20" dy="30">"#), "{out}");
-        assert!(out.contains(r#"<rect style="fill:#000; font-family: Inter 24pt"/>"#), "{out}");
+        assert!(out.contains(r#"<rect style="fill:#000; font-family: 'Inter 24pt'"/>"#), "{out}");
     }
 
     #[test]
@@ -367,6 +378,35 @@ mod tests {
         let two = prepare(&Document::parse(r#"<svg xmlns="http://www.w3.org/2000/svg"><text font-size="96" inline-size="800" data-fit="shrink" data-max-lines="2">Alexandra Josephine Montgomery Whitfield</text></svg>"#).unwrap(), &fonts).unwrap();
         let size2: f32 = two.split("font-size=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
         assert!(size2 > size, "two lines shrink less: {size2} vs {size}");
+    }
+
+    #[test]
+    fn a_family_name_that_is_not_a_css_identifier_still_reaches_the_font() {
+        // `Inter 24pt` is two words, and `24pt` is a dimension, not an
+        // identifier: written unquoted, usvg failed to parse it and drew its
+        // fallback family. With a fallback that is not the family, a parse
+        // failure shows; the bundled default used to hide it.
+        let fonts = FontSet::bundled();
+        let out = prepare(&Document::parse(r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50"><text x="0" y="40" font-family="Inter">x</text><text x="0" y="40" font-family="Inter" inline-size="100">y z</text></svg>"#).unwrap(), &fonts).unwrap();
+        let opt = usvg::Options { font_family: "no such family".into(), ..fonts.options() };
+        let tree = usvg::Tree::from_str(&out, &opt).unwrap();
+        let mut families = Vec::new();
+        for node in tree.root().children() {
+            if let usvg::Node::Text(text) = node {
+                for chunk in text.chunks() {
+                    for span in chunk.spans() {
+                        families.push(span.font().families().iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","));
+                    }
+                }
+            }
+        }
+        assert_eq!(families.len(), 2, "one span per text: {out}");
+        assert!(families.iter().all(|f| f.contains("Inter 24pt")), "{families:?} from {out}");
+        // The measurer reads the same family: a wrapped line is measured in Inter, not the fallback.
+        let m = TextMeasurer { opt: usvg::Options { font_family: "no such family".into(), ..fonts.options() }, widths: RefCell::new(HashMap::new()), calls: std::cell::Cell::new(0) };
+        assert!(m.width("Inter", "Inter 24pt", 400, 40.0, 0.0) > 0.0);
+        assert_eq!(css_family("Source Serif 4 Display"), "'Source Serif 4 Display'");
+        assert_eq!(css_family("O'Brien Sans"), "\"O'Brien Sans\"");
     }
 
     #[test]
