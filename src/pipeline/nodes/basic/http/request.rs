@@ -823,11 +823,11 @@ fn build_request_from_secure_credential(
     }
 
     let bindings = resolve_secure_request_bindings(language, config, &secret, input, metadata)?;
-    let mut tokens = secret.secrets.clone();
-    for (key, value) in bindings {
-        tokens.insert(key, value);
-    }
-    let redact_tokens = tokens
+    // Only the credential's secrets are hidden from the run. A variable is a
+    // value the pipeline itself supplied (`--argument RECIPE=fetch`); masking
+    // it would rewrite every occurrence of that word in the rest of the run.
+    let redact_tokens = secret
+        .secrets
         .values()
         .filter_map(|item| {
             let trimmed = item.trim();
@@ -838,6 +838,10 @@ fn build_request_from_secure_credential(
             }
         })
         .collect::<Vec<_>>();
+    let mut tokens = secret.secrets.clone();
+    for (key, value) in bindings {
+        tokens.insert(key, value);
+    }
 
     let url = render_secure_request_template(&secret.request.url, &tokens);
     if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -1327,6 +1331,23 @@ mod tests {
             Some(json!("username=<USERNAME>&password=<PASSWORD>")),
             "a profile that declares a body owns it"
         );
+    }
+
+    /// A variable is the pipeline's own value, not a secret: it fills the
+    /// template but is never masked, or every occurrence of a common word
+    /// (`fetch`) would be rewritten in the rest of the run.
+    #[test]
+    fn secure_request_masks_its_secrets_but_not_the_pipelines_variables() {
+        let config = Config { argument: json!({ "RECIPE": "fetch" }), ..Default::default() };
+        let profile = json!({
+            "request": { "method": "POST", "url": "http://tools.example.com/<RECIPE>", "headers": { "Authorization": "Bearer <TOKEN>" } },
+            "variables": [{ "name": "RECIPE", "required": true }],
+            "secrets": { "TOKEN": "your-token" }
+        });
+        let prepared = build_request_from_secure_credential("tools", &NoopLanguageEngine, &config, &profile, &json!({}), &json!({}))
+            .expect("build prepared request");
+        assert_eq!(prepared.url, "http://tools.example.com/fetch");
+        assert_eq!(prepared.redact_tokens, vec!["your-token".to_string()]);
     }
 
     /// A provider profile (method, URL, `Authorization: Bearer <API_KEY>`)

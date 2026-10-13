@@ -44,7 +44,16 @@ pub struct WebSwitch {
 #[async_trait]
 impl PipelineSwitch for WebSwitch {
     async fn activate(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError> {
-        self.platform.projects.activate_pipeline_definition(owner, project, file_rel_path)?;
+        let meta = self.platform.projects.activate_pipeline_definition(owner, project, file_rel_path)?;
+        self.arm(owner, project, &meta.file_rel_path).await
+    }
+
+    async fn deactivate(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError> {
+        let meta = self.platform.projects.deactivate_pipeline_definition(owner, project, file_rel_path)?;
+        self.disarm(owner, project, &meta.file_rel_path).await
+    }
+
+    async fn arm(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError> {
         self.platform.pipeline_runtime.refresh_pipeline(owner, project, file_rel_path)?;
         self.scheduler.sync_pipeline(owner, project, file_rel_path).await;
         self.kv_subscriber.sync_pipeline(owner, project, file_rel_path).await;
@@ -53,8 +62,7 @@ impl PipelineSwitch for WebSwitch {
         Ok(())
     }
 
-    async fn deactivate(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError> {
-        self.platform.projects.deactivate_pipeline_definition(owner, project, file_rel_path)?;
+    async fn disarm(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError> {
         run_lifecycle_hooks(&self.platform, owner, project, file_rel_path, "on_deactivate").await;
         self.platform.pipeline_runtime.evict(owner, project, file_rel_path);
         self.scheduler.sync_pipeline(owner, project, file_rel_path).await;

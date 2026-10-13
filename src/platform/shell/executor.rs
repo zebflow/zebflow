@@ -1100,17 +1100,8 @@ impl DslExecutor {
             return DslOutput::err("activate: pipeline file_rel_path is required");
         }
 
-        match self.platform.projects.activate_pipeline_definition(
-            &self.owner,
-            &self.project,
-            file_rel_path,
-        ) {
+        match self.platform.switch_on(&self.owner, &self.project, file_rel_path).await {
             Ok(meta) => {
-                let _ = self.platform.pipeline_runtime.refresh_pipeline(
-                    &self.owner,
-                    &self.project,
-                    file_rel_path,
-                );
                 let mut out = DslOutput::new_ok();
                 out.push(DslLine::success(format!(
                     "Pipeline '{}' activated.",
@@ -1127,17 +1118,8 @@ impl DslExecutor {
             return DslOutput::err("deactivate: pipeline file_rel_path is required");
         }
 
-        match self.platform.projects.deactivate_pipeline_definition(
-            &self.owner,
-            &self.project,
-            file_rel_path,
-        ) {
+        match self.platform.switch_off(&self.owner, &self.project, file_rel_path).await {
             Ok(meta) => {
-                let _ = self.platform.pipeline_runtime.refresh_pipeline(
-                    &self.owner,
-                    &self.project,
-                    file_rel_path,
-                );
                 let mut out = DslOutput::new_ok();
                 out.push(DslLine::success(format!(
                     "Pipeline '{}' deactivated.",
@@ -2004,6 +1986,45 @@ mod note_tests {
 
     fn texts(out: &crate::platform::shell::DslOutput) -> Vec<String> {
         out.lines.iter().map(|l| l.text.clone()).collect()
+    }
+
+    /// Records what the console asks the web layer to arm and disarm.
+    #[derive(Default)]
+    struct RecordingSwitch(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl crate::platform::services::migration::PipelineSwitch for RecordingSwitch {
+        async fn activate(&self, _: &str, _: &str, _: &str) -> Result<(), crate::platform::error::PlatformError> { unreachable!() }
+        async fn deactivate(&self, _: &str, _: &str, _: &str) -> Result<(), crate::platform::error::PlatformError> { unreachable!() }
+        async fn arm(&self, _: &str, _: &str, path: &str) -> Result<(), crate::platform::error::PlatformError> {
+            self.0.lock().unwrap().push(format!("arm {path}"));
+            Ok(())
+        }
+        async fn disarm(&self, _: &str, _: &str, path: &str) -> Result<(), crate::platform::error::PlatformError> {
+            self.0.lock().unwrap().push(format!("disarm {path}"));
+            Ok(())
+        }
+    }
+
+    /// `activate pipeline` in the console arms what the pipeline starts (a
+    /// schedule, a topic subscription) exactly as the Studio's button does;
+    /// marking it active alone left a `trigger.schedule` silent until restart.
+    #[tokio::test]
+    async fn console_activation_arms_the_pipelines_triggers() {
+        let (_tmp, ex) = executor();
+        let recorder = std::sync::Arc::new(RecordingSwitch::default());
+        let switch: std::sync::Arc<dyn crate::platform::services::migration::PipelineSwitch> = recorder.clone();
+        ex.platform.projects.attach_pipeline_switch(std::sync::Arc::downgrade(&switch));
+        let out = ex
+            .execute_dsl(r#"register pipelines/test/tick -- | trigger.schedule --cron "0 7 * * *" | javascript.script.run -- "return 1""#)
+            .await;
+        assert!(out.ok, "{:?}", texts(&out));
+        assert!(ex.execute_dsl("activate pipeline pipelines/test/tick").await.ok);
+        assert!(ex.execute_dsl("deactivate pipeline pipelines/test/tick").await.ok);
+        assert_eq!(
+            *recorder.0.lock().unwrap(),
+            ["arm pipelines/test/tick.zf.json", "disarm pipelines/test/tick.zf.json"]
+        );
     }
 
     /// `execute pipeline` leaves the same two things behind as the API

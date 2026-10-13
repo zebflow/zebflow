@@ -1030,17 +1030,8 @@ impl PlatformOps {
         let mut lines = Vec::new();
 
         for frp in &matching {
-            match self.platform.projects.activate_pipeline_definition(
-                &self.owner,
-                &self.project,
-                frp,
-            ) {
+            match self.platform.switch_on(&self.owner, &self.project, frp).await {
                 Ok(_) => {
-                    let _ = self.platform.pipeline_runtime.refresh_pipeline(
-                        &self.owner,
-                        &self.project,
-                        frp,
-                    );
                     ok_count += 1;
                     lines.push(format!("  ✓ {frp}"));
                 }

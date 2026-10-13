@@ -111,6 +111,31 @@ pub struct PlatformService {
 }
 
 impl PlatformService {
+    /// Activates a pipeline and arms what it starts — schedules, topic
+    /// subscriptions, socket clients, hooks — through the attached switch.
+    /// Marking the definition active alone leaves a `trigger.schedule` or
+    /// `trigger.topic` silent until the next restart, so every door that
+    /// switches a pipeline on goes through here. Without a web layer (tests,
+    /// tools) only the runtime registry is refreshed.
+    pub async fn switch_on(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<crate::platform::model::PipelineMeta, PlatformError> {
+        let meta = self.projects.activate_pipeline_definition(owner, project, file_rel_path)?;
+        match self.projects.pipeline_switch() {
+            Some(switch) => switch.arm(&meta.owner, &meta.project, &meta.file_rel_path).await?,
+            None => self.pipeline_runtime.refresh_pipeline(&meta.owner, &meta.project, &meta.file_rel_path)?,
+        }
+        Ok(meta)
+    }
+
+    /// The reverse of [`PlatformService::switch_on`].
+    pub async fn switch_off(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<crate::platform::model::PipelineMeta, PlatformError> {
+        let meta = self.projects.deactivate_pipeline_definition(owner, project, file_rel_path)?;
+        match self.projects.pipeline_switch() {
+            Some(switch) => switch.disarm(&meta.owner, &meta.project, &meta.file_rel_path).await?,
+            None => self.pipeline_runtime.refresh_pipeline(&meta.owner, &meta.project, &meta.file_rel_path)?,
+        }
+        Ok(meta)
+    }
+
     /// Builds platform from config and runs bootstrap initialization.
     pub fn from_config(mut config: PlatformConfig) -> Result<Self, PlatformError> {
         // A process asked for a role it cannot perform refuses here, before it

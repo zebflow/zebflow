@@ -32,6 +32,12 @@ pub const REPORT_FILE: &str = "archive/0.10/MIGRATION.md";
 pub trait PipelineSwitch: Send + Sync {
     async fn activate(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError>;
     async fn deactivate(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError>;
+    /// Everything activation does after the definition is marked active: the
+    /// runtime registry, schedules, subscriptions, socket clients and the
+    /// `on_activate` hooks. `file_rel_path` is the stored one (`….zf.json`).
+    async fn arm(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError>;
+    /// The reverse of [`PipelineSwitch::arm`], after the definition is marked inactive.
+    async fn disarm(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<(), PlatformError>;
 }
 
 /// What an apply did.

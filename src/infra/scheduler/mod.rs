@@ -118,6 +118,7 @@ impl PipelineScheduler {
         }
 
         let job_key = format!("{}/{}/{}:{}", owner, project, file_rel_path, node_id);
+        let cron = &with_seconds(cron);
 
         let runtime = self.runtime.clone();
         let engine = self.engine.clone();
@@ -264,6 +265,38 @@ impl PipelineScheduler {
                 Err(e) => eprintln!("Scheduler: failed to add job {}: {}", job_key, e),
             },
             Err(e) => eprintln!("Scheduler: invalid cron '{}' for {}: {}", cron, job_key, e),
+        }
+    }
+}
+
+/// The cron `trigger.schedule` documents is the classic five fields
+/// (`0 7 * * *`); the scheduler reads seconds first and refuses five. A
+/// five-field expression fires at second 0; six or seven pass as written.
+fn with_seconds(cron: &str) -> String {
+    let cron = cron.trim();
+    if cron.split_whitespace().count() == 5 {
+        format!("0 {cron}")
+    } else {
+        cron.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_seconds;
+
+    #[test]
+    fn five_fields_fire_at_second_zero() {
+        assert_eq!(with_seconds("* * * * *"), "0 * * * * *");
+        assert_eq!(with_seconds(" 0 7 * * * "), "0 0 7 * * *");
+        assert_eq!(with_seconds("*/30 * * * * *"), "*/30 * * * * *");
+    }
+
+    #[test]
+    fn the_documented_forms_are_accepted_by_the_scheduler() {
+        for cron in ["* * * * *", "0 7 * * *", "*/5 9-17 * * 1-5", "0 * * * * *"] {
+            let job = tokio_cron_scheduler::Job::new_async(with_seconds(cron).as_str(), |_, _| Box::pin(async {}));
+            assert!(job.is_ok(), "{cron}: {:?}", job.err());
         }
     }
 }

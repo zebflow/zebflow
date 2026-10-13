@@ -2088,8 +2088,17 @@ pub fn execute_sql(
         }
         let db = get_db(data_root, owner, project)?;
         if statement_has_returning(trimmed) {
+            // A write that answers rows runs in a write transaction of its
+            // own. `Db::query` opens one only for INSERT; an UPDATE ...
+            // RETURNING sent there reads a snapshot and is refused as
+            // read-only.
             let rows = db
-                .query(trimmed, params)
+                .transaction()
+                .and_then(|mut tx| {
+                    let rows = tx.query(trimmed, params)?;
+                    tx.commit()?;
+                    Ok(rows)
+                })
                 .map_err(|e| store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e))?;
             let written = rows.len();
             let (columns, rows, truncated) = payload_from_rows(rows, max_rows);
@@ -3578,6 +3587,18 @@ mod tests {
         let plain = run("INSERT INTO notes (body) VALUES ('returning soon')").expect("plain insert");
         assert_eq!(plain.affected_rows, Some(1));
         assert!(plain.rows.is_empty());
+
+        // An UPDATE that answers rows writes too: a claim takes the row once,
+        // and the second claim answers nothing.
+        let claim = format!("UPDATE notes SET status = 'taken' WHERE _key = '{key}' AND status = 'draft' RETURNING _key, status");
+        let first = run(&claim).expect("update returning");
+        assert_eq!(first.rows.len(), 1);
+        assert_eq!(first.rows[0][1], Value::String("taken".to_string()));
+        assert!(run(&claim).expect("second claim").rows.is_empty());
+        // sekejap 0.20 has no DELETE ... RETURNING: it says so, rather than
+        // the misleading read-only refusal a snapshot gave.
+        let refused = run(&format!("DELETE FROM notes WHERE _key = '{key}' RETURNING _key")).unwrap_err();
+        assert!(refused.message.contains("DELETE ... RETURNING"), "{}", refused.message);
 
         for sql in [
             "CREATE TABLE people (_key TEXT PRIMARY KEY, name TEXT)",
