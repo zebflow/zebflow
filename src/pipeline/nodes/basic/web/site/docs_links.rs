@@ -27,8 +27,9 @@ pub struct BrokenLink {
 }
 
 /// The internal links of every page, resolved against the routes and headings
-/// the build produced. Answers every broken one, sorted, rather than the first.
-pub fn check(pages: &[DocPage]) -> Vec<BrokenLink> {
+/// the build produced, under the site's base path (`/`, `/docs/0.11/`).
+/// Answers every broken one, sorted, rather than the first.
+pub fn check(pages: &[DocPage], base_path: &str) -> Vec<BrokenLink> {
     let routes: HashSet<&str> = pages.iter().map(|page| page.route_path.as_str()).collect();
     let anchors: HashMap<&str, HashSet<&str>> = pages
         .iter()
@@ -63,7 +64,7 @@ pub fn check(pages: &[DocPage]) -> Vec<BrokenLink> {
             let route = if path.is_empty() {
                 page.route_path.clone()
             } else {
-                match resolve_route(page, path) {
+                match resolve_route(page, path, base_path) {
                     Some(route) => route,
                     None => {
                         broken.insert(BrokenLink {
@@ -120,11 +121,36 @@ fn is_external(target: &str) -> bool {
         || lower.starts_with("data:")
 }
 
+/// The address a Markdown link to another page is written as on the site:
+/// `../guides/writing.md#setup` from `origins/index.md`, under `/docs/`, is
+/// `/docs/guides/writing/#setup`. `None` for anything that is not a link to a
+/// page of this folder — an external address, an asset, a link climbing out.
+/// The link check has already refused a page link that answers nothing.
+pub fn page_href(page: &DocPage, target: &str, base_path: &str) -> Option<String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() || is_external(trimmed) {
+        return None;
+    }
+    let (path, anchor) = match trimmed.split_once('#') {
+        Some((path, anchor)) => (path, Some(anchor)),
+        None => (trimmed, None),
+    };
+    if !path.ends_with(".md") {
+        return None;
+    }
+    let route = resolve_route(page, path, base_path)?;
+    Some(match anchor {
+        Some(anchor) => format!("{route}#{anchor}"),
+        None => route,
+    })
+}
+
 /// The route a relative Markdown link points at: `../guides/writing.md` from
-/// `origins/index.md` is `/guides/writing/`. `None` when it climbs out of the
-/// docs folder. Only a `.md` target reaches here; anything else is an asset,
-/// not a route, and the caller has already left it alone.
-fn resolve_route(page: &DocPage, path: &str) -> Option<String> {
+/// `origins/index.md` is `/guides/writing/` under the base path. `None` when
+/// it climbs out of the docs folder. Only a `.md` target reaches here;
+/// anything else is an asset, not a route, and the caller has already left it
+/// alone.
+fn resolve_route(page: &DocPage, path: &str, base_path: &str) -> Option<String> {
     let mut segments: Vec<&str> = page.source_rel_path.split('/').collect();
     segments.pop(); // the page's own file name
     if path.starts_with('/') {
@@ -144,7 +170,8 @@ fn resolve_route(page: &DocPage, path: &str) -> Option<String> {
     if slug.last() == Some(&"index") {
         slug.pop();
     }
-    Some(if slug.is_empty() { "/".to_string() } else { format!("/{}/", slug.join("/")) })
+    let base = base_path.trim_end_matches('/');
+    Some(if slug.is_empty() { format!("{base}/") } else { format!("{base}/{}/", slug.join("/")) })
 }
 
 /// Every `](target)` in the Markdown — links and images alike. Reference-style
@@ -226,7 +253,7 @@ mod tests {
             page("index.md", "See [guides](guides/writing.md) and [up](./index.md).", &[]),
             page("guides/writing.md", "Back to [home](../index.md).", &["front-matter"]),
         ];
-        assert_eq!(check(&pages), Vec::new());
+        assert_eq!(check(&pages, "/"), Vec::new());
     }
 
     #[test]
@@ -235,7 +262,7 @@ mod tests {
             page("index.md", "[gone](guides/gone.md) and [heading](guides/writing.md#nowhere)", &[]),
             page("guides/writing.md", "nothing here", &["front-matter"]),
         ];
-        let broken = check(&pages);
+        let broken = check(&pages, "/");
         assert_eq!(broken.len(), 2, "{broken:?}");
         assert!(broken.iter().any(|link| link.reason.contains("no page answers at /guides/gone/")));
         assert!(broken.iter().any(|link| link.reason.contains("has no heading 'nowhere'")));
@@ -244,7 +271,7 @@ mod tests {
     #[test]
     fn an_anchor_on_this_page_is_checked_against_this_page() {
         let pages = vec![page("index.md", "[here](#the-proof) and [there](#missing)", &["the-proof"])];
-        let broken = check(&pages);
+        let broken = check(&pages, "/");
         assert_eq!(broken.len(), 1);
         assert!(broken[0].reason.contains("has no heading 'missing'"), "{:?}", broken[0]);
     }
@@ -256,7 +283,7 @@ mod tests {
             "[out](https://example.com/gone) [mail](mailto:nobody@example.com)\n\n```md\n[in code](nowhere.md)\n```\n",
             &[],
         )];
-        assert_eq!(check(&pages), Vec::new());
+        assert_eq!(check(&pages, "/"), Vec::new());
     }
 
     /// An image is shipped by the asset path, not answered by a route. This
@@ -268,7 +295,28 @@ mod tests {
             "![A diagram](diagram.png)\n\n<PotoPlayer src=\"stories/intro.poto\" />\n\n[a download](../files/report.pdf)",
             &[],
         )];
-        assert_eq!(check(&pages), Vec::new());
+        assert_eq!(check(&pages, "/"), Vec::new());
+    }
+
+    /// Under a base path every route carries it, and a page link is written
+    /// as that address: `./start.md` is a 404 on a served site.
+    #[test]
+    fn under_a_base_path_links_resolve_and_are_written_as_addresses() {
+        let mut pages = vec![
+            page("index.md", "See [the guide](guides/writing.md#front-matter).", &[]),
+            page("guides/writing.md", "Back to [home](../index.md).", &["front-matter"]),
+        ];
+        for page in pages.iter_mut() {
+            page.route_path = format!("/docs/0.11{}", page.route_path);
+        }
+        assert_eq!(check(&pages, "/docs/0.11/"), Vec::new());
+        assert!(!check(&pages, "/").is_empty(), "the same links under the wrong base answer nothing");
+        assert_eq!(page_href(&pages[0], "guides/writing.md#front-matter", "/docs/0.11/").as_deref(), Some("/docs/0.11/guides/writing/#front-matter"));
+        assert_eq!(page_href(&pages[1], "../index.md", "/docs/0.11/").as_deref(), Some("/docs/0.11/"));
+        assert_eq!(page_href(&pages[1], "/index.md", "/").as_deref(), Some("/"));
+        assert_eq!(page_href(&pages[0], "diagram.png", "/docs/"), None);
+        assert_eq!(page_href(&pages[0], "https://example.com/a.md", "/docs/"), None);
+        assert_eq!(page_href(&pages[0], "../../out.md", "/docs/"), None);
     }
 
     /// A link that climbs above the docs folder is refused rather than
@@ -276,7 +324,7 @@ mod tests {
     #[test]
     fn a_link_out_of_the_folder_is_reported() {
         let pages = vec![page("index.md", "[escape](../../secrets.md)", &[])];
-        let broken = check(&pages);
+        let broken = check(&pages, "/");
         assert_eq!(broken.len(), 1);
         assert_eq!(broken[0].reason, "leaves the docs folder");
     }

@@ -295,7 +295,10 @@ impl BasicPipelineEngine {
         }])
     }
 
-    /// `--from`: every Markdown page of a docs folder, its sitemap and search index.
+    /// `--from`: every Markdown page of a docs folder, its sitemap and search
+    /// index. With `--version` the build is written under `<folder>/<version>/`
+    /// (pinned, not indexed) and, with `--latest`, again at `<folder>/`; the
+    /// versions list is updated once every copy is written.
     fn run_site_docs(
         &self,
         node_id: &str,
@@ -311,10 +314,107 @@ impl BasicPipelineEngine {
         let Some(docs_root) = self.repo_layout.as_ref().map(|layout| layout.repo_docs_dir()) else {
             return Err(PipelineError::new(CODE_TEMPLATE_ROOT, "project layout is not configured on this pipeline engine"));
         };
+        let folder = config.folder_rel(site::Mode::Docs)?;
+        // The unversioned address of the site: its folder's place under the served folder.
+        let root_path = static_site::site_base_path(self.platform.as_ref(), &ctx.owner, &ctx.project, &folder);
+        let label = config.version_label()?.map(str::to_string);
+        let mut targets = Vec::new();
+        match &label {
+            None => targets.push(DocsTarget { site_root_rel: folder.clone(), base_path: root_path.clone(), version: None }),
+            Some(label) => {
+                let version = |pinned| site::docs::DocsVersion { label: label.clone(), root_path: root_path.clone(), pinned };
+                targets.push(DocsTarget {
+                    site_root_rel: format!("{}/{label}", folder.trim_end_matches('/')),
+                    base_path: format!("{root_path}{label}/"),
+                    version: Some(version(true)),
+                });
+                if config.latest {
+                    targets.push(DocsTarget { site_root_rel: folder.clone(), base_path: root_path.clone(), version: Some(version(false)) });
+                }
+            }
+        }
+
+        let mut built = Vec::with_capacity(targets.len());
+        for target in &targets {
+            built.push(self.build_docs_target(node_id, config, payload, metadata, ctx, &zebfs, template_root, &docs_root, target)?);
+        }
+        let versions_path = match &label {
+            Some(label) => Some(update_versions_list(&zebfs, &folder, label, &format!("{root_path}{label}/"), config.latest)?),
+            None => None,
+        };
+
+        // The answer describes the copy readers are sent to: the root when
+        // there is one, else the only build.
+        let main = built.last().expect("at least one target");
+        let generated: usize = built.iter().map(|b| b.written.generated).sum();
+        let skipped: usize = built.iter().map(|b| b.written.skipped).sum();
+        Ok(vec![NodeExecutionOutput {
+            output_pins: vec![site::OUTPUT_PIN_OUT.to_string()],
+            payload: with_answer(payload, json!({
+                "site": {
+                    "mode": site::Mode::Docs.as_str(),
+                    "status": "ok",
+                    "name": main.site_title,
+                    "template": main.template_rel_path,
+                    "from": main.from_rel,
+                    "folder": main.site_root_rel,
+                    "store": node_store.as_ref().map(|store| store.id.clone()),
+                    "origin": main.origin,
+                    "manifest_path": static_site::site_manifest_rel_path(&main.site_root_rel),
+                    "asset_group": main.asset_group,
+                    "page_count": main.page_count,
+                    "generated_files": generated,
+                    "skipped_files": skipped,
+                    "sitemap_path": main.sitemap_path,
+                    "robots_path": main.sitemap_path.as_ref().map(|_| site::docs::robots_rel_path(&main.site_root_rel)),
+                    "llms_path": main.sitemap_path.as_ref().map(|_| site::docs::llms_rel_path(&main.site_root_rel)),
+                    "llms_full_path": main.sitemap_path.as_ref().map(|_| site::docs::llms_full_rel_path(&main.site_root_rel)),
+                    "search_manifest_path": site::docs::search_file_rel_path(&main.site_root_rel, &site::docs_search::manifest_rel_path()),
+                    "search_files": main.search_files,
+                    "routes": main.routes,
+                    "version": label,
+                    "latest": config.latest,
+                    "versions_path": versions_path,
+                }
+            })),
+            trace: vec![
+                format!("node={node_id}"),
+                format!("node_kind={}", site::NODE_KIND),
+                format!("pages={}", main.page_count),
+                format!("copies={}", built.len()),
+            ],
+        }])
+    }
+
+    /// One copy of a docs site: every page, its Markdown twin, the search
+    /// index and, unless it is a pinned version, the sitemap, robots and llms
+    /// files — all decided before the first is written.
+    #[allow(clippy::too_many_arguments)]
+    fn build_docs_target(
+        &self,
+        node_id: &str,
+        config: &site::Config,
+        payload: &Value,
+        metadata: &Value,
+        ctx: &PipelineContext,
+        zebfs: &ZebFs,
+        template_root: &std::path::Path,
+        docs_root: &std::path::Path,
+        target: &DocsTarget,
+    ) -> Result<DocsBuilt, PipelineError> {
         let on_conflict = config.on_conflict()?;
         let create_template = |rel: &str, content: &str| self.create_docs_template(ctx, template_root, rel, content);
-        let mut docs = site::docs::load_site(config, template_root, &docs_root, &create_template)?;
+        let mut docs = site::docs::load_site(config, &target.site_root_rel, &target.base_path, template_root, docs_root, &create_template)?;
         docs.set_origin(static_site::site_origin(self.platform.as_ref(), &ctx.owner, &ctx.project, &docs.site_root_rel));
+        if let Some(version) = &target.version {
+            if let Some(page) = docs.pages.iter().find(|page| page.slug_segments.first().is_some_and(|first| *first == version.label)) {
+                return Err(PipelineError::new(
+                    site::CODE_VERSION,
+                    format!("--version {} would hide the page {}: a top-level page or folder may not be named like a version", version.label, page.source_rel_path),
+                ));
+            }
+            docs.set_version(version.clone());
+        }
         docs.set_asset_base(&ctx.owner, &ctx.project);
         let compiled = self.compile_site_template(
             node_id,
@@ -323,7 +423,7 @@ impl BasicPipelineEngine {
         )?;
 
         let asset_group = static_site::asset_group_id(&docs.template_rel_path, &docs.template_source.markup);
-        let site_store = static_site::SiteStore { store: &zebfs, root_rel: docs.site_root_rel.clone() };
+        let site_store = static_site::SiteStore { store: zebfs, root_rel: docs.site_root_rel.clone() };
         let project_asset_root = self.repo_layout.as_ref().map(|layout| layout.repo_static_dir());
         let source = site::page::page_input(payload);
 
@@ -358,11 +458,15 @@ impl BasicPipelineEngine {
         }
         // The machine-readable surface (`discoverability.md` §3), written on
         // every build whether or not the folder has an address yet.
-        let sitemap_path = site::docs::sitemap_rel_path(&docs.site_root_rel);
-        files.push((sitemap_path.clone(), docs.sitemap_xml.clone()));
-        files.push((site::docs::robots_rel_path(&docs.site_root_rel), docs.robots_txt.clone()));
-        files.push((site::docs::llms_rel_path(&docs.site_root_rel), docs.llms_txt.clone()));
-        files.push((site::docs::llms_full_rel_path(&docs.site_root_rel), docs.llms_full_txt.clone()));
+        // A pinned version is never indexed: these belong to the unversioned root.
+        let indexed = docs.version.as_ref().is_none_or(|version| !version.pinned);
+        let sitemap_path = indexed.then(|| site::docs::sitemap_rel_path(&docs.site_root_rel));
+        if indexed {
+            files.push((site::docs::sitemap_rel_path(&docs.site_root_rel), docs.sitemap_xml.clone()));
+            files.push((site::docs::robots_rel_path(&docs.site_root_rel), docs.robots_txt.clone()));
+            files.push((site::docs::llms_rel_path(&docs.site_root_rel), docs.llms_txt.clone()));
+            files.push((site::docs::llms_full_rel_path(&docs.site_root_rel), docs.llms_full_txt.clone()));
+        }
         // The search index, in chunks: the page fetches the ones its query
         // names and nothing else (`docs_search.rs`).
         for file in &docs.search_files {
@@ -370,7 +474,7 @@ impl BasicPipelineEngine {
         }
         let mut statuses = Vec::with_capacity(files.len());
         for (rel_path, contents) in &files {
-            statuses.push(site::page::conflict_status(&zebfs, rel_path, contents, on_conflict.as_str())?);
+            statuses.push(site::page::conflict_status(zebfs, rel_path, contents, on_conflict.as_str())?);
         }
 
         let mut written = Written::default();
@@ -388,7 +492,7 @@ impl BasicPipelineEngine {
         for ((rel_path, contents), status) in files.iter().zip(statuses) {
             written.count(match status {
                 Some(kept) => kept,
-                None => site::page::write_generated_object(&zebfs, rel_path, contents, on_conflict.as_str())?,
+                None => site::page::write_generated_object(zebfs, rel_path, contents, on_conflict.as_str())?,
             });
         }
         let routes = docs.pages.iter().map(|page| page.route_path.clone()).collect::<Vec<_>>();
@@ -417,39 +521,105 @@ impl BasicPipelineEngine {
             true,
         )?;
 
-        Ok(vec![NodeExecutionOutput {
-            output_pins: vec![site::OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(payload, json!({
-                "site": {
-                    "mode": site::Mode::Docs.as_str(),
-                    "status": "ok",
-                    "name": docs.site_title,
-                    "template": docs.template_rel_path,
-                    "from": docs.from_rel,
-                    "folder": docs.site_root_rel,
-                    "store": node_store.as_ref().map(|store| store.id.clone()),
-                    "origin": docs.deploy_base_url,
-                    "manifest_path": static_site::site_manifest_rel_path(&docs.site_root_rel),
-                    "asset_group": asset_group,
-                    "page_count": docs.pages.len(),
-                    "generated_files": written.generated,
-                    "skipped_files": written.skipped,
-                    "sitemap_path": sitemap_path,
-                    "robots_path": site::docs::robots_rel_path(&docs.site_root_rel),
-                    "llms_path": site::docs::llms_rel_path(&docs.site_root_rel),
-                    "llms_full_path": site::docs::llms_full_rel_path(&docs.site_root_rel),
-                    "search_manifest_path": site::docs::search_file_rel_path(&docs.site_root_rel, &site::docs_search::manifest_rel_path()),
-                    "search_files": docs.search_files.len(),
-                    "routes": routes,
-                }
-            })),
-            trace: vec![
-                format!("node={node_id}"),
-                format!("node_kind={}", site::NODE_KIND),
-                format!("pages={}", docs.pages.len()),
-            ],
-        }])
+        Ok(DocsBuilt {
+            site_title: docs.site_title.clone(),
+            template_rel_path: docs.template_rel_path.clone(),
+            from_rel: docs.from_rel.clone(),
+            site_root_rel: docs.site_root_rel.clone(),
+            origin: docs.deploy_base_url.clone(),
+            asset_group,
+            page_count: docs.pages.len(),
+            written,
+            sitemap_path,
+            search_files: docs.search_files.len(),
+            routes,
+        })
     }
+}
+
+/// Where one copy of a docs site is written and the address it answers at.
+struct DocsTarget {
+    site_root_rel: String,
+    base_path: String,
+    version: Option<site::docs::DocsVersion>,
+}
+
+/// What one copy wrote, for the node's answer.
+struct DocsBuilt {
+    site_title: String,
+    template_rel_path: String,
+    from_rel: String,
+    site_root_rel: String,
+    origin: Option<String>,
+    asset_group: String,
+    page_count: usize,
+    written: Written,
+    sitemap_path: Option<String>,
+    search_files: usize,
+    routes: Vec<String>,
+}
+
+/// `<folder>/versions.json`, with this version in it: `{ "versions": [{ "version",
+/// "path", "latest" }] }`, the latest first, then newest to oldest. Every
+/// build of the site reads it when its page loads, so a version is listed
+/// here once and never rebuilt. Answers the file's path.
+fn update_versions_list(zebfs: &ZebFs, folder: &str, label: &str, path: &str, latest: bool) -> Result<String, PipelineError> {
+    let rel = format!("{}/{}", folder.trim_end_matches('/'), site::docs::VERSIONS_FILE);
+    let previous = crate::pipeline::nodes::shared::project_store::read_capped(zebfs, &rel, CODE_READ)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let mut versions: Vec<Value> = previous
+        .as_ref()
+        .and_then(|doc| doc.get("versions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| entry.get("version").and_then(Value::as_str).is_some_and(|v| v != label))
+        .collect();
+    if latest {
+        for entry in versions.iter_mut() {
+            if let Some(map) = entry.as_object_mut() {
+                map.insert("latest".to_string(), Value::Bool(false));
+            }
+        }
+    }
+    versions.push(json!({ "version": label, "path": path, "latest": latest }));
+    versions.sort_by(|a, b| {
+        let latest = |v: &Value| v.get("latest").and_then(Value::as_bool).unwrap_or(false);
+        let key = |v: &Value| v.get("version").and_then(Value::as_str).unwrap_or("").to_string();
+        latest(b).cmp(&latest(a)).then_with(|| natural_cmp(&key(b), &key(a)))
+    });
+    let body = serde_json::to_string_pretty(&json!({ "versions": versions })).unwrap_or_default() + "\n";
+    site::page::write_generated_object(zebfs, &rel, &body, "overwrite")?;
+    Ok(rel)
+}
+
+/// `0.9` before `0.11`: digit runs compare as numbers.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parts(s: &str) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        for c in s.chars() {
+            let digit = c.is_ascii_digit();
+            match out.last_mut() {
+                Some((d, run)) if *d == digit => run.push(c),
+                _ => out.push((digit, c.to_string())),
+            }
+        }
+        out
+    }
+    let (pa, pb) = (parts(a), parts(b));
+    for (x, y) in pa.iter().zip(pb.iter()) {
+        let ord = if x.0 && y.0 {
+            x.1.parse::<u128>().unwrap_or(0).cmp(&y.1.parse::<u128>().unwrap_or(0))
+        } else {
+            x.1.cmp(&y.1)
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    pa.len().cmp(&pb.len())
 }
 
 /// How many files a docs build wrote, and how many it left as they were.

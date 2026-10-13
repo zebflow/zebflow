@@ -286,7 +286,32 @@ pub(super) fn first_paragraph(markdown: &str) -> String {
         }
         lines.push(trimmed);
     }
-    lines.join(" ")
+    inline_text(&lines.join(" "))
+}
+
+/// A Markdown line as the words a reader sees: `[the guide](start.md)` is
+/// `the guide`, `![a chart](c.png)` is `a chart`, and emphasis and code marks
+/// are dropped. A description is plain text in a meta tag, never Markdown.
+fn inline_text(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find('[') {
+        let image = open > 0 && rest[..open].ends_with('!');
+        out.push_str(&rest[..if image { open - 1 } else { open }]);
+        let after = &rest[open + 1..];
+        match after.find("](").and_then(|mid| after[mid + 2..].find(')').map(|close| (mid, mid + 2 + close))) {
+            Some((mid, close)) => {
+                out.push_str(&after[..mid]);
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("**", "").replace("__", "").replace('`', "")
 }
 
 pub(crate) fn plain_text_from_markdown(markdown: &str) -> String {
@@ -381,7 +406,16 @@ pub(super) fn unique_slug(base: String, seen: &mut HashMap<String, usize>) -> St
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_headings, parse_folder_meta, plain_text_from_markdown, split_frontmatter};
+    use super::{extract_headings, first_paragraph, parse_folder_meta, plain_text_from_markdown, split_frontmatter};
+
+    #[test]
+    fn a_description_is_the_words_not_the_markdown() {
+        assert_eq!(
+            first_paragraph("# Title\n\nStart with [installing](setup/install.md#install), see ![the chart](c.png) and **bold** `code`.\n\nNext."),
+            "Start with installing, see the chart and bold code."
+        );
+        assert_eq!(first_paragraph("An [unclosed bracket here."), "An [unclosed bracket here.");
+    }
 
     #[test]
     fn parses_frontmatter_and_markdown_body() {

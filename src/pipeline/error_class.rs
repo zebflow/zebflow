@@ -578,6 +578,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_WEB_SITE_GENERATE_TEMPLATE_ROOT", ErrorClass::Failed),
     ("FW_NODE_WEB_SITE_GENERATE_TEMPLATE_WRITE", ErrorClass::Failed),
     ("FW_NODE_WEB_SITE_GENERATE_UNAVAILABLE", ErrorClass::Failed),
+    ("FW_NODE_WEB_SITE_GENERATE_VERSION", ErrorClass::Refused),
     ("FW_NODE_WEB_SITE_GENERATE_WRITE", ErrorClass::Failed),
 ];
 

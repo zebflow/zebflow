@@ -787,6 +787,10 @@ pub fn parse_node_config_with_positional(
                     if let Some(slot) = preview_slot_for_config_key(&dsl_flag.config_key) {
                         let cell = parse_preview_flag_value(&flag_str, &val)?;
                         set_preview_config(&mut config, slot, cell);
+                    } else if dsl_flag.value == "text" {
+                        // A flag declared as text keeps what was written:
+                        // `--version 0.10` is the text `0.10`, never the number 0.1.
+                        config.insert(dsl_flag.config_key.clone(), json!(val));
                     } else {
                         config.insert(dsl_flag.config_key.clone(), coerce_scalar_value(&val));
                     }

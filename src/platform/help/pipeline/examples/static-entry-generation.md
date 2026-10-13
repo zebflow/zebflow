@@ -183,6 +183,53 @@ only: a site is a book or it is not.
 scaffold, and edited from then on. `--path` and `--from` choose the mode —
 give one, never both.
 
+### Where the site answers
+
+A served folder answers at the root of its host (Studio → Files, `serve`), and
+a docs site written into a folder **under** it answers at that place: serve
+`site`, build with `--folder site/docs`, and the pages answer at `/docs/…` —
+beside whatever else `site` holds, such as a landing page from `--path`.
+Every route, link, breadcrumb, search address and the sitemap carry that
+prefix. Before the folder is served the site answers at `/`; build again
+once it is served.
+
+### Versions
+
+A product that ships releases keeps the docs of each one. `--version` makes
+the build one version of the site, and `--latest` marks it the newest:
+
+```zf
+| trigger.manual
+| web.site.generate --from handbook --folder site/docs --version 0.11 --latest
+```
+
+| Written | Answers at | Indexed |
+|---|---|---|
+| `site/docs/0.11/…` | `/docs/0.11/…` — that version, always | never (`noindex`, `canonical` to the address below) |
+| `site/docs/…` (with `--latest`) | `/docs/…` — whatever is latest | yes; the sitemap, `robots.txt` and `llms*.txt` are written here only |
+| `site/docs/versions.json` | `/docs/versions.json` | — |
+
+```json
+{ "versions": [
+  { "version": "0.12", "path": "/docs/0.12/", "latest": true },
+  { "version": "0.11", "path": "/docs/0.11/", "latest": false }
+] }
+```
+
+Each version folder holds its own pages, `_assets/` and search index, and is
+never touched again: building 0.12 adds `/docs/0.12/`, moves `/docs/` to 0.12
+and updates `versions.json`, and leaves 0.11 as it was built. The scaffolded
+template's version picker and its "you are reading an older version" notice
+read `versions.json` when the page loads, so an old version names a newer one
+without being rebuilt. The picker opens the same page in the other version
+when it exists there, and that version's home when it does not.
+
+A label is one path segment — a letter or digit, then letters, digits, `.`,
+`-` or `_` (`0.11`, `2.x`, `next`) — and is kept exactly as written, so
+`0.10` stays `0.10`. A top-level page or folder named like the version is
+refused, since the version folder would hide it. `--latest` needs
+`--version`.
+
 ### What a docs build writes besides the pages
 
 Every build, with no flag and nothing authored by hand
@@ -287,6 +334,11 @@ there, an anchor for a heading that was renamed, or a path climbing out of the
 docs folder refuses the build and names every one of them at once — nothing is
 written. External links (`http`, `https`, `mailto`, `tel`) are never fetched
 and never checked, and a link inside a fenced code block is left alone.
+
+A link to another page is written as the address that page answers at:
+`[the guide](../guide/start.md#setup)` becomes `/docs/guide/start/#setup`,
+under the site's prefix and version. The `.md` file is what the author
+writes; a reader is never sent to it.
 
 ### Search without a server
 

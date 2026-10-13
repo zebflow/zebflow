@@ -712,6 +712,80 @@ function SidebarItem(props) {{
   );
 }}
 
+// The versions a versioned site lists in `versions.json`, read when the page
+// loads: a version built before a newer one shipped still names it, without
+// being built again. Empty until the list arrives, and on an unversioned site.
+function useVersionList(href) {{
+  const [list, setList] = useState([]);
+  useEffect(() => {{
+    if (!href) return;
+    let cancelled = false;
+    fetch(href)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((doc) => {{
+        if (!cancelled && doc && Array.isArray(doc.versions)) setList(doc.versions);
+      }})
+      .catch(() => {{}});
+    return () => {{
+      cancelled = true;
+    }};
+  }}, [href]);
+  return list;
+}}
+
+// This page's address inside its version: `/docs/0.11/a/b/` → `a/b/`.
+function pathInVersion(version, routePath) {{
+  const root = version.root_path || "/";
+  const here = version.pinned ? root + version.label + "/" : root;
+  return String(routePath || "").startsWith(here) ? String(routePath).slice(here.length) : "";
+}}
+
+// The version picker. Another version opens on the same page when that
+// version has it, and on its home when it does not.
+function VersionSwitch({{ version, routePath }}) {{
+  const list = useVersionList(version?.versions_href);
+  if (!version) return null;
+  const root = version.root_path || "/";
+  const rest = pathInVersion(version, routePath);
+  const options = list.length ? list : [{{ version: version.label, path: root + version.label + "/", latest: !version.pinned }}];
+  const open = (event) => {{
+    const target = options.find((item) => item.version === event.currentTarget.value);
+    if (!target) return;
+    const base = target.latest ? root : target.path;
+    fetch(base + rest, {{ method: "HEAD" }})
+      .then((res) => {{
+        window.location.href = res.ok ? base + rest : base;
+      }})
+      .catch(() => {{
+        window.location.href = base;
+      }});
+  }};
+  return (
+    <label class="mt-3 flex items-center gap-2 text-xs text-slate-500" data-docs-version={{version.label}}>
+      Version
+      <select value={{version.label}} onChange={{open}} class="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-900">
+        {{options.map((item) => (
+          <option value={{item.version}}>{{item.version}}{{item.latest ? " (latest)" : ""}}</option>
+        ))}}
+      </select>
+    </label>
+  );
+}}
+
+// A pinned page of an older version says so, and links the same page in the latest.
+function OldVersionNotice({{ version, routePath }}) {{
+  const list = useVersionList(version?.pinned ? version.versions_href : null);
+  const latest = list.find((item) => item.latest);
+  if (!version || !version.pinned || !latest || latest.version === version.label) return null;
+  const href = (version.root_path || "/") + pathInVersion(version, routePath);
+  return (
+    <div class="mb-6 rounded-md border border-amber-300 bg-amber-50/70 px-4 py-3 text-sm text-amber-700">
+      You are reading the docs for {{version.label}}. The latest is {{latest.version}}:{{" "}}
+      <a href={{href}} class="font-semibold underline">read this page there</a>.
+    </div>
+  );
+}}
+
 export default function DocsTemplate(input) {{
   const page = input.page || {{}};
   const sidebar = Array.isArray(input.sidebar) ? input.sidebar : [];
@@ -816,6 +890,7 @@ export default function DocsTemplate(input) {{
         <div class="lg:grid lg:h-screen lg:grid-cols-12">
           <aside class="border-b border-slate-200 px-4 py-4 lg:col-span-3 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:px-5 lg:py-5">
             <div class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{{{fallback_title}}}</div>
+            <VersionSwitch version={{input.site?.version}} routePath={{page.route_path}} />
               <div class="mt-3">
                 <input
                   type="search"
@@ -864,6 +939,7 @@ export default function DocsTemplate(input) {{
           </aside>
           <main class="min-w-0 px-4 py-5 lg:col-span-6 lg:overflow-y-auto lg:px-8 lg:py-8">
             <div class="mx-auto max-w-3xl">
+              <OldVersionNotice version={{input.site?.version}} routePath={{page.route_path}} />
               <nav class="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
                 {{breadcrumbs.map((crumb, index) => (
                   <span class="inline-flex items-center gap-2">

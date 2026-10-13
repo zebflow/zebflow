@@ -1,4 +1,4 @@
-//! The project's embedded multimodel store, on sekejap 0.19.
+//! The project's embedded multimodel store, on sekejap 0.20.
 //!
 //! One `Db` per project directory, pooled by path. sekejap locks internally
 //! and is `Send + Sync`, so the pool hands out `Arc<Db>` and nothing here

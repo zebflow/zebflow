@@ -51,6 +51,8 @@ pub const CODE_MODE: &str = "FW_NODE_WEB_SITE_GENERATE_MODE";
 pub const CODE_CONFLICT: &str = "FW_NODE_WEB_SITE_GENERATE_CONFLICT";
 /// A docs build refused because the Markdown links somewhere it does not write.
 pub const CODE_LINKS: &str = "FW_NODE_WEB_SITE_GENERATE_LINKS";
+/// A `--version` that is not a version label, or one that collides with a page.
+pub const CODE_VERSION: &str = "FW_NODE_WEB_SITE_GENERATE_VERSION";
 
 /// Typed configuration for `web.site.generate`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -88,6 +90,14 @@ pub struct Config {
     /// `overwrite` (default), `skip` or `error` when a page exists with other content.
     #[serde(default)]
     pub on_conflict: Option<String>,
+    /// Docs mode: this build is one version of the site (`0.11`), written
+    /// under `<folder>/<version>/` and listed in `<folder>/versions.json`.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Docs mode, with `--version`: the latest version, written again at
+    /// `<folder>/` — the unversioned address, the only one indexed.
+    #[serde(default)]
+    pub latest: bool,
 }
 
 /// Which site a configuration builds.
@@ -143,8 +153,36 @@ impl Config {
                 CODE_MODE,
                 "--route sets one page's route (--path); a docs site routes every page from its file",
             )),
+            Mode::Page if given(&self.version).is_some() || self.latest => Err(PipelineError::new(
+                CODE_MODE,
+                "--version and --latest version a docs site (--from); a page has no versions",
+            )),
+            Mode::Docs if self.latest && given(&self.version).is_none() => Err(PipelineError::new(
+                CODE_VERSION,
+                "--latest marks a version as the latest: give it --version, e.g. --version 0.11 --latest",
+            )),
+            Mode::Docs => {
+                self.version_label()?;
+                Ok(mode)
+            }
             _ => Ok(mode),
         }
+    }
+
+    /// The `--version` label, checked: a letter or digit, then letters,
+    /// digits, `.`, `-` or `_`, at most 32 — one path segment of the site.
+    pub fn version_label(&self) -> Result<Option<&str>, PipelineError> {
+        let Some(label) = given(&self.version) else { return Ok(None) };
+        let ok = label.len() <= 32
+            && label.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+        if !ok {
+            return Err(PipelineError::new(
+                CODE_VERSION,
+                format!("--version '{label}' is not a version label: a letter or digit, then letters, digits, '.', '-' or '_' (e.g. 0.11, 2.x, next)"),
+            ));
+        }
+        Ok(Some(label))
     }
 
     /// `--on-conflict`, overwrite by default (`node-conventions.md` §8).
@@ -203,6 +241,11 @@ pub fn definition() -> NodeDefinition {
             (default `docs.template.tsx`); `--name` is the site's name; each folder's `_meta.yaml` sets its title, `order` and `nav` \
             (a page's front matter its `order`), and that one order drives the sidebar, prev/next and the search index; \
             a page whose Markdown is gone is removed from the site on the next build. \
+            A link to another page is written as that page's address. The site answers at its folder's place under the served folder \
+            (served `site`, docs written to `site/docs`: pages at `/docs/…`), at `/` until the folder is served. \
+            `--version 0.11` makes the build one version: written under `<folder>/0.11/` with its own assets and search index, never indexed, \
+            listed in `<folder>/versions.json`; with `--latest` it is also written at `<folder>/` — the unversioned address, the only one indexed, \
+            with the sitemap. A version once built is never rebuilt by a newer one: the template's switcher reads versions.json when the page loads. \
             Both write under `--folder` (default `site` for a page, `docs` for a docs site), sharing one manifest and one `_assets/`; \
             a page whose content changed is overwritten unless `--on-conflict` says skip or error, decided before anything is written. \
             The page renders from the payload, which it also embeds for hydration — so it publishes what the payload holds — \
@@ -217,7 +260,7 @@ pub fn definition() -> NodeDefinition {
                     "type": "object",
                     "description": "Page mode: mode, status, path, route, store, file, origin, template, folder, manifest_path, asset_group, bytes. \
                         Docs mode: mode, status, name, template, from, folder, store, origin, manifest_path, asset_group, page_count, \
-                        generated_files, skipped_files, sitemap_path, search_index_path, routes.",
+                        generated_files, skipped_files, sitemap_path, search_index_path, routes; with --version also version, latest, versions_path.",
                     "properties": {
                         "mode": { "type": "string", "enum": ["page", "docs"] },
                         "status": { "type": "string", "description": "page: written, unchanged or skipped; docs: ok" },
@@ -238,7 +281,10 @@ pub fn definition() -> NodeDefinition {
                         "generated_files": { "type": "integer" },
                         "skipped_files": { "type": "integer" },
                         "sitemap_path": { "type": ["string", "null"] },
-                        "search_index_path": { "type": "string" }
+                        "search_index_path": { "type": "string" },
+                        "version": { "type": ["string", "null"], "description": "The --version label" },
+                        "latest": { "type": "boolean" },
+                        "versions_path": { "type": ["string", "null"], "description": "The versions list, <folder>/versions.json" }
                     }
                 }
             }
@@ -256,6 +302,8 @@ pub fn definition() -> NodeDefinition {
             flag("--name", "name", "text", "A docs site: its name (default: the folder's _meta.yaml title, else the folder name)."),
             DslFlag { value: "text".to_string(), ..store_flag() },
             flag("--folder", "folder", "text", "The site's folder in the store (default: site for a page, docs for a docs site). Every page of one site shares it, with one manifest and one _assets/."),
+            flag("--version", "version", "text", "A docs site: this build is one version, e.g. 0.11 — written under <folder>/0.11/ and listed in <folder>/versions.json."),
+            DslFlag { kind: DslFlagKind::Bool, ..flag("--latest", "latest", "", "A docs site, with --version: the latest version, written again at <folder>/ — the unversioned address, the only one indexed.") },
             DslFlag {
                 choices: vec!["overwrite".to_string(), "skip".to_string(), "error".to_string()],
                 ..on_conflict_flag(OnConflict::Overwrite)
@@ -272,11 +320,13 @@ pub fn definition() -> NodeDefinition {
             field("route", "Route", "/posts/{{ input.slug }}", "One page: ctx.route while rendering (default: the page's address)."),
             field("name", "Name", "Handbook", "A docs site: its name."),
             field("folder", "Folder", "site", "The site's folder in the store (default: site for a page, docs for a docs site)."),
+            field("version", "Version", "0.11", "A docs site: this build is one version, under <folder>/<version>/."),
+            NodeFieldDef { field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), ..field("latest", "Latest", "", "A docs site, with Version: also written at the unversioned address.") },
         ]
         .into_iter()
         .chain(store_fields(OnConflict::Overwrite))
         .collect(),
-        layout: ["template", "path", "from", "route", "name", "folder", "store", "on_conflict"]
+        layout: ["template", "path", "from", "route", "name", "folder", "version", "latest", "store", "on_conflict"]
             .iter()
             .map(|name| LayoutItem::Field(name.to_string()))
             .collect(),
@@ -287,6 +337,9 @@ pub fn definition() -> NodeDefinition {
             NodeExample::dsl("Build the docs site nightly", r#"web.site.generate --from handbook --folder handbook-site --name "Example Handbook""#)
                 .output(json!({ "site": { "mode": "docs", "status": "ok", "name": "Example Handbook", "template": "docs.template.tsx", "from": "handbook", "folder": "handbook-site", "store": "local", "page_count": 12, "search_index_path": "handbook-site/search-index.json" } }))
                 .note("Markdown under `docs/handbook/` becomes HTML under `handbook-site/`, private until the owner serves that folder as a site in Studio → Files."),
+            NodeExample::dsl("Publish the 0.11 docs as the latest version", r#"web.site.generate --from handbook --folder site/docs --version 0.11 --latest"#)
+                .output(json!({ "site": { "mode": "docs", "status": "ok", "name": "Handbook", "template": "docs.template.tsx", "from": "handbook", "folder": "site/docs", "store": "local", "page_count": 12, "version": "0.11", "latest": true, "versions_path": "site/docs/versions.json" } }))
+                .note("With `site` served, the pages answer at `/docs/…` (latest) and `/docs/0.11/…` (pinned, not indexed); a later `--version 0.12 --latest` adds `/docs/0.12/` and leaves 0.11 as it was."),
         ],
         ..Default::default()
     }

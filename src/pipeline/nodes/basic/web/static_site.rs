@@ -233,6 +233,35 @@ pub fn site_origin(
     normalize_deploy_base_url(rule.serve.first().map(String::as_str))
 }
 
+/// Where a site's pages answer on its serve origin: the site folder's place
+/// under the folder its `public_execute` rule is set on. A served `site` with
+/// the docs written to `site/docs` answers them at `/docs/`; a site folder
+/// that is the served folder, or one not served yet, answers at `/`.
+pub fn site_base_path(
+    platform: Option<&std::sync::Arc<crate::platform::services::PlatformService>>,
+    owner: &str,
+    project: &str,
+    site_root: &str,
+) -> String {
+    let rule_folder = platform.and_then(|platform| {
+        let layout = platform.file.ensure_project_layout(owner, project).ok()?;
+        let (folder, rule) = crate::platform::services::zebfs_acl::effective_rule(&layout.data_store_dir(), site_root).ok()??;
+        (rule.access == crate::zebfs::acl::ZebFsAccess::PublicExecute).then_some(folder)
+    });
+    base_path_under(rule_folder.as_deref(), site_root)
+}
+
+/// `site_root`'s path below `served`, as a base path: `/`, or `/docs/`.
+pub fn base_path_under(served: Option<&str>, site_root: &str) -> String {
+    let root = site_root.trim_matches('/');
+    let below = served
+        .map(|served| served.trim_matches('/'))
+        .and_then(|served| if served.is_empty() { Some(root) } else { root.strip_prefix(served).filter(|rest| rest.is_empty() || rest.starts_with('/')) })
+        .map(|rest| rest.trim_matches('/'))
+        .unwrap_or("");
+    if below.is_empty() { "/".to_string() } else { format!("/{below}/") }
+}
+
 pub fn normalize_deploy_base_url(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|s| !s.is_empty())
@@ -1094,6 +1123,18 @@ mod tests {
         SITE_MANIFEST_FILE,
     };
     use crate::zebfs::{LocalZebFs, ZebFs};
+
+    #[test]
+    fn a_site_answers_at_its_place_under_the_served_folder() {
+        use super::base_path_under;
+        assert_eq!(base_path_under(Some("site"), "site"), "/");
+        assert_eq!(base_path_under(Some("site/"), "site/docs"), "/docs/");
+        assert_eq!(base_path_under(Some("site"), "site/docs/0.11"), "/docs/0.11/");
+        assert_eq!(base_path_under(Some(""), "docs"), "/docs/");
+        // Not served, or served from a folder that only shares a prefix: the root.
+        assert_eq!(base_path_under(None, "site/docs"), "/");
+        assert_eq!(base_path_under(Some("site"), "site-old/docs"), "/");
+    }
     use tempfile::tempdir;
 
     fn local_store(root: &std::path::Path) -> ZebFs {

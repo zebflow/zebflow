@@ -6686,9 +6686,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap"
-version = "0.19.4"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7514a936459da55bdb1472e3d8e660f77d6be08d8401baf77f3efaf404411494"
+checksum = "fbc3cf828c2f27e47ee7cfd2e9b2d1f9acaec46ad8a1f4fb33b3439816216aac"
 dependencies = [
  "sekejap-core",
  "sekejap-dist",
@@ -6698,9 +6698,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-core"
-version = "0.19.4"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a17408d5bd88865f51bf693e0cd14e973690c66ad14d63858b026a908a6a823"
+checksum = "9314ff8cef277106c21742041b38c7f48c417daf37045735144dcb8f4a221a6f"
 dependencies = [
  "crc32c",
  "geographiclib-rs",
@@ -6712,9 +6712,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-dist"
-version = "0.19.4"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7355979b76466121e0af516388e86b004fa4b101b9c6cca1364102abc852fc4a"
+checksum = "c0a4a36012d63edb0f4804f824f07f0c6d8ac3ffe740a2642823163e77956924"
 dependencies = [
  "sekejap-core",
  "sekejap-kernel",
@@ -6724,9 +6724,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-kernel"
-version = "0.19.4"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e821ef93a5e564f2e08c29b13d4513f64ee6eb8a17dae1be16e707b8adf107a2"
+checksum = "a7fe8908ae51ad987af6a388b4ecfa88fc85d0fc1a9a3fed17cb2f113cbd0eca"
 dependencies = [
  "crc32c",
  "libc",
@@ -6736,9 +6736,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap-lang"
-version = "0.19.4"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "425a6f332c7141c264982f8e36f7279486d84e430abe27420969318eef67c7f1"
+checksum = "4186e028f4c7416cc1f50917b985e63835d23644cb91e0983b01ef39ce30e230"
 dependencies = [
  "bcrypt",
  "hmac",
@@ -9517,7 +9517,7 @@ dependencies = [
 
 [[package]]
 name = "zebflow"
-version = "0.11.12"
+version = "0.11.13"
 dependencies = [
  "arc-swap",
  "argon2",

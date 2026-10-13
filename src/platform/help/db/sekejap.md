@@ -151,7 +151,9 @@ three-character piece read only the rows that hold it.
 **Dates** are stored as UTC microseconds behind a `TIMESTAMPTZ` column; write
 an ISO-8601 string or the integer, read back ISO text, and filter with
 `created_at BETWEEN '2026-09-01' AND '2026-10-01'` or
-`EXTRACT(YEAR FROM created_at) = 2026`.
+`EXTRACT(YEAR FROM created_at) = 2026`. `finished_at - started_at` in a
+select list answers the seconds between them, and
+`created_at < now() - INTERVAL '2 minutes'` filters by age.
 
 **Full text** — a `gin` index over the column, then:
 
@@ -254,6 +256,7 @@ INSERT INTO contacts (_key, name) VALUES ($1, $2) ON CONFLICT (_key) DO UPDATE S
 INSERT INTO contacts (_key, name) VALUES ($1, $2) ON CONFLICT (_key) DO NOTHING
 UPDATE contacts SET status = 'inactive' WHERE _key = $1
 UPDATE contacts SET status = 'inactive' WHERE score < 10
+UPDATE contacts SET status = 'archived' WHERE _key = $1 RETURNING _key, status
 DELETE FROM contacts WHERE _key = $1
 ```
 
@@ -261,6 +264,17 @@ A plain `INSERT` never overwrites: a key that exists is `23505`, and
 `ON CONFLICT` is the upsert. `UNIQUE` keeps any other column unique. Each
 statement is its own transaction; `BEGIN` / `COMMIT` are refused. A batch
 that must land together goes through `sekejap.record.create`.
+
+**Claim a row exactly once** — a key and the state it must still be in:
+
+```sql
+UPDATE jobs SET status = 'running', started_at = now()
+WHERE _key = $1 AND status = 'queued'
+```
+
+The first caller is told one row changed, every later one zero, however many
+run at once. That is the step a queue or a state machine is built on: act
+only when you got the row.
 
 ## The `sekejap.record.create` node
 

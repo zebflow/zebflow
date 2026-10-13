@@ -598,3 +598,98 @@ async fn a_removed_page_stops_being_served() {
         manifest["assets"].as_array().expect("assets").iter().filter_map(|a| a["asset_group"].as_str()).collect();
     assert_eq!(groups.len(), 1, "no asset is left under the template's earlier group: {manifest}");
 }
+
+/// A versioned docs site under a served folder: `site` is served, the docs
+/// are written to `site/docs`, so every page answers under `/docs/`. Each
+/// version keeps its own copy under `/docs/<version>/`, never indexed and
+/// never rebuilt by a later one; the latest is written again at `/docs/`,
+/// the one copy with a sitemap. Page links are written as addresses.
+#[tokio::test]
+async fn a_versioned_docs_site_answers_under_its_folder_and_keeps_every_version() {
+    let root = temp_dir("site-generate-docs-versions");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    handbook(&app, &cookie).await;
+    put_repo_file(&app, &cookie, "docs/handbook/index.md", "# Welcome\n\nStart with [installing](setup/install.md#install).\n").await;
+    serve_folder(&app, &cookie, "site").await;
+    publish(&app, &cookie, "docs-0-11", "| trigger.manual | web.site.generate --from handbook --folder site/docs --version 0.11 --latest").await;
+    publish(&app, &cookie, "docs-0-12", "| trigger.manual | web.site.generate --from handbook --folder site/docs --version 0.12 --latest").await;
+
+    let first = generate(&app, &cookie, "docs-0-11", json!({})).await;
+    assert_eq!(first["version"], json!("0.11"), "{first}");
+    assert_eq!(first["latest"], json!(true), "{first}");
+    assert_eq!(first["folder"], json!("site/docs"), "the answer describes the latest copy: {first}");
+    assert_eq!(first["versions_path"], json!("site/docs/versions.json"), "{first}");
+    assert_eq!(first["sitemap_path"], json!("site/docs/sitemap.xml"), "{first}");
+    assert_eq!(first["routes"][1], json!("/docs/setup/install/"), "{first}");
+
+    // The latest, at the unversioned address: indexed, canonical to itself,
+    // and its page link written as the address it answers at.
+    let (status, _, home) = visit(&app, SITE_HOST, "/docs/").await;
+    assert_eq!(status, StatusCode::OK, "{home}");
+    assert!(!home.contains("RWE component error"), "{home}");
+    assert!(home.contains("href=\"/docs/setup/install/#install\""), "a .md link is written as its page's address: {home}");
+    assert!(!home.contains("install.md"), "{home}");
+    let (status, _, latest) = visit(&app, SITE_HOST, "/docs/setup/install/").await;
+    assert_eq!(status, StatusCode::OK, "{latest}");
+    assert!(latest.contains(&format!("{SITE_ORIGIN}/docs/setup/install/")), "{latest}");
+    assert!(!latest.contains("<meta name=\"robots\""), "the latest is indexed: {latest}");
+
+    // The pinned copy: its own address, never indexed, canonical to the latest's.
+    let (status, _, pinned) = visit(&app, SITE_HOST, "/docs/0.11/setup/install/").await;
+    assert_eq!(status, StatusCode::OK, "{pinned}");
+    assert!(pinned.contains("<meta name=\"robots\" content=\"noindex, nofollow\">"), "{pinned}");
+    assert!(pinned.contains(&format!("rel=\"canonical\" href=\"{SITE_ORIGIN}/docs/setup/install/\"")), "{pinned}");
+    assert!(pinned.contains("data-docs-version=\"0.11\""), "the version picker names this version: {pinned}");
+    assert!(!pinned.contains("RWE component error"), "{pinned}");
+    let (_, _, pinned_home) = visit(&app, SITE_HOST, "/docs/0.11/").await;
+    assert!(pinned_home.contains("href=\"/docs/0.11/setup/install/#install\""), "a pinned page links within its version: {pinned_home}");
+    let (status, _, metadata) = visit(&app, SITE_HOST, "/docs/0.11/search/m-0.json").await;
+    assert_eq!(status, StatusCode::OK, "{metadata}");
+    assert!(search_hrefs(&metadata).iter().all(|href| href.starts_with("/docs/0.11/")), "{metadata}");
+    assert_eq!(visit(&app, SITE_HOST, "/docs/0.11/sitemap.xml").await.0, StatusCode::NOT_FOUND, "a pinned copy has no sitemap");
+    let (_, _, sitemap) = visit(&app, SITE_HOST, "/docs/sitemap.xml").await;
+    assert!(sitemap.contains(&format!("<loc>{SITE_ORIGIN}/docs/setup/install/</loc>")), "{sitemap}");
+    assert!(!sitemap.contains("/docs/0.11/"), "{sitemap}");
+
+    // 0.12 ships: 0.11 stays exactly as it was built, the root moves on, and
+    // the list names both, the latest first.
+    put_repo_file(&app, &cookie, "docs/handbook/setup/install.md", "---\ntitle: Install\norder: 1\n---\n# Install\n\nInstall the newer demo app.\n").await;
+    generate(&app, &cookie, "docs-0-12", json!({})).await;
+    let (_, _, kept) = visit(&app, SITE_HOST, "/docs/0.11/setup/install/").await;
+    assert!(kept.contains("Install the demo app.") && !kept.contains("newer"), "0.11 is frozen: {kept}");
+    let (_, _, moved) = visit(&app, SITE_HOST, "/docs/setup/install/").await;
+    assert!(moved.contains("Install the newer demo app."), "{moved}");
+    assert_eq!(visit(&app, SITE_HOST, "/docs/0.12/setup/install/").await.0, StatusCode::OK);
+    let (status, _, versions) = visit(&app, SITE_HOST, "/docs/versions.json").await;
+    assert_eq!(status, StatusCode::OK, "{versions}");
+    assert_eq!(
+        parse(&versions),
+        json!({ "versions": [
+            { "version": "0.12", "path": "/docs/0.12/", "latest": true },
+            { "version": "0.11", "path": "/docs/0.11/", "latest": false },
+        ] }),
+        "{versions}"
+    );
+}
+
+/// `--latest` needs a version, a label is one path segment, and a version may
+/// not hide a page of the same name.
+#[tokio::test]
+async fn a_version_is_checked_before_anything_is_written() {
+    let root = temp_dir("site-generate-docs-version-refused");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    handbook(&app, &cookie).await;
+    for (name, flags, code) in [
+        ("latest-alone", "--latest", site::CODE_VERSION),
+        ("bad-label", "--version ../x", site::CODE_VERSION),
+        ("hides-a-page", "--version setup", site::CODE_VERSION),
+    ] {
+        publish(&app, &cookie, name, &format!("| trigger.manual | web.site.generate --from handbook --folder site/docs {flags}")).await;
+        let (status, body) = execute(&app, &cookie, name, json!({})).await;
+        assert_ne!(status, StatusCode::OK, "{name}: {body}");
+        assert!(body.to_string().contains(code), "{name}: {body}");
+    }
+    assert_eq!(store_object(&app, &cookie, "site/docs/versions.json").await.0, StatusCode::NOT_FOUND, "nothing was written");
+}

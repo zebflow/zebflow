@@ -18,7 +18,7 @@ use super::docs_text::{
     replace_or_insert_meta, replace_tag_content, split_frontmatter, titleize_segment, upsert_link_rel, xml_escape,
 };
 pub use super::docs_text::{DocHeading, FolderMeta, PageFrontmatter};
-use super::{Config, DEFAULT_DOCS_TEMPLATE, DOCS_META_FILE, Mode};
+use super::{Config, DEFAULT_DOCS_TEMPLATE, DOCS_META_FILE};
 use crate::pipeline::PipelineError;
 use crate::pipeline::nodes::basic::web::static_site;
 use crate::pipeline::nodes::shared::project_store;
@@ -93,7 +93,43 @@ pub struct DocsSite {
     pub search_files: Vec<super::docs_search::SearchFile>,
     /// Where the page reads the index manifest from.
     pub search_manifest_route: String,
+    /// Set when the build is one version of a versioned site (`--version`).
+    pub version: Option<DocsVersion>,
 }
+
+/// One version of a versioned docs site. The pinned copy lives under
+/// `<root>/<label>/` and is never indexed; the latest version is written
+/// again at `<root>`, the only copy search engines are given. Which version is
+/// the latest is read from `versions.json` when the page loads, so a build
+/// never has to be redone because a newer one shipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocsVersion {
+    /// `0.11`
+    pub label: String,
+    /// The site's unversioned base path: `/docs/`.
+    pub root_path: String,
+    /// This copy is the one under `<root>/<label>/`.
+    pub pinned: bool,
+}
+
+impl DocsVersion {
+    /// Where every build of the site lists its versions.
+    pub fn versions_href(&self) -> String {
+        format!("{}{VERSIONS_FILE}", self.root_path)
+    }
+
+    /// The unversioned address of a pinned page: `/docs/0.11/a/` → `/docs/a/`.
+    pub fn unpinned_route(&self, route: &str) -> String {
+        let pinned_root = format!("{}{}/", self.root_path, self.label);
+        match route.strip_prefix(&pinned_root) {
+            Some(rest) => format!("{}{rest}", self.root_path),
+            None => route.to_string(),
+        }
+    }
+}
+
+/// The versions list, at the site's unversioned root.
+pub const VERSIONS_FILE: &str = "versions.json";
 
 #[derive(Debug, Clone)]
 struct FolderNode {
@@ -133,12 +169,14 @@ impl FolderNode {
 /// API on a platform.
 pub fn load_site(
     config: &Config,
+    site_root_rel: &str,
+    deploy_base_path: &str,
     template_root: &Path,
     docs_root: &Path,
     create_template: &dyn Fn(&str, &str) -> Result<(), PipelineError>,
 ) -> Result<DocsSite, PipelineError> {
     let docs_root_rel = normalize_rel_dir_path(config.from.as_deref().unwrap_or_default(), "--from")?;
-    let site_root_rel = config.folder_rel(Mode::Docs)?;
+    let site_root_rel = site_root_rel.to_string();
     let template_rel_path = super::page::normalize_template_rel_path(
         config.template.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(DEFAULT_DOCS_TEMPLATE),
     )?;
@@ -153,8 +191,9 @@ pub fn load_site(
 
     let template_source =
         ensure_template_scaffold(template_root, &template_rel_path, config.name.as_deref(), create_template)?;
-    // A site runs at the root of its serve address (`node-conventions.md` §7).
-    let deploy_base_path = "/".to_string();
+    // The site answers at its folder's place under the served folder
+    // (`static_site::site_base_path`), `/` until it is served.
+    let deploy_base_path = static_site::normalize_deploy_base_path(Some(deploy_base_path), "/")?;
 
     let mut folder_meta = HashMap::new();
     let mut pages = Vec::new();
@@ -201,9 +240,18 @@ pub fn load_site(
     let llms_full_txt = build_llms_full_txt(&site_title, None, &ordered_pages);
     // Every internal link, against the routes and headings this build will
     // write. A site with a dead link is not written (`docs_links.rs`).
-    let broken = super::docs_links::check(&ordered_pages);
+    let broken = super::docs_links::check(&ordered_pages, &deploy_base_path);
     if !broken.is_empty() {
         return Err(PipelineError::new(super::CODE_LINKS, super::docs_links::report(&broken)));
+    }
+    // Checked, so every page link answers: written as the address it answers
+    // at, never as the `.md` file it names.
+    let mut ordered_pages = ordered_pages;
+    for page in ordered_pages.iter_mut() {
+        let source = page.clone();
+        for block in page.blocks.iter_mut() {
+            route_block_links(block, &source, &deploy_base_path);
+        }
     }
 
     let search_files = super::docs_search::build(&ordered_pages);
@@ -225,6 +273,7 @@ pub fn load_site(
         llms_full_txt,
         search_files,
         search_manifest_route,
+        version: None,
     })
 }
 
@@ -255,13 +304,21 @@ pub fn page_payload(
             "search_manifest_href": site.search_manifest_route,
             "base_url": site.deploy_base_url,
             "base_path": site.deploy_base_path,
+            // The switcher's facts; which version is the latest is read from
+            // `versions_href` when the page loads.
+            "version": site.version.as_ref().map(|version| json!({
+                "label": version.label,
+                "pinned": version.pinned,
+                "root_path": version.root_path,
+                "versions_href": version.versions_href(),
+            })),
         },
         "page": {
             "title": page.title,
             "description": page.description,
             "keywords": page.keywords,
-            "canonical": effective_canonical(site.deploy_base_url.as_deref(), &page.route_path, page.canonical.as_deref()),
-            "noindex": page.noindex,
+            "canonical": page_canonical(site, page),
+            "noindex": page_noindex(site, page),
             "blocks": page.blocks,
             "headings": page.headings,
             "breadcrumbs": breadcrumbs,
@@ -334,11 +391,7 @@ pub fn apply_page_seo(html: String, site: &DocsSite, page_index: usize) -> Strin
     let Some(page) = site.pages.get(page_index) else {
         return html;
     };
-    let canonical = effective_canonical(
-        site.deploy_base_url.as_deref(),
-        &page.route_path,
-        page.canonical.as_deref(),
-    );
+    let canonical = page_canonical(site, page);
     let mut out = html;
     let title = format!("{} | {}", page.title, site.site_title);
     out = replace_tag_content(&out, "title", &html_escape(&title));
@@ -346,7 +399,7 @@ pub fn apply_page_seo(html: String, site: &DocsSite, page_index: usize) -> Strin
     if let Some(canonical) = canonical {
         out = upsert_link_rel(&out, "canonical", &canonical);
     }
-    if page.noindex {
+    if page_noindex(site, page) {
         out = replace_or_insert_meta(&out, "name", "robots", "noindex, nofollow");
     }
     out = replace_or_insert_meta(&out, "property", "og:title", &html_escape(&page.title));
@@ -380,6 +433,21 @@ pub fn apply_page_seo(html: String, site: &DocsSite, page_index: usize) -> Strin
     );
     out = insert_before_head_end(&out, &page_jsonld(site, page, &page_address));
     out
+}
+
+/// A pinned version's page points search engines at its unversioned address,
+/// the one copy they are given; the author's own `canonical` still wins.
+fn page_canonical(site: &DocsSite, page: &DocPage) -> Option<String> {
+    let route = match &site.version {
+        Some(version) if version.pinned => version.unpinned_route(&page.route_path),
+        _ => page.route_path.clone(),
+    };
+    effective_canonical(site.deploy_base_url.as_deref(), &route, page.canonical.as_deref())
+}
+
+/// A pinned version's page is never indexed: the latest is, at the root.
+fn page_noindex(site: &DocsSite, page: &DocPage) -> bool {
+    page.noindex || site.version.as_ref().is_some_and(|version| version.pinned)
 }
 
 /// `TechArticle` and `BreadcrumbList` for one page, from the title, the
@@ -884,6 +952,19 @@ impl DocsSite {
     ///
     /// An address that is already absolute (`/…`, `https://…`, `data:`) is the
     /// author being explicit and is left exactly as written.
+    /// Makes this build one version of a versioned site. A pinned build
+    /// writes no sitemap, robots or llms file: its pages are not indexed, and
+    /// those files belong to the unversioned root alone.
+    pub fn set_version(&mut self, version: DocsVersion) {
+        if version.pinned {
+            self.sitemap_xml.clear();
+            self.robots_txt.clear();
+            self.llms_txt.clear();
+            self.llms_full_txt.clear();
+        }
+        self.version = Some(version);
+    }
+
     pub fn set_asset_base(&mut self, owner: &str, project: &str) {
         let base = format!("/static/{owner}/{project}/");
         for page in self.pages.iter_mut() {
@@ -892,6 +973,80 @@ impl DocsSite {
             }
         }
     }
+}
+
+/// Every link to another page, written as the address it answers at:
+/// `](../guide/start.md#setup)` becomes `](/docs/guide/start/#setup)`, and a
+/// card's `href` the same. A fenced block is code and is left as written.
+fn route_block_links(block: &mut super::docs_blocks::DocBlock, page: &DocPage, base_path: &str) {
+    use super::docs_blocks::DocBlock;
+    match block {
+        DocBlock::Markdown { text } => *text = route_markdown_links(text, page, base_path),
+        DocBlock::Cards { items } => {
+            for card in items.iter_mut() {
+                if let Some(href) = card.href.as_deref().and_then(|href| super::docs_links::page_href(page, href, base_path)) {
+                    card.href = Some(href);
+                }
+            }
+        }
+        DocBlock::Admonition { blocks, .. } | DocBlock::Unknown { blocks, .. } => {
+            for inner in blocks.iter_mut() {
+                route_block_links(inner, page, base_path);
+            }
+        }
+        DocBlock::Tabs { panes } => {
+            for pane in panes.iter_mut() {
+                for inner in pane.blocks.iter_mut() {
+                    route_block_links(inner, page, base_path);
+                }
+            }
+        }
+        DocBlock::Component { .. } | DocBlock::CodeGroup { .. } | DocBlock::Code { .. } => {}
+    }
+}
+
+fn route_markdown_links(text: &str, page: &DocPage, base_path: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("](") {
+            let (before, tail) = rest.split_at(at + 2);
+            out.push_str(before);
+            let Some(close) = tail.find(')') else {
+                rest = tail;
+                break;
+            };
+            let target = &tail[..close];
+            let (path, title) = match target.split_once(char::is_whitespace) {
+                Some((path, title)) => (path, Some(title)),
+                None => (target, None),
+            };
+            match super::docs_links::page_href(page, path, base_path) {
+                Some(href) => {
+                    out.push_str(&href);
+                    if let Some(title) = title {
+                        out.push(' ');
+                        out.push_str(title);
+                    }
+                }
+                None => out.push_str(target),
+            }
+            out.push(')');
+            rest = &tail[close + 1..];
+        }
+        out.push_str(rest);
+    }
+    out
 }
 
 /// The props that name a file. An explicit list, so a prop that merely looks
@@ -1144,7 +1299,7 @@ mod tests {
         let create = |rel: &str, content: &str| {
             crate::pipeline::nodes::shared::project_store::create_repo_file(source, rel, content.as_bytes(), "FW_NODE_WEB_SITE_GENERATE_TEMPLATE_WRITE")
         };
-        super::load_site(&config, source, docs, &create).expect("site")
+        super::load_site(&config, "docs", "/", source, docs, &create).expect("site")
     }
 
     /// One order — `nav`, then `order`, then title; the root page first; a

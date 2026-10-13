@@ -205,7 +205,9 @@ node has an `:error` pin. On top of that:
   Content` with no body; the run's value is never sent implicitly.
 
 The definition declares every role — flag, type (`text` `json`
-`file:image` …), `one` `repeat` or `map`, required, a ceiling on repeats. At
+`file:image` …), `one` `repeat` or `map`, required, a ceiling on repeats. A
+`text` role keeps what was written (`--version 0.10` is `"0.10"`, never the
+number 0.1); any other role that reads as a number or a boolean becomes one. At
 save: an unknown role, a missing required role, a second value for a `one`
 role, a file of the wrong kind, a reference to a key no upstream node answers
 ("did you mean …") and an `input.<key>` two upstream nodes answer (naming both
@@ -327,7 +329,12 @@ and `FW_FILE_REF_*` pass through because they name a contract.
 
 A node never holds the project's own address ([Addressing](./addressing.md)
 §0). A site generator needing an absolute URL takes the `serve` origin of the
-folder it writes; with none, it writes host-relative links and no sitemap.
+folder it writes; with none, it writes host-relative links and no sitemap. Its
+routes start at the written folder's place under the served folder (`site`
+served, `site/docs` written: `/docs/…`), `/` when it is the served folder or
+none is served. A versioned docs site (`--version`) writes each version under
+`<folder>/<version>/`, never indexed and never rebuilt, the latest again at
+`<folder>/`, and lists them in `<folder>/versions.json`.
 
 ## 11. Providers
 
