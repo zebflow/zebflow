@@ -120,10 +120,11 @@ impl S3Config {
                 ));
             }
         };
+        let bucket = validate_bucket_name(&required("bucket")?)?;
         Ok(Self {
             endpoint,
             region,
-            bucket: required("bucket")?,
+            bucket,
             prefix,
             access_key_id: required("access_key_id")?,
             secret_access_key: required("secret_access_key")?,
@@ -138,6 +139,35 @@ impl S3Config {
             None => ("http", self.endpoint.as_str()),
         }
     }
+}
+
+fn validate_bucket_name(bucket: &str) -> Result<String, ZebFsError> {
+    let trimmed = bucket.trim();
+    if trimmed.is_empty() || trimmed.len() > 63 {
+        return Err(ZebFsError::new(
+            "ZEBFS_S3_CREDENTIAL",
+            "bucket name must be between 1 and 63 characters",
+        ));
+    }
+    let bytes = trimmed.as_bytes();
+    let is_alnum = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    if !is_alnum(bytes[0]) || !is_alnum(bytes[bytes.len() - 1]) {
+        return Err(ZebFsError::new(
+            "ZEBFS_S3_CREDENTIAL",
+            "bucket name must start and end with a lowercase letter or digit",
+        ));
+    }
+    if trimmed.contains("..")
+        || !bytes
+            .iter()
+            .all(|&b| is_alnum(b) || b == b'-' || b == b'.')
+    {
+        return Err(ZebFsError::new(
+            "ZEBFS_S3_CREDENTIAL",
+            "bucket name may only contain lowercase letters, digits, dots, and hyphens",
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 /// A project's files in a bucket.
@@ -538,7 +568,11 @@ impl S3ZebFs {
         if len == 0 {
             return Ok(Box::new(std::io::empty()));
         }
-        let range = format!("bytes={offset}-{}", offset + len - 1);
+        let end = offset
+            .checked_add(len)
+            .and_then(|v| v.checked_sub(1))
+            .ok_or_else(|| ZebFsError::new(CODE, "invalid byte range overflow"))?;
+        let range = format!("bytes={offset}-{end}");
         let response = self.request("GET", &self.key_for(&rel), &[], None, &[("range", range.as_str())])?;
         Ok(Box::new(response.into_reader().take(len)))
     }
@@ -1044,6 +1078,37 @@ pub(crate) mod tests {
         let err = fs.get("a").unwrap_err();
         assert_eq!(err.code, "ZEBFS_S3");
         assert!(err.message.contains("cannot reach the store"), "{}", err.message);
+    }
+
+    #[test]
+    fn rejects_invalid_bucket_names_and_range_overflow() {
+        for bad_bucket in [
+            "bucket/../../admin",
+            "bucket?list-type=2",
+            "bucket#frag",
+            "bucket@evil.example.com",
+            "bucket..dots",
+            "-leading-hyphen",
+            "trailing-hyphen-",
+            "UpperCaseBucket",
+        ] {
+            let cred = serde_json::json!({
+                "endpoint": "https://s3.example.com",
+                "bucket": bad_bucket,
+                "access_key_id": "ak",
+                "secret_access_key": uuid::Uuid::new_v4().to_string(),
+            });
+            let err = S3Config::from_credential(&cred).expect_err(bad_bucket);
+            assert_eq!(err.code, "ZEBFS_S3_CREDENTIAL");
+        }
+
+        let fs = store(1, "");
+        let err = match fs.open_range("file.bin", u64::MAX, 2) {
+            Ok(_) => panic!("overflowing byte range must fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.code, "ZEBFS_S3");
+        assert!(err.message.contains("overflow"), "{}", err.message);
     }
 
     const EXPECTED_SIGNATURE: &str = "5ca375ac8dbc0e2b1ffadba8f005f7238a43b127699269453699634d1732a380";
