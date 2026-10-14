@@ -189,3 +189,37 @@ async fn a_webhook_without_a_method_is_get_when_saved_and_when_called() {
     .await;
     assert_eq!(status, StatusCode::OK, "{run}");
 }
+
+/// A host that carries routes serves only its routes (`addressing.md` §2): a
+/// path none of them match is 404 — never the platform's own pages, such as
+/// the Studio's login, served under the project's domain.
+#[tokio::test]
+async fn a_host_with_routes_never_falls_through_to_the_platform() {
+    let root = temp_dir("host-miss");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "hello", r#"| trigger.webhook --route /hello --method GET | web.response.send --body hi"#).await;
+    let (status, body) = studio(
+        &app,
+        &cookie,
+        "PUT",
+        "/settings/addressing",
+        Some(json!({ "data": { "hosts": ["tiles.example.com"], "routes": [{ "host": "tiles.example.com", "path": "/tiles/", "surface": "ms" }], "disabled": ["files"] } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let on_tiles = |uri: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::builder().uri(uri).header(header::HOST, "tiles.example.com").body(Body::empty()).expect("request"))
+                .await
+                .expect("response")
+                .status()
+        }
+    };
+    for uri in ["/login", "/home", "/hello", "/wh/other/project/x", "/api/projects/superadmin/default/pipelines"] {
+        assert_eq!(on_tiles(uri).await, StatusCode::NOT_FOUND, "{uri}");
+    }
+    // The project's own platform forms still pass on its host, as before.
+    assert_eq!(on_tiles("/wh/superadmin/default/hello").await, StatusCode::OK);
+}

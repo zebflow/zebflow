@@ -36,6 +36,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use super::PlatformAppState;
+use crate::platform::services::addressing::sections::{self, SectionTable};
 use crate::platform::services::pipeline_runtime::McpTriggerSpec;
 use crate::platform::web::ProjectHost;
 
@@ -116,6 +117,9 @@ pub(in crate::platform::web) struct Issuer {
     /// Where the app's pages are, for `--login`: the origin on a project
     /// host, `{base}/wh/{o}/{p}` on the platform form.
     pages: String,
+    /// On a sectioned project's host: its routing and the host, so `--login`
+    /// (written whole) is emitted as the visitor reaches it (§2c).
+    section: Option<(std::sync::Arc<SectionTable>, String)>,
 }
 
 impl Issuer {
@@ -129,7 +133,13 @@ impl Issuer {
         };
         let mount = url.path().trim_end_matches('/');
         let path = if route == "/" { mount.to_string() } else { format!("{mount}{route}") };
-        Some(Issuer { origin, path, pages: pages.trim_end_matches('/').to_string() })
+        Some(Issuer { origin, path, pages: pages.trim_end_matches('/').to_string(), section: None })
+    }
+
+    /// The issuer of a route reached on a sectioned project's host.
+    pub(super) fn in_section(mut self, table: std::sync::Arc<SectionTable>, host: String) -> Issuer {
+        self.section = Some((table, host));
+        self
     }
 
     /// `resource` = `issuer` = the connect URL.
@@ -150,8 +160,19 @@ impl Issuer {
         format!("{}/.well-known/oauth-authorization-server{}", self.origin, self.path)
     }
 
-    pub(super) fn login_url(&self, login: &str) -> String {
-        format!("{}{login}", self.pages)
+    /// Where `--login` answers for this issuer; `None` when, on a section's
+    /// host, it does not route back to that page (§2c Visitor form).
+    pub(super) fn login_url(&self, login: &str) -> Option<String> {
+        match &self.section {
+            None => Some(format!("{}{login}", self.pages)),
+            Some((table, host)) => {
+                let path = sections::pages_url(table, host, login)?;
+                if path.starts_with("http://") || path.starts_with("https://") {
+                    return Some(path);
+                }
+                Some(format!("{}{path}", self.pages))
+            }
+        }
     }
 }
 
@@ -284,7 +305,7 @@ mod tests {
         assert_eq!(issuer.protected_resource_url(), "http://library.site-a.localhost:10610/.well-known/oauth-protected-resource/_mcp/library");
         assert_eq!(issuer.authorization_server_url(), "http://library.site-a.localhost:10610/.well-known/oauth-authorization-server/_mcp/library");
         assert_eq!(issuer.endpoint("token"), "http://library.site-a.localhost:10610/_mcp/library/_oauth/token");
-        assert_eq!(issuer.login_url("/auth/login"), "http://library.site-a.localhost:10610/auth/login");
+        assert_eq!(issuer.login_url("/auth/login").as_deref(), Some("http://library.site-a.localhost:10610/auth/login"));
         let root = Issuer::new("https://library.example/_mcp", "/", "https://library.example").unwrap();
         assert_eq!(root.resource(), "https://library.example/_mcp");
         assert_eq!(well_known_split("/.well-known/oauth-protected-resource/_mcp/library"), Some(("oauth-protected-resource", "/_mcp/library")));
@@ -294,7 +315,7 @@ mod tests {
 
     #[test]
     fn a_named_host_is_https_and_the_dev_host_keeps_its_port() {
-        let named = ProjectHost { host: "library.example".into(), owner: "site-a".into(), project: "demo".into(), dev_host: false, mount: Some("/_mcp".into()) };
+        let named = ProjectHost { host: "library.example".into(), owner: "site-a".into(), project: "demo".into(), dev_host: false, mount: Some("/_mcp".into()), root: None };
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("library.example:8080"));
         headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
@@ -309,6 +330,6 @@ mod tests {
         let issuer = Issuer::new(&platform.0, "/library", &platform.1).unwrap();
         assert_eq!(issuer.resource(), "https://zebflow.example/mcp/site-a/demo/library");
         assert_eq!(issuer.protected_resource_url(), "https://zebflow.example/.well-known/oauth-protected-resource/mcp/site-a/demo/library");
-        assert_eq!(issuer.login_url("/auth/login"), "https://zebflow.example/wh/site-a/demo/auth/login");
+        assert_eq!(issuer.login_url("/auth/login").as_deref(), Some("https://zebflow.example/wh/site-a/demo/auth/login"));
     }
 }

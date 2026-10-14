@@ -14,6 +14,7 @@
 //! keeps working on every host.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,9 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::slug_segment;
+
+pub mod sections;
+use sections::SectionTable;
 
 /// The file under `data/store/` — store tier: irreplaceable, never in the repo.
 pub const ADDRESSING_FILE: &str = "addressing.json";
@@ -128,6 +132,11 @@ pub struct AddressRoute {
     pub host: String,
     pub path: String,
     pub surface: Surface,
+    /// A section's root (`/site-a`) on a `/` pages route or an `mcp` route
+    /// (`addressing.md` §2c). Absent on every rootless project, and never
+    /// written when absent, so a rootless file round-trips unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 /// What the operator set for one project. Empty means "dev host, default
@@ -203,14 +212,31 @@ impl ProjectAddressing {
     /// and every named host except a file host, where nothing runs.
     pub fn site_hosts(&self, dev_host: String) -> Vec<String> {
         let file_hosts = self.file_hosts();
+        // A section host is never a site host (§2c); on a rootless project
+        // this list is empty.
+        let section_hosts = self.section_hosts();
         let mut hosts: Vec<String> = self
             .hosts
             .iter()
-            .filter(|h| !file_hosts.contains(&h.as_str()))
+            .filter(|h| !file_hosts.contains(&h.as_str()) && !section_hosts.contains(&h.as_str()))
             .cloned()
             .collect();
         hosts.push(dev_host);
         hosts
+    }
+
+    /// Hosts whose `/` pages route carries a root (`addressing.md` §2c).
+    pub fn section_hosts(&self) -> Vec<&str> {
+        self.routes
+            .iter()
+            .filter(|r| r.root.is_some() && r.surface == Surface::Pages && r.path == "/")
+            .map(|r| r.host.as_str())
+            .collect()
+    }
+
+    /// Whether any route carries a root: a sectioned project.
+    pub fn is_sectioned(&self) -> bool {
+        self.routes.iter().any(|r| r.root.is_some())
     }
 }
 
@@ -228,6 +254,9 @@ pub struct Resolution {
     pub dev_host: bool,
     /// Whether this host is a named file host (`addressing.md` §2b).
     pub file_host: bool,
+    /// The host carries routes and none matched: only this project's own
+    /// platform forms pass; anything else is 404, never a platform route.
+    pub miss: bool,
 }
 
 impl Resolution {
@@ -249,21 +278,119 @@ impl Resolution {
 
 #[derive(Default)]
 struct Index {
-    /// host → (owner, project). Custom hosts only; dev hosts are computed.
+    /// host → (owner, project). Custom hosts and section dev hosts; the
+    /// two-label dev hosts are computed.
     hosts: HashMap<String, (String, String)>,
     /// (owner, project) → addressing, as last read.
     projects: HashMap<(String, String), ProjectAddressing>,
+    /// Sectioned projects only: their prepared routing (§2c).
+    sections: HashMap<(String, String), Arc<SectionTable>>,
+    /// Every host of a sectioned project — named, dev, section dev — to it.
+    section_hosts: HashMap<String, (String, String)>,
+}
+
+impl Index {
+    /// Put a project's sections into the index, or take them out when it has
+    /// none. Answers the section dev hosts skipped because another project
+    /// holds the name.
+    fn place_sections(&mut self, owner: &str, project: &str, table: Option<SectionTable>) -> Vec<String> {
+        let key = (owner.to_string(), project.to_string());
+        self.section_hosts.retain(|_, held| held != &key);
+        if let Some(old) = self.sections.remove(&key) {
+            for host in old.section_dev_hosts.values() {
+                if self.hosts.get(host) == Some(&key) {
+                    self.hosts.remove(host);
+                }
+            }
+        }
+        let Some(mut table) = table else {
+            return Vec::new();
+        };
+        let mut skipped = Vec::new();
+        let labels: Vec<(String, String)> = table.section_dev_hosts.iter().map(|(l, h)| (l.clone(), h.clone())).collect();
+        for (label, host) in labels {
+            match self.hosts.get(&host) {
+                Some(held) if held != &key => {
+                    table.section_dev_hosts.remove(&label);
+                    table.hosts.remove(&host);
+                    skipped.push(host);
+                }
+                _ => {
+                    self.hosts.insert(host, key.clone());
+                }
+            }
+        }
+        for host in table.hosts.keys() {
+            self.section_hosts.insert(host.clone(), key.clone());
+        }
+        self.sections.insert(key, Arc::new(table));
+        skipped
+    }
 }
 
 pub struct AddressingService {
     data: Arc<dyn DataAdapter>,
     file: Arc<dyn FileAdapter>,
     index: RwLock<Index>,
+    /// Whether any project on this instance has a root. A rootless instance
+    /// pays one relaxed load for §2c and nothing else.
+    any_sections: AtomicBool,
 }
 
 impl AddressingService {
     pub fn new(data: Arc<dyn DataAdapter>, file: Arc<dyn FileAdapter>) -> Self {
-        Self { data, file, index: RwLock::new(Index::default()) }
+        Self { data, file, index: RwLock::new(Index::default()), any_sections: AtomicBool::new(false) }
+    }
+
+    /// The prepared routing of the sectioned project a host belongs to, and
+    /// the host as the table knows it. `None` for every host of a rootless
+    /// project, at the cost of one atomic load on an instance with none.
+    pub fn section_of_host(&self, host: &str) -> Option<(Arc<SectionTable>, String)> {
+        if !self.any_sections.load(Ordering::Relaxed) {
+            return None;
+        }
+        let host = normalize_host(host);
+        let index = self.index.read().expect("addressing index poisoned");
+        let key = index.section_hosts.get(&host)?;
+        Some((index.sections.get(key)?.clone(), host))
+    }
+
+    /// The prepared routing of a sectioned project; `None` when rootless.
+    pub fn sections(&self, owner: &str, project: &str) -> Option<Arc<SectionTable>> {
+        if !self.any_sections.load(Ordering::Relaxed) {
+            return None;
+        }
+        let key = (slug_segment(owner), slug_segment(project));
+        if let Some(found) = self.index.read().expect("addressing index poisoned").sections.get(&key) {
+            return Some(found.clone());
+        }
+        None
+    }
+
+    /// Rebuild one sectioned project's routing after its ACL changed: the
+    /// hosts a folder serves are part of it.
+    pub fn refresh_sections(&self, owner: &str, project: &str) {
+        if self.sections(owner, project).is_none() {
+            return;
+        }
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let Ok(addressing) = self.read(&owner, &project) else { return };
+        let table = self.section_table(&owner, &project, &addressing);
+        self.index.write().expect("addressing index poisoned").place_sections(&owner, &project, table);
+    }
+
+    fn section_table(&self, owner: &str, project: &str, addressing: &ProjectAddressing) -> Option<SectionTable> {
+        if !addressing.is_sectioned() {
+            return None;
+        }
+        let serve = self
+            .file
+            .ensure_project_layout(owner, project)
+            .map(|layout| sections::serve_hosts_of(&layout.data_store_dir()))
+            .unwrap_or_default();
+        self.any_sections.store(true, Ordering::Relaxed);
+        SectionTable::build(owner, project, addressing, &serve)
     }
 
     /// The automatic host every project has: `<project>.<owner>.localhost`.
@@ -315,6 +442,7 @@ impl AddressingService {
     /// writes keep it current afterwards.
     pub fn rebuild_index(&self) -> Result<usize, PlatformError> {
         let mut index = Index::default();
+        let mut sectioned = Vec::new();
         for user in self.data.list_users()? {
             for project in self.data.list_projects(&user.owner)? {
                 let addressing = self.read_from_disk(&project.owner, &project.project)?;
@@ -323,9 +451,20 @@ impl AddressingService {
                         .hosts
                         .insert(host.clone(), (project.owner.clone(), project.project.clone()));
                 }
+                if addressing.is_sectioned() {
+                    sectioned.push((project.owner.clone(), project.project.clone(), addressing.clone()));
+                }
                 index
                     .projects
                     .insert((project.owner.clone(), project.project.clone()), addressing);
+            }
+        }
+        // Section dev hosts after every named host: a collision drops only
+        // the section dev host, never a rootless project's host (§2c).
+        for (owner, project, addressing) in sectioned {
+            let table = self.section_table(&owner, &project, &addressing);
+            for host in index.place_sections(&owner, &project, table) {
+                eprintln!("addressing: {owner}/{project}: section dev host `{host}` is another project's named host; it does not answer");
             }
         }
         let count = index.hosts.len();
@@ -361,11 +500,12 @@ impl AddressingService {
             return Ok(found.clone());
         }
         let addressing = self.read_from_disk(&owner, &project)?;
-        self.index
-            .write()
-            .expect("addressing index poisoned")
-            .projects
-            .insert((owner, project), addressing.clone());
+        let table = self.section_table(&owner, &project, &addressing);
+        let mut index = self.index.write().expect("addressing index poisoned");
+        if table.is_some() {
+            index.place_sections(&owner, &project, table);
+        }
+        index.projects.insert((owner, project), addressing.clone());
         Ok(addressing)
     }
 
@@ -376,7 +516,21 @@ impl AddressingService {
         &self,
         owner: &str,
         project: &str,
+        addressing: ProjectAddressing,
+    ) -> Result<ProjectAddressing, PlatformError> {
+        self.write_checked(owner, project, addressing, |_| Ok(()))
+    }
+
+    /// [`Self::write`], with `check` run on a sectioned project's prepared
+    /// routing before anything is stored: the save refuses what the caller
+    /// can see and this service cannot (registered routes, `addressing.md`
+    /// §2c). Never called for a rootless project.
+    pub fn write_checked(
+        &self,
+        owner: &str,
+        project: &str,
         mut addressing: ProjectAddressing,
+        check: impl Fn(&SectionTable) -> Result<(), PlatformError>,
     ) -> Result<ProjectAddressing, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
@@ -390,6 +544,12 @@ impl AddressingService {
             }
             if host == dev_host {
                 continue; // implicit, never stored
+            }
+            // A section dev host of this project is implicit too (§2c).
+            if addressing.routes.iter().filter_map(|r| r.root.as_deref()).filter_map(|r| sections::root_label(r).ok())
+                .any(|label| sections::section_dev_host(&owner, &project, &label) == host)
+            {
+                continue;
             }
             if !valid_host(&host) {
                 return Err(PlatformError::new(
@@ -431,14 +591,29 @@ impl AddressingService {
                     format!("route `{}{}` names a host this project does not have; add the host first", route.host, route.path),
                 ));
             }
-            let path = normalize_route_path(&route.path, route.surface)?;
+            let root = match route.root.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+                Some(raw) => Some(format!("/{}", sections::root_label(raw)?)),
+                None => None,
+            };
+            // A pages route off `/` stands only beside a section's root (§2c);
+            // `sections::validate` refuses it anywhere else.
+            let shared_pages = route.surface == Surface::Pages
+                && root.is_none()
+                && addressing.routes.iter().any(|r| {
+                    normalize_host(&r.host) == host && r.surface == Surface::Pages && r.root.is_some()
+                });
+            let path = if shared_pages {
+                normalize_route_path(&route.path, Surface::Static)?
+            } else {
+                normalize_route_path(&route.path, route.surface)?
+            };
             if routes.iter().any(|r: &AddressRoute| r.host == host && r.path == path) {
                 return Err(PlatformError::new(
                     "ADDRESSING_ROUTE_DUPLICATE",
                     format!("two routes at `{host}{path}`"),
                 ));
             }
-            routes.push(AddressRoute { host, path, surface: route.surface });
+            routes.push(AddressRoute { host, path, surface: route.surface, root });
         }
         // A file host answers exposed files at its root and nothing else: no
         // second route beside it, and never the dev host (`addressing.md` §2b).
@@ -450,9 +625,22 @@ impl AddressingService {
                 ));
             }
         }
+        {
+            let file_hosts: Vec<&str> = routes.iter().filter(|r| r.surface == Surface::Files).map(|r| r.host.as_str()).collect();
+            sections::validate(&owner, &addressing.hosts, &routes, &file_hosts)?;
+        }
         addressing.routes = routes;
         addressing.disabled.sort_by_key(|s| s.key());
         addressing.disabled.dedup();
+        if let Some(table) = self.section_table(&owner, &project, &addressing) {
+            if let Some((host, _)) = table.hosts.iter().find(|(_, h)| h.section.is_some() && h.serve_host) {
+                return Err(PlatformError::new(
+                    "ADDRESSING_ROOT",
+                    format!("`{host}` serves a folder (Files → access); a section host cannot also be a `serve` host"),
+                ));
+            }
+            check(&table)?;
+        }
 
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let dir = layout.data_store_dir();
@@ -466,13 +654,29 @@ impl AddressingService {
             PlatformError::new("ADDRESSING_WRITE", format!("{}: {err}", path.display()))
         })?;
 
+        // The section dev hosts are claimed under the index's own lock, in
+        // the same hold that publishes the routing (§2c Dev host).
+        let table = self.section_table(&owner, &project, &addressing);
         let mut index = self.index.write().expect("addressing index poisoned");
+        if let Some(table) = &table {
+            for host in table.section_dev_hosts.values() {
+                if let Some((o, p)) = index.hosts.get(host)
+                    && (o != &owner || p != &project)
+                {
+                    return Err(PlatformError::new(
+                        "ADDRESSING_HOST_TAKEN",
+                        format!("the section dev host `{host}` already answers for `{o}/{p}`"),
+                    ));
+                }
+            }
+        }
         index
             .hosts
             .retain(|_, (o, p)| !(o == &owner && p == &project));
         for host in &addressing.hosts {
             index.hosts.insert(host.clone(), (owner.clone(), project.clone()));
         }
+        index.place_sections(&owner, &project, table);
         index.projects.insert((owner, project), addressing.clone());
         Ok(addressing)
     }
@@ -513,10 +717,12 @@ impl AddressingService {
             .map(|r| (r.surface, strip_prefix(path, &r.path)));
 
         // A host that carries any custom route serves only its routes — a
-        // dedicated tiles host does not also serve the site at `/`.
+        // dedicated tiles host does not also serve the site at `/`, nor the
+        // Studio's `/login`: a miss stays the project's.
+        let miss = custom_hit.is_none() && !candidates.is_empty();
         let hit = match custom_hit {
             Some(hit) => Some(hit),
-            None if !candidates.is_empty() => None,
+            None if miss => Some((Surface::Pages, "/".to_string())),
             None => {
                 // Default mounts: `_` prefixes, then pages at the root.
                 Surface::ALL
@@ -533,9 +739,9 @@ impl AddressingService {
         // governs the `/_files/` mount on site hosts only.
         let file_host = !dev_host && addressing.file_hosts().contains(&host.as_str());
         if file_host {
-            return Some(Resolution { owner, project, surface, rest, host, dev_host, file_host });
+            return Some(Resolution { owner, project, surface, rest, host, dev_host, file_host, miss });
         }
-        if !addressing.is_enabled(surface) {
+        if !miss && !addressing.is_enabled(surface) {
             return Some(Resolution {
                 owner,
                 project,
@@ -544,9 +750,10 @@ impl AddressingService {
                 host,
                 dev_host,
                 file_host,
+                miss,
             });
         }
-        Some(Resolution { owner, project, surface, rest, host, dev_host, file_host })
+        Some(Resolution { owner, project, surface, rest, host, dev_host, file_host, miss })
     }
 
     /// Whether a platform-form request (`/files/{o}/{p}/…`) is for a surface
@@ -725,6 +932,7 @@ mod tests {
             host: "p.o.localhost".into(),
             dev_host: true,
             file_host: false,
+            miss: false,
         };
         assert_eq!(r.platform_path(), None, "files has no platform form; the gateway answers it");
         let r = Resolution { surface: Surface::Pages, rest: "/".into(), ..r };

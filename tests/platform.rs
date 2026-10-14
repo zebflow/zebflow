@@ -24,3 +24,5 @@ mod webhook_routes;
 mod home_hidden;
 #[path = "platform/migration_startup.rs"]
 mod migration_startup;
+#[path = "platform/sections.rs"]
+mod sections;

@@ -64,6 +64,7 @@ import {
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import { pePipelineDocument, pePipelineGraph } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
 import { devOrigin } from "@/components/lib/addressing";
+import { useProjectSections } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/use-project-sections";
 
 // ── graphui bundle loader (sets globalThis.PipelineGraph) ────────────────────
 let _graphuiPromise: Promise<void> | null = null;
@@ -277,6 +278,7 @@ export default function PipelineEditor({
   const [catalog, setCatalog] = useState<Map<string, NodeCatalogEntry>>(new Map());
   const [kindIcons, setKindIcons] = useState<Record<string, string>>({});
   const [kindTitles, setKindTitles] = useState<Record<string, string>>({});
+  const sections = useProjectSections(owner, project);
   const [dataState, setDataState] = useState<EditorDataState>({
     allCredentials: [],
     pgCredentials: [],
@@ -1682,7 +1684,7 @@ export default function PipelineEditor({
       <NodeDialog
         nodeData={dialogNode}
         catalog={catalog}
-        dataState={dataState}
+        dataState={{ ...dataState, sections }}
         graphRef={graphRef}
         webhookBaseUrl={devOrigin(owner, project)}
         onApply={handleNodeApply}

@@ -261,6 +261,11 @@ async fn answer(state: PlatformAppState, owner: String, project: String, tail: S
                 return guard::too_many(wait);
             }
             if let Some(worker_id) = worker_for(&state, &owner, &project) {
+                // Placing a project on another office is not built; a
+                // sectioned one fails closed until it is (`addressing.md` §2c).
+                if state.platform.addressing.sections(&owner, &project).is_some() {
+                    return refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "a project with sections runs on its own office only");
+                }
                 let path = match op.word().filter(|_| op_hint.is_some()) {
                     // A well-known document: the worker reads it by path.
                     Some(word) => Some(format!("{WORKER_PREFIX}{owner}/{project}{}/_oauth/{word}", if route == "/" { "" } else { route.as_str() })),
@@ -287,7 +292,29 @@ async fn answer(state: PlatformAppState, owner: String, project: String, tail: S
         return refusal(StatusCode::INTERNAL_SERVER_ERROR, "mcp_route_auth_mixed", "the tools on this route declare different --auth; activate them again with one");
     }
     let oauth_route = first.spec.auth_type == "oauth";
-    let issuer = base.as_ref().filter(|_| oauth_route).and_then(|(base, pages)| Issuer::new(base, &route, pages));
+    // On a section's host the connect URL is the visitor's: the mount
+    // restored, the root removed (`addressing.md` §2c Visitor form).
+    let section_root = request.host.as_ref().and_then(|h| h.root.clone());
+    let visible_route = match &section_root {
+        None => Some(route.clone()),
+        Some(root) => {
+            let prefix = format!("/{root}");
+            if route == prefix {
+                Some("/".to_string())
+            } else {
+                route.strip_prefix(&prefix).filter(|rest| rest.starts_with('/')).map(str::to_string)
+            }
+        }
+    };
+    let issuer = base
+        .as_ref()
+        .filter(|_| oauth_route)
+        .zip(visible_route.as_deref())
+        .and_then(|((base, pages), visible)| Issuer::new(base, visible, pages))
+        .map(|issuer| match (&request.host, state.platform.addressing.sections(&owner, &project)) {
+            (Some(host), Some(table)) => issuer.in_section(table, host.host.clone()),
+            _ => issuer,
+        });
     if op != Op::Mcp && !oauth_route {
         return refusal(StatusCode::NOT_FOUND, "not_found", "this MCP server does not sign people in (--auth is not oauth)");
     }

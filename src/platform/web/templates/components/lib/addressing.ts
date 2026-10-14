@@ -20,11 +20,22 @@ export function devOrigin(owner: string, project: string): string {
   return `${window.location.protocol}//${devHost(owner, project)}${port}`;
 }
 
-/** The URL a route answers at on the dev host; "" during server render. */
-export function projectRouteUrl(owner: string, project: string, path: string): string {
+/**
+ * The URL a route answers at on the dev host; "" during server render. A
+ * route under a section's root answers on that section's dev host, the root
+ * taken off (`addressing.md` §2c): pass the project's `sections`.
+ */
+export function projectRouteUrl(owner: string, project: string, path: string, sections: any[] = []): string {
   const origin = devOrigin(owner, project);
   if (!origin) return "";
   const norm = String(path || "/").trim() || "/";
   const normalized = norm.startsWith("/") ? norm : `/${norm}`;
+  const first = normalized.split("/").filter(Boolean)[0] ?? "";
+  const section = (Array.isArray(sections) ? sections : []).find((s: any) => s?.root === `/${first}`);
+  if (section?.dev_host && typeof window !== "undefined") {
+    const port = window.location.port ? `:${window.location.port}` : "";
+    const rest = normalized.slice(first.length + 1) || "/";
+    return `${window.location.protocol}//${section.dev_host}${port}${rest}`;
+  }
   return `${origin}${normalized}`;
 }

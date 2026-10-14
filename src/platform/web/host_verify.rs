@@ -20,23 +20,27 @@ pub(super) const PREFIX: &str = "/_verify";
 /// How long a minted token answers; Verify uses it at once.
 const LIFETIME: Duration = Duration::from_secs(60);
 
-static TOKENS: Mutex<Option<HashMap<String, (String, String, Instant)>>> = Mutex::new(None);
+/// token → (owner, project, section, minted). The section is the host's root
+/// on a sectioned project (`addressing.md` §2c), `None` everywhere else.
+type Minted = (String, String, Option<String>, Instant);
+static TOKENS: Mutex<Option<HashMap<String, Minted>>> = Mutex::new(None);
 
-/// A token that proves `owner/project` once, within [`LIFETIME`].
-pub(super) fn mint(owner: &str, project: &str) -> String {
+/// A token that proves `owner/project` (and on a sectioned project, the
+/// host's section) once, within [`LIFETIME`].
+pub(super) fn mint(owner: &str, project: &str, section: Option<&str>) -> String {
     let token = uuid::Uuid::new_v4().simple().to_string();
     let now = Instant::now();
     let mut guard = TOKENS.lock().unwrap_or_else(|e| e.into_inner());
     let tokens = guard.get_or_insert_with(HashMap::new);
-    tokens.retain(|_, (_, _, at)| now.duration_since(*at) < LIFETIME);
-    tokens.insert(token.clone(), (owner.to_string(), project.to_string(), now));
+    tokens.retain(|_, (_, _, _, at)| now.duration_since(*at) < LIFETIME);
+    tokens.insert(token.clone(), (owner.to_string(), project.to_string(), section.map(str::to_string), now));
     token
 }
 
 /// The gate's answer to `/_verify[/{token}]` on a host of `owner/project`:
 /// 204 for the bare probe or a live token of this project (used up), 404
 /// with `x-zebflow-verify: other` for anything else.
-pub(super) fn answer(path: &str, owner: &str, project: &str) -> Response {
+pub(super) fn answer(path: &str, owner: &str, project: &str, section: Option<&str>) -> Response {
     let rest = path.strip_prefix(PREFIX).unwrap_or_default().trim_matches('/');
     if rest.is_empty() {
         return StatusCode::NO_CONTENT.into_response();
@@ -44,7 +48,9 @@ pub(super) fn answer(path: &str, owner: &str, project: &str) -> Response {
     let mut guard = TOKENS.lock().unwrap_or_else(|e| e.into_inner());
     let found = guard.as_mut().and_then(|tokens| tokens.remove(rest));
     match found {
-        Some((o, p, at)) if o == owner && p == project && at.elapsed() < LIFETIME => StatusCode::NO_CONTENT.into_response(),
+        Some((o, p, s, at)) if o == owner && p == project && s.as_deref() == section && at.elapsed() < LIFETIME => {
+            StatusCode::NO_CONTENT.into_response()
+        }
         _ => {
             let mut resp = StatusCode::NOT_FOUND.into_response();
             resp.headers_mut().insert("x-zebflow-verify", HeaderValue::from_static("other"));
@@ -66,12 +72,20 @@ mod tests {
 
     #[test]
     fn a_token_proves_its_own_project_once() {
-        let token = mint("site-a", "demo");
-        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "catalog").status(), StatusCode::NOT_FOUND, "another project");
-        let token = mint("site-a", "demo");
-        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "demo").status(), StatusCode::NO_CONTENT);
-        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "demo").status(), StatusCode::NOT_FOUND, "used up");
-        assert_eq!(answer("/_verify", "site-a", "demo").status(), StatusCode::NO_CONTENT);
-        assert_eq!(answer("/_verify/unknown", "site-a", "demo").status(), StatusCode::NOT_FOUND);
+        let token = mint("site-a", "demo", None);
+        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "catalog", None).status(), StatusCode::NOT_FOUND, "another project");
+        let token = mint("site-a", "demo", None);
+        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "demo", None).status(), StatusCode::NO_CONTENT);
+        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "demo", None).status(), StatusCode::NOT_FOUND, "used up");
+        assert_eq!(answer("/_verify", "site-a", "demo", None).status(), StatusCode::NO_CONTENT);
+        assert_eq!(answer("/_verify/unknown", "site-a", "demo", None).status(), StatusCode::NOT_FOUND);
+        // A sectioned project's token proves the host's section, not only
+        // the project (`addressing.md` §2c).
+        let token = mint("site-a", "demo", Some("shop"));
+        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "demo", Some("clinic")).status(), StatusCode::NOT_FOUND, "another section");
+        let token = mint("site-a", "demo", Some("shop"));
+        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "demo", None).status(), StatusCode::NOT_FOUND, "the rootless host");
+        let token = mint("site-a", "demo", Some("shop"));
+        assert_eq!(answer(&format!("/_verify/{token}"), "site-a", "demo", Some("shop")).status(), StatusCode::NO_CONTENT);
     }
 }

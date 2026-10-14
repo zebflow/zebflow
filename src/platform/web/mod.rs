@@ -13,6 +13,7 @@ mod file_host;
 mod host_verify;
 mod migration;
 mod published_mcp;
+mod sections;
 mod stored_answer;
 mod webhook_url;
 mod ws_room;
@@ -1427,6 +1428,9 @@ pub struct ProjectHost {
     /// `/_mcp/library`): the request path minus the path under the surface.
     /// `None` when the request used a platform form on this host.
     pub mount: Option<String>,
+    /// The section root the route carried (`site-a`), on a sectioned
+    /// project's host (`addressing.md` §2c); `None` everywhere else.
+    pub root: Option<String>,
 }
 
 /// The path a visitor asked for on a project host, before the gate rewrote
@@ -1465,6 +1469,14 @@ async fn addressing_gate(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
         .or_else(|| request.uri().authority().map(|a| a.to_string()));
+    // A host of a sectioned project has a gate of its own (`addressing.md`
+    // §2c). A rootless instance pays one atomic load here and nothing else.
+    if let Some(raw_host) = host.as_deref()
+        && let Some((table, section_host)) = state.platform.addressing.section_of_host(raw_host)
+    {
+        let raw_host = raw_host.to_string();
+        return sections::gate(&state, request, next, table, section_host, &raw_host).await;
+    }
     // Settings → Addressing → Verify's probe, on any host of a project
     // (`host_verify.rs`): proof the host reaches this project, given by a
     // one-time token instead of a header naming it on every response.
@@ -1472,7 +1484,7 @@ async fn addressing_gate(
         && let Some(host) = host.as_deref()
         && let Some((owner, project, _)) = state.platform.addressing.project_of_host(host)
     {
-        return host_verify::answer(&path, &owner, &project);
+        return host_verify::answer(&path, &owner, &project, None);
     }
     // The project's file host answers stored files and nothing else — no
     // page, no API, no cookie (kinds/zebfs-acl §Resolution).
@@ -1514,11 +1526,12 @@ async fn addressing_gate(
             project: resolution.project.clone(),
             dev_host: resolution.dev_host,
             mount: Some(mount),
+            root: None,
         });
         return next.run(request).await;
     }
-    if let Some(host) = host
-        && let Some(resolution) = state.platform.addressing.resolve(&host, &path)
+    if let Some(host) = host.as_deref()
+        && let Some(resolution) = state.platform.addressing.resolve(host, &path)
     {
         // A named file host is the production file host: exposed files at its
         // root and nothing else — no platform form, no site (`addressing.md` §2b).
@@ -1589,6 +1602,11 @@ async fn addressing_gate(
                 .any(|p| path == *p || path.starts_with(&format!("{p}/")));
         let mut mount = None;
         if !platform_form {
+            // A host whose routes match nothing answers 404 for the project;
+            // it never falls through to the platform's own routes (§2).
+            if resolution.miss {
+                return (StatusCode::NOT_FOUND, "not found").into_response();
+            }
             if resolution.rest.is_empty() {
                 return (
                     StatusCode::NOT_FOUND,
@@ -1636,6 +1654,7 @@ async fn addressing_gate(
             project: resolution.project.clone(),
             dev_host: resolution.dev_host,
             mount,
+            root: None,
         });
         // No header names the owner or project on a public answer; Verify
         // proves the host with a one-time probe (`host_verify.rs`).
@@ -1643,6 +1662,11 @@ async fn addressing_gate(
     }
     if state.platform.addressing.platform_form_disabled(&path) {
         return (StatusCode::NOT_FOUND, "this surface is switched off for the project (Settings → Addressing)").into_response();
+    }
+    // A stray host's platform form of a sectioned project is a rootless
+    // arrival: its claimed paths are the project's 404 (§2c Claim).
+    if sections::stray_claimed(&state, host.as_deref(), &path) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     next.run(request).await
 }
@@ -10832,6 +10856,7 @@ async fn api_internal_runtime_webhook(
         uri,
         headers,
         visitor,
+        None,
         body,
     )
     .await
@@ -10866,6 +10891,7 @@ async fn api_internal_runtime_webhook_root(
         uri,
         headers,
         visitor,
+        None,
         body,
     )
     .await
@@ -16098,14 +16124,17 @@ fn set_project_file_access(
             }
         }
     }
-    let path = crate::platform::services::zebfs_acl::set_access_as(
+    let saved = crate::platform::services::zebfs_acl::set_access_as(
         &store_dir,
         &req.path,
         access,
         scope,
         &req.serve,
         Some(role.key()),
-    )
+    );
+    // A sectioned project's routing holds the hosts its folders serve (§2c).
+    state.platform.addressing.refresh_sections(owner, project);
+    let path = saved
     .map_err(|err| {
         if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" {
             (
@@ -17493,8 +17522,22 @@ fn addressing_section_json(
             })
         })
         .collect();
+    // A sectioned project's sections, each with its own dev host (§2c).
+    let sections: Vec<Value> = state
+        .platform
+        .addressing
+        .sections(owner, project)
+        .map(|table| {
+            table
+                .section_dev_hosts
+                .iter()
+                .map(|(label, host)| json!({ "root": format!("/{label}"), "dev_host": host, "dev_url": format!("http://{host}:{port}/") }))
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(json!({
         "config": addressing,
+        "sections": sections,
         "dev_host": dev_host,
         "dev_url": format!("http://{dev_host}:{port}/"),
         "neutral_url": format!("/wh/{owner}/{project}"),
@@ -17554,7 +17597,12 @@ async fn api_check_addressing_host(
         if let Ok(client) = client {
             let mut tried = Vec::new();
             for scheme in ["https", "http"] {
-                let token = host_verify::mint(&slug_segment(&owner), &slug_segment(&project));
+                let section = state
+                    .platform
+                    .addressing
+                    .sections(&owner, &project)
+                    .and_then(|table| table.hosts.get(&host).and_then(|h| h.section.clone()));
+                let token = host_verify::mint(&slug_segment(&owner), &slug_segment(&project), section.as_deref());
                 let url = format!("{scheme}://{host}{}/{token}", host_verify::PREFIX);
                 match client.get(&url).send().await {
                     Ok(resp) => {
@@ -18045,7 +18093,23 @@ async fn api_upsert_settings_section(
                             .into_response();
                     }
                 };
-            return match state.platform.addressing.write(&owner, &project, payload) {
+            // A sectioned project's save also refuses what its registered
+            // routes cannot reach as written (`addressing.md` §2c).
+            let check = |table: &crate::platform::services::addressing::sections::SectionTable| {
+                let mut pages = Vec::new();
+                let mut mcp = Vec::new();
+                for compiled in state.platform.pipeline_runtime.list_project(&owner, &project) {
+                    pages.extend(compiled.webhook_triggers.iter().map(|t| t.path.clone()));
+                    for spec in &compiled.mcp_triggers {
+                        mcp.push(spec.route.clone());
+                        if !spec.login.is_empty() {
+                            pages.push(spec.login.clone());
+                        }
+                    }
+                }
+                crate::platform::services::addressing::sections::check_routes(table, &pages, &mcp)
+            };
+            return match state.platform.addressing.write_checked(&owner, &project, payload, check) {
                 Ok(saved) => {
                     let hosts_after = saved.site_hosts(
                         crate::platform::services::addressing::AddressingService::dev_host(&owner, &project),
@@ -18069,7 +18133,7 @@ async fn api_upsert_settings_section(
                         Err(err) => internal_error(err),
                     }
                 }
-                Err(err) if err.code.starts_with("ADDRESSING_") => (
+                Err(err) if err.code.starts_with("ADDRESSING_") || err.code.starts_with("PIPELINE_ROUTE_") => (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "ok": false, "error": { "code": err.code, "message": err.message } })),
                 )
@@ -23858,12 +23922,15 @@ async fn public_webhook_ingress(
     uri: Uri,
     headers: HeaderMap,
     visitor: Option<axum::Extension<VisitorPath>>,
+    section: Option<axum::Extension<sections::SectionArrival>>,
     body: Bytes,
 ) -> Response {
     let request_id = webhook_run_id(&headers);
     let head = method == Method::HEAD;
     let visitor_path = visitor.map(|axum::Extension(VisitorPath(path))| path);
-    let mut response = public_webhook_ingress_run(state, path, method, uri, headers, body, request_id.clone(), visitor_path).await;
+    let section = section.map(|axum::Extension(arrival)| arrival);
+    let mut response =
+        public_webhook_ingress_run(state, path, method, uri, headers, body, request_id.clone(), visitor_path, section).await;
     if let Ok(v) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert("x-request-id", v);
     }
@@ -23895,10 +23962,18 @@ async fn public_webhook_ingress_run(
     body: Bytes,
     request_id: String,
     visitor_path: Option<String>,
+    section: Option<sections::SectionArrival>,
 ) -> Response {
     let owner = crate::platform::model::slug_segment(&owner);
     let project = crate::platform::model::slug_segment(&project);
     let path = format!("/{}", tail.trim_start_matches('/'));
+    // On a sectioned project's host the error pages name the path the
+    // visitor asked for (`addressing.md` §2c); elsewhere, as before.
+    let error_path = section.as_ref().map(|s| s.visitor_path.clone()).unwrap_or_else(|| path.clone());
+    let method_key_early = method.as_str().to_ascii_uppercase();
+    if section.as_ref().is_some_and(|s| s.claimed) {
+        return webhook_not_found(&state, &owner, &project, &headers, &error_path, &method_key_early, &request_id).await;
+    }
     let method_key = method.as_str().to_ascii_uppercase();
     let exec_start = std::time::Instant::now();
     let project_cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
@@ -23927,6 +24002,11 @@ async fn public_webhook_ingress_run(
     }
     if let Ok(Some(placement)) = state.platform.cluster_placement.get(&owner, &project) {
         if placement.target == ProjectRuntimePlacementTarget::Worker {
+            if section.is_some() {
+                // Placing a project on another office is not built; a
+                // sectioned one fails closed until it is (§2c).
+                return (StatusCode::SERVICE_UNAVAILABLE, "a project with sections runs on its own office only").into_response();
+            }
             if let Some(worker_id) = placement.worker_id.as_deref() {
                 return match forward_runtime_webhook_to_worker(
                     &state, &method, &uri, &headers, &body, worker_id, visitor_path.as_deref(),
@@ -23996,7 +24076,7 @@ async fn public_webhook_ingress_run(
     });
 
     let Some(selected) = candidates.into_iter().next() else {
-        return webhook_not_found(&state, &owner, &project, &headers, &path, &method_key, &request_id).await;
+        return webhook_not_found(&state, &owner, &project, &headers, &error_path, &method_key, &request_id).await;
     };
     let retention = resolve_invocation_retention(&project_cfg, Some(&selected.compiled.graph));
     // A bundle trigger whose sender proves itself with a secret header
@@ -24090,9 +24170,31 @@ async fn public_webhook_ingress_run(
                         }
                         wanted
                     };
-                    let sep = if url.contains('?') { '&' } else { '?' };
-                    let url = format!("{url}{sep}next={}", url_query_encode(&wanted));
-                    return axum::response::Redirect::to(&url).into_response();
+                    // On a sectioned project's host both are written whole and
+                    // emitted as the visitor reaches them, or not at all: the
+                    // refusal then answers its status with no Location (§2c).
+                    let emitted = match &section {
+                        Some(arrival) => arrival.pages_url(&url).zip(arrival.pages_url(&wanted)),
+                        // A sectioned project reached on the platform address:
+                        // its written paths get the platform form.
+                        None if state.platform.addressing.sections(&owner, &project).is_some() => {
+                            let platform = |p: &str| {
+                                if p.starts_with('/') && !p.starts_with("//") { format!("/wh/{owner}/{project}{p}") } else { p.to_string() }
+                            };
+                            Some((platform(&url), platform(&wanted)))
+                        }
+                        None => Some((url, wanted)),
+                    };
+                    match emitted {
+                        Some((url, wanted)) => {
+                            let sep = if url.contains('?') { '&' } else { '?' };
+                            let url = format!("{url}{sep}next={}", url_query_encode(&wanted));
+                            return axum::response::Redirect::to(&url).into_response();
+                        }
+                        None => eprintln!(
+                            "webhook {owner}/{project}: the --auth redirect for `{error_path}` does not route back on this host; answered without Location"
+                        ),
+                    }
                 }
             }
 
@@ -24101,7 +24203,7 @@ async fn public_webhook_ingress_run(
                 &owner,
                 &project,
                 status.as_u16(),
-                json!({"error": msg, "path": path, "method": method_key}),
+                json!({"error": msg, "path": error_path, "method": method_key}),
             )
             .await
             {
@@ -24418,7 +24520,7 @@ async fn public_webhook_ingress_run(
         // one): the visitor's "no such file" is a 404, never a 500; the run
         // record above keeps the reason.
         Err(err) if err.code == crate::pipeline::nodes::basic::web::response::CODE_NOT_FOUND => {
-            return webhook_not_found(&state, &owner, &project, &headers, &path, &method_key, &request_id).await;
+            return webhook_not_found(&state, &owner, &project, &headers, &error_path, &method_key, &request_id).await;
         }
         Err(err) => {
             // What the caller learns about an uncaught failure is a switch,
@@ -24435,7 +24537,7 @@ async fn public_webhook_ingress_run(
                 "/projects/{owner}/{project}/pipelines/registry?type=pipeline&path={folder}&file={file_rel_path}&run={request_id}"
             );
             let detail = json!({ "code": err.code, "message": err.message, "node_id": node_id, "run_url": run_url });
-            let mut error_input = json!({ "request_id": request_id, "path": path, "method": method_key });
+            let mut error_input = json!({ "request_id": request_id, "path": error_path, "method": method_key });
             if shown {
                 error_input["detail"] = detail.clone();
                 // The older keys the page archetypes read before `detail` existed.
@@ -24523,6 +24625,7 @@ async fn public_webhook_ingress_root(
     uri: Uri,
     headers: HeaderMap,
     visitor: Option<axum::Extension<VisitorPath>>,
+    section: Option<axum::Extension<sections::SectionArrival>>,
     body: Bytes,
 ) -> Response {
     public_webhook_ingress(
@@ -24532,6 +24635,7 @@ async fn public_webhook_ingress_root(
         uri,
         headers,
         visitor,
+        section,
         body,
     )
     .await

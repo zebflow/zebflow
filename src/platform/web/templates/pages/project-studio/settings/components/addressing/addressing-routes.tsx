@@ -16,6 +16,7 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
   const [host, setHost] = useState(hosts[0] ?? data?.dev_host ?? "");
   const [path, setPath] = useState("/");
   const [surface, setSurface] = useState("files");
+  const [root, setRoot] = useState("");
   const [copied, setCopied] = useState("");
   const surfaces = Array.isArray(data?.surfaces) ? data.surfaces : [];
   const allHosts = [data?.dev_host, ...hosts].filter(Boolean);
@@ -30,8 +31,11 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
   function submit(e) {
     e.preventDefault();
     if (!host) return;
-    onAddRoute({ host, path: path.trim() || "/", surface });
+    const trimmed = root.trim();
+    const takesRoot = surface === "pages" || surface === "mcp";
+    onAddRoute(takesRoot && trimmed ? { host, path: path.trim() || "/", surface, root: trimmed } : { host, path: path.trim() || "/", surface });
     setPath("/");
+    setRoot("");
   }
 
   return (
@@ -54,7 +58,7 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
               other surfaces under <code>/_ws</code>, <code>/_static</code>, <code>/_ms</code>, the app's published MCP servers (off by default) under <code>/_mcp</code>, and exposed files (off by default) under <code>/_files</code>.
               The project's dev MCP is not a surface: it answers on the platform address only.
               A route mounts one surface at a host and path of your choosing; a host with any route serves only its routes. A <code>files</code> route at <code>/</code> makes its host a file host: exposed files only, inert, nothing else on it.
-              Pages can only be a root.
+              Pages answer at <code>/</code>. Give a host's <code>/</code> pages route a root such as <code>/site-a</code> and that host becomes one section of this project: <code>/map</code> there answers the route <code>/site-a/map</code>, which then answers on no other host. A section host may add shared pages routes such as <code>/api/</code>.
             </p>
             {routes.length > 0 ? (
               <ul className="mt-3 flex flex-col divide-y divide-border border border-border">
@@ -64,7 +68,7 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
                   return (
                     <li key={`${label}-${index}`} className="flex flex-wrap items-center gap-3 px-3 py-2">
                       <code className="font-mono text-[0.8rem] text-foreground">{label}</code>
-                      <span className="text-[0.76rem] text-muted-foreground">→ {title}</span>
+                      <span className="text-[0.76rem] text-muted-foreground">→ {title}{route.root ? ` · root ${route.root}` : ""}</span>
                       <span className="ml-auto flex items-center gap-1">
                         <a href={`https://${label}`} target="_blank" rel="noreferrer" className="px-2 text-[0.78rem] text-info underline-offset-4 hover:underline">Open ↗</a>
                         <Button type="button" size="sm" variant="ghost" onClick={() => copy(`https://${label}`)}>{copied === `https://${label}` ? "Copied" : "Copy"}</Button>
@@ -87,9 +91,28 @@ export default function AddressingRoutes({ data, hosts, routes, disabled, onAddR
                   <option key={s.key} value={s.key}>{s.title}</option>
                 ))}
               </Select>
+              {surface === "pages" || surface === "mcp" ? (
+                <Input id="addressing-route-root" value={root} onChange={(e) => setRoot(e.target.value)} placeholder="root (optional) /site-a" className="w-[11rem] font-mono" />
+              ) : null}
               <Button type="submit" size="sm" variant="outline" disabled={busy || !host}>Add route</Button>
             </form>
           </div>
+
+          {Array.isArray(data?.sections) && data.sections.length > 0 ? (
+            <div>
+              <h5 className="text-[0.78rem] font-semibold text-foreground">Sections</h5>
+              <p className="mt-1 text-[0.78rem] text-muted-foreground">Each section has a dev host of its own that answers exactly what its hosts do.</p>
+              <ul className="mt-2 flex flex-col divide-y divide-border border border-border">
+                {data.sections.map((section) => (
+                  <li key={section.root} className="flex flex-wrap items-center gap-3 px-3 py-2">
+                    <code className="font-mono text-[0.8rem] text-foreground">{section.root}</code>
+                    <code className="font-mono text-[0.74rem] text-muted-foreground">{section.dev_host}</code>
+                    <a href={section.dev_url} target="_blank" rel="noreferrer" className="ml-auto px-2 text-[0.78rem] text-info underline-offset-4 hover:underline">Open ↗</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           <div>
             <h5 className="text-[0.78rem] font-semibold text-foreground">Surfaces</h5>

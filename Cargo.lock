@@ -9527,6 +9527,7 @@ dependencies = [
  "base64",
  "bcrypt",
  "chrono",
+ "chrono-tz",
  "datafusion",
  "deno_core",
  "deno_error",

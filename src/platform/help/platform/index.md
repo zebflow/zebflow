@@ -73,6 +73,7 @@ way. Other layout keys and their defaults: `static` = `static`, `docs` =
 - **Webhook ingress** — `{method} /wh/{owner}/{project}{path}` for every active `trigger.webhook`.
 - **MCP session** — a per-project token (`GET /api/projects/{o}/{p}/mcp/session`) that gives an agent the project's tools at `POST /api/projects/{o}/{p}/mcp`, narrowed by capabilities. `help("platform/agent")` is what that agent reads first.
 - **Hub** — clonable packages (pipeline, template, folder and project bundles) and installable ones (node bundles, `zeb/*` libraries, recorded in `zeb.lock`). `help("guide/hub")`.
+- **Sections** — one project serving several sites on their own domains, sharing its data: a host's `/` pages route with a `root`. `help("guide/sections")`.
 - **Offices and controller** — one instance is standalone; several form a cluster where a controller vouches for offices. `help("guide/federated-offices")`.
 
 ## API base

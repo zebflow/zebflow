@@ -62,6 +62,7 @@ impl PipelineScheduler {
                     &pipeline.graph.id,
                     &trigger.node_id,
                     &trigger.cron,
+                    &trigger.timezone,
                 )
                 .await;
             }
@@ -94,6 +95,7 @@ impl PipelineScheduler {
                     &pipeline.graph.id,
                     &trigger.node_id,
                     &trigger.cron,
+                    &trigger.timezone,
                 )
                 .await;
             }
@@ -108,6 +110,7 @@ impl PipelineScheduler {
         graph_id: &str,
         node_id: &str,
         cron: &str,
+        timezone: &str,
     ) {
         if cron.trim().is_empty() {
             eprintln!(
@@ -118,7 +121,14 @@ impl PipelineScheduler {
         }
 
         let job_key = format!("{}/{}/{}:{}", owner, project, file_rel_path, node_id);
-        let cron = &with_seconds(cron);
+        let (cron, tz) = match schedule_of(cron, timezone) {
+            Ok(schedule) => schedule,
+            Err(err) => {
+                eprintln!("Scheduler: {} for {}", err, job_key);
+                return;
+            }
+        };
+        let cron = &cron;
 
         let runtime = self.runtime.clone();
         let engine = self.engine.clone();
@@ -131,7 +141,7 @@ impl PipelineScheduler {
         let graph_id_s = graph_id.to_string();
         let node_id_s = node_id.to_string();
 
-        let job_result = Job::new_async(cron, move |_uuid, _sched| {
+        let job_result = Job::new_async_tz(cron.as_str(), tz, move |_uuid, _sched| {
             let runtime = runtime.clone();
             let engine = engine.clone();
             let hits = hits.clone();
@@ -269,6 +279,22 @@ impl PipelineScheduler {
     }
 }
 
+/// What a `trigger.schedule` fires on: its cron with seconds first, and its
+/// `--timezone` (an IANA name; UTC when empty). Refused when either cannot be
+/// read, so activation reports it instead of the schedule never firing.
+pub fn schedule_of(cron: &str, timezone: &str) -> Result<(String, chrono_tz::Tz), String> {
+    let cron = with_seconds(cron);
+    let tz = match timezone.trim() {
+        "" => chrono_tz::UTC,
+        name => name
+            .parse::<chrono_tz::Tz>()
+            .map_err(|_| format!("--timezone '{name}' is not an IANA timezone like Asia/Jakarta or UTC"))?,
+    };
+    Job::new_async_tz(cron.as_str(), tz, |_, _| Box::pin(async {}))
+        .map_err(|err| format!("--cron '{cron}' cannot be read ({err}); write five fields, e.g. 0 7 * * *"))?;
+    Ok((cron, tz))
+}
+
 /// The cron `trigger.schedule` documents is the classic five fields
 /// (`0 7 * * *`); the scheduler reads seconds first and refuses five. A
 /// five-field expression fires at second 0; six or seven pass as written.
@@ -290,6 +316,15 @@ mod tests {
         assert_eq!(with_seconds("* * * * *"), "0 * * * * *");
         assert_eq!(with_seconds(" 0 7 * * * "), "0 0 7 * * *");
         assert_eq!(with_seconds("*/30 * * * * *"), "*/30 * * * * *");
+    }
+
+    #[test]
+    fn a_timezone_moves_the_schedule_and_a_bad_one_is_refused() {
+        let (_, tz) = super::schedule_of("0 7 * * *", "Asia/Jakarta").expect("jakarta");
+        assert_eq!(tz, chrono_tz::Asia::Jakarta);
+        assert_eq!(super::schedule_of("0 7 * * *", "").expect("utc").1, chrono_tz::UTC);
+        assert!(super::schedule_of("0 7 * * *", "Mars/Olympus").unwrap_err().contains("IANA"));
+        assert!(super::schedule_of("every morning", "").unwrap_err().contains("--cron"));
     }
 
     #[test]

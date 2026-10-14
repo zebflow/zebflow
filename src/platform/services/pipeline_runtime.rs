@@ -309,6 +309,12 @@ impl CompiledPipeline {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
+                    if let Err(reason) = crate::infra::scheduler::schedule_of(&cron, &timezone) {
+                        return Err(PlatformError::new(
+                            "PIPELINE_SCHEDULE_INVALID",
+                            format!("node '{}' in pipeline '{}': {reason}", node.id, meta.file_rel_path),
+                        ));
+                    }
                     schedule_triggers.push(ScheduleTriggerSpec {
                         node_id: node.id.clone(),
                         cron,

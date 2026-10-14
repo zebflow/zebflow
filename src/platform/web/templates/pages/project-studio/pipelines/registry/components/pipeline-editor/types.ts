@@ -75,6 +75,8 @@ export interface EditorDataState {
   aiTools: any[];
   pageTemplates: any[];
   functionPipelines: any[];
+  /** The project's sections, each root with its dev host (`addressing.md` §2c). */
+  sections?: any[];
   owner: string;
   project: string;
 }

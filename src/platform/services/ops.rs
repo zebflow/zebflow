@@ -299,7 +299,7 @@ impl PlatformOps {
                         "project-management",
                         "Project Management",
                         join_docs(&["guide/project-management", "platform/operations"]),
-                        vec![],
+                        vec![section("sections", "Several sites in one project", doc("guide/sections"), vec![])],
                     ),
                 ],
             ),
@@ -2333,11 +2333,26 @@ impl PlatformOps {
         // relative links and `Location: /admin` included (`addressing.md` §4).
         // With the port, as a browser on this machine would send it, so the
         // absolute URLs the page emits are the ones a person can click.
-        let dev_host = format!(
-            "{}:{}",
-            crate::platform::services::addressing::AddressingService::dev_host(&self.owner, &self.project),
-            crate::platform::boot::configured_port()
-        );
+        let mut request = request;
+        let mut host = crate::platform::services::addressing::AddressingService::dev_host(&self.owner, &self.project);
+        // A path under a section's root goes to that section's dev host, the
+        // root taken off (`addressing.md` §2c, §4).
+        if let Some(table) = self.platform.addressing.sections(&self.owner, &self.project) {
+            let trimmed = request.path.trim();
+            let (path, query) = trimmed.split_once('?').map_or((trimmed, None), |(p, q)| (p, Some(q)));
+            let segments: Vec<String> = path.split('/').filter(|s| !s.is_empty()).map(str::to_string).collect();
+            if let Some(label) = table.claims(&segments)
+                && let Some(section_host) = table.section_dev_hosts.get(label)
+            {
+                host = section_host.clone();
+                let rest = format!("/{}", segments[1..].join("/"));
+                request.path = match query {
+                    Some(query) => format!("{rest}?{query}"),
+                    None => rest,
+                };
+            }
+        }
+        let dev_host = format!("{host}:{}", crate::platform::boot::configured_port());
         self.route_fetch_via(&crate::platform::boot::local_instance_url(), &dev_host, request).await
     }
 

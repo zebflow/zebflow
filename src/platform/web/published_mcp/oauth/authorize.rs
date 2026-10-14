@@ -122,9 +122,19 @@ pub(super) async fn authorize(ctx: &Ctx<'_>, query: &str) -> Response {
         credential: ctx.spec.auth_credential.clone(),
         created_at: now_unix(),
     };
+    // On a section's host `--login` is emitted as the visitor reaches it,
+    // or not at all (`addressing.md` §2c): a 400 before any ticket opens.
+    let Some(login_url) = ctx.issuer.login_url(&ctx.spec.login) else {
+        eprintln!("published mcp {}/{}: --login `{}` does not route back on this host", ctx.owner, ctx.project, ctx.spec.login);
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "ok": false, "error": { "code": "login_unreachable", "message": "this server's sign-in page does not answer on this host" } })),
+        )
+            .into_response();
+    };
     match ctx.state.platform.published_oauth.open_ticket(ctx.owner, ctx.project, &ticket) {
         Ok(Some(secret)) => see_other(&rules::with_query(
-            &ctx.issuer.login_url(&ctx.spec.login),
+            &login_url,
             &[("oauth", &secret), ("client", &client_name), ("redirect_host", &ticket.redirect_host)],
         )),
         Ok(None) => back("temporarily_unavailable", "too many sign-ins on this server just now; try again in a minute"),

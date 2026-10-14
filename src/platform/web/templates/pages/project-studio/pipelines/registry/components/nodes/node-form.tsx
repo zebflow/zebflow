@@ -59,7 +59,7 @@ function buildTemplateOptions(
 function webhookPublicUrlFor(dataState: EditorDataState, webhookPath: string): string {
   const owner = String(dataState?.owner || "").trim();
   const project = String(dataState?.project || "").trim();
-  return projectRouteUrl(owner, project, webhookPath);
+  return projectRouteUrl(owner, project, webhookPath, dataState?.sections);
 }
 
 function defaultFor(type: NodeFieldType): unknown {
