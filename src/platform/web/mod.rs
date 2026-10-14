@@ -26115,6 +26115,8 @@ async fn parse_multipart_envelope(
     Ok(Some((text_fields, files)))
 }
 
+const MAX_FORM_ARRAY_INDEX: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MultipartValueKey {
     base: String,
@@ -26139,6 +26141,7 @@ fn parse_multipart_value_key(raw: &str) -> MultipartValueKey {
         if !inner.is_empty()
             && inner.chars().all(|ch| ch.is_ascii_digit())
             && let Ok(index) = inner.parse::<usize>()
+            && index <= MAX_FORM_ARRAY_INDEX
         {
             return MultipartValueKey {
                 base: name[..open].to_string(),
@@ -26173,7 +26176,7 @@ fn insert_form_value(map: &mut serde_json::Map<String, Value>, raw_name: &str, v
         return;
     }
 
-    if let Some(index) = key.index {
+    if let Some(index) = key.index.filter(|&i| i <= MAX_FORM_ARRAY_INDEX) {
         let entry = map
             .entry(key.base)
             .or_insert_with(|| Value::Array(Vec::new()));
@@ -26273,6 +26276,18 @@ mod webhook_ingress_tests {
         assert_eq!(key.base, "meta[name]");
         assert_eq!(key.index, None);
         assert!(!key.force_array);
+    }
+
+    #[test]
+    fn large_indexed_form_brackets_do_not_allocate_sparse_arrays() {
+        let huge = parse_multipart_value_key("photos[99999999]");
+        assert_eq!(huge.base, "photos[99999999]");
+        assert_eq!(huge.index, None);
+        assert!(!huge.force_array);
+
+        let body = urlencoded_form_to_json(b"photos%5B99999999%5D=x&photos%5B0%5D=a&photos%5B1%5D=b").unwrap();
+        assert_eq!(body["photos[99999999]"], json!("x"));
+        assert_eq!(body["photos"], json!(["a", "b"]));
     }
 }
 
