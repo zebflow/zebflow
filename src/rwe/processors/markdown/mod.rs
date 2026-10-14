@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use pulldown_cmark::{Options, Parser, html};
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, html};
 
 /// Converts `<markdown>...</markdown>` blocks into HTML fragments.
 ///
@@ -110,22 +110,47 @@ fn extract_class_attr(tag_snippet: &str) -> Option<String> {
     let start = tag_snippet.find(needle)? + needle.len();
     let end = tag_snippet[start..].find('"')?;
     let raw = &tag_snippet[start..start + end];
-    // Filter out the placeholder class we set in the component
+    // Filter out the placeholder class we set in the component and reject quotes/angle brackets
     let filtered = raw
         .split_whitespace()
-        .filter(|c| *c != "rwe-md-placeholder")
+        .filter(|c| *c != "rwe-md-placeholder" && !c.contains(['"', '\'', '<', '>']))
         .collect::<Vec<_>>()
         .join(" ");
     Some(filtered)
 }
 
+fn safe_markdown_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("https:")
+        || lower.starts_with("http:")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("tel:")
+        || lower.starts_with('#')
+        || lower.starts_with('.')
+        || (lower.starts_with('/') && !lower.starts_with("//"))
+}
+
 pub fn render_markdown_fragment(md: &str) -> String {
+    let stripped = strip_script_blocks(md);
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_FOOTNOTES);
-    let parser = Parser::new_ext(md, options);
+    let parser = Parser::new_ext(&stripped, options).map(|event| match event {
+        Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
+        Event::Start(Tag::Link { link_type, dest_url, title, id }) if !safe_markdown_url(&dest_url) => {
+            Event::Start(Tag::Link { link_type, dest_url: CowStr::Borrowed("#"), title, id })
+        }
+        Event::Start(Tag::Image { link_type, dest_url, title, id }) if !safe_markdown_url(&dest_url) => {
+            Event::Start(Tag::Image { link_type, dest_url: CowStr::Borrowed("#"), title, id })
+        }
+        other => other,
+    });
     let mut out = String::new();
     html::push_html(&mut out, parser);
     add_heading_ids(&strip_script_blocks(&out))

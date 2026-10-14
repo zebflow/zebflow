@@ -68,7 +68,7 @@ export default function Page(input) {
 }
 "#;
     let tampered = concat!(
-        r#"<p class="my-1.5" onclick="steal()" style="color:red">Hi<script>alert(1)</script></p>"#,
+        r#"<p class="my-1.5" onclick="steal()" style="color:red" data-rwe-md="PGltZyBzcmM9eCBvbmVycm9yPWFsZXJ0KDEpPg==" data-zeb-lib="evil">Hi<script>alert(1)</script></p>"#,
         r#"<img src="/_files/a.png" onerror="alert(1)"><a href="javascript:alert(1)">go</a>"#,
         r#"<iframe src="https://example.com/x"></iframe><style>p{}</style><svg onload="alert(1)"></svg>"#,
     );

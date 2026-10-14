@@ -69,6 +69,9 @@ export function sanitizeAttrs(tag, attrs, edit) {
     if (value === undefined || value === null || value === false) continue;
     const name = raw === "className" ? "class" : raw;
     if (!/^[a-z][a-z0-9-]*$/.test(name)) continue;
+    if (name.startsWith("data-rwe-")) continue;
+    if (name === "data-zeb-lib" && value !== "potoru") continue;
+    if (name === "data-zeb-wrapper" && value !== "PotoPlayer") continue;
     const allowed = ALLOWED_ATTRS.has(name) || name.startsWith("data-") || name.startsWith("aria-");
     if (!allowed) continue;
     if (name === "contenteditable" && !(edit && value === "false")) continue;

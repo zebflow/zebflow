@@ -85,6 +85,25 @@ mod tests {
         assert!(!output.contains("data-rwe-md"));
         assert!(diagnostics.is_empty());
     }
+
+    #[test]
+    fn document_html_and_markdown_refuse_data_rwe_md_and_raw_html_xss() {
+        let encoded = BASE64.encode(
+            "Hello <img src=x onerror=alert(1)><svg onload=alert(1)><script>alert(1)</script> [click](javascript:alert(1))",
+        );
+        let html = format!(
+            "<div class=\"rwe-md-placeholder prose\" data-rwe-md=\"{encoded}\" data-zeb-lib=\"markdown\"></div>"
+        );
+        let options = ReactiveWebOptions::default();
+        let mut diagnostics = Vec::new();
+        let output = apply_compile_processors(&html, "", &options, &mut diagnostics);
+        assert!(!output.contains("<img"), "{output}");
+        assert!(!output.contains("<svg"), "{output}");
+        assert!(!output.contains("<script"), "{output}");
+        assert!(!output.contains("javascript:"), "{output}");
+        assert!(output.contains("&lt;img src=x onerror=alert(1)&gt;"), "{output}");
+        assert!(output.contains("href=\"#\""), "{output}");
+    }
 }
 
 fn normalize_processor_list(raw: &[String]) -> Vec<String> {
