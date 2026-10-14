@@ -17111,7 +17111,14 @@ async fn api_oauth2_authorize(
             let base = platform_base_url(&headers);
             format!("{base}/oauth/callback")
         });
-    let oauth_state = sign_oauth_state(&state.oauth_state_secret, &owner, &project, &credential_id);
+    let nonce = issue_oauth_nonce();
+    let oauth_state = sign_oauth_state(
+        &state.oauth_state_secret,
+        &owner,
+        &project,
+        &credential_id,
+        &nonce,
+    );
 
     let mut url = format!(
         "{authorize_url}?client_id={}&redirect_uri={}&response_type=code&state={}",
@@ -17125,7 +17132,56 @@ async fn api_oauth2_authorize(
     // Request offline access for refresh tokens (Google-specific but harmless elsewhere)
     url.push_str("&access_type=offline&prompt=consent");
 
-    Json(serde_json::json!({ "redirect_url": url })).into_response()
+    let mut resp = Json(serde_json::json!({ "redirect_url": url })).into_response();
+    if let Ok(cookie_val) = HeaderValue::from_str(&format!(
+        "{OAUTH_NONCE_COOKIE_NAME}={nonce}; Path=/oauth/callback; HttpOnly; SameSite=Lax; Max-Age=600"
+    )) {
+        resp.headers_mut()
+            .append(axum::http::header::SET_COOKIE, cookie_val);
+    }
+    resp
+}
+
+const OAUTH_NONCE_COOKIE_NAME: &str = "zebflow_oauth_nonce";
+
+fn pending_oauth_nonces() -> &'static std::sync::Mutex<std::collections::HashMap<String, i64>> {
+    static NONCES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+        std::sync::OnceLock::new();
+    NONCES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn issue_oauth_nonce() -> String {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let now = crate::platform::model::now_ts();
+    if let Ok(mut map) = pending_oauth_nonces().lock() {
+        map.retain(|_, ts| (now - *ts).abs() <= 600);
+        if map.len() >= 4096 {
+            map.clear();
+        }
+        map.insert(nonce.clone(), now);
+    }
+    nonce
+}
+
+fn consume_oauth_nonce(nonce: &str) -> bool {
+    let now = crate::platform::model::now_ts();
+    let Ok(mut map) = pending_oauth_nonces().lock() else {
+        return false;
+    };
+    let Some(issued_at) = map.remove(nonce) else {
+        return false;
+    };
+    (now - issued_at).abs() <= 600
+}
+
+fn oauth_nonce_cookie(headers: &HeaderMap) -> Option<String> {
+    let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    cookie.split(';').map(str::trim).find_map(|part| {
+        part.strip_prefix(&format!("{OAUTH_NONCE_COOKIE_NAME}="))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -17137,7 +17193,7 @@ struct OAuthCallbackQuery {
     error_description: Option<String>,
 }
 
-/// OAuth2 callback handler — unauthenticated. Provider redirects browser here.
+/// OAuth2 callback handler — requires matching single-use browser nonce cookie and signed state.
 async fn oauth2_callback_handler(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -17156,13 +17212,17 @@ async fn oauth2_callback_handler(
         return axum::response::Redirect::to("/home?oauth=error").into_response();
     };
 
-    let (owner, project, credential_id) =
-        match verify_oauth_state(&state.oauth_state_secret, oauth_state) {
-            Ok(v) => v,
-            Err(_) => {
-                return axum::response::Redirect::to("/home?oauth=error").into_response();
-            }
-        };
+    let cookie_nonce = oauth_nonce_cookie(&headers);
+    let (owner, project, credential_id) = match verify_oauth_state(
+        &state.oauth_state_secret,
+        oauth_state,
+        cookie_nonce.as_deref(),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return axum::response::Redirect::to("/home?oauth=error").into_response();
+        }
+    };
 
     match maybe_forward_project_api_to_worker(
         &state,
@@ -17205,7 +17265,7 @@ async fn oauth2_callback_handler(
             }
         };
 
-    match state
+    let mut resp = match state
         .platform
         .credentials
         .exchange_oauth2_code(&owner, &project, &credential_id, code, &redirect_uri)
@@ -17219,16 +17279,35 @@ async fn oauth2_callback_handler(
             let target = format!("/projects/{owner}/{project}/credentials?oauth=error");
             axum::response::Redirect::to(&target).into_response()
         }
-    }
+    };
+    resp.headers_mut().append(
+        axum::http::header::SET_COOKIE,
+        HeaderValue::from_static(
+            "zebflow_oauth_nonce=; Path=/oauth/callback; HttpOnly; SameSite=Lax; Max-Age=0",
+        ),
+    );
+    resp
 }
 
-fn sign_oauth_state(secret: &[u8; 32], owner: &str, project: &str, credential_id: &str) -> String {
+fn sign_oauth_state(
+    secret: &[u8; 32],
+    owner: &str,
+    project: &str,
+    credential_id: &str,
+    nonce: &str,
+) -> String {
     use base64::Engine as _;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
     let now = crate::platform::model::now_ts();
-    let payload = serde_json::json!({"o": owner, "p": project, "c": credential_id, "t": now});
+    let payload = serde_json::json!({
+        "o": owner,
+        "p": project,
+        "c": credential_id,
+        "n": nonce,
+        "t": now
+    });
     let payload_b64 =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
 
@@ -17240,10 +17319,19 @@ fn sign_oauth_state(secret: &[u8; 32], owner: &str, project: &str, credential_id
     format!("{payload_b64}.{sig}")
 }
 
-fn verify_oauth_state(secret: &[u8; 32], state: &str) -> Result<(String, String, String), String> {
+fn verify_oauth_state(
+    secret: &[u8; 32],
+    state: &str,
+    cookie_nonce: Option<&str>,
+) -> Result<(String, String, String), String> {
     use base64::Engine as _;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+
+    let expected_nonce = cookie_nonce
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "missing oauth nonce cookie".to_string())?;
 
     let parts: Vec<&str> = state.splitn(2, '.').collect();
     if parts.len() != 2 {
@@ -17283,6 +17371,10 @@ fn verify_oauth_state(secret: &[u8; 32], state: &str) -> Result<(String, String,
         .and_then(serde_json::Value::as_str)
         .ok_or("missing credential_id")?
         .to_string();
+    let state_nonce = payload
+        .get("n")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing state nonce")?;
     let timestamp = payload
         .get("t")
         .and_then(serde_json::Value::as_i64)
@@ -17292,6 +17384,12 @@ fn verify_oauth_state(secret: &[u8; 32], state: &str) -> Result<(String, String,
     let now = crate::platform::model::now_ts();
     if (now - timestamp).abs() > 600 {
         return Err("state expired".to_string());
+    }
+    if state_nonce != expected_nonce {
+        return Err("oauth state nonce mismatch".to_string());
+    }
+    if !consume_oauth_nonce(state_nonce) {
+        return Err("oauth state nonce already consumed or unknown".to_string());
     }
 
     Ok((owner, project, credential_id))
@@ -30028,5 +30126,30 @@ mod home_directory_tests {
             }
             _ => panic!("hmac credential must not be accepted for jwt auth"),
         }
+    }
+
+    #[test]
+    fn oauth2_state_requires_matching_single_use_nonce() {
+        let secret = [7u8; 32];
+        let nonce = issue_oauth_nonce();
+        let state = sign_oauth_state(&secret, "site-a", "demo", "google-oauth", &nonce);
+
+        // Missing or mismatched browser nonce cookie is rejected (without burning the valid nonce).
+        assert!(verify_oauth_state(&secret, &state, None).is_err());
+        assert!(verify_oauth_state(&secret, &state, Some("wrong-nonce")).is_err());
+
+        // Matching nonce cookie succeeds once.
+        let verified = verify_oauth_state(&secret, &state, Some(&nonce)).expect("valid state");
+        assert_eq!(
+            verified,
+            (
+                "site-a".to_string(),
+                "demo".to_string(),
+                "google-oauth".to_string()
+            )
+        );
+
+        // Replaying the same state + nonce cookie is rejected because the nonce is single-use.
+        assert!(verify_oauth_state(&secret, &state, Some(&nonce)).is_err());
     }
 }
