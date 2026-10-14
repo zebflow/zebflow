@@ -43,6 +43,60 @@ fn normalize_api_path(path: &str) -> String {
     }
 }
 
+const MAX_LLM_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn parse_bounded_llm_json(bytes: &[u8], max_bytes: usize) -> Result<Value, String> {
+    if bytes.len() > max_bytes {
+        return Err(format!(
+            "LLM response exceeded maximum size of {max_bytes} bytes"
+        ));
+    }
+    serde_json::from_slice(bytes).map_err(|e| format!("invalid LLM JSON response: {e}"))
+}
+
+async fn read_bounded_llm_response(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Value, String> {
+    if let Some(len) = resp.content_length()
+        && len > max_bytes as u64
+    {
+        return Err(format!(
+            "LLM response exceeded maximum size of {max_bytes} bytes"
+        ));
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(format!(
+                "LLM response exceeded maximum size of {max_bytes} bytes"
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    parse_bounded_llm_json(&buf, max_bytes)
+}
+
+fn format_llm_status_error(status: reqwest::StatusCode, val: &Value) -> String {
+    if let Some(msg) = val
+        .get("error")
+        .and_then(|e| e.get("message").or(Some(e)))
+        .and_then(Value::as_str)
+    {
+        let snippet: String = msg.chars().take(512).collect();
+        return format!("LLM error {status}: {snippet}");
+    }
+    format!("LLM error {status}")
+}
+
 /// OpenAI-family HTTP client.
 ///
 /// `openai` credentials use the modern Responses API. `openrouter`
@@ -69,7 +123,7 @@ impl OpenAiHttpClient {
             response_path: "/responses".to_string(),
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client: build_http_client(),
             surface: OpenAiApiSurface::Responses,
             store: false,
         }
@@ -81,7 +135,7 @@ impl OpenAiHttpClient {
             response_path: "/chat/completions".to_string(),
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client: build_http_client(),
             surface: OpenAiApiSurface::ChatCompletions,
             store: false,
         }
@@ -177,7 +231,7 @@ impl OpenAiHttpClient {
             response_path,
             api_key: api_key.to_string(),
             model,
-            client: reqwest::Client::new(),
+            client: build_http_client(),
             surface,
             store,
         })
@@ -193,8 +247,28 @@ impl OpenAiHttpClient {
         )
     }
 
-    async fn call_chat_completions(&self, messages: Vec<Message>) -> Result<String, String> {
+    async fn post_json(&self, body: &Value) -> Result<Value, String> {
         let url = self.response_url();
+        crate::pipeline::security::validate_outbound_http_url(&url, "llm.http")
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let val = read_bounded_llm_response(resp, MAX_LLM_RESPONSE_BYTES).await?;
+        if !status.is_success() {
+            return Err(format_llm_status_error(status, &val));
+        }
+        Ok(val)
+    }
+
+    async fn call_chat_completions(&self, messages: Vec<Message>) -> Result<String, String> {
         let mapped: Vec<Value> = messages
             .into_iter()
             .map(|m| {
@@ -209,20 +283,7 @@ impl OpenAiHttpClient {
             })
             .collect();
         let body = json!({ "model": self.model, "messages": mapped });
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = resp.status();
-        let val: Value = resp.json().await.map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!("LLM error {}: {}", status, val));
-        }
+        let val = self.post_json(&body).await?;
         val.get("choices")
             .and_then(Value::as_array)
             .and_then(|a| a.first())
@@ -234,7 +295,6 @@ impl OpenAiHttpClient {
     }
 
     async fn call_responses(&self, messages: Vec<Message>) -> Result<String, String> {
-        let url = self.response_url();
         let mut instructions = Vec::new();
         let input: Vec<Value> = messages
             .into_iter()
@@ -257,20 +317,7 @@ impl OpenAiHttpClient {
             body["instructions"] = Value::String(instructions.join("\n\n"));
         }
 
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = resp.status();
-        let val: Value = resp.json().await.map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!("LLM error {}: {}", status, val));
-        }
+        let val = self.post_json(&body).await?;
         extract_responses_text(&val).ok_or_else(|| "empty LLM response".to_string())
     }
 
@@ -279,7 +326,6 @@ impl OpenAiHttpClient {
         messages: Vec<Value>,
         tools: &[ToolDef],
     ) -> Result<(CallResult, Usage), String> {
-        let url = self.response_url();
         let tools_json: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -298,20 +344,7 @@ impl OpenAiHttpClient {
             body["tools"] = Value::Array(tools_json);
             body["tool_choice"] = json!("auto");
         }
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = resp.status();
-        let val: Value = resp.json().await.map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!("LLM error {}: {}", status, val));
-        }
+        let val = self.post_json(&body).await?;
         let usage = Usage::from_response(&val);
         let choice = val
             .get("choices")
@@ -360,7 +393,6 @@ impl OpenAiHttpClient {
         messages: Vec<Value>,
         tools: &[ToolDef],
     ) -> Result<(CallResult, Usage), String> {
-        let url = self.response_url();
         let tools_json: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -382,21 +414,7 @@ impl OpenAiHttpClient {
             body["tool_choice"] = json!("auto");
         }
 
-        let resp = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = resp.status();
-        let val: Value = resp.json().await.map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(format!("LLM error {}: {}", status, val));
-        }
-
+        let val = self.post_json(&body).await?;
         let usage = Usage::from_response(&val);
         let tool_calls = val
             .get("output")
@@ -571,4 +589,67 @@ pub fn client_from_provider_secret_with_model(
 ) -> Option<Arc<dyn LlmCall>> {
     OpenAiHttpClient::from_provider_secret(provider_kind, secret, model_override)
         .map(|c| Arc::new(c) as Arc<dyn LlmCall>)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{Json, Router, routing::post};
+    use serde_json::json;
+    use tokio::net::TcpListener;
+
+    use super::{
+        LlmCall, Message, MessageRole, OpenAiHttpClient, format_llm_status_error,
+        parse_bounded_llm_json,
+    };
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_http_client_blocks_private_egress_and_caps_response_size() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let hits_route = hits.clone();
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let hits_route = hits_route.clone();
+                async move {
+                    hits_route.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "output_text": "internal secret" }))
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = OpenAiHttpClient::new(
+            format!("http://{addr}"),
+            uuid::Uuid::new_v4().to_string(),
+            "gpt-4o-mini".to_string(),
+        );
+        let err = client
+            .call(vec![Message {
+                role: MessageRole::User,
+                content: "hi".to_string(),
+            }])
+            .await
+            .expect_err("private loopback base_url must be blocked before sending");
+        server.abort();
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "loopback server should never be contacted");
+        assert!(err.contains("FW_EGRESS_DENIED") || err.contains("blocked network address"), "err: {err}");
+
+        // Bounded JSON response reader rejects oversized payloads and accepts valid JSON within cap.
+        let oversized = vec![b' '; 128];
+        let cap_err = parse_bounded_llm_json(&oversized, 64).expect_err("oversized must fail");
+        assert!(cap_err.contains("exceeded maximum size"), "{cap_err}");
+        let valid = parse_bounded_llm_json(br#"{"output_text":"hello"}"#, 64).expect("within cap");
+        assert_eq!(valid["output_text"], "hello");
+        assert_eq!(
+            format_llm_status_error(reqwest::StatusCode::BAD_GATEWAY, &json!({ "upstream_html": "do-not-echo" })),
+            "LLM error 502 Bad Gateway"
+        );
+    }
 }
