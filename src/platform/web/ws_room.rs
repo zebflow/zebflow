@@ -136,14 +136,14 @@ async fn handle_ws_room(ctx: SessionCtx, mut socket: WebSocket) {
     let mut broadcast_rx = room.subscribe();
     let joined = json!({ "type": "joined", "session_id": session_id, "room": room_id, "state": room.get_state() });
 
-    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+    let (events_tx, events_rx) = session_event_channel();
     tokio::spawn(run_session_events(ctx, auth, events_rx));
 
     let mut reason = "close";
     if socket.send(Message::Text(joined.to_string().into())).await.is_err() {
         reason = "error";
     } else {
-        let _ = events_tx.send((CONNECT_EVENT.to_string(), json!({})));
+        let _ = enqueue_event(&events_tx, CONNECT_EVENT.to_string(), json!({}));
         loop {
             tokio::select! {
                 broadcast = broadcast_rx.recv() => match broadcast {
@@ -174,7 +174,18 @@ async fn handle_ws_room(ctx: SessionCtx, mut socket: WebSocket) {
                             continue; // reserved for the server
                         }
                         let payload = val.get("payload").cloned().unwrap_or_else(|| json!({}));
-                        let _ = events_tx.send((event, payload));
+                        if !enqueue_event(&events_tx, event, payload) {
+                            // A client sending faster than its pipelines run is
+                            // closed, not given an unbounded queue of runs.
+                            let _ = socket
+                                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                    code: CLOSE_POLICY_VIOLATION,
+                                    reason: "too many pending events".into(),
+                                })))
+                                .await;
+                            reason = "error";
+                            break;
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => {
@@ -188,9 +199,30 @@ async fn handle_ws_room(ctx: SessionCtx, mut socket: WebSocket) {
     }
 
     // Queued behind every event this socket sent; the worker drains, then ends.
-    let _ = events_tx.send((DISCONNECT_EVENT.to_string(), json!({ "reason": reason })));
+    // Awaited, so a full queue delays `$disconnect` rather than losing it.
+    let _ = events_tx.send((DISCONNECT_EVENT.to_string(), json!({ "reason": reason }))).await;
     drop(events_tx);
     hub.leave_room(&room_key, guard);
+}
+
+/// Most events one session may have waiting for its pipelines.
+pub(super) const MAX_PENDING_SESSION_EVENTS: usize = 256;
+
+/// Close code for a client that broke the room's rules (RFC 6455 §7.4.1).
+const CLOSE_POLICY_VIOLATION: u16 = 1008;
+
+type SessionEvent = (String, Value);
+
+fn session_event_channel() -> (
+    tokio::sync::mpsc::Sender<SessionEvent>,
+    tokio::sync::mpsc::Receiver<SessionEvent>,
+) {
+    tokio::sync::mpsc::channel(MAX_PENDING_SESSION_EVENTS)
+}
+
+/// Queues one event without waiting; `false` when the queue is full or closed.
+fn enqueue_event(tx: &tokio::sync::mpsc::Sender<SessionEvent>, event: String, payload: Value) -> bool {
+    tx.try_send((event, payload)).is_ok()
 }
 
 /// Decide admission for one connection, remembering the auth it passed.
@@ -240,7 +272,7 @@ fn verify_trigger_auth(
 async fn run_session_events(
     ctx: SessionCtx,
     mut auth: AuthCache,
-    mut events: tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
+    mut events: tokio::sync::mpsc::Receiver<SessionEvent>,
 ) {
     while let Some((event, payload)) = events.recv().await {
         run_event(&ctx, &mut auth, &event, payload).await;
@@ -337,5 +369,17 @@ mod tests {
         assert!(admission(&[true, false], || false), "any open trigger: open");
         assert!(!admission(&[true, true], || false), "all need auth and none passed");
         assert!(admission(&[true], || true), "passed one");
+    }
+
+    #[tokio::test]
+    async fn a_session_event_queue_is_bounded_and_refuses_past_its_capacity() {
+        let (tx, _rx) = session_event_channel();
+        for i in 0..MAX_PENDING_SESSION_EVENTS {
+            assert!(enqueue_event(&tx, "move".into(), json!({ "i": i })), "event {i} fits");
+        }
+        assert!(
+            !enqueue_event(&tx, "move".into(), json!({})),
+            "one past the cap is refused, not queued without limit"
+        );
     }
 }
