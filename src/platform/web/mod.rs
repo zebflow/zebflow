@@ -27467,15 +27467,16 @@ async fn api_get_mcp_session(
     Path((owner, project)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = require_project_api_capability(
+    let viewer = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::McpSessionCreate,
     ) {
-        return resp;
-    }
+        Ok(subject) => subject,
+        Err(resp) => return resp,
+    };
 
     let base_url = platform_base_url(&headers);
 
@@ -27485,18 +27486,26 @@ async fn api_get_mcp_session(
         .get_for_project(&owner, &project)
     {
         Some(session) => {
-            let mcp_url = format!(
-                "{}/api/projects/{}/{}/mcp",
-                base_url.trim_end_matches('/'),
-                owner,
-                project
-            );
+            let can_read_token = state
+                .platform
+                .mcp_sessions
+                .validate_grant(&owner, &project, &viewer.id, &session.capabilities)
+                .is_ok();
+            let mcp_url = can_read_token.then(|| {
+                format!(
+                    "{}/api/projects/{}/{}/mcp",
+                    base_url.trim_end_matches('/'),
+                    owner,
+                    project
+                )
+            });
+            let token = can_read_token.then(|| session.token.clone());
             Json(json!({
                 "ok": true,
                 "session": {
                     "active": session.enabled,
                     "enabled": session.enabled,
-                    "token": session.token,
+                    "token": token,
                     "mcp_url": mcp_url,
                     "capabilities": session.capabilities.iter().map(|c| c.key()).collect::<Vec<_>>(),
                     "created_at": session.created_at,
@@ -27578,15 +27587,16 @@ async fn api_toggle_mcp_session(
     headers: HeaderMap,
     Json(req): Json<McpSessionToggleRequest>,
 ) -> Response {
-    if let Err(resp) = require_project_api_capability(
+    let actor = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::McpSessionCreate,
     ) {
-        return resp;
-    }
+        Ok(subject) => subject,
+        Err(resp) => return resp,
+    };
 
     if req.enabled
         && state
@@ -27611,7 +27621,7 @@ async fn api_toggle_mcp_session(
     match state
         .platform
         .mcp_sessions
-        .set_enabled(&owner, &project, req.enabled)
+        .set_enabled(&owner, &project, req.enabled, &actor.id)
     {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
@@ -27623,22 +27633,23 @@ async fn api_reset_mcp_session_token(
     Path((owner, project)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = require_project_api_capability(
+    let actor = match require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
         ProjectCapability::McpSessionCreate,
     ) {
-        return resp;
-    }
+        Ok(subject) => subject,
+        Err(resp) => return resp,
+    };
 
     let base_url = platform_base_url(&headers);
 
     match state
         .platform
         .mcp_sessions
-        .reset_token(&owner, &project, &base_url)
+        .reset_token(&owner, &project, &base_url, &actor.id)
     {
         Ok(response) => Json(json!({"ok": true, "session": response})).into_response(),
         Err(err) => internal_error(err),
@@ -27691,7 +27702,8 @@ fn internal_error(err: PlatformError) -> Response {
         | "HUB_PUBLISH_SOURCE_MISSING"
         | "HUB_SERVICE_DISABLED"
         | "MCP_SESSION_NOT_FOUND" => StatusCode::NOT_FOUND,
-        "HUB_TOKEN_FORBIDDEN"
+        "PLATFORM_AUTHZ_FORBIDDEN"
+        | "HUB_TOKEN_FORBIDDEN"
         | "HUB_PUBLISHER_FORBIDDEN"
         | "HUB_PUBLISHER_SCOPE_DENIED"
         | "HUB_PACKAGE_FORBIDDEN" => StatusCode::FORBIDDEN,
@@ -27703,7 +27715,8 @@ fn internal_error(err: PlatformError) -> Response {
         // Retraction destroyed the bytes and kept the coordinate, which is what
         // 410 says and 404 would not.
         "HUB_VERSION_RETRACTED" => StatusCode::GONE,
-        "HUB_TOKEN_INVALID"
+        "INVALID_REQUEST"
+        | "HUB_TOKEN_INVALID"
         | "HUB_ARTIFACT_PATH_INVALID"
         | "HUB_PUBLISH_INVALID"
         | "HUB_REMOTE_INVALID"

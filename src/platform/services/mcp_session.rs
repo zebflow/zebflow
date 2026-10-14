@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    McpSession, McpSessionResponse, ProjectCapability, ProjectPolicy, ProjectPolicyBinding,
-    ProjectSubjectKind, now_ts,
+    McpSession, McpSessionResponse, ProjectAccessSubject, ProjectCapability, ProjectPolicy,
+    ProjectPolicyBinding, ProjectSubjectKind, now_ts, slug_segment,
 };
+use crate::platform::services::AuthorizationService;
 
 fn mcp_url_for(base_url: &str, owner: &str, project: &str) -> String {
     format!(
@@ -41,11 +42,16 @@ pub struct McpSessionService {
     sessions: Arc<Mutex<HashMap<String, McpSession>>>,
     project_tokens: Arc<Mutex<HashMap<(String, String), String>>>,
     data: Arc<dyn DataAdapter>,
+    authz: Arc<AuthorizationService>,
     min_created_at: i64,
 }
 
 impl McpSessionService {
-    pub fn new(data: Arc<dyn DataAdapter>, min_created_at: i64) -> Self {
+    pub fn new(
+        data: Arc<dyn DataAdapter>,
+        authz: Arc<AuthorizationService>,
+        min_created_at: i64,
+    ) -> Self {
         let sessions_map = Arc::new(Mutex::new(HashMap::new()));
         let project_tokens_map = Arc::new(Mutex::new(HashMap::new()));
 
@@ -77,14 +83,87 @@ impl McpSessionService {
             sessions: sessions_map,
             project_tokens: project_tokens_map,
             data,
+            authz,
             min_created_at,
         }
     }
 
+    /// Validates that `granted_by` holds `McpSessionCreate`, holds every requested
+    /// capability in `capabilities`, and satisfies any member `mcp_capability_ceiling`.
+    pub fn validate_grant(
+        &self,
+        owner: &str,
+        project: &str,
+        granted_by: &str,
+        capabilities: &[ProjectCapability],
+    ) -> Result<(), PlatformError> {
+        if capabilities.is_empty() {
+            return Err(PlatformError::new(
+                "INVALID_REQUEST",
+                "At least one valid capability must be specified",
+            ));
+        }
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let granter = slug_segment(granted_by);
+        if granter.is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_AUTHZ_FORBIDDEN",
+                "MCP session creator is required",
+            ));
+        }
+        let subject = ProjectAccessSubject::user(&granter);
+        let actor_caps = self
+            .authz
+            .resolve_project_capabilities(&subject, &owner, &project)?;
+        if !actor_caps.contains(&ProjectCapability::McpSessionCreate) {
+            return Err(PlatformError::new(
+                "PLATFORM_AUTHZ_FORBIDDEN",
+                format!(
+                    "subject '{granter}' lacks capability '{}' for project '{owner}/{project}'",
+                    ProjectCapability::McpSessionCreate.key()
+                ),
+            ));
+        }
+        for capability in capabilities {
+            if !actor_caps.contains(capability) {
+                return Err(PlatformError::new(
+                    "PLATFORM_AUTHZ_FORBIDDEN",
+                    format!(
+                        "subject '{granter}' cannot grant capability '{}' to an MCP session because they do not hold it",
+                        capability.key()
+                    ),
+                ));
+            }
+        }
+        let is_superadmin = self
+            .data
+            .get_user_auth(&granter)?
+            .is_some_and(|u| u.profile.role == "superadmin");
+        if granter != owner
+            && !is_superadmin
+            && let Some(member) = self.data.get_project_member(&owner, &project, &granter)?
+            && !member.mcp_capability_ceiling.is_empty()
+        {
+            for capability in capabilities {
+                if !member.mcp_capability_ceiling.contains(capability) {
+                    return Err(PlatformError::new(
+                        "PLATFORM_AUTHZ_FORBIDDEN",
+                        format!(
+                            "capability '{}' exceeds member MCP capability ceiling",
+                            capability.key()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Create or re-enable an MCP session for a project.
     ///
-    /// If a session already exists for this project, the token is preserved and
-    /// capabilities are updated. If no session exists, a new token is generated.
+    /// If a session already exists for this project and was created by the same user,
+    /// the token is preserved and capabilities are updated. Otherwise, a new token is generated.
     pub fn create(
         &self,
         owner: &str,
@@ -94,6 +173,7 @@ impl McpSessionService {
         auto_reset_seconds: Option<u64>,
         granted_by: &str,
     ) -> Result<McpSessionResponse, PlatformError> {
+        self.validate_grant(owner, project, granted_by, &capabilities)?;
         let key = (owner.to_string(), project.to_string());
 
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -102,28 +182,47 @@ impl McpSessionService {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        // If a session already exists, keep the token but update capabilities + enable it.
+        // If a session already exists for the same granter, keep the token; if a different
+        // user is replacing the session, rotate the token so a prior user cannot inherit
+        // elevated capabilities on a token they previously read.
         if let Some(existing_token) = project_tokens.get(&key).cloned() {
-            if let Some(existing) = sessions.get_mut(&existing_token) {
-                existing.capabilities = capabilities.clone();
-                existing.enabled = true;
-                existing.granted_by = granted_by.to_string();
-                if auto_reset_seconds.is_some() {
-                    existing.auto_reset_seconds = auto_reset_seconds;
+            let same_granter = sessions
+                .get(&existing_token)
+                .is_some_and(|existing| existing.granted_by == granted_by);
+            if same_granter {
+                if let Some(existing) = sessions.get_mut(&existing_token) {
+                    existing.capabilities = capabilities.clone();
+                    existing.enabled = true;
+                    existing.granted_by = granted_by.to_string();
+                    if auto_reset_seconds.is_some() {
+                        existing.auto_reset_seconds = auto_reset_seconds;
+                    }
+                    let session_clone = existing.clone();
+                    drop(sessions);
+                    drop(project_tokens);
+                    let _ = self.data.put_mcp_session(&session_clone);
+                    // Update policy binding with new capabilities
+                    let _ = self.revoke_policy_binding(owner, project, &existing_token);
+                    self.create_session_policy_and_binding(
+                        owner,
+                        project,
+                        &existing_token,
+                        &capabilities,
+                    )?;
+                    return Ok(response_for(&session_clone, base_url, self.min_created_at));
                 }
-                let session_clone = existing.clone();
+            } else {
+                sessions.remove(&existing_token);
+                project_tokens.remove(&key);
                 drop(sessions);
                 drop(project_tokens);
-                let _ = self.data.put_mcp_session(&session_clone);
-                // Update policy binding with new capabilities
                 let _ = self.revoke_policy_binding(owner, project, &existing_token);
-                self.create_session_policy_and_binding(
-                    owner,
-                    project,
-                    &existing_token,
-                    &capabilities,
-                )?;
-                return Ok(response_for(&session_clone, base_url, self.min_created_at));
+                let _ = self.data.delete_mcp_session(&existing_token);
+                sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                project_tokens = self
+                    .project_tokens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
             }
         }
 
@@ -157,8 +256,29 @@ impl McpSessionService {
         owner: &str,
         project: &str,
         enabled: bool,
+        actor: &str,
     ) -> Result<(), PlatformError> {
         let key = (owner.to_string(), project.to_string());
+        if enabled {
+            let existing_caps = {
+                let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                let project_tokens = self
+                    .project_tokens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                project_tokens
+                    .get(&key)
+                    .and_then(|token| sessions.get(token))
+                    .map(|session| session.capabilities.clone())
+            };
+            let Some(caps) = existing_caps else {
+                return Err(PlatformError::new(
+                    "MCP_SESSION_NOT_FOUND",
+                    "No MCP session found for this project",
+                ));
+            };
+            self.validate_grant(owner, project, actor, &caps)?;
+        }
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let project_tokens = self
             .project_tokens
@@ -167,6 +287,9 @@ impl McpSessionService {
         if let Some(token) = project_tokens.get(&key) {
             if let Some(session) = sessions.get_mut(token) {
                 session.enabled = enabled;
+                if enabled {
+                    session.granted_by = actor.to_string();
+                }
                 let session_clone = session.clone();
                 drop(sessions);
                 drop(project_tokens);
@@ -186,8 +309,30 @@ impl McpSessionService {
         owner: &str,
         project: &str,
         base_url: &str,
+        granted_by: &str,
     ) -> Result<McpSessionResponse, PlatformError> {
         let key = (owner.to_string(), project.to_string());
+        let existing_caps = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let project_tokens = self
+                .project_tokens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let token = project_tokens.get(&key).ok_or_else(|| {
+                PlatformError::new(
+                    "MCP_SESSION_NOT_FOUND",
+                    "No MCP session found for this project",
+                )
+            })?;
+            sessions
+                .get(token)
+                .map(|s| s.capabilities.clone())
+                .ok_or_else(|| {
+                    PlatformError::new("MCP_SESSION_NOT_FOUND", "Session data not found")
+                })?
+        };
+        self.validate_grant(owner, project, granted_by, &existing_caps)?;
+
         let new_token = Self::generate_token();
 
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -212,6 +357,7 @@ impl McpSessionService {
             token: new_token.clone(),
             created_at: now_ts(),
             enabled: true,
+            granted_by: granted_by.to_string(),
             ..old_session
         };
 

@@ -486,3 +486,149 @@ async fn mcp_apply_reactivates_a_topic_pipeline_with_its_subscriber_and_is_the_o
     let http = send(&app, &maintainer, "GET", &format!("/api/projects/{OWNER}/{PROJECT}/migration/0.11/plan"), None).await;
     assert_eq!(http.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn mcp_session_cannot_exceed_creator_capabilities_or_ceiling_and_gates_start_here() {
+    let root = TestDir(std::env::temp_dir().join(format!(
+        "zebflow-platform-mcp-session-cap-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    )));
+    let mut config = PlatformConfig::default();
+    config.data_root = root.0.clone();
+    config.default_password = uuid::Uuid::new_v4().to_string();
+    let owner_pw = config.default_password.clone();
+    let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
+    let app = zebflow::platform::web::router(platform.clone()).await;
+    let owner_cookie = login_as(&app, OWNER, &owner_pw).await;
+
+    let limited_pw = uuid::Uuid::new_v4().to_string();
+    platform
+        .users
+        .create_user(&zebflow::platform::CreateUserRequest {
+            owner: "maintainer-limited".into(),
+            password: limited_pw.clone(),
+            role: "member".into(),
+            git_name: String::new(),
+            git_email: String::new(),
+        })
+        .expect("create user");
+    platform
+        .project_members
+        .upsert_member(
+            OWNER,
+            OWNER,
+            PROJECT,
+            &zebflow::platform::model::UpsertProjectMemberRequest {
+                user_id: "maintainer-limited".into(),
+                role_preset: zebflow::platform::model::ProjectAccessRolePreset::Maintainer,
+                custom_policy_ids: Vec::new(),
+                mcp_capability_ceiling: vec![
+                    zebflow::platform::model::ProjectCapability::PipelinesRead,
+                ],
+            },
+        )
+        .expect("upsert member");
+
+    let limited_cookie = login_as(&app, "maintainer-limited", &limited_pw).await;
+
+    // 1. A maintainer cannot grant a capability they do not hold (`members.write`).
+    let (status, body) = json_of(
+        send(
+            &app,
+            &limited_cookie,
+            "POST",
+            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
+            Some(json!({ "capabilities": ["members.write"] })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "unheld capability must be refused: {body}");
+
+    // 2. A maintainer with mcp_capability_ceiling=[pipelines.read] cannot mint a session with pipelines.write.
+    let (status, body) = json_of(
+        send(
+            &app,
+            &limited_cookie,
+            "POST",
+            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
+            Some(json!({ "capabilities": ["pipelines.read", "pipelines.write"] })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "capability exceeding ceiling must be refused: {body}");
+
+    // 3. Minting within the ceiling ([pipelines.read]) succeeds, and calling `start_here`
+    // without `project.read` is refused.
+    let (status, body) = json_of(
+        send(
+            &app,
+            &limited_cookie,
+            "POST",
+            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
+            Some(json!({ "capabilities": ["pipelines.read"] })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let narrow_token = body["session"]["token"].as_str().expect("token").to_string();
+    let start_err = mcp_call(&app, &narrow_token, "start_here", json!({}))
+        .await
+        .expect_err("start_here without project.read must be refused");
+    assert!(
+        start_err.contains("project.read"),
+        "expected project.read requirement error, got: {start_err}"
+    );
+
+    // 4. When the owner replaces the session with broader capabilities, the ceiling-limited
+    // maintainer cannot rotate/steal that broader session via reset-token or read its token.
+    let (status, owner_body) = json_of(
+        send(
+            &app,
+            &owner_cookie,
+            "POST",
+            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
+            Some(json!({ "capabilities": ["project.read", "pipelines.read", "pipelines.write"] })),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{owner_body}");
+
+    let (reset_status, reset_body) = json_of(
+        send(
+            &app,
+            &limited_cookie,
+            "POST",
+            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session/reset-token"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        reset_status,
+        StatusCode::FORBIDDEN,
+        "reset-token must refuse when session capabilities exceed caller ceiling: {reset_body}"
+    );
+
+    let (get_status, get_body) = json_of(
+        send(
+            &app,
+            &limited_cookie,
+            "GET",
+            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(get_status, StatusCode::OK, "{get_body}");
+    assert!(
+        get_body["session"]["token"].is_null(),
+        "GET mcp/session must not expose token exceeding caller ceiling: {get_body}"
+    );
+}
+

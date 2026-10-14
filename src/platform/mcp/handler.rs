@@ -519,6 +519,7 @@ impl ZebflowMcpHandler {
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "start_here")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.start_here().await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
@@ -1737,6 +1738,9 @@ impl ServerHandler for ZebflowMcpHandler {
         let Some(session) = self.session_from_context(&context) else {
             return Ok(ListPromptsResult::default());
         };
+        if self.check_tool_capability(&session, "skill_list").is_err() {
+            return Ok(ListPromptsResult::default());
+        }
         let Ok(layout) = self.platform.projects.project_layout(&session.owner, &session.project) else {
             return Ok(ListPromptsResult::default());
         };
@@ -1755,6 +1759,7 @@ impl ServerHandler for ZebflowMcpHandler {
         let session = self
             .session_from_context(&context)
             .ok_or_else(|| McpError::invalid_request("no MCP session", None))?;
+        self.check_tool_capability(&session, "skill_read")?;
         let layout = self
             .platform
             .projects

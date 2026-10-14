@@ -261,6 +261,7 @@ impl PlatformService {
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
         let mcp_sessions = Arc::new(McpSessionService::new(
             data.clone(),
+            authz.clone(),
             config.secret_rotation_epoch,
         ));
         let ws_hub = Arc::new(WsHub::new());
