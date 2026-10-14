@@ -54,7 +54,8 @@ pub fn definition() -> NodeDefinition {
         title: "Browser Run".to_string(),
         description: "Runs a Playwright script in a remote headless browser — screenshots, PDFs, scraping. The browser is reached through a `browser_*` credential (a Browserless-compatible \
             endpoint the owner configured) — screenshots, PDF of a live page, scraping a page that needs JavaScript. The body after \
-            `--` is the script, an ESM `export default async ({ page }) => { … }`; put payload values into it with `{{ expr }}`. \
+            `--` is the script, an ESM `export default async ({ page, context }) => { … }`; read upstream payload values from `context.input` \
+            (and trigger data from `context.trigger`) rather than interpolating strings into JS source. \
             Whatever it returns is added to the payload as `page`, and the rest is kept. The engine's `--timeout` bounds the run \
             (e.g. `--timeout 2m`). This is not for verifying your own pages during development — that is the agent's own browser \
             (`zebflow-verify`)."
@@ -77,13 +78,14 @@ pub fn definition() -> NodeDefinition {
                 field_type: NodeFieldType::CodeEditor,
                 language: Some("javascript".to_string()),
                 span: Some("full".to_string()),
-                help: Some("export default async ({ page }) => { ... } — Browserless /function script. Return value becomes the node output.".to_string()),
-                default_value: Some(json!("export default async ({ page }) => {\n  await page.goto('https://example.com');\n  return {\n    data: { title: await page.title() },\n    type: 'application/json'\n  };\n};")),
+                help: Some("export default async ({ page, context }) => { ... } — Browserless /function script. Read upstream data from context.input. Return value becomes the node output.".to_string()),
+                default_value: Some(json!("export default async ({ page, context }) => {\n  await page.goto('https://example.com');\n  return {\n    data: { title: await page.title() },\n    type: 'application/json'\n  };\n};")),
                 sidebar: vec![
                     SidebarSection {
                         title: "API".to_string(),
                         items: vec![
                             SidebarItem { label: "page".to_string(), type_hint: Some("Page".to_string()), description: Some("Playwright/Puppeteer page object.".to_string()) },
+                            SidebarItem { label: "context.input".to_string(), type_hint: Some("object".to_string()), description: Some("Structured upstream pipeline payload.".to_string()) },
                         ],
                     },
                     SidebarSection {
@@ -102,7 +104,7 @@ pub fn definition() -> NodeDefinition {
         ],
         ai_tool: Default::default(),
         examples: vec![
-            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.page.run --credential browserless_main --timeout 20s -- "export default async ({ page }) => { await page.goto('{{ $trigger.body.url }}'); return { title: await page.title() }; }""#)
+            crate::pipeline::model::NodeExample::dsl("Title of a rendered page", r#"browser.page.run --credential browserless_main --timeout 20s -- "export default async ({ page, context }) => { await page.goto(context.input.url); return { title: await page.title() }; }""#)
                 .output(serde_json::json!({ "page": { "title": "Example Domain" } }))
                 .note("Read it downstream as `input.page.title`."),
         ],
@@ -147,6 +149,41 @@ impl Node {
             bundle_egress,
         })
     }
+}
+
+fn build_browserless_endpoint(base_url: &str, token: &str) -> Result<reqwest::Url, PipelineError> {
+    let raw = format!("{}/function", base_url.trim_end_matches('/'));
+    let mut url = reqwest::Url::parse(&raw)
+        .map_err(|e| PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_SECRET", format!("invalid browser url: {e}")))?;
+    if !token.is_empty() {
+        url.query_pairs_mut().append_pair("token", token);
+    }
+    Ok(url)
+}
+
+fn build_browserless_request_body(code: &str, input: &NodeExecutionInput) -> Value {
+    json!({
+        "code": code,
+        "context": {
+            "input": input.payload,
+            "trigger": input.metadata.get("trigger").cloned().unwrap_or(Value::Null),
+        }
+    })
+}
+
+fn mask_browser_token(message: &str, token: &str) -> String {
+    if token.is_empty() {
+        return message.to_string();
+    }
+    let mut masked = message.replace(token, "••••••");
+    let mut probe = reqwest::Url::parse("https://example.invalid/function").expect("static url");
+    probe.query_pairs_mut().append_pair("token", token);
+    if let Some(q) = probe.query().and_then(|q| q.strip_prefix("token=")) {
+        if !q.is_empty() {
+            masked = masked.replace(q, "••••••");
+        }
+    }
+    masked
 }
 
 #[async_trait]
@@ -227,26 +264,24 @@ impl NodeHandler for Node {
             .unwrap_or("")
             .trim();
 
-        let endpoint = if token.is_empty() {
-            format!("{}/function", base_url)
-        } else {
-            format!("{}/function?token={}", base_url, token)
-        };
+        let endpoint = build_browserless_endpoint(base_url, token)?;
 
-        // Async, with no timeout of its own: the engine's `--timeout` drops
-        // this future, which a blocking client could not be made to notice.
+        // Async, with no timeout of its own: the engine's `--timeout` bounds
+        // this future, and HTTP redirects are disabled so a validated endpoint
+        // cannot redirect to an internal address or leak `?token=` to a third party.
         let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", e.to_string()))?;
+        let req_body = build_browserless_request_body(&self.config.code, &input);
         let response = client
-            .post(&endpoint)
-            .json(&json!({ "code": self.config.code }))
+            .post(endpoint)
+            .json(&req_body)
             .send()
             .await
             .map_err(|e| {
                 // The token rides in the query string; an error that quotes the URL must not repeat it.
-                let message = e.to_string();
-                let message = if token.is_empty() { message } else { message.replace(token, "••••••") };
+                let message = mask_browser_token(&e.to_string(), token);
                 PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", message)
             })?;
 
@@ -256,7 +291,7 @@ impl NodeHandler for Node {
 
         let payload = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));
 
-        if !(200..400).contains(&status) {
+        if !(200..300).contains(&status) {
             return Err(PipelineError::new(
                 "FW_NODE_BROWSER_PAGE_RUN_STATUS",
                 format!(
@@ -280,6 +315,8 @@ impl NodeHandler for Node {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// `--timeout-ms` is gone (the engine's `--timeout` bounds the run) and the
     /// answer is `page`.
     #[test]
@@ -289,5 +326,39 @@ mod tests {
         assert_eq!(flags, ["--credential"]);
         assert!(def.output_schema["properties"].get("page").is_some());
         assert!(!def.fields.iter().any(|f| f.name == "timeout_ms"));
+    }
+
+    #[test]
+    fn browser_page_run_url_encodes_token_disables_redirects_and_passes_structured_context() {
+        let token = format!("{}&inject=1#frag", uuid::Uuid::new_v4());
+        let url = build_browserless_endpoint("https://browserless.example.com/", &token).expect("endpoint");
+        assert_eq!(url.path(), "/function");
+        assert!(url.fragment().is_none(), "fragment must be percent-encoded inside token param");
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert_eq!(pairs, vec![("token".to_string(), token.clone())]);
+
+        let masked = mask_browser_token(&format!("request to {url} failed"), &token);
+        assert!(!masked.contains(&token));
+        assert!(!masked.contains("inject=1"));
+
+        let input = NodeExecutionInput {
+            node_id: "b".to_string(),
+            input_pin: INPUT_PIN_IN.to_string(),
+            payload: json!({ "url": "https://example.com/?q=';alert(1)//" }),
+            metadata: json!({ "trigger": { "kind": "webhook" } }),
+            bus: None,
+        };
+        let body = build_browserless_request_body(
+            "export default async ({ page, context }) => { await page.goto(context.input.url); }",
+            &input,
+        );
+        assert_eq!(
+            body["context"]["input"]["url"],
+            json!("https://example.com/?q=';alert(1)//")
+        );
+        assert_eq!(body["context"]["trigger"]["kind"], json!("webhook"));
     }
 }
