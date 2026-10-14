@@ -2712,6 +2712,9 @@ async fn project_asset(
         };
     }
 
+    if !project_exists_or_on_disk(&state, &owner, &project) {
+        return (StatusCode::NOT_FOUND, "asset not found").into_response();
+    }
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
@@ -2768,6 +2771,24 @@ async fn project_asset(
     resp
 }
 
+pub(super) fn project_exists_or_on_disk(state: &PlatformAppState, owner: &str, project: &str) -> bool {
+    let owner = crate::platform::model::slug_segment(owner);
+    let project = crate::platform::model::slug_segment(project);
+    if owner.is_empty() || project.is_empty() {
+        return false;
+    }
+    state.platform.projects.get_project(&owner, &project).ok().flatten().is_some()
+        || state
+            .platform
+            .config
+            .data_root
+            .join("users")
+            .join(&owner)
+            .join("projects")
+            .join(&project)
+            .is_dir()
+}
+
 /// Serves static project assets from the layout's static dir (`repo/static/{*path}` by default).
 /// Route: GET /p/{owner}/{project}/assets/{*path}
 async fn project_static_asset(
@@ -2805,6 +2826,9 @@ async fn project_static_asset(
         };
     }
 
+    if !project_exists_or_on_disk(&state, &owner, &project) {
+        return (StatusCode::NOT_FOUND, "asset not found").into_response();
+    }
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
@@ -24665,6 +24689,13 @@ async fn public_mapserver_ingress(
             Ok(response) => response,
             Err(err) => internal_error(err),
         };
+    }
+    if !project_exists_or_on_disk(&state, &owner, &project) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "layer not found"})),
+        )
+            .into_response();
     }
     let raw_path = format!("/{}", tail.trim_start_matches('/'));
 

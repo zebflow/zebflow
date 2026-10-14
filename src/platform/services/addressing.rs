@@ -504,6 +504,9 @@ impl AddressingService {
         {
             return Ok(found.clone());
         }
+        if self.data.get_project(&owner, &project)?.is_none() {
+            return Ok(ProjectAddressing::default());
+        }
         let addressing = self.read_from_disk(&owner, &project)?;
         let table = self.section_table(&owner, &project, &addressing);
         let mut index = self.index.write().expect("addressing index poisoned");
@@ -990,6 +993,34 @@ mod tests {
             )
             .expect("normal host saves");
         assert_eq!(saved.hosts, vec!["site-a.example.org".to_string()]);
+    }
+
+    #[test]
+    fn anonymous_requests_do_not_create_project_layouts_for_missing_projects() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: dir.path().to_path_buf(),
+                ..crate::platform::model::PlatformConfig::default()
+            },
+        )
+        .expect("platform");
+        let _ = platform.addressing.resolve("ghost-proj.ghost-owner.localhost", "/");
+        let _ = platform.addressing.read("ghost-owner", "ghost-proj").expect("default addressing");
+        assert!(
+            !dir.path().join("users/ghost-owner/projects/ghost-proj").exists(),
+            "missing project must not be created on disk by addressing lookups"
+        );
+        assert!(
+            !platform
+                .addressing
+                .index
+                .read()
+                .expect("index")
+                .projects
+                .contains_key(&("ghost-owner".to_string(), "ghost-proj".to_string())),
+            "missing project must not be cached in addressing index"
+        );
     }
 }
 

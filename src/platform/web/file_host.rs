@@ -162,6 +162,9 @@ pub(super) async fn file_host_response(
     let Ok(rel) = normalize_object_path(&decoded) else {
         return not_found();
     };
+    if !super::project_exists_or_on_disk(state, owner, project) {
+        return not_found();
+    }
     let layout = match state.platform.file.ensure_project_layout(owner, project) {
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
@@ -189,6 +192,9 @@ pub(super) fn execute_site_response(
     path: &str,
     request: &HeaderMap,
 ) -> Option<Response> {
+    if !super::project_exists_or_on_disk(state, owner, project) {
+        return None;
+    }
     let layout = state.platform.file.ensure_project_layout(owner, project).ok()?;
     let store_dir = layout.data_store_dir();
     let manifest = crate::platform::services::zebfs_acl::read(&store_dir).ok()?;
