@@ -17,9 +17,8 @@
 //! (the default), or the same with `base64` and `size` in place of the
 //! FileRef with `--return inline`. The payload is kept.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -27,6 +26,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::pipeline::nodes::shared::limits::choice;
 use crate::pipeline::nodes::shared::profile::{check_credential, check_profile, option_flag, option_text, provider_flag};
@@ -49,6 +49,31 @@ const OUTPUT_PIN_OUT: &str = "out";
 const CONFIG_CODE: &str = "FW_NODE_AI_AUDIO_GENERATE_CONFIG";
 const CREDENTIAL_CODE: &str = "FW_NODE_AI_AUDIO_GENERATE_CREDENTIAL";
 const FILE_CODE: &str = "FW_NODE_AI_AUDIO_GENERATE_FILE";
+
+/// Maximum `--text` byte length accepted for a single TTS synthesis call (16 KiB).
+pub const MAX_TTS_TEXT_BYTES: usize = 16 * 1024;
+/// Maximum synthesized WAV size in bytes (32 MiB).
+pub const MAX_TTS_WAV_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum JSON+base64 stdout payload read from the Piper Python bridge (48 MiB).
+const MAX_PIPER_STDOUT_BYTES: usize = 48 * 1024 * 1024;
+/// Maximum stderr read from the Piper Python bridge (64 KiB).
+const MAX_PIPER_STDERR_BYTES: usize = 64 * 1024;
+
+/// Safe runtime environment variables forwarded to the isolated `python3 -I` bridge.
+const SAFE_PIPER_ENV_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "SYSTEMROOT",
+];
 
 /// The TTS providers, each with a profile.
 pub const PROVIDERS: &[&str] = &["piper"];
@@ -74,6 +99,7 @@ def fail(message: str) -> None:
 
 try:
     req = json.load(sys.stdin)
+    max_wav_bytes = int(req.get("max_wav_bytes") or (32 * 1024 * 1024))
     load_kwargs = {
         "model_path": req["model_path"],
         "config_path": req["config_path"],
@@ -90,9 +116,17 @@ try:
         volume=req.get("volume", 1.0),
     )
 
-    chunks = list(voice.synthesize(req["text"], syn_config=syn_config))
-    if chunks:
-        audio = np.concatenate([chunk.audio_int16_array for chunk in chunks])
+    arrays = []
+    total_samples = 0
+    for chunk in voice.synthesize(req["text"], syn_config=syn_config):
+        arr = chunk.audio_int16_array
+        total_samples += len(arr)
+        if total_samples * 2 + 44 > max_wav_bytes:
+            fail("synthesized audio exceeds maximum WAV size limit")
+        arrays.append(arr)
+
+    if arrays:
+        audio = np.concatenate(arrays)
     else:
         audio = np.array([], dtype=np.int16)
 
@@ -104,6 +138,8 @@ try:
         wf.writeframes(audio.astype("<i2").tobytes())
 
     wav_bytes = wav_buffer.getvalue()
+    if len(wav_bytes) > max_wav_bytes:
+        fail("synthesized audio exceeds maximum WAV size limit")
     duration_ms = round((len(audio) / voice.config.sample_rate) * 1000) if voice.config.sample_rate else 0
     payload = {
         "ok": True,
@@ -587,13 +623,14 @@ impl Node {
 
     /// Piper: the credential's voice files pulled from the node's store into
     /// a scratch folder, then the Python bridge.
-    fn synthesise_piper(
+    async fn synthesise_piper(
         &self,
         platform: &Arc<PlatformService>,
         owner: &str,
         project: &str,
         secret: &PiperCredentialSecret,
     ) -> Result<Synthesis, PipelineError> {
+        let text = validate_tts_text(&self.config.text)?;
         let zebfs = open_store(platform, owner, project, self.config.store.as_deref())?.fs;
         let scratch = StoreScratch::new(FILE_CODE)?;
         let model_rel = normalize_zebfs_asset_rel_path(required_secret_str(&secret.model_file, "model_file")?)?;
@@ -616,20 +653,68 @@ impl Node {
             }
             None => None,
         };
-        let bridge = run_piper_bridge(&PiperBridgeRequest {
-            model_path: model_abs,
-            config_path: config_abs,
-            espeak_data_dir: espeak_abs,
-            text: self.config.text.trim().to_string(),
-            speaker: self.settings.voice,
-            length_scale: speed_to_length_scale(self.settings.speed)?,
-            volume: self.settings.volume,
-        })?;
+        let bridge = run_piper_bridge(
+            &PiperBridgeRequest {
+                model_path: model_abs,
+                config_path: config_abs,
+                espeak_data_dir: espeak_abs,
+                text: text.to_string(),
+                speaker: self.settings.voice,
+                length_scale: speed_to_length_scale(self.settings.speed)?,
+                volume: self.settings.volume,
+                max_wav_bytes: MAX_TTS_WAV_BYTES,
+            },
+            PIPER_BRIDGE_SCRIPT,
+            MAX_PIPER_STDOUT_BYTES,
+        )
+        .await?;
+        let max_b64_len = (MAX_TTS_WAV_BYTES / 3 + 1) * 4;
+        if bridge.audio_blob_base64.len() > max_b64_len {
+            return Err(PipelineError::new(
+                "FW_NODE_AI_AUDIO_GENERATE_BLOB",
+                format!(
+                    "synthesized audio base64 size ({} bytes) exceeds maximum {} byte WAV limit",
+                    bridge.audio_blob_base64.len(),
+                    MAX_TTS_WAV_BYTES
+                ),
+            ));
+        }
         let wav = BASE64_STANDARD.decode(bridge.audio_blob_base64.as_bytes()).map_err(|err| {
             PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_BLOB", format!("failed to decode audio blob: {err}"))
         })?;
+        if wav.len() > MAX_TTS_WAV_BYTES {
+            return Err(PipelineError::new(
+                "FW_NODE_AI_AUDIO_GENERATE_BLOB",
+                format!(
+                    "synthesized audio size ({} bytes) exceeds maximum {} byte limit",
+                    wav.len(),
+                    MAX_TTS_WAV_BYTES
+                ),
+            ));
+        }
         Ok(Synthesis { wav, sample_rate: bridge.sample_rate, samples: bridge.samples, duration_ms: bridge.duration_ms })
     }
+}
+
+fn validate_tts_text(raw: &str) -> Result<&str, PipelineError> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err(PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_TEXT",
+            "--text is empty; it needs what to say",
+        ));
+    }
+    if text.len() > MAX_TTS_TEXT_BYTES {
+        return Err(PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_TEXT",
+            format!(
+                "--text is {} bytes, exceeding the maximum {} byte limit",
+                text.len(),
+                MAX_TTS_TEXT_BYTES
+            ),
+        ));
+    }
+    Ok(text)
 }
 
 #[async_trait]
@@ -666,9 +751,7 @@ impl NodeHandler for Node {
         let provider = self.config.provider.trim();
 
         // Arrives final — `{{ }}` resolved engine-side before this ran.
-        if self.config.text.trim().is_empty() {
-            return Err(PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_TEXT", "--text is empty; it needs what to say"));
-        }
+        validate_tts_text(&self.config.text)?;
 
         let credential_id = self.config.credential_id.trim();
         if credential_id.is_empty() {
@@ -694,7 +777,7 @@ impl NodeHandler for Node {
             }
         }
 
-        let synthesis = self.synthesise_piper(platform, owner, project, &secret)?;
+        let synthesis = self.synthesise_piper(platform, owner, project, &secret).await?;
         let answer = self.deliver(platform, owner, project, synthesis)?;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -716,58 +799,143 @@ struct PiperBridgeRequest {
     speaker: Option<i32>,
     length_scale: Option<f32>,
     volume: f32,
+    max_wav_bytes: usize,
 }
 
-fn run_piper_bridge(req: &PiperBridgeRequest) -> Result<PiperBridgeResult, PipelineError> {
-    let mut child = Command::new("python3")
+fn build_piper_command(script: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("python3");
+    cmd.arg("-I")
         .arg("-c")
-        .arg(PIPER_BRIDGE_SCRIPT)
+        .arg(script)
+        .kill_on_drop(true)
+        .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| {
-            PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_PIPER", format!("failed to start python3: {err}"))
-        })?;
+        .stderr(Stdio::piped());
+    for key in SAFE_PIPER_ENV_VARS {
+        if let Some(val) = std::env::var_os(key) {
+            cmd.env(key, val);
+        }
+    }
+    cmd
+}
+
+async fn run_piper_bridge(
+    req: &PiperBridgeRequest,
+    script: &str,
+    max_stdout_bytes: usize,
+) -> Result<PiperBridgeResult, PipelineError> {
+    let mut child = build_piper_command(script).spawn().map_err(|err| {
+        PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+            format!("failed to start python3: {err}"),
+        )
+    })?;
+
+    let payload = serde_json::to_vec(req).map_err(|err| {
+        PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+            format!("failed to serialize request: {err}"),
+        )
+    })?;
 
     {
-        let Some(stdin) = child.stdin.as_mut() else {
-            return Err(PipelineError::new(
-                "FW_NODE_AI_AUDIO_GENERATE_PIPER",
-                "failed to open python stdin",
-            ));
-        };
-        let payload = serde_json::to_vec(req).map_err(|err| {
+        let mut stdin = child.stdin.take().ok_or_else(|| {
             PipelineError::new(
                 "FW_NODE_AI_AUDIO_GENERATE_PIPER",
-                format!("failed to serialize request: {err}"),
+                "failed to open python stdin",
             )
         })?;
-        stdin.write_all(&payload).map_err(|err| {
+        stdin.write_all(&payload).await.map_err(|err| {
             PipelineError::new(
                 "FW_NODE_AI_AUDIO_GENERATE_PIPER",
                 format!("failed to write python stdin: {err}"),
             )
         })?;
+        stdin.shutdown().await.map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+                format!("failed to close python stdin: {err}"),
+            )
+        })?;
     }
 
-    let output = child.wait_with_output().map_err(|err| {
-        PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_PIPER", format!("failed waiting for python: {err}"))
+    let stdout_pipe = child.stdout.take().ok_or_else(|| {
+        PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+            "failed to open python stdout",
+        )
     })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
+    let stderr_pipe = child.stderr.take().ok_or_else(|| {
+        PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+            "failed to open python stderr",
+        )
+    })?;
+
+    let stdout_fut = async move {
+        let mut buf = Vec::new();
+        stdout_pipe
+            .take((max_stdout_bytes as u64).saturating_add(1))
+            .read_to_end(&mut buf)
+            .await
+            .map(|_| buf)
+    };
+    let stderr_fut = async move {
+        let mut buf = Vec::new();
+        stderr_pipe
+            .take(MAX_PIPER_STDERR_BYTES as u64)
+            .read_to_end(&mut buf)
+            .await
+            .map(|_| buf)
+    };
+
+    let (stdout_res, stderr_res) = tokio::join!(stdout_fut, stderr_fut);
+    let stdout = stdout_res.map_err(|err| {
+        PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+            format!("failed reading python stdout: {err}"),
+        )
+    })?;
+    let stderr = stderr_res.map_err(|err| {
+        PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+            format!("failed reading python stderr: {err}"),
+        )
+    })?;
+
+    if stdout.len() > max_stdout_bytes {
+        let _ = child.kill().await;
+        return Err(PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_BLOB",
+            format!(
+                "piper stdout exceeded maximum {} byte limit",
+                max_stdout_bytes
+            ),
+        ));
+    }
+
+    let status = child.wait().await.map_err(|err| {
+        PipelineError::new(
+            "FW_NODE_AI_AUDIO_GENERATE_PIPER",
+            format!("failed waiting for python: {err}"),
+        )
+    })?;
+
+    if !status.success() {
+        let stderr_str = String::from_utf8_lossy(&stderr).trim().to_string();
+        let stdout_str = String::from_utf8_lossy(&stdout).trim().to_string();
+        let detail = if !stderr_str.is_empty() {
+            stderr_str
+        } else if !stdout_str.is_empty() {
+            stdout_str
         } else {
-            format!("python exited with status {}", output.status)
+            format!("python exited with status {status}")
         };
         return Err(PipelineError::new("FW_NODE_AI_AUDIO_GENERATE_PIPER", detail));
     }
 
-    serde_json::from_slice::<PiperBridgeResult>(&output.stdout).map_err(|err| {
+    serde_json::from_slice::<PiperBridgeResult>(&stdout).map_err(|err| {
         PipelineError::new(
             "FW_NODE_AI_AUDIO_GENERATE_PIPER",
             format!("invalid python result payload: {err}"),
@@ -2046,5 +2214,57 @@ mod tests {
                 row[0], row[1], row[2], row[3], row[4]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn piper_bridge_enforces_text_and_wav_caps_and_runs_isolated_async_python() {
+        let oversized_text = "a".repeat(super::MAX_TTS_TEXT_BYTES + 1);
+        let err = super::validate_tts_text(&oversized_text).expect_err("oversized text must be rejected");
+        assert_eq!(err.code, "FW_NODE_AI_AUDIO_GENERATE_TEXT");
+
+        let cmd = super::build_piper_command("pass");
+        let std_cmd = cmd.as_std();
+        let args: Vec<_> = std_cmd.get_args().collect();
+        assert_eq!(args.first().and_then(|a| a.to_str()), Some("-I"), "python3 must run in isolated mode (-I)");
+
+        let req = super::PiperBridgeRequest {
+            model_path: PathBuf::from("model.onnx"),
+            config_path: PathBuf::from("model.onnx.json"),
+            espeak_data_dir: None,
+            text: "hello".to_string(),
+            speaker: None,
+            length_scale: None,
+            volume: 1.0,
+            max_wav_bytes: 1024,
+        };
+        let check_isolated_script = r#"
+import json, os, sys
+_ = json.load(sys.stdin)
+assert sys.flags.isolated == 1, "expected python -I isolated mode"
+assert "ZEBFLOW_CREDENTIAL_KEY" not in os.environ, "secret env var leaked"
+json.dump({
+    "ok": True,
+    "sample_rate": 22050,
+    "samples": 22,
+    "duration_ms": 1,
+    "bytes": 44,
+    "audio_blob_base64": "UklGRg=="
+}, sys.stdout)
+"#;
+        let res = super::run_piper_bridge(&req, check_isolated_script, 4096)
+            .await
+            .expect("isolated python3 bridge should succeed");
+        assert_eq!(res.sample_rate, 22050);
+        assert_eq!(res.samples, 22);
+
+        let flood_script = r#"
+import sys
+sys.stdout.write("A" * 8192)
+sys.stdout.flush()
+"#;
+        let flood_err = super::run_piper_bridge(&req, flood_script, 1024)
+            .await
+            .expect_err("stdout exceeding cap must be rejected");
+        assert_eq!(flood_err.code, "FW_NODE_AI_AUDIO_GENERATE_BLOB");
     }
 }
