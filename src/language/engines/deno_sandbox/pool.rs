@@ -307,24 +307,43 @@ const SANDBOX_INIT: &str = r#"
   globalThis.__tj_tick     = function () {};
   globalThis.__script_input = null;
 
+  var _URL = globalThis.URL;
+  var _Response = globalThis.Response;
+  var _decodeURIComponent = globalThis.decodeURIComponent;
+  var _getOwnDesc = Object.getOwnPropertyDescriptor;
+
   globalThis.fetch = function secureFetch(input) {
     if (typeof globalThis.__tj_tick === "function") globalThis.__tj_tick();
 
     var raw;
-    if (typeof input === "string")                  raw = input.trim();
-    else if (input && typeof input.url === "string") raw = input.url.trim();
-    else return Promise.reject(new Error("DenoSandboxError: unsupported fetch input"));
+    if (typeof input === "string") {
+      raw = input.trim();
+    } else if (input && typeof input === "object" && input instanceof _URL && typeof input.href === "string") {
+      var hrefDesc = _getOwnDesc(input, "href");
+      if (!hrefDesc || "get" in hrefDesc || typeof hrefDesc.value !== "string") {
+        return Promise.reject(new Error("DenoSandboxError: unsupported fetch input"));
+      }
+      raw = hrefDesc.value.trim();
+    } else if (input && typeof input === "object") {
+      var urlDesc = _getOwnDesc(input, "url");
+      if (!urlDesc || "get" in urlDesc || typeof urlDesc.value !== "string") {
+        return Promise.reject(new Error("DenoSandboxError: unsupported fetch input"));
+      }
+      raw = urlDesc.value.trim();
+    } else {
+      return Promise.reject(new Error("DenoSandboxError: unsupported fetch input"));
+    }
 
     // Local path (e.g. "/payload.json") — read via Rust op
     if (raw.startsWith("/")) {
-      var rel = decodeURIComponent(raw).replace(/^\/+/, "");
+      var rel = _decodeURIComponent(raw).replace(/^\/+/, "");
       if (!rel || rel.indexOf("..") !== -1) {
         return Promise.reject(new Error("DenoSandboxError: local fetch path invalid"));
       }
       try {
         var content = __zfReadLocalFile(rel);
         var ct = rel.endsWith(".json") ? "application/json" : "text/plain";
-        return Promise.resolve(new globalThis.Response(content, {
+        return Promise.resolve(new _Response(content, {
           status: 200, headers: { "content-type": ct }
         }));
       } catch (e) {
@@ -334,13 +353,13 @@ const SANDBOX_INIT: &str = r#"
         if (msg.indexOf("local fetch denied: ") !== -1) {
           return Promise.reject(new Error("DenoSandboxError: " + msg));
         }
-        return Promise.resolve(new globalThis.Response("Not Found", { status: 404 }));
+        return Promise.resolve(new _Response("Not Found", { status: 404 }));
       }
     }
 
     // External URL — enforce allow-list
     var parsed;
-    try { parsed = new URL(raw); } catch (e) {
+    try { parsed = new _URL(raw); } catch (e) {
       return Promise.reject(new Error("DenoSandboxError: unsupported fetch url '" + raw + "'"));
     }
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
@@ -432,7 +451,7 @@ const SANDBOX_INIT: &str = r#"
     RegExp.prototype, Error.prototype, Promise.prototype, Map.prototype,
     Set.prototype, WeakMap.prototype, WeakSet.prototype,
     Object, Array, String, Number, Boolean, Date, RegExp, Promise,
-    JSON, Math, Reflect
+    JSON, Math, Reflect, _URL, _URL && _URL.prototype, _Response, _Response && _Response.prototype
   ];
   for (var _fp = 0; _fp < _fnProtos.length; _fp++) {
     _frozenTargets[_frozenTargets.length] = _fnProtos[_fp];

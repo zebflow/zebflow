@@ -28,6 +28,7 @@ pub fn analyze(source: &str, policy: &SecurityPolicy) -> Result<Vec<Diagnostic>,
         }
     }
 
+    check_ast_security(source, policy)?;
     check_fetch_domain_allowlist(source, policy)?;
 
     for (idx, line) in source.lines().enumerate() {
@@ -42,6 +43,120 @@ pub fn analyze(source: &str, policy: &SecurityPolicy) -> Result<Vec<Diagnostic>,
     }
 
     Ok(diagnostics)
+}
+
+fn check_ast_security(source: &str, policy: &SecurityPolicy) -> Result<(), EngineError> {
+    use oxc_allocator::Allocator;
+    use oxc_parser::Parser;
+    use oxc_span::SourceType;
+
+    let allocator = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&allocator, source, source_type).parse();
+    let mut visitor = RweAstSecurityVisitor {
+        policy,
+        violation: None,
+    };
+    oxc_ast_visit::walk::walk_program(&mut visitor, &parsed.program);
+    if let Some(err) = visitor.violation {
+        return Err(err);
+    }
+    Ok(())
+}
+
+struct RweAstSecurityVisitor<'p> {
+    policy: &'p SecurityPolicy,
+    violation: Option<EngineError>,
+}
+
+impl RweAstSecurityVisitor<'_> {
+    fn check_member_pair(&mut self, obj_name: Option<&str>, prop_name: &str) {
+        if self.violation.is_some() {
+            return;
+        }
+        if !self.policy.allow_raw_html && prop_name == "dangerouslySetInnerHTML" {
+            self.violation = Some(EngineError::new(
+                "RWE_SECURITY_RAW_HTML",
+                "dangerouslySetInnerHTML is blocked by security policy",
+            ));
+            return;
+        }
+        for blocked in &self.policy.blocked_globals {
+            let matched = match blocked.as_str() {
+                "eval" => prop_name == "eval",
+                "Function" | "globalThis.Function" => prop_name == "Function",
+                other => {
+                    if let Some((b_obj, b_prop)) = other.split_once('.') {
+                        prop_name == b_prop && obj_name.is_none_or(|o| o == b_obj)
+                    } else {
+                        prop_name == other || obj_name == Some(other)
+                    }
+                }
+            };
+            if matched {
+                self.violation = Some(EngineError::new(
+                    "RWE_SECURITY_GLOBAL",
+                    format!("blocked global found in source: {blocked}"),
+                ));
+                return;
+            }
+        }
+    }
+}
+
+fn expr_ident_name<'a>(expr: &'a oxc_ast::ast::Expression<'a>) -> Option<&'a str> {
+    match expr {
+        oxc_ast::ast::Expression::Identifier(id) => Some(id.name.as_str()),
+        oxc_ast::ast::Expression::ParenthesizedExpression(p) => expr_ident_name(&p.expression),
+        _ => None,
+    }
+}
+
+fn expr_static_string<'a>(expr: &'a oxc_ast::ast::Expression<'a>) -> Option<&'a str> {
+    match expr {
+        oxc_ast::ast::Expression::StringLiteral(lit) => Some(lit.value.as_str()),
+        oxc_ast::ast::Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl
+            .quasis
+            .first()
+            .and_then(|q| q.value.cooked.as_ref().map(|s| s.as_str())),
+        _ => None,
+    }
+}
+
+impl<'a> oxc_ast_visit::Visit<'a> for RweAstSecurityVisitor<'_> {
+    fn visit_import_expression(&mut self, expr: &oxc_ast::ast::ImportExpression<'a>) {
+        if !self.policy.allow_dynamic_import && self.violation.is_none() {
+            self.violation = Some(EngineError::new(
+                "RWE_SECURITY_DYNAMIC_IMPORT",
+                "dynamic import() is blocked by security policy",
+            ));
+        }
+        oxc_ast_visit::walk::walk_import_expression(self, expr);
+    }
+
+    fn visit_static_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::StaticMemberExpression<'a>,
+    ) {
+        self.check_member_pair(
+            expr_ident_name(&member.object),
+            member.property.name.as_str(),
+        );
+        oxc_ast_visit::walk::walk_static_member_expression(self, member);
+    }
+
+    fn visit_computed_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::ComputedMemberExpression<'a>,
+    ) {
+        if let Some(prop) = expr_static_string(&member.expression) {
+            self.check_member_pair(expr_ident_name(&member.object), prop);
+        }
+        oxc_ast_visit::walk::walk_computed_member_expression(self, member);
+    }
 }
 
 /// Check all `fetch("…")` / `fetch('…')` calls with static string literal URLs.
@@ -152,3 +267,4 @@ fn has_identifier_call(source: &str, ident: &str) -> bool {
 fn is_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
+

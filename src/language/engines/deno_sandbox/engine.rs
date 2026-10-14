@@ -523,4 +523,22 @@ return {
         assert_eq!(rows[1]["name"].as_str(), Some("Bob"));
         assert!(out["csv"].as_str().unwrap().contains("Alice"));
     }
+
+    #[test]
+    fn fetch_rejects_getter_and_prototype_url_spoofing() {
+        let engine = DenoSandboxEngine::default();
+        for src in [
+            r#"let step = 0; const req = {}; Object.defineProperty(req, "url", { get() { return step++ === 0 ? "https://allowed.example.com/" : "http://127.0.0.1:5156/"; } }); return await fetch(req);"#,
+            r#"const proto = { url: "https://allowed.example.com/" }; const req = Object.create(proto); return await fetch(req);"#,
+        ] {
+            let err = engine
+                .run_script(src, &json!({}), None)
+                .expect_err("spoofed fetch input must be rejected");
+            assert!(
+                err.message.contains("unsupported fetch input"),
+                "unexpected error: {}",
+                err.message
+            );
+        }
+    }
 }

@@ -69,6 +69,8 @@ const RESERVED: &[&str] = &[
     "__zfOps",
     "__zfScriptResult",
     "__zfReadLocalFile",
+    "__zfHostAllowed",
+    "__zfResetRealm",
     "__opsLeft",
     "__deadline",
     "__r",
@@ -210,6 +212,17 @@ fn line_col(text: &str, offset: usize) -> (u32, u32) {
     (line.max(1), column)
 }
 
+fn static_property_name<'a>(expr: &'a oxc_ast::ast::Expression<'a>) -> Option<&'a str> {
+    match expr {
+        oxc_ast::ast::Expression::StringLiteral(lit) => Some(lit.value.as_str()),
+        oxc_ast::ast::Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl
+            .quasis
+            .first()
+            .and_then(|q| q.value.cooked.as_ref().map(|s| s.as_str())),
+        _ => None,
+    }
+}
+
 struct Collector {
     /// Where the author's own code begins. Everything before it is the wrapper
     /// this module wrote, which declares the `$` scope itself — reserving those
@@ -243,11 +256,10 @@ impl Collector {
         }
     }
 
-    /// A bare-identifier call, which is the only form these checks can see.
-    /// `globalThis['ev'+'al']` is deliberately out of scope: it is not
-    /// statically decidable, and the host watchdog is what actually contains
-    /// the consequences.
     fn check_callee_name(&mut self, name: &str, offset: u32) {
+        if offset < self.body_starts_at {
+            return;
+        }
         if !self.policy.allow_dynamic_code && matches!(name, "eval" | "Function") {
             self.refuse(
                 "SCRIPT_DYNAMIC_CODE",
@@ -264,6 +276,14 @@ impl Collector {
                 offset,
             );
         }
+    }
+
+    fn check_member_property(&mut self, name: &str, offset: u32) {
+        if offset < self.body_starts_at {
+            return;
+        }
+        self.note_reserved(name, offset);
+        self.check_callee_name(name, offset);
     }
 
     /// A loop with a test gets the tick folded into the test via the comma
@@ -306,6 +326,42 @@ impl<'a> oxc_ast_visit::Visit<'a> for Collector {
         self.note_reserved(ident.name.as_str(), ident.span.start);
     }
 
+    fn visit_binding_property(&mut self, prop: &oxc_ast::ast::BindingProperty<'a>) {
+        match &prop.key {
+            oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
+                self.check_member_property(id.name.as_str(), id.span.start);
+            }
+            oxc_ast::ast::PropertyKey::StringLiteral(lit) => {
+                self.check_member_property(lit.value.as_str(), lit.span.start);
+            }
+            oxc_ast::ast::PropertyKey::TemplateLiteral(tpl) if tpl.expressions.is_empty() => {
+                if let Some(cooked) = tpl.quasis.first().and_then(|q| q.value.cooked.as_ref()) {
+                    self.check_member_property(cooked.as_str(), tpl.span.start);
+                }
+            }
+            _ => {}
+        }
+        oxc_ast_visit::walk::walk_binding_property(self, prop);
+    }
+
+    fn visit_static_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::StaticMemberExpression<'a>,
+    ) {
+        self.check_member_property(member.property.name.as_str(), member.span.start);
+        oxc_ast_visit::walk::walk_static_member_expression(self, member);
+    }
+
+    fn visit_computed_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::ComputedMemberExpression<'a>,
+    ) {
+        if let Some(name) = static_property_name(&member.expression) {
+            self.check_member_property(name, member.span.start);
+        }
+        oxc_ast_visit::walk::walk_computed_member_expression(self, member);
+    }
+
     fn visit_assignment_target(&mut self, target: &oxc_ast::ast::AssignmentTarget<'a>) {
         use oxc_ast::ast::AssignmentTarget as AT;
         match target {
@@ -316,11 +372,11 @@ impl<'a> oxc_ast_visit::Visit<'a> for Collector {
             // Both are statically visible; a computed key built at run time
             // is not, and is left to the watchdog by design.
             AT::StaticMemberExpression(member) => {
-                self.note_reserved(member.property.name.as_str(), member.span.start);
+                self.check_member_property(member.property.name.as_str(), member.span.start);
             }
             AT::ComputedMemberExpression(member) => {
-                if let oxc_ast::ast::Expression::StringLiteral(key) = &member.expression {
-                    self.note_reserved(key.value.as_str(), member.span.start);
+                if let Some(name) = static_property_name(&member.expression) {
+                    self.check_member_property(name, member.span.start);
                 }
             }
             _ => {}
@@ -363,6 +419,27 @@ impl<'a> oxc_ast_visit::Visit<'a> for Collector {
     ) {
         self.note_reserved(prop.binding.name.as_str(), prop.binding.span.start);
         oxc_ast_visit::walk::walk_assignment_target_property_identifier(self, prop);
+    }
+
+    fn visit_assignment_target_property_property(
+        &mut self,
+        prop: &oxc_ast::ast::AssignmentTargetPropertyProperty<'a>,
+    ) {
+        match &prop.name {
+            oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
+                self.check_member_property(id.name.as_str(), id.span.start);
+            }
+            oxc_ast::ast::PropertyKey::StringLiteral(lit) => {
+                self.check_member_property(lit.value.as_str(), lit.span.start);
+            }
+            oxc_ast::ast::PropertyKey::TemplateLiteral(tpl) if tpl.expressions.is_empty() => {
+                if let Some(cooked) = tpl.quasis.first().and_then(|q| q.value.cooked.as_ref()) {
+                    self.check_member_property(cooked.as_str(), tpl.span.start);
+                }
+            }
+            _ => {}
+        }
+        oxc_ast_visit::walk::walk_assignment_target_property_property(self, prop);
     }
 
     /// `with` re-binds every free identifier in its body against an object the
@@ -408,3 +485,35 @@ impl<'a> oxc_ast_visit::Visit<'a> for Collector {
         oxc_ast_visit::walk::walk_for_in_statement(self, stmt);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computed_member_access_is_blocked() {
+        let strict = ScriptPolicy {
+            allow_dynamic_code: false,
+            allow_import: false,
+            allow_timers: false,
+            inject_guards: true,
+        };
+        for blocked in [
+            r#"return globalThis["eval"]("1 + 1");"#,
+            r#"return globalThis["\u0065val"]("1 + 1");"#,
+            r#"return globalThis[`eval`]("1 + 1");"#,
+            r#"return window["Function"]("return 1")();"#,
+            r#"const { eval: e } = globalThis; return e("1");"#,
+            r#"const { ["\u0065val"]: e } = globalThis; return e("1");"#,
+            r#"globalThis["setTimeout"](() => {}, 10);"#,
+            r#"globalThis[`__tj_tick`] = () => {};"#,
+            r#"return globalThis["__zfResetRealm"];"#,
+        ] {
+            assert!(
+                compile_body(blocked, strict).is_err(),
+                "expected '{blocked}' to be rejected by compile_body"
+            );
+        }
+    }
+}
+
