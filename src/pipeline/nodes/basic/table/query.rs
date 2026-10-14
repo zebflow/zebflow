@@ -61,7 +61,6 @@ const SOURCE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_SOURCE";
 const REGISTER_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_REGISTER";
 /// The SQL was refused or failed.
 const SQL_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_SQL";
-const PREPARE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_PREPARE";
 const EXECUTE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_EXECUTE";
 
 /// The most rows one run writes to a file; a larger result is refused.
@@ -590,39 +589,25 @@ async fn execute_geodatafusion_query(
     params: &[Value],
     fetch: usize,
 ) -> Result<Vec<RecordBatch>, PipelineError> {
+    let sql = normalize_select_sql(sql)?;
     let cap = Some(fetch.saturating_add(1));
-    if params.is_empty() {
-        return ctx
-            .sql(sql)
-            .await
-            .and_then(|frame| frame.limit(0, cap))
-            .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))?
-            .collect()
-            .await
-            .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()));
+    let mut frame = ctx
+        .sql(&sql)
+        .await
+        .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))?;
+    if !params.is_empty() {
+        let scalars: Vec<datafusion::common::ScalarValue> =
+            params.iter().map(json_to_scalar_value).collect();
+        frame = frame
+            .with_param_values(scalars)
+            .map_err(|err| PipelineError::new(EXECUTE_CODE, err.to_string()))?;
     }
-
-    let prepare_sql = format!("PREPARE zf_table_query AS {sql}");
-    ctx.sql(&prepare_sql)
-        .await
-        .map_err(|err| PipelineError::new(PREPARE_CODE, err.to_string()))?
+    frame
+        .limit(0, cap)
+        .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))?
         .collect()
         .await
-        .map_err(|err| PipelineError::new(PREPARE_CODE, err.to_string()))?;
-
-    let param_sql = params
-        .iter()
-        .map(datafusion_literal)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let execute_sql = format!("EXECUTE zf_table_query({param_sql})");
-    ctx.sql(&execute_sql)
-        .await
-        .and_then(|frame| frame.limit(0, cap))
-        .map_err(|err| PipelineError::new(EXECUTE_CODE, err.to_string()))?
-        .collect()
-        .await
-        .map_err(|err| PipelineError::new(EXECUTE_CODE, err.to_string()))
+        .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))
 }
 
 fn normalize_select_sql(sql: &str) -> Result<String, PipelineError> {
@@ -634,27 +619,60 @@ fn normalize_select_sql(sql: &str) -> Result<String, PipelineError> {
             "table.query.run only accepts SELECT or WITH queries",
         ));
     }
+    let statements = datafusion::sql::parser::DFParser::parse_sql(&sql)
+        .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))?;
+    if statements.len() != 1 {
+        return Err(PipelineError::new(
+            SQL_CODE,
+            "table.query.run only accepts a single SELECT or WITH query",
+        ));
+    }
+    match &statements[0] {
+        datafusion::sql::parser::Statement::Statement(stmt) => match stmt.as_ref() {
+            datafusion::sql::sqlparser::ast::Statement::Query(query) => {
+                if let datafusion::sql::sqlparser::ast::SetExpr::Select(select) = query.body.as_ref()
+                    && select.into.is_some()
+                {
+                    return Err(PipelineError::new(
+                        SQL_CODE,
+                        "table.query.run does not allow SELECT INTO",
+                    ));
+                }
+            }
+            _ => {
+                return Err(PipelineError::new(
+                    SQL_CODE,
+                    "table.query.run only accepts SELECT or WITH queries",
+                ));
+            }
+        },
+        _ => {
+            return Err(PipelineError::new(
+                SQL_CODE,
+                "table.query.run only accepts SELECT or WITH queries",
+            ));
+        }
+    }
     Ok(sql)
 }
 
-fn datafusion_literal(value: &Value) -> String {
+fn json_to_scalar_value(value: &Value) -> datafusion::common::ScalarValue {
+    use datafusion::common::ScalarValue;
     match value {
-        Value::Null => "NULL".to_string(),
-        Value::Bool(v) => {
-            if *v {
-                "TRUE".to_string()
+        Value::Null => ScalarValue::Null,
+        Value::Bool(v) => ScalarValue::Boolean(Some(*v)),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                ScalarValue::Int64(Some(i))
+            } else if let Some(u) = n.as_u64() {
+                ScalarValue::UInt64(Some(u))
             } else {
-                "FALSE".to_string()
+                ScalarValue::Float64(n.as_f64())
             }
         }
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => quote_sql_string(s),
-        other => quote_sql_string(&other.to_string()),
+        Value::String(s) => ScalarValue::Utf8(Some(s.clone())),
+        other => ScalarValue::Utf8(Some(other.to_string())),
     }
-}
-
-fn quote_sql_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn rows_from_json_value(value: Value) -> Vec<Value> {
@@ -754,5 +772,33 @@ mod tests {
             let cities: Vec<&str> = rows.iter().filter_map(|r| r["city"].as_str()).collect();
             assert_eq!(cities, ["site-b", "site-d", "site-a"], "{params:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn table_query_binds_backslash_quote_params_and_rejects_multi_statement_sql() {
+        for forbidden in [
+            "SELECT 1; COPY (SELECT 1) TO '/tmp/out.csv'",
+            "SELECT 1; DROP TABLE t",
+            "WITH t AS (SELECT 1) SELECT * FROM t; SELECT 2",
+            "SELECT 1 INTO out_table",
+        ] {
+            assert!(
+                normalize_select_sql(forbidden).is_err(),
+                "expected multi-statement or INTO SQL '{forbidden}' to be rejected"
+            );
+        }
+
+        let ctx = SessionContext::new();
+        let payload = r"\'); COPY (SELECT 'injected') TO '/tmp/zf_sqli.csv'; --";
+        let sql = "SELECT $1 AS echoed";
+        let batches = execute_geodatafusion_query(&ctx, sql, &[json!(payload)], 10)
+            .await
+            .expect("parameterized query with backslash-quote must execute safely as literal");
+        let rows: Vec<Value> = batches
+            .iter()
+            .flat_map(|b| record_batch_to_rows(b, CODE).expect("rows"))
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["echoed"], json!(payload));
     }
 }
