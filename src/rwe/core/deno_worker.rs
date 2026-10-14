@@ -375,10 +375,10 @@ async fn load_page_module(
         .map_err(|e| EngineError::new("RWE_CTX_INIT", e.to_string()))?;
 
     // 3. Write to a temp file so deno_core can load it as a file:// module.
-    //    All component imports inside have already been resolved to absolute
-    //    file paths by prepare_template_root / compiler.rs.
-    let temp_path = write_temp_module(&js)?;
-    let specifier = path_to_file_url(&temp_path)?;
+    //    TempModuleGuard ensures the file is removed and ACTIVE_RENDER_MODULE
+    //    is cleared even when module loading or evaluation fails.
+    let temp_guard = write_temp_module(&js)?;
+    let specifier = path_to_file_url(temp_guard.path())?;
 
     // 4. Load the module as a *side* module so the singleton JsRuntime can
     //    render multiple pages across its lifetime (load_main_es_module can only
@@ -406,8 +406,7 @@ async fn load_page_module(
         .map_err(|e| EngineError::new("RWE_MODULE_NAMESPACE", e.to_string()))?;
     set_render_module_namespace(js_rt, &module_namespace)?;
 
-    // Clean up temp file (best-effort, before render script runs).
-    let _ = std::fs::remove_file(&temp_path);
+    drop(temp_guard);
     Ok(())
 }
 
@@ -674,7 +673,6 @@ fn transpile_source(source: &str, jsx: bool) -> Result<String, EngineError> {
 
     let parsed = Parser::new(&alloc, source, source_type).parse();
     if parsed.panicked {
-        let _ = std::fs::write("/tmp/rwe-transpile-failed.tsx", source);
         return Err(EngineError::new("RWE_TRANSPILE", "oxc parser panicked"));
     }
 
@@ -801,27 +799,44 @@ pub fn cleanup_temp_modules() {
     }
 }
 
-/// Whether `path` is a module this worker wrote with [`write_temp_module`].
-/// The compiler inlines every template and library into that one module, so
-/// it is the only file a render ever loads; anything else is a dynamic
-/// `import()` a template wrote, and a template reads no files.
-fn is_own_render_module(path: &std::path::Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    path.parent() == Some(std::env::temp_dir().as_path())
-        && name.starts_with("rwe-module-")
-        && name.ends_with(".js")
+thread_local! {
+    static ACTIVE_RENDER_MODULE: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
 }
 
-fn write_temp_module(js: &str) -> Result<std::path::PathBuf, EngineError> {
+struct TempModuleGuard(std::path::PathBuf);
+
+impl TempModuleGuard {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempModuleGuard {
+    fn drop(&mut self) {
+        ACTIVE_RENDER_MODULE.with(|slot| *slot.borrow_mut() = None);
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Whether `path` is the exact module this worker thread wrote for the current
+/// render via [`write_temp_module`]. The compiler inlines every template and
+/// library into that one module, so it is the only file a render ever loads;
+/// any other file (including another render's `rwe-module-*.js`) is refused.
+fn is_own_render_module(path: &std::path::Path) -> bool {
+    ACTIVE_RENDER_MODULE.with(|slot| slot.borrow().as_deref() == Some(path))
+}
+
+fn write_temp_module(js: &str) -> Result<TempModuleGuard, EngineError> {
     use std::io::Write;
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("rwe-module-{n}.js"));
+    path.push(format!("rwe-module-{}-{n}.js", uuid::Uuid::new_v4()));
     let mut f = std::fs::File::create(&path)
         .map_err(|e| EngineError::new("RWE_TEMP_CREATE", e.to_string()))?;
     f.write_all(js.as_bytes())
         .map_err(|e| EngineError::new("RWE_TEMP_WRITE", e.to_string()))?;
-    Ok(path)
+    ACTIVE_RENDER_MODULE.with(|slot| *slot.borrow_mut() = Some(path.clone()));
+    Ok(TempModuleGuard(path))
 }
 
 fn path_to_file_url(path: &std::path::Path) -> Result<ModuleSpecifier, EngineError> {
@@ -886,6 +901,60 @@ mod tests {
         match rendered {
             Ok(out) => assert!(!out.html.contains("SERVER_FILE_CONTENT"), "{}", out.html),
             Err(err) => assert!(err.message.contains("loads only the page module"), "{err:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_render_cleans_up_temp_module_and_rejects_sibling_temp_imports() {
+        // 1. Even if a file named `/tmp/rwe-module-*.js` exists in the temp dir,
+        //    is_own_render_module only permits the current render's exact module path.
+        let sibling = std::env::temp_dir().join(format!(
+            "rwe-module-sibling-{}.js",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&sibling, "export const leaked = 'OTHER_TENANT_BUNDLE';").expect("write");
+        let import_sibling = format!(
+            r#"
+            const mod = await import("file://{}");
+            export default function Page() {{
+                return <main>{{mod.leaked}}</main>;
+            }}
+        "#,
+            sibling.display()
+        );
+        let res = render_ssr(&import_sibling, &json!({}), 10_000);
+        let _ = std::fs::remove_file(&sibling);
+        match res {
+            Ok(out) => assert!(!out.html.contains("OTHER_TENANT_BUNDLE"), "{}", out.html),
+            Err(err) => assert!(err.message.contains("loads only the page module"), "{err:?}"),
+        }
+
+        // 2. A render that throws during top-level evaluation still cleans up its temp module.
+        let marker = format!("LEAK_MARKER_{}", uuid::Uuid::new_v4().simple());
+        let failing_source = format!(
+            r#"
+            const probeValue = "{marker}";
+            throw new Error("top-level render failure: " + probeValue);
+            export default function Page() {{
+                return <main>{{probeValue}}</main>;
+            }}
+        "#
+        );
+        let _ = render_ssr(&failing_source, &json!({}), 10_000);
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("rwe-module-") && name_str.ends_with(".js") {
+                    if let Ok(contents) = std::fs::read_to_string(entry.path()) {
+                        assert!(
+                            !contents.contains(&marker),
+                            "failed render leaked temp module {}",
+                            entry.path().display()
+                        );
+                    }
+                }
+            }
         }
     }
 
