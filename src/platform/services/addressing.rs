@@ -447,6 +447,12 @@ impl AddressingService {
             for project in self.data.list_projects(&user.owner)? {
                 let addressing = self.read_from_disk(&project.owner, &project.project)?;
                 for host in &addressing.hosts {
+                    if sections::is_platform_host(host)
+                        || Self::parse_dev_host(host).is_some()
+                        || Self::parse_dev_file_host(host).is_some()
+                    {
+                        continue;
+                    }
                     index
                         .hosts
                         .insert(host.clone(), (project.owner.clone(), project.project.clone()));
@@ -551,16 +557,22 @@ impl AddressingService {
             {
                 continue;
             }
+            if sections::is_platform_host(raw) {
+                return Err(PlatformError::new(
+                    "ADDRESSING_HOST_RESERVED",
+                    format!("`{host}` is the platform's own address; a project cannot hold it"),
+                ));
+            }
             if !valid_host(&host) {
                 return Err(PlatformError::new(
                     "ADDRESSING_HOST_INVALID",
                     format!("`{raw}` is not a hostname (letters, digits, `-`, dots; no port, no path)"),
                 ));
             }
-            if host.ends_with(DEV_HOST_SUFFIX) && Self::parse_dev_host(&host).is_some() {
+            if Self::parse_dev_host(&host).is_some() || Self::parse_dev_file_host(&host).is_some() {
                 return Err(PlatformError::new(
                     "ADDRESSING_HOST_RESERVED",
-                    format!("`{host}` has the shape of another project's dev host"),
+                    format!("`{host}` has the shape of a project's dev host"),
                 ));
             }
             if !hosts.contains(&host) {
@@ -939,6 +951,39 @@ mod tests {
         assert_eq!(r.platform_path().as_deref(), Some("/wh/o/p"));
         let r = Resolution { surface: Surface::Pages, rest: "/book?x=1".into(), ..r };
         assert_eq!(r.platform_path().as_deref(), Some("/wh/o/p/book?x=1"));
+    }
+
+    #[test]
+    fn the_platform_address_and_dev_file_hosts_are_refused_for_every_project() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: dir.path().to_path_buf(),
+                ..crate::platform::model::PlatformConfig::default()
+            },
+        )
+        .expect("platform");
+        for host in ["127.0.0.1", "localhost", "[::1]", "default.superadmin.fs.localhost", "other.user.fs.localhost"] {
+            let err = platform
+                .addressing
+                .write(
+                    "superadmin",
+                    "default",
+                    ProjectAddressing { hosts: vec![host.to_string()], ..ProjectAddressing::default() },
+                )
+                .expect_err(host);
+            assert_eq!(err.code, "ADDRESSING_HOST_RESERVED", "{host}: {}", err.message);
+        }
+        // Normal project host still saves cleanly.
+        let saved = platform
+            .addressing
+            .write(
+                "superadmin",
+                "default",
+                ProjectAddressing { hosts: vec!["site-a.example.org".to_string()], ..ProjectAddressing::default() },
+            )
+            .expect("normal host saves");
+        assert_eq!(saved.hosts, vec!["site-a.example.org".to_string()]);
     }
 }
 

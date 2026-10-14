@@ -80,7 +80,10 @@ register (`PIPELINE_ROUTE_RESERVED`). `pages` mounts at `/` or nowhere
 (`ADDRESSING_PAGES_ROOT`), except on a section host (§2c); every other
 surface mounts anywhere. A disabled
 surface answers 404 on the project's hosts and on its platform form alike.
-A host belongs to one project on an instance (`ADDRESSING_HOST_TAKEN`).
+A host belongs to one project on an instance (`ADDRESSING_HOST_TAKEN`), and no
+project may hold the platform's own address (the configured base URL's host, or
+`localhost`, `127.0.0.1` and `[::1]` on any port) or another project's dev or
+dev-file host (`ADDRESSING_HOST_RESERVED`).
 
 There is no dev mode and no production mode: Zebflow is one runtime, and no
 behaviour keys on which host asked — the dev host and a named host obey the
@@ -191,7 +194,7 @@ Rules for a sectioned project, on every host it has:
   **platform address**: the configured base URL's host, and always
   `localhost`, `127.0.0.1` and `[::1]` on any port (a tunnel names its own) — and
   never a host in the index, where the project-host reading wins (saving such
-  a host on a sectioned project is refused as help). Any other host, a stray
+  a host on any project is refused, §2). Any other host, a stray
   name or a request with no host included, is a rootless arrival, and a
   `/wh/` or `/mcp/` pass-through on a project host is an arrival on that host.
   The claim is decided in the gate, on the controller, before any forwarding.
