@@ -838,9 +838,9 @@ fn build_request_from_secure_credential(
             }
         })
         .collect::<Vec<_>>();
-    let mut tokens = secret.secrets.clone();
-    for (key, value) in bindings {
-        tokens.insert(key, value);
+    let mut tokens = bindings;
+    for (key, value) in &secret.secrets {
+        tokens.insert(key.clone(), value.clone());
     }
 
     let url = render_secure_request_template(&secret.request.url, &tokens);
@@ -892,17 +892,41 @@ fn secure_request_egress_policy(
     url: &str,
     method: &str,
 ) -> Result<Option<OutboundHttpPolicy>, PipelineError> {
-    if egress.allow_private
-        && egress
-            .allowed_hosts
-            .iter()
-            .map(|host| host.trim())
-            .all(str::is_empty)
-    {
+    let allowed_hosts: Vec<String> = egress
+        .allowed_hosts
+        .iter()
+        .map(|host| host.trim().to_string())
+        .filter(|host| !host.is_empty())
+        .collect();
+    if egress.allow_private && allowed_hosts.is_empty() {
         return Err(PipelineError::new(
             "FW_NODE_HTTP_RESPONSE_FETCH_EGRESS",
             "secure_request egress.allow_private requires at least one egress.allowed_hosts entry",
         ));
+    }
+
+    if !allowed_hosts.is_empty() {
+        let parsed = reqwest::Url::parse(url).map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_HTTP_RESPONSE_FETCH_EGRESS",
+                format!("secure_request resolved URL is invalid: {err}"),
+            )
+        })?;
+        let host = parsed
+            .host_str()
+            .unwrap_or_default()
+            .trim_matches(['[', ']'])
+            .trim_end_matches('.');
+        let allowed = allowed_hosts.iter().any(|item| {
+            let item = item.trim().trim_matches(['[', ']']).trim_end_matches('.');
+            !item.is_empty() && item.eq_ignore_ascii_case(host)
+        });
+        if !allowed {
+            return Err(PipelineError::new(
+                "FW_NODE_HTTP_RESPONSE_FETCH_EGRESS",
+                format!("secure_request egress does not allow host {host}"),
+            ));
+        }
     }
 
     if !egress.allowed_methods.is_empty() {
@@ -940,15 +964,10 @@ fn secure_request_egress_policy(
         }
     }
 
-    if egress.allow_private {
+    if egress.allow_private || !allowed_hosts.is_empty() {
         return Ok(Some(OutboundHttpPolicy {
-            allow_private: true,
-            allowed_hosts: egress
-                .allowed_hosts
-                .iter()
-                .map(|host| host.trim().to_string())
-                .filter(|host| !host.is_empty())
-                .collect(),
+            allow_private: egress.allow_private,
+            allowed_hosts,
         }));
     }
     Ok(None)
@@ -965,6 +984,14 @@ fn resolve_secure_request_bindings(
     // resolved). A variable the node leaves unset takes the profile's own
     // default, which is the profile author's expression, run here.
     let arguments = argument_map(&config.argument)?;
+    for key in arguments.keys() {
+        if !credential.variables.iter().any(|item| &item.name == key) {
+            return Err(PipelineError::new(
+                "FW_NODE_HTTP_RESPONSE_FETCH_ARGUMENT",
+                format!("the secure_request profile has no variable `{key}`"),
+            ));
+        }
+    }
     let mut out = BTreeMap::new();
     for item in &credential.variables {
         if let Some(value) = arguments.get(&item.name).filter(|value| !value.is_empty()) {
@@ -982,11 +1009,6 @@ fn resolve_secure_request_bindings(
             continue;
         }
         out.insert(item.name.clone(), eval_binding_to_string(language, fallback, input, metadata)?);
-    }
-    for (key, value) in arguments {
-        if !value.is_empty() {
-            out.entry(key).or_insert(value);
-        }
     }
     Ok(out)
 }
@@ -1063,11 +1085,25 @@ fn eval_binding_to_string(
 }
 
 fn render_secure_request_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    let mut out = template.to_string();
-    for (key, value) in tokens {
-        let placeholder = format!("<{key}>");
-        out = out.replace(&placeholder, value);
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        if let Some(close) = after_open.find('>') {
+            let candidate = &after_open[..close];
+            if !candidate.contains('<')
+                && let Some(value) = tokens.get(candidate)
+            {
+                out.push_str(value);
+                rest = &after_open[close + 1..];
+                continue;
+            }
+        }
+        out.push('<');
+        rest = after_open;
     }
+    out.push_str(rest);
     out
 }
 
@@ -1473,6 +1509,96 @@ mod tests {
         )
         .expect_err("path outside allowlist should fail");
 
+        assert_eq!(err.code, "FW_NODE_HTTP_RESPONSE_FETCH_EGRESS");
+    }
+
+    #[test]
+    fn secure_request_refuses_undeclared_arguments_single_pass_renders_and_enforces_allowed_hosts() {
+        let secret_token = format!("sec-{}", uuid::Uuid::new_v4());
+        let profile = json!({
+            "request": {
+                "method": "POST",
+                "url": "https://<HOST>/v1/echo",
+                "headers": {
+                    "Authorization": "Bearer <Z_API_TOKEN>"
+                },
+                "body": "msg=<A_MESSAGE>"
+            },
+            "variables": [
+                { "name": "HOST", "required": true },
+                { "name": "A_MESSAGE", "required": true }
+            ],
+            "secrets": {
+                "Z_API_TOKEN": secret_token
+            },
+            "egress": {
+                "allow_private": false,
+                "allowed_hosts": ["api.example.com"]
+            }
+        });
+
+        // 1. Undeclared argument attempting to override a secret or inject a token is refused.
+        let override_cfg: Config = serde_json::from_value(json!({
+            "argument": {
+                "HOST": "api.example.com",
+                "A_MESSAGE": "hello",
+                "Z_API_TOKEN": uuid::Uuid::new_v4().to_string()
+            }
+        }))
+        .unwrap();
+        let err = build_request_from_secure_credential(
+            "echo-profile",
+            &NoopLanguageEngine,
+            &override_cfg,
+            &profile,
+            &json!({}),
+            &json!({}),
+        )
+        .expect_err("undeclared argument must be refused");
+        assert_eq!(err.code, "FW_NODE_HTTP_RESPONSE_FETCH_ARGUMENT");
+
+        // 2. Variable containing `<Z_API_TOKEN>` is rendered in a single pass and never expands the secret into the body.
+        let probe_cfg: Config = serde_json::from_value(json!({
+            "argument": {
+                "HOST": "api.example.com",
+                "A_MESSAGE": "leak:<Z_API_TOKEN>"
+            }
+        }))
+        .unwrap();
+        let prepared = build_request_from_secure_credential(
+            "echo-profile",
+            &NoopLanguageEngine,
+            &probe_cfg,
+            &profile,
+            &json!({}),
+            &json!({}),
+        )
+        .expect("declared arguments prepare");
+        assert_eq!(prepared.body, Some(json!("msg=leak:<Z_API_TOKEN>")));
+        assert!(
+            prepared
+                .headers
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == &format!("Bearer {secret_token}"))
+        );
+
+        // 3. `egress.allowed_hosts` is enforced even when `allow_private` is false.
+        let wrong_host_cfg: Config = serde_json::from_value(json!({
+            "argument": {
+                "HOST": "evil.example.org",
+                "A_MESSAGE": "hello"
+            }
+        }))
+        .unwrap();
+        let err = build_request_from_secure_credential(
+            "echo-profile",
+            &NoopLanguageEngine,
+            &wrong_host_cfg,
+            &profile,
+            &json!({}),
+            &json!({}),
+        )
+        .expect_err("host outside allowed_hosts must be refused");
         assert_eq!(err.code, "FW_NODE_HTTP_RESPONSE_FETCH_EGRESS");
     }
 }

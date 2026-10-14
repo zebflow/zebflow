@@ -190,15 +190,16 @@ pub struct OutboundHttpPolicy {
 }
 
 impl OutboundHttpPolicy {
-    fn allows_host(&self, host: &str) -> bool {
-        if !self.allow_private {
-            return false;
-        }
+    fn matches_allowed_host(&self, host: &str) -> bool {
         let host = normalize_host(host);
         self.allowed_hosts
             .iter()
             .map(|item| normalize_host(item))
             .any(|allowed| !allowed.is_empty() && allowed == host)
+    }
+
+    fn allows_host(&self, host: &str) -> bool {
+        self.allow_private && self.matches_allowed_host(host)
     }
 }
 
@@ -225,6 +226,12 @@ pub fn validate_outbound_http_url_with_policy(
             format!("{node_kind} outbound URL must include a host"),
         ));
     };
+    if !policy.allowed_hosts.is_empty() && !policy.matches_allowed_host(host) {
+        return Err(PipelineError::new(
+            "FW_EGRESS_DENIED",
+            format!("{node_kind} outbound URL host {host} is not in allowed_hosts"),
+        ));
+    }
     if host.eq_ignore_ascii_case("localhost") && !policy.allows_host(host) {
         return Err(PipelineError::new(
             "FW_EGRESS_DENIED",
