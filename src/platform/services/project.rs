@@ -439,6 +439,55 @@ impl ProjectService {
         Ok(())
     }
 
+    /// Validates a repository path for `GitSyncService::resolve`, enforcing
+    /// `.git` directory protection, machine-owned file protection, symlink
+    /// containment, and template/pipeline lock checks.
+    pub(crate) fn validate_git_resolve_path(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<(String, PathBuf), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        if rel_path_escapes_root(rel_path) {
+            return Err(PlatformError::new(
+                "GIT_RESOLVE",
+                "path leaves the repository",
+            ));
+        }
+        let rel = contained_rel_path(rel_path);
+        if rel.is_empty() {
+            return Err(PlatformError::new(
+                "GIT_RESOLVE",
+                "repository path must not be empty",
+            ));
+        }
+        if crate::infra::io::path::rel_path_names_git_dir(&rel) {
+            return Err(PlatformError::new(
+                "GIT_RESOLVE",
+                "the repository's .git directory belongs to git",
+            ));
+        }
+        if repo_entry_is_machine_owned(&rel) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_MACHINE_OWNED",
+                format!("'{rel}' is written by the platform and cannot be resolved here"),
+            ));
+        }
+        self.ensure_template_editable(&owner, &project, &rel, "resolved")?;
+        self.ensure_pipeline_editable(&owner, &project, &rel, "resolved")?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let abs = layout.repo_dir.join(&rel);
+        if !crate::infra::io::path::real_path_within(&layout.repo_dir, &abs) {
+            return Err(PlatformError::new(
+                "GIT_RESOLVE",
+                "path leaves the repository",
+            ));
+        }
+        Ok((rel, abs))
+    }
+
     /// Lists projects by owner, populating title from zebflow.yaml.
     /// Every project this person can open: the ones they own, and the ones they
     /// were invited into.

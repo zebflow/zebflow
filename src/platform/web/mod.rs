@@ -13268,6 +13268,26 @@ async fn api_git_commit(
             if let Err(response) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::SettingsWrite) {
                 return response;
             }
+            let existing_cred = state
+                .platform
+                .zebflow_cfg
+                .read_or_default(&owner_slug, &project_slug)
+                .map(|c| c.configs.git.remote.credential_id)
+                .unwrap_or_default();
+            if !req.credential_id.as_deref().unwrap_or_default().trim().is_empty()
+                || (!existing_cred.trim().is_empty()
+                    && !req.repo_url.as_deref().unwrap_or_default().trim().is_empty())
+            {
+                if let Err(response) = require_project_api_capability(
+                    &state,
+                    &headers,
+                    &owner,
+                    &project,
+                    ProjectCapability::CredentialsWrite,
+                ) {
+                    return response;
+                }
+            }
             if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
                 req.repo_url.as_deref().unwrap_or_default().trim(),
                 &state.platform.config.data_root,
@@ -13457,6 +13477,17 @@ async fn api_git_put_remote(
         ProjectCapability::SettingsWrite,
     ) {
         return r;
+    }
+    if !req.credential_id.trim().is_empty() {
+        if let Err(r) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::CredentialsWrite,
+        ) {
+            return r;
+        }
     }
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         return match forward_project_json_request_to_worker(

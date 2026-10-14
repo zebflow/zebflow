@@ -127,6 +127,9 @@ impl GitSyncService {
         let Ok(Some(cred)) = self.platform.credentials.get_project_credential(owner, project, credential_id) else {
             return Vec::new();
         };
+        if !git_credential_matches_remote(&cred.kind, &cred.secret, repo_url) {
+            return Vec::new();
+        }
         let username = cred.secret["username"].as_str().unwrap_or("");
         let token = cred.secret["token"].as_str().unwrap_or("");
         if token.is_empty() {
@@ -152,8 +155,8 @@ impl GitSyncService {
         let current = run(repo, &[], &["remote", "get-url", "origin"]).ok();
         match current {
             Some(url) if url.trim() == repo_url => Ok(()),
-            Some(_) => run(repo, &[], &["remote", "set-url", "origin", repo_url]).map(|_| ()),
-            None => run(repo, &[], &["remote", "add", "origin", repo_url]).map(|_| ()),
+            Some(_) => run(repo, &[], &["remote", "set-url", "--end-of-options", "origin", repo_url]).map(|_| ()),
+            None => run(repo, &[], &["remote", "add", "--end-of-options", "origin", repo_url]).map(|_| ()),
         }
     }
 
@@ -256,24 +259,20 @@ impl GitSyncService {
 
     /// Settle one conflicted file and stage it.
     pub fn resolve(&self, owner: &str, project: &str, rel_path: &str, how: Resolution, content: Option<&str>) -> Result<SyncState, PlatformError> {
+        let (rel, abs) = self.platform.projects.validate_git_resolve_path(owner, project, rel_path)?;
         let repo = self.repo_dir(owner, project)?;
         let state = self.state(owner, project)?;
-        let rel = rel_path.trim().trim_start_matches('/');
         if !state.rebase_in_progress {
             return Err(PlatformError::new("GIT_NO_CONFLICT", "no rebase in progress"));
         }
-        if !state.conflicts.iter().any(|c| c == rel) {
+        if !state.conflicts.iter().any(|c| c == &rel) {
             return Err(PlatformError::new("GIT_NO_CONFLICT", format!("'{rel}' is not a conflicted file")));
         }
         match how {
             // During a rebase, git's "theirs" is the commit being replayed — the project's own.
-            Resolution::Mine => { run(&repo, &[], &["checkout", "--theirs", "--", rel])?; }
-            Resolution::Theirs => { run(&repo, &[], &["checkout", "--ours", "--", rel])?; }
+            Resolution::Mine => { run(&repo, &[], &["checkout", "--theirs", "--", &rel])?; }
+            Resolution::Theirs => { run(&repo, &[], &["checkout", "--ours", "--", &rel])?; }
             Resolution::Content => {
-                let abs = repo.join(rel);
-                if !abs.starts_with(&repo) {
-                    return Err(PlatformError::new("GIT_RESOLVE", "path leaves the repository"));
-                }
                 if let Some(text) = content {
                     std::fs::write(&abs, text)?;
                 }
@@ -284,7 +283,7 @@ impl GitSyncService {
                 }
             }
         }
-        run(&repo, &[], &["add", "--", rel])?;
+        run(&repo, &[], &["add", "--", &rel])?;
         self.state(owner, project)
     }
 
@@ -347,16 +346,169 @@ pub fn git_command() -> Command {
     cmd
 }
 
-/// A `file://` remote is a repository on this machine. One inside the data
-/// root is another project's repository (or this one's), never a remote.
-pub fn refuse_remote_in_data_root(repo_url: &str, data_root: &Path) -> Result<(), PlatformError> {
-    let Some(rest) = repo_url.strip_prefix("file://") else {
-        return Ok(());
+/// Validates that `cred` is a git credential (`github`, `gitlab`, `git`) and,
+/// when a provider host is bound or implied, that `repo_url`'s host matches it.
+pub fn git_credential_matches_remote(kind: &str, secret: &serde_json::Value, repo_url: &str) -> bool {
+    if !matches!(kind, "github" | "gitlab" | "git") {
+        return false;
+    }
+    let Ok(parsed_remote) = reqwest::Url::parse(repo_url) else {
+        return false;
     };
-    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let target = canonical(Path::new(rest));
-    if target.starts_with(canonical(data_root)) || Path::new(rest).starts_with(data_root) {
-        return Err(PlatformError::new("GIT_REMOTE_REFUSED", "a file:// remote cannot point inside the platform's data root"));
+    let Some(remote_host) = parsed_remote.host_str().map(|h| h.to_ascii_lowercase()) else {
+        return false;
+    };
+    let bound_url = secret
+        .get("repo_url")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            secret
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            secret
+                .get("instance_url")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(bound) = bound_url {
+        let expected_host = reqwest::Url::parse(bound)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+            .unwrap_or_else(|| bound.trim_end_matches('/').to_ascii_lowercase());
+        return !expected_host.is_empty() && remote_host == expected_host;
+    }
+    match kind {
+        "github" => remote_host == "github.com",
+        "gitlab" => remote_host == "gitlab.com",
+        "git" => true,
+        _ => false,
+    }
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn resolve_existing_ancestor(path: &Path) -> PathBuf {
+    let lex = normalize_lexical_path(path);
+    let mut cur: &Path = &lex;
+    let mut suffix = Vec::new();
+    while !cur.as_os_str().is_empty() {
+        if let Ok(canon) = std::fs::canonicalize(cur) {
+            let mut rebuilt = canon;
+            for part in suffix.into_iter().rev() {
+                rebuilt.push(part);
+            }
+            return rebuilt;
+        }
+        if let Some(name) = cur.file_name() {
+            suffix.push(name.to_os_string());
+        } else {
+            break;
+        }
+        cur = match cur.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    lex
+}
+
+/// Validates a Git remote URL:
+/// - Refuses bare filesystem paths, SCP-style `user@host:path`, `ssh://`, `git://`, or leading `-`.
+/// - For `http://` and `https://`, refuses localhost, internal domains, private/loopback/link-local IP literals, and any DNS resolution to a blocked IP.
+/// - For `file://`, requires an absolute path outside `data_root`.
+pub fn refuse_remote_in_data_root(repo_url: &str, data_root: &Path) -> Result<(), PlatformError> {
+    let repo_url = repo_url.trim();
+    if repo_url.is_empty() || repo_url.starts_with('-') {
+        return Err(PlatformError::new(
+            "GIT_REMOTE_REFUSED",
+            "remote URL is empty or invalid",
+        ));
+    }
+    if repo_url.starts_with("http://") || repo_url.starts_with("https://") {
+        let parsed = reqwest::Url::parse(repo_url).map_err(|e| {
+            PlatformError::new("GIT_REMOTE_REFUSED", format!("invalid remote URL: {e}"))
+        })?;
+        let Some(host) = parsed.host_str() else {
+            return Err(PlatformError::new(
+                "GIT_REMOTE_REFUSED",
+                "remote URL must include a host",
+            ));
+        };
+        let lower = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
+        if lower == "localhost"
+            || lower.ends_with(".localhost")
+            || lower.ends_with(".local")
+            || lower.ends_with(".internal")
+            || lower.ends_with(".cluster.local")
+        {
+            return Err(PlatformError::new(
+                "GIT_REMOTE_REFUSED",
+                format!("remote URL host '{host}' targets a local or internal domain"),
+            ));
+        }
+        if let Ok(ip) = lower.parse::<std::net::IpAddr>() {
+            crate::pipeline::security::validate_outbound_http_url(repo_url, "git.remote")
+                .map_err(|e| PlatformError::new("GIT_REMOTE_REFUSED", e.message))?;
+            let _ = ip;
+            return Ok(());
+        }
+        if let Some(port) = parsed.port_or_known_default() {
+            if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) {
+                for addr in addrs {
+                    let probe = format!("{}://{}:{}/", parsed.scheme(), addr.ip(), port);
+                    crate::pipeline::security::validate_outbound_http_url(&probe, "git.remote")
+                        .map_err(|e| PlatformError::new("GIT_REMOTE_REFUSED", e.message))?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    let Some(rest) = repo_url.strip_prefix("file://") else {
+        return Err(PlatformError::new(
+            "GIT_REMOTE_REFUSED",
+            "remote URL must use https://, http://, or an absolute file:// path outside the data root",
+        ));
+    };
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return Err(PlatformError::new(
+            "GIT_REMOTE_REFUSED",
+            "a file:// remote must be an absolute path",
+        ));
+    }
+    let target_lex = normalize_lexical_path(Path::new(rest));
+    let root_lex = normalize_lexical_path(data_root);
+    let target_resolved = resolve_existing_ancestor(Path::new(rest));
+    let root_resolved = resolve_existing_ancestor(data_root);
+    if target_resolved.starts_with(&root_resolved)
+        || root_resolved.starts_with(&target_resolved)
+        || target_lex.starts_with(&root_lex)
+        || root_lex.starts_with(&target_lex)
+    {
+        return Err(PlatformError::new(
+            "GIT_REMOTE_REFUSED",
+            "a file:// remote cannot point inside the platform's data root",
+        ));
     }
     Ok(())
 }
@@ -412,6 +564,7 @@ impl WithCode for PlatformError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn the_state_word_reads_the_counts() {
@@ -441,6 +594,73 @@ mod tests {
         assert!(refuse_remote_in_data_root(&dotted, &root).is_err());
         assert!(refuse_remote_in_data_root("file:///srv/remotes/site-a.git", &root).is_ok());
         assert!(refuse_remote_in_data_root("https://git.example.com/a.git", &root).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_sync_refuses_bare_and_internal_remotes_checks_credential_and_locks() {
+        let root = std::env::temp_dir().join(format!("zf-git-guard-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        for bad_remote in [
+            "../../other-owner/other-project/repo",
+            "/srv/remotes/bare-path-without-scheme",
+            "git@github.com:org/repo.git",
+            "ssh://git.example.com/repo.git",
+            "--upload-pack=touch /tmp/pwn",
+            "http://127.0.0.1:8080/repo.git",
+            "http://169.254.169.254/latest/meta-data",
+            "http://localhost/repo.git",
+            "https://api.svc.cluster.local/repo.git",
+        ] {
+            assert!(
+                refuse_remote_in_data_root(bad_remote, &root).is_err(),
+                "expected remote '{bad_remote}' to be refused"
+            );
+        }
+
+        // Credential kind and host binding:
+        assert!(!git_credential_matches_remote(
+            "jwt_signing_key",
+            &json!({ "token": uuid::Uuid::new_v4().to_string() }),
+            "https://github.com/org/repo.git"
+        ));
+        assert!(git_credential_matches_remote(
+            "github",
+            &json!({ "token": uuid::Uuid::new_v4().to_string() }),
+            "https://github.com/org/repo.git"
+        ));
+        assert!(
+            !git_credential_matches_remote(
+                "github",
+                &json!({ "token": uuid::Uuid::new_v4().to_string() }),
+                "https://evil.example.com/org/repo.git"
+            ),
+            "github credential must not send token to arbitrary third-party host"
+        );
+        assert!(
+            !git_credential_matches_remote(
+                "gitlab",
+                &json!({ "token": uuid::Uuid::new_v4().to_string(), "url": "https://gitlab.example.com" }),
+                "https://evil.example.com/org/repo.git"
+            ),
+            "gitlab credential bound to gitlab.example.com must not authenticate to evil.example.com"
+        );
+
+        // Lock, .git, and machine-owned path checks in validate_git_resolve_path:
+        let p = crate::pipeline::nodes::shared::test_platform::test_platform();
+        assert!(p.projects.validate_git_resolve_path("superadmin", "default", ".git/config").is_err());
+        assert!(p.projects.validate_git_resolve_path("superadmin", "default", "zebflow.yaml").is_err());
+        assert!(p.projects.validate_git_resolve_path("superadmin", "default", "zeb.lock").is_err());
+        p.zebflow_cfg
+            .set_template_locked("superadmin", "default", "pages/home.tsx", true)
+            .expect("lock template");
+        let err = p
+            .projects
+            .validate_git_resolve_path("superadmin", "default", "pages/home.tsx")
+            .expect_err("locked template must not be resolvable via git resolve");
+        assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
