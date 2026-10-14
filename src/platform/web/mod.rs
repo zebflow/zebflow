@@ -8052,15 +8052,34 @@ async fn api_meta(State(state): State<PlatformAppState>) -> Response {
 
 // ── System info endpoint ─────────────────────────────────────────────────────
 
+static SYSTEM_INFO_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+> = std::sync::OnceLock::new();
+static SYSTEM_CAPABILITIES_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+> = std::sync::OnceLock::new();
+
 async fn api_system_info(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
-    // Require a logged-in session (not necessarily superadmin)
-    if session_owner(&state, &headers).is_none() {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+
+    let cache = SYSTEM_INFO_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, ref cached)) = *guard {
+            if at.elapsed() < std::time::Duration::from_secs(15) {
+                return Json(cached.clone()).into_response();
+            }
+        }
     }
 
     let info = tokio::task::spawn_blocking(collect_system_info)
         .await
         .unwrap_or_else(|_| json!({"ok": false, "error": "collection failed"}));
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((std::time::Instant::now(), info.clone()));
+    }
 
     Json(info).into_response()
 }
@@ -8216,6 +8235,15 @@ fn detect_os_variant() -> &'static str {
 }
 
 fn collect_capabilities() -> serde_json::Value {
+    let cache = SYSTEM_CAPABILITIES_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, ref cached)) = *guard {
+            if at.elapsed() < std::time::Duration::from_secs(60) {
+                return cached.clone();
+            }
+        }
+    }
+
     let home = dirs_next::home_dir().unwrap_or_default();
     let zf_base = home.join(".zebflow");
 
@@ -8273,11 +8301,11 @@ fn collect_capabilities() -> serde_json::Value {
     let sqlmap_version = probe_binary_version(std::path::Path::new("sqlmap"), "--version");
     let nikto_version = probe_binary_version(std::path::Path::new("nikto"), "--version");
 
-    json!({
+    let caps = json!({
         "python": python_info,
         "python_managed": {
             "available": python_managed_available,
-            "path": if python_managed_available { Some(managed_python.to_string_lossy().to_string()) } else { None },
+            "path": if python_managed_available { Some("~/.zebflow/engines/python/bin/python3".to_string()) } else { None },
         },
         "lightpanda": {
             "installed": lp_installed,
@@ -8307,37 +8335,20 @@ fn collect_capabilities() -> serde_json::Value {
             "sqlmap":  { "installed": sqlmap_version.is_some(),  "version": sqlmap_version  },
             "nikto":   { "installed": nikto_version.is_some(),   "version": nikto_version   },
         },
-    })
+    });
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((std::time::Instant::now(), caps.clone()));
+    }
+
+    caps
 }
 
 fn detect_container_context() -> serde_json::Value {
     let in_docker = std::path::Path::new("/.dockerenv").exists();
-
-    #[cfg(target_os = "linux")]
-    let host_gateway: Option<String> =
-        std::fs::read_to_string("/proc/net/route")
-            .ok()
-            .and_then(|content| {
-                content.lines().skip(1).find_map(|line| {
-                    let cols: Vec<&str> = line.split_whitespace().collect();
-                    // Default route: Destination == 00000000
-                    if cols.len() >= 3 && cols[1] == "00000000" {
-                        u32::from_str_radix(cols[2], 16).ok().map(|hex| {
-                            let b = hex.to_le_bytes();
-                            format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
-                        })
-                    } else {
-                        None
-                    }
-                })
-            });
-
-    #[cfg(not(target_os = "linux"))]
-    let host_gateway: Option<String> = None;
-
     json!({
         "in_docker": in_docker,
-        "host_gateway": host_gateway,
+        "host_gateway": serde_json::Value::Null,
     })
 }
 
@@ -8824,8 +8835,11 @@ fn require_superadmin(state: &PlatformAppState, headers: &HeaderMap) -> Result<(
 }
 
 fn is_superadmin_owner(state: &PlatformAppState, owner: &str) -> bool {
-    state
-        .platform
+    is_superadmin_owner_for_platform(&state.platform, owner)
+}
+
+fn is_superadmin_owner_for_platform(platform: &PlatformService, owner: &str) -> bool {
+    platform
         .users
         .get_user(owner)
         .ok()
@@ -30169,5 +30183,25 @@ mod home_directory_tests {
 
         // Replaying the same state + nonce cookie is rejected because the nonce is single-use.
         assert!(verify_oauth_state(&secret, &state, Some(&nonce)).is_err());
+    }
+
+    #[test]
+    fn api_system_info_requires_superadmin_and_redacts_host_paths() {
+        let p = crate::pipeline::nodes::shared::test_platform::test_platform();
+        p.users
+            .create_user(&crate::platform::model::CreateUserRequest {
+                owner: "guest-user".to_string(),
+                password: uuid::Uuid::new_v4().to_string(),
+                role: "member".to_string(),
+                git_name: String::new(),
+                git_email: String::new(),
+            })
+            .expect("create member user");
+
+        assert!(!is_superadmin_owner_for_platform(&p, "guest-user"));
+        assert!(is_superadmin_owner_for_platform(&p, "superadmin"));
+
+        let container_ctx = detect_container_context();
+        assert!(container_ctx["host_gateway"].is_null());
     }
 }
