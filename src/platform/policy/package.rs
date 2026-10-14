@@ -333,6 +333,44 @@ pub fn review_package_entries(
             }
             database_initialization.push(report);
         }
+        let rel_norm = entry
+            .rel_path
+            .trim()
+            .trim_start_matches('/')
+            .trim_start_matches("./");
+        if rel_norm == layout.schema_document_rel() {
+            if !entry.unreadable.is_empty() {
+                violations.push(format!(
+                    "{}: schema document the safety review cannot read ({})",
+                    entry.rel_path, entry.unreadable
+                ));
+            } else if let Some(source) = entry.text() {
+                if let Err(err) =
+                    crate::platform::sekejap::validate_schema_contract_bytes(source.as_bytes())
+                {
+                    violations.push(format!("{}: {}", entry.rel_path, err.message));
+                }
+            }
+        } else if rel_norm.starts_with("schema/sqlite/") && rel_norm.ends_with(".sql") {
+            if !entry.unreadable.is_empty() {
+                violations.push(format!(
+                    "{}: sqlite schema the safety review cannot read ({})",
+                    entry.rel_path, entry.unreadable
+                ));
+            } else if let Some(source) = entry.text() {
+                for stmt in split_initial_data_sql(source) {
+                    let body = strip_leading_sql_noise(&stmt);
+                    if let Some((verb, _)) = take_keyword(body)
+                        && matches!(verb.as_str(), "ATTACH" | "VACUUM" | "PRAGMA")
+                    {
+                        violations.push(format!(
+                            "{}: disallowed statement '{verb}' in sqlite schema",
+                            entry.rel_path
+                        ));
+                    }
+                }
+            }
+        }
         if options.publish_mode && looks_like_private_publish_path(&entry.rel_path) {
             warnings.push(format!(
                 "{} looks like private/runtime data",

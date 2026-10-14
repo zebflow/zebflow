@@ -625,11 +625,12 @@ fn default_sql(raw: &str) -> String {
     let is_quoted = value.len() >= 2
         && value.starts_with('\'')
         && value.ends_with('\'')
+        && !value.contains('\\')
         && !value[1..value.len() - 1].replace("''", "").contains('\'');
     if is_number || is_keyword || is_quoted {
         value.to_string()
     } else {
-        format!("'{}'", value.replace('\'', "''"))
+        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
     }
 }
 
@@ -1142,19 +1143,181 @@ fn export_tables_from_defs(defs: Vec<SimpleTableDefinition>) -> Vec<SekejapTable
     tables
 }
 
-fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleTableDefinition> {
-    let table_slug = qualified_slug(&table.table);
-    if table_slug.is_empty() {
+fn valid_qualified_identifier(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    let collection_slug = qualified_slug(&table.collection);
-    let collection = if collection_slug.is_empty() {
+    let slug = qualified_slug(trimmed);
+    if slug.is_empty() {
+        return None;
+    }
+    (trimmed == slug || trimmed == format!("public.{slug}")).then_some(slug)
+}
+
+fn valid_bare_identifier(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let slug = slug_segment(trimmed);
+    (!slug.is_empty() && trimmed == slug).then_some(slug)
+}
+
+fn validate_imported_edge(
+    table_slug: &str,
+    raw_edge: &EdgeTableDefinition,
+) -> Result<EdgeTableDefinition, PlatformError> {
+    let invalid = |msg: String| PlatformError::new("PLATFORM_SEKEJAP_TABLE_INVALID", msg);
+    let source = valid_bare_identifier(&raw_edge.source).ok_or_else(|| {
+        invalid(format!(
+            "edge table '{table_slug}' has invalid source column '{}'",
+            raw_edge.source
+        ))
+    })?;
+    let destination = valid_bare_identifier(&raw_edge.destination).ok_or_else(|| {
+        invalid(format!(
+            "edge table '{table_slug}' has invalid destination column '{}'",
+            raw_edge.destination
+        ))
+    })?;
+    if source.starts_with('_') || destination.starts_with('_') || source == destination {
+        return Err(invalid(format!(
+            "edge table '{table_slug}' requires two distinct end columns not starting with '_'"
+        )));
+    }
+    let source_table = valid_qualified_identifier(&raw_edge.source_table).ok_or_else(|| {
+        invalid(format!(
+            "edge table '{table_slug}' has invalid source_table '{}'",
+            raw_edge.source_table
+        ))
+    })?;
+    let destination_table =
+        valid_qualified_identifier(&raw_edge.destination_table).ok_or_else(|| {
+            invalid(format!(
+                "edge table '{table_slug}' has invalid destination_table '{}'",
+                raw_edge.destination_table
+            ))
+        })?;
+    let label = if raw_edge.label.trim().is_empty() {
+        table_slug
+            .rsplit('.')
+            .next()
+            .unwrap_or(table_slug)
+            .to_string()
+    } else {
+        valid_qualified_identifier(&raw_edge.label).ok_or_else(|| {
+            invalid(format!(
+                "edge table '{table_slug}' has invalid label '{}'",
+                raw_edge.label
+            ))
+        })?
+    };
+    let graph = if raw_edge.graph.trim().is_empty() {
+        String::new()
+    } else {
+        valid_bare_identifier(&raw_edge.graph).ok_or_else(|| {
+            invalid(format!(
+                "edge table '{table_slug}' has invalid graph '{}'",
+                raw_edge.graph
+            ))
+        })?
+    };
+    let mut references = Vec::with_capacity(raw_edge.references.len());
+    for r in &raw_edge.references {
+        let col = valid_bare_identifier(&r.column).ok_or_else(|| {
+            invalid(format!(
+                "edge table '{table_slug}' has invalid reference column '{}'",
+                r.column
+            ))
+        })?;
+        let tbl = valid_qualified_identifier(&r.table).ok_or_else(|| {
+            invalid(format!(
+                "edge table '{table_slug}' has invalid reference table '{}'",
+                r.table
+            ))
+        })?;
+        references.push(EdgeTableReference {
+            column: col,
+            table: tbl,
+        });
+    }
+    let mut key = Vec::with_capacity(raw_edge.key.len());
+    for k in &raw_edge.key {
+        let col = valid_bare_identifier(k).ok_or_else(|| {
+            invalid(format!(
+                "edge table '{table_slug}' has invalid key column '{k}'"
+            ))
+        })?;
+        key.push(col);
+    }
+    Ok(EdgeTableDefinition {
+        references,
+        key,
+        source,
+        source_table,
+        destination,
+        destination_table,
+        label,
+        graph,
+    })
+}
+
+fn imported_table_definition(
+    table: &SekejapTableSchemaExport,
+) -> Result<SimpleTableDefinition, PlatformError> {
+    let invalid = |msg: String| PlatformError::new("PLATFORM_SEKEJAP_TABLE_INVALID", msg);
+    let table_slug = valid_qualified_identifier(&table.table).ok_or_else(|| {
+        invalid(format!("invalid table identifier '{}'", table.table))
+    })?;
+    let collection = if table.collection.trim().is_empty() {
         table_slug.clone()
     } else {
-        collection_slug
+        valid_qualified_identifier(&table.collection).ok_or_else(|| {
+            invalid(format!(
+                "invalid collection identifier '{}'",
+                table.collection
+            ))
+        })?
     };
-    Some(SimpleTableDefinition {
-        table: table_slug.clone(),
+    let key_default = table.key_default.trim().to_string();
+    if !key_default.is_empty() && key_default != "ulid()" && key_default != "uuid4()" {
+        return Err(invalid(format!(
+            "a key is generated by ulid() or uuid4(), not '{key_default}'"
+        )));
+    }
+    let schema = if table.schema.trim().is_empty() {
+        table_slug
+            .split_once('.')
+            .map(|(s, _)| s.to_string())
+            .unwrap_or_default()
+    } else {
+        valid_bare_identifier(&table.schema).ok_or_else(|| {
+            invalid(format!("invalid schema identifier '{}'", table.schema))
+        })?
+    };
+    let edge = match &table.edge {
+        Some(raw_edge) => {
+            if !key_default.is_empty() {
+                return Err(invalid(
+                    "an edge table has no generated key: its two ends are its rows' address"
+                        .to_string(),
+                ));
+            }
+            Some(validate_imported_edge(&table_slug, raw_edge)?)
+        }
+        None => None,
+    };
+    for attr in &table.attributes {
+        let trimmed = attr.name.trim();
+        if !trimmed.is_empty() && trimmed != "_key" && valid_bare_identifier(trimmed).is_none() {
+            return Err(invalid(format!(
+                "table '{table_slug}' has invalid attribute identifier '{trimmed}'"
+            )));
+        }
+    }
+    Ok(SimpleTableDefinition {
+        table: table_slug,
         collection,
         attributes: normalize_attributes(&table.attributes),
         hash_indexed_fields: stable_list(table.hash_indexed_fields.clone()),
@@ -1163,10 +1326,25 @@ fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleT
         vector_fields: stable_list(table.vector_fields.clone()),
         spatial_fields: stable_list(table.spatial_fields.clone()),
         row_count: 0,
-        key_default: table.key_default.trim().to_string(),
-        schema: slug_segment(&table.schema),
-        edge: table.edge.clone(),
+        key_default,
+        schema,
+        edge,
     })
+}
+
+pub fn validate_schema_contract_bytes(raw: &[u8]) -> Result<(), PlatformError> {
+    let document = decode_contract::<DatabaseSchemaContract>(raw).map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_SCHEMA_READ",
+            format!("failed to parse sekejap schema contract: {err}"),
+        )
+    })?;
+    encode_schema_export(document.spec.clone())?;
+    for table in &document.spec.tables {
+        let def = imported_table_definition(table)?;
+        let _ = build_create_table_sql(&def)?;
+    }
+    Ok(())
 }
 
 /// Creates one managed table with its declared indexes.
@@ -1183,6 +1361,10 @@ pub fn apply_schema_export(
     export: &SekejapSchemaExport,
 ) -> Result<SekejapSchemaApplyReport, PlatformError> {
     encode_schema_export(export.clone())?;
+    let mut defs = Vec::with_capacity(export.tables.len());
+    for table in &export.tables {
+        defs.push(imported_table_definition(table)?);
+    }
     let mut tables_created = Vec::new();
     let mut tables_skipped = Vec::new();
     let db = get_db(data_root, owner, project)?;
@@ -1190,12 +1372,6 @@ pub fn apply_schema_export(
         .into_iter()
         .map(|def| def.table)
         .collect::<BTreeSet<_>>();
-
-    let defs = export
-        .tables
-        .iter()
-        .filter_map(imported_table_definition)
-        .collect::<Vec<_>>();
     let apply_error = |err: PlatformError| PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.message);
     let run = |sql: String| {
         db.execute(&sql, &[])
@@ -3925,6 +4101,64 @@ mod tests {
         assert_eq!(report.after.node_count, 1);
         let sync = sync_project(tmp.path(), "alice", "demo").expect("sync");
         assert_eq!(sync.operation, "sync");
+    }
+
+    #[test]
+    fn sekejap_schema_import_rejects_ddl_injection_in_key_default_and_edge_fields() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bad_key_default = SekejapSchemaExport {
+            database: DB_KIND.to_string(),
+            connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
+            tables: vec![SekejapTableSchemaExport {
+                table: "posts".to_string(),
+                collection: "posts".to_string(),
+                attributes: vec![],
+                hash_indexed_fields: vec![],
+                range_indexed_fields: vec![],
+                fulltext_fields: vec![],
+                vector_fields: vec![],
+                spatial_fields: vec![],
+                key_default: "ulid()); DROP TABLE users; --".to_string(),
+                schema: String::new(),
+                edge: None,
+            }],
+        };
+        let err = apply_schema_export(tmp.path(), "demo", "site-a", &bad_key_default)
+            .expect_err("injected key_default must be rejected");
+        assert_eq!(err.code, "PLATFORM_SEKEJAP_TABLE_INVALID");
+
+        let bad_edge = SekejapSchemaExport {
+            database: DB_KIND.to_string(),
+            connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
+            tables: vec![SekejapTableSchemaExport {
+                table: "follows".to_string(),
+                collection: "follows".to_string(),
+                attributes: vec![],
+                hash_indexed_fields: vec![],
+                range_indexed_fields: vec![],
+                fulltext_fields: vec![],
+                vector_fields: vec![],
+                spatial_fields: vec![],
+                key_default: String::new(),
+                schema: String::new(),
+                edge: Some(EdgeTableDefinition {
+                    references: vec![EdgeTableReference {
+                        column: "from_id".to_string(),
+                        table: "users); DROP TABLE users; --".to_string(),
+                    }],
+                    key: vec!["from_id".to_string(), "to_id".to_string()],
+                    source: "from_id".to_string(),
+                    source_table: "users".to_string(),
+                    destination: "to_id".to_string(),
+                    destination_table: "users".to_string(),
+                    label: "follows".to_string(),
+                    graph: "base; DROP TABLE users; --".to_string(),
+                }),
+            }],
+        };
+        let err = apply_schema_export(tmp.path(), "demo", "site-a", &bad_edge)
+            .expect_err("injected edge fields must be rejected");
+        assert_eq!(err.code, "PLATFORM_SEKEJAP_TABLE_INVALID");
     }
 
 }
