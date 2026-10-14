@@ -118,9 +118,12 @@ impl GitSyncService {
         Ok((r.repo_url.trim().to_string(), r.credential_id.trim().to_string(), branch))
     }
 
-    /// `-c http.extraheader=…` for the one command that talks to the remote;
-    /// nothing for a remote that needs no token (a `file://` test remote).
-    fn auth_args(&self, owner: &str, project: &str, credential_id: &str, repo_url: &str) -> Vec<String> {
+    /// `GIT_CONFIG_*` environment variables for the one command that talks to
+    /// the remote; nothing for a remote that needs no credential (e.g. a
+    /// `file://` test remote). Passing the authorization header via environment
+    /// variables instead of `-c http.extraheader=…` keeps the credential out of
+    /// the child process's `argv` (`/proc/<pid>/cmdline`).
+    fn auth_env(&self, owner: &str, project: &str, credential_id: &str, repo_url: &str) -> Vec<(&'static str, String)> {
         if credential_id.is_empty() || !repo_url.starts_with("http") {
             return Vec::new();
         }
@@ -132,12 +135,14 @@ impl GitSyncService {
         }
         let username = cred.secret["username"].as_str().unwrap_or("");
         let token = cred.secret["token"].as_str().unwrap_or("");
-        if token.is_empty() {
+        let Some(header) = git_http_basic_auth_header(username, token) else {
             return Vec::new();
-        }
-        let user = if username.is_empty() { "x-access-token" } else { username };
-        let basic = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{token}"));
-        vec!["-c".to_string(), format!("http.extraheader=AUTHORIZATION: basic {basic}")]
+        };
+        vec![
+            ("GIT_CONFIG_COUNT", "1".to_string()),
+            ("GIT_CONFIG_KEY_0", "http.extraheader".to_string()),
+            ("GIT_CONFIG_VALUE_0", header),
+        ]
     }
 
     fn identity_args(&self, actor: Option<&str>, project: &str) -> Vec<String> {
@@ -191,8 +196,9 @@ impl GitSyncService {
         let repo = self.repo_dir(owner, project)?;
         let (repo_url, cred, remote_branch) = self.remote(owner, project)?;
         self.ensure_origin(&repo, &repo_url)?;
-        let auth = self.auth_args(owner, project, &cred, &repo_url);
-        match run(&repo, &auth, &["fetch", "--end-of-options", "origin", &remote_branch]) {
+        let auth = self.auth_env(owner, project, &cred, &repo_url);
+        let auth_refs: Vec<(&str, &str)> = auth.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        match run_env(&repo, &[], &["fetch", "--end-of-options", "origin", &remote_branch], &auth_refs) {
             Ok(_) => {}
             // An empty remote has no branch yet: nothing to fetch, nothing to
             // rebase on; the first push creates it. Every other failure is real.
@@ -243,8 +249,9 @@ impl GitSyncService {
         if state.rebase_in_progress {
             return Err(PlatformError::new("GIT_CONFLICT", "a rebase is in progress — resolve the conflicts and continue, or abort"));
         }
-        let auth = self.auth_args(owner, project, &cred, &repo_url);
-        match run(&repo, &auth, &["push", "--set-upstream", "--end-of-options", "origin", &format!("HEAD:{remote_branch}")]) {
+        let auth = self.auth_env(owner, project, &cred, &repo_url);
+        let auth_refs: Vec<(&str, &str)> = auth.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        match run_env(&repo, &[], &["push", "--set-upstream", "--end-of-options", "origin", &format!("HEAD:{remote_branch}")], &auth_refs) {
             Ok(_) => self.fetch(owner, project),
             Err(err) => {
                 let msg = err.message.to_lowercase();
@@ -811,5 +818,39 @@ mod tests {
         );
         assert!(git_config.contains("https://git.example.com/org/site-a.git"));
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn git_sync_auth_env_passes_http_header_via_git_config_env_not_argv() {
+        let p = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let cred_val = uuid::Uuid::new_v4().to_string();
+        p.credentials
+            .upsert_project_credential(
+                "superadmin",
+                "default",
+                &crate::platform::model::UpsertProjectCredentialRequest {
+                    credential_id: "git-origin".to_string(),
+                    title: "GitHub Origin".to_string(),
+                    kind: "github".to_string(),
+                    secret: json!({
+                        "username": "ci-bot",
+                        "token": cred_val,
+                        "repo_url": "https://github.com/org/site-a.git"
+                    }),
+                    notes: String::new(),
+                },
+            )
+            .expect("upsert credential");
+
+        let env = GitSyncService::new((*p).clone()).auth_env(
+            "superadmin",
+            "default",
+            "git-origin",
+            "https://github.com/org/site-a.git",
+        );
+        assert_eq!(env.len(), 3);
+        assert_eq!(env[0], ("GIT_CONFIG_COUNT", "1".to_string()));
+        assert_eq!(env[1], ("GIT_CONFIG_KEY_0", "http.extraheader".to_string()));
+        assert!(env[2].1.starts_with("AUTHORIZATION: basic "));
     }
 }

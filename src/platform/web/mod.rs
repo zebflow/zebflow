@@ -4090,12 +4090,30 @@ async fn home_clone_project_submit(
     Redirect::to(HOME_PATH).into_response()
 }
 
-/// Replaces occurrences of `token` in `s` with `***` (for safe error messages).
+/// Replaces occurrences of `token` (both raw and percent-encoded userinfo form) in `s` with `***`.
 fn scrub_token_from_str(s: &str, token: &str) -> String {
     if token.is_empty() {
         return s.to_string();
     }
-    s.replace(token, "***")
+    let mut out = s.replace(token, "***");
+    let mut encoded_upper = String::with_capacity(token.len());
+    let mut encoded_lower = String::with_capacity(token.len());
+    for b in token.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            encoded_upper.push(b as char);
+            encoded_lower.push(b as char);
+        } else {
+            encoded_upper.push_str(&format!("%{b:02X}"));
+            encoded_lower.push_str(&format!("%{b:02x}"));
+        }
+    }
+    if !encoded_upper.is_empty() && encoded_upper != token {
+        out = out.replace(&encoded_upper, "***");
+    }
+    if !encoded_lower.is_empty() && encoded_lower != token {
+        out = out.replace(&encoded_lower, "***");
+    }
+    out
 }
 
 /// The header a controller presents when it calls one of *its* offices.
