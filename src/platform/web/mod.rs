@@ -25058,7 +25058,11 @@ async fn public_mapserver_ingress(
             .or_else(|| params.get("ZOOM"))
             .and_then(|s| s.parse::<u8>().ok())
     });
-    let style_param = params.get("style").or_else(|| params.get("STYLE")).cloned();
+    let style_param = params
+        .get("style")
+        .or_else(|| params.get("STYLE"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     let manifest = crate::mapserver::publish::registry::manifest_from_runtime(
         layer_id,
@@ -25099,6 +25103,11 @@ async fn public_mapserver_ingress(
                 .into_response();
         }
     }
+    if let Err(err) =
+        crate::mapserver::resolve::validate_caller_style_dsl(&manifest, style_param.as_deref())
+    {
+        return (axum::http::StatusCode::BAD_REQUEST, err).into_response();
+    }
     let effective_filter: Option<String> = match (manifest.filter.clone(), filter_param) {
         (Some(default), Some(caller)) => Some(format!("{default};{caller}")),
         (default, caller) => default.or(caller),
@@ -25136,8 +25145,15 @@ async fn public_mapserver_ingress(
     } else {
         "geojson"
     };
+    let effective_limit = if is_tile_request || is_mvt_request {
+        tile_limit
+    } else {
+        limit
+    };
+    let zoom_allowed = crate::mapserver::resolve::zoom_within_bounds(&manifest, zoom);
     let preloaded_features: Option<serde_json::Value> = if manifest.source_kind
         == crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction
+        && zoom_allowed
     {
         let slug = manifest.function_slug.as_deref().unwrap_or("");
         if slug.is_empty() {
@@ -25147,8 +25163,16 @@ async fn public_mapserver_ingress(
             )
                 .into_response();
         }
-        let cache_key =
-            crate::mapserver::resolve::function_cache::cache_key(&owner, &project, slug);
+        let cache_key = crate::mapserver::resolve::function_cache::cache_key(
+            &owner,
+            &project,
+            slug,
+            &manifest.layer_id,
+            bbox,
+            zoom,
+            effective_filter.as_deref(),
+            effective_limit,
+        );
         if let Some(cached) = crate::mapserver::resolve::function_cache::get_cached(&cache_key) {
             Some(cached)
         } else {
@@ -25162,7 +25186,7 @@ async fn public_mapserver_ingress(
                     "zoom": zoom,
                     "format": render_format,
                     "filter": effective_filter,
-                    "limit": limit,
+                    "limit": effective_limit,
                 },
                 "owner": owner,
                 "project": project,
@@ -25235,22 +25259,28 @@ async fn public_mapserver_ingress(
         }
 
         // ── Direct GeoParquet → MVT fast path ─────────────────────────────
-        if manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoParquet {
-            let source_path = std::path::Path::new(&manifest.source_ref);
+        if zoom_allowed
+            && manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoParquet
+        {
+            let source_path = std::path::PathBuf::from(&manifest.source_ref);
             if source_path.exists() {
                 let parsed_filter = effective_filter
                     .as_deref()
                     .and_then(|f| crate::mapserver::resolve::filter_dsl::parse_filter(f).ok());
-                if let Ok(mvt_bytes) =
+                let mvt_layer_name_bg = mvt_layer_name.clone();
+                let allowed_props_bg = manifest.allowed_properties.clone();
+                if let Ok(Ok(mvt_bytes)) = tokio::task::spawn_blocking(move || {
                     crate::mapserver::resolve::geoparquet_direct::render_mvt_direct(
-                        source_path,
+                        &source_path,
                         tile_bbox,
-                        &mvt_layer_name,
+                        &mvt_layer_name_bg,
                         zoom,
                         parsed_filter.as_ref(),
-                        &manifest.allowed_properties,
+                        &allowed_props_bg,
                         tile_limit,
                     )
+                })
+                .await
                 {
                     crate::mapserver::resolve::tile_cache::put_tile(
                         mvt_key,
@@ -25372,50 +25402,69 @@ async fn public_mapserver_ingress(
 
         // Resolve DSL → ResolvedStyle for per-feature data-driven styling
         let resolved_style: Option<crate::mapserver::resolve::style_dsl::ResolvedStyle> =
-            style_dsl_str.as_deref().and_then(|dsl| {
-                let def = crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl).ok()?;
-                let source_path = std::path::Path::new(&manifest.source_ref);
-                let stats = if def.needs_stats() {
-                    def.field_name().and_then(|fname| {
-                        crate::mapserver::resolve::geoparquet_direct::get_field_stats(
-                            source_path,
-                            fname,
-                        )
-                    })
-                } else {
-                    None
-                };
-                let distinct = if def.needs_distinct() {
-                    def.field_name().and_then(|fname| {
-                        crate::mapserver::resolve::geoparquet_direct::get_field_distinct(
-                            source_path,
-                            fname,
-                            50,
-                        )
-                    })
-                } else {
-                    None
-                };
-                crate::mapserver::resolve::style_dsl::resolve_style(
-                    &def,
-                    stats.as_ref(),
-                    distinct.as_ref(),
-                    zoom,
-                )
+            if let Some(ref dsl) = style_dsl_str {
+                let dsl = dsl.clone();
+                let source_ref = manifest.source_ref.clone();
+                let allowed_props = manifest.allowed_properties.clone();
+                let caller_supplied_style = style_param.is_some();
+                tokio::task::spawn_blocking(move || {
+                    let def = crate::mapserver::resolve::style_dsl::parse_style_dsl(&dsl).ok()?;
+                    if caller_supplied_style
+                        && let Some(fname) = def.field_name()
+                        && !crate::mapserver::resolve::property_is_public(&allowed_props, fname)
+                    {
+                        return None;
+                    }
+                    let source_path = std::path::Path::new(&source_ref);
+                    let stats = if zoom_allowed && def.needs_stats() {
+                        def.field_name().and_then(|fname| {
+                            crate::mapserver::resolve::geoparquet_direct::get_field_stats(
+                                source_path,
+                                fname,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let distinct = if zoom_allowed && def.needs_distinct() {
+                        def.field_name().and_then(|fname| {
+                            crate::mapserver::resolve::geoparquet_direct::get_field_distinct(
+                                source_path,
+                                fname,
+                                50,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    crate::mapserver::resolve::style_dsl::resolve_style(
+                        &def,
+                        stats.as_ref(),
+                        distinct.as_ref(),
+                        zoom,
+                    )
+                    .ok()
+                })
+                .await
                 .ok()
-            });
+                .flatten()
+            } else {
+                None
+            };
 
         // A raster tile is pixels: no column of the source leaves the server on
         // this branch, so `allowed_properties` has nothing to prune here. Data
         // driven styling still has to read the column it colours by, and making
         // that column public first would force the operator to leak it to get a
-        // choropleth. The render path therefore resolves with exactly that one
-        // field added and nothing else.
+        // choropleth. Only the publisher's own manifest style may add a private
+        // column for rendering — a caller's `?style=` has already been checked
+        // against `allowed_properties`.
         let render_manifest = {
             let mut render_manifest = manifest.clone();
-            if let Some(field) = resolved_style
-                .as_ref()
-                .and_then(crate::mapserver::resolve::style_dsl::ResolvedStyle::field_name)
+            if style_param.is_none()
+                && let Some(field) = resolved_style
+                    .as_ref()
+                    .and_then(crate::mapserver::resolve::style_dsl::ResolvedStyle::field_name)
                 && !crate::mapserver::resolve::property_is_public(
                     &render_manifest.allowed_properties,
                     field,
@@ -25467,24 +25516,30 @@ async fn public_mapserver_ingress(
         }
 
         // ── Direct parquet fast path (bypasses DataFusion entirely) ─────
-        if manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoParquet {
-            let source_path = std::path::Path::new(&manifest.source_ref);
+        if zoom_allowed
+            && manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoParquet
+        {
+            let source_path = std::path::PathBuf::from(&manifest.source_ref);
             if source_path.exists() {
                 let parsed_filter = effective_filter
                     .as_deref()
                     .and_then(|f| crate::mapserver::resolve::filter_dsl::parse_filter(f).ok());
-                if let Ok(png_bytes) =
+                let style_bg = style.clone();
+                let resolved_style_bg = resolved_style.clone();
+                if let Ok(Ok(png_bytes)) = tokio::task::spawn_blocking(move || {
                     crate::mapserver::resolve::geoparquet_direct::render_tile_direct(
-                        source_path,
+                        &source_path,
                         tile_bbox,
                         tile_width,
                         tile_height,
                         zoom,
-                        &style,
-                        resolved_style.as_ref(),
+                        &style_bg,
+                        resolved_style_bg.as_ref(),
                         parsed_filter.as_ref(),
                         tile_limit,
                     )
+                })
+                .await
                 {
                     crate::mapserver::resolve::tile_cache::put_tile(
                         tile_key,
@@ -25508,8 +25563,10 @@ async fn public_mapserver_ingress(
         // Non-blocking: if a metatile pixmap is cached, slice from it (very fast).
         // Otherwise, render the individual tile normally and spawn a background
         // task to render+cache the metatile pixmap for future requests.
-        let use_metatile =
-            zoom.map(|z| z >= 8).unwrap_or(false) && tile_width == 256 && tile_height == 256;
+        let use_metatile = zoom_allowed
+            && zoom.map(|z| z >= 8).unwrap_or(false)
+            && tile_width == 256
+            && tile_height == 256;
 
         if use_metatile {
             const META_GRID: u32 = 4;

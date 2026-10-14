@@ -62,32 +62,58 @@ pub struct ResolveResponse {
     pub features: Vec<Value>,
 }
 
+/// Returns whether `zoom` satisfies the manifest's `min_zoom` and `max_zoom` bounds.
+pub fn zoom_within_bounds(manifest: &PublishedLayerManifest, zoom: Option<u8>) -> bool {
+    if let Some(zoom) = zoom {
+        if let Some(min_zoom) = manifest.min_zoom {
+            if zoom < min_zoom {
+                return false;
+            }
+        }
+        if let Some(max_zoom) = manifest.max_zoom {
+            if zoom > max_zoom {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Validates a caller-supplied `?style=` DSL parameter against `manifest.allowed_properties`.
+///
+/// A caller may only colour or classify features by columns that are published
+/// in `allowed_properties`; referencing a hidden column via `?style=` is refused
+/// so pixel colours cannot be used as an oracle for private columns.
+pub fn validate_caller_style_dsl(
+    manifest: &PublishedLayerManifest,
+    caller_style: Option<&str>,
+) -> Result<(), String> {
+    let Some(raw) = caller_style.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let parsed = style_dsl::parse_style_dsl(raw).map_err(|e| format!("invalid style: {e}"))?;
+    if let Some(field) = parsed.field_name()
+        && !property_is_public(&manifest.allowed_properties, field)
+    {
+        return Err(format!(
+            "style field '{field}' is not a published property of this layer"
+        ));
+    }
+    Ok(())
+}
+
 pub fn resolve_features(
     manifest: &PublishedLayerManifest,
     request: &ResolveRequest,
     preloaded: Option<&Value>,
 ) -> Result<ResolveResponse, String> {
-    if let Some(zoom) = request.zoom {
-        if let Some(min_zoom) = manifest.min_zoom {
-            if zoom < min_zoom {
-                return Ok(ResolveResponse {
-                    layer: manifest.layer_id.clone(),
-                    count: 0,
-                    truncated: false,
-                    features: Vec::new(),
-                });
-            }
-        }
-        if let Some(max_zoom) = manifest.max_zoom {
-            if zoom > max_zoom {
-                return Ok(ResolveResponse {
-                    layer: manifest.layer_id.clone(),
-                    count: 0,
-                    truncated: false,
-                    features: Vec::new(),
-                });
-            }
-        }
+    if !zoom_within_bounds(manifest, request.zoom) {
+        return Ok(ResolveResponse {
+            layer: manifest.layer_id.clone(),
+            count: 0,
+            truncated: false,
+            features: Vec::new(),
+        });
     }
     let mut response = match manifest.source_kind {
         SourceKind::GeoJsonFile => {
@@ -139,5 +165,100 @@ mod tests {
         assert!(!property_is_public(&[], "name"));
         assert!(property_is_public(&["name".to_string()], "name"));
         assert!(!property_is_public(&["name".to_string()], "owner_phone"));
+    }
+
+    #[test]
+    fn mapserver_rejects_unallowed_caller_style_field_enforces_zoom_bounds_and_keys_function_cache_by_request()
+     {
+        let manifest = PublishedLayerManifest {
+            layer_id: "parcels".to_string(),
+            path: "/parcels".to_string(),
+            source_kind: SourceKind::GeoParquet,
+            source_ref: "parcels.parquet".to_string(),
+            mode: "features".to_string(),
+            min_zoom: Some(10),
+            max_zoom: Some(16),
+            bbox_required: true,
+            max_features: 100,
+            allowed_properties: vec!["name".to_string()],
+            style: None,
+            filter: None,
+            function_slug: None,
+            cache_ttl_secs: None,
+        };
+
+        // 1. Caller ?style= referencing a hidden property is rejected, while allowed properties and uniform styles pass.
+        let err = validate_caller_style_dsl(&manifest, Some("uv(secret_valuation)"))
+            .expect_err("hidden style field must be rejected");
+        assert!(err.contains("is not a published property"), "{err}");
+        let err = validate_caller_style_dsl(&manifest, Some("cb(secret_valuation,5,YlOrRd)"))
+            .expect_err("hidden class-breaks field must be rejected");
+        assert!(err.contains("is not a published property"), "{err}");
+        assert!(validate_caller_style_dsl(&manifest, Some("uv(name)")).is_ok());
+        assert!(validate_caller_style_dsl(&manifest, Some("f:4169E180;s:1E3CA0")).is_ok());
+        assert!(validate_caller_style_dsl(&manifest, None).is_ok());
+
+        // 2. Zoom bounds check enforces min_zoom and max_zoom before direct rendering.
+        assert!(!zoom_within_bounds(&manifest, Some(0)));
+        assert!(!zoom_within_bounds(&manifest, Some(9)));
+        assert!(zoom_within_bounds(&manifest, Some(10)));
+        assert!(zoom_within_bounds(&manifest, Some(16)));
+        assert!(!zoom_within_bounds(&manifest, Some(17)));
+
+        // 3. Function cache keys vary by layer_id, bbox, zoom, filter, and limit.
+        let k1 = function_cache::cache_key(
+            "org",
+            "demo",
+            "fn_parcels",
+            "parcels",
+            Some([0.0, 0.0, 1.0, 1.0]),
+            Some(12),
+            Some("name:A"),
+            100,
+        );
+        let k_diff_bbox = function_cache::cache_key(
+            "org",
+            "demo",
+            "fn_parcels",
+            "parcels",
+            Some([1.0, 1.0, 2.0, 2.0]),
+            Some(12),
+            Some("name:A"),
+            100,
+        );
+        let k_diff_filter = function_cache::cache_key(
+            "org",
+            "demo",
+            "fn_parcels",
+            "parcels",
+            Some([0.0, 0.0, 1.0, 1.0]),
+            Some(12),
+            Some("name:B"),
+            100,
+        );
+        let k_diff_zoom = function_cache::cache_key(
+            "org",
+            "demo",
+            "fn_parcels",
+            "parcels",
+            Some([0.0, 0.0, 1.0, 1.0]),
+            Some(13),
+            Some("name:A"),
+            100,
+        );
+        let k_diff_limit = function_cache::cache_key(
+            "org",
+            "demo",
+            "fn_parcels",
+            "parcels",
+            Some([0.0, 0.0, 1.0, 1.0]),
+            Some(12),
+            Some("name:A"),
+            10,
+        );
+        assert_ne!(k1, k_diff_bbox);
+        assert_ne!(k1, k_diff_filter);
+        assert_ne!(k1, k_diff_zoom);
+        assert_ne!(k1, k_diff_limit);
     }
 }

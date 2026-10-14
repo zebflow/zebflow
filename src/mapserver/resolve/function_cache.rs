@@ -34,9 +34,31 @@ fn cache() -> &'static Mutex<CacheState> {
     })
 }
 
-/// Build cache key for a function layer: `"{owner}:{project}:{slug}"`.
-pub fn cache_key(owner: &str, project: &str, slug: &str) -> String {
-    format!("{owner}:{project}:{slug}")
+/// Build cache key for a function layer scoped by request parameters so one
+/// caller's query parameters cannot poison the cached GeoJSON for another caller.
+pub fn cache_key(
+    owner: &str,
+    project: &str,
+    slug: &str,
+    layer_id: &str,
+    bbox: Option<[f64; 4]>,
+    zoom: Option<u8>,
+    filter: Option<&str>,
+    limit: usize,
+) -> String {
+    let bbox_part = match bbox {
+        Some([minx, miny, maxx, maxy]) => {
+            format!("{}:{}:{}:{}", minx.to_bits(), miny.to_bits(), maxx.to_bits(), maxy.to_bits())
+        }
+        None => "none".to_string(),
+    };
+    let zoom_part = zoom
+        .map(|z| z.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let filter_part = filter.unwrap_or("");
+    format!(
+        "{owner}:{project}:{slug}:layer={layer_id}:bbox={bbox_part}:zoom={zoom_part}:limit={limit}:filter={filter_part}"
+    )
 }
 
 /// Return cached function result if present and not expired.
@@ -79,9 +101,15 @@ pub fn put_cached(key: &str, value: &Value, ttl_secs: u64) {
     }
 }
 
-/// Invalidate a specific cache entry (e.g. on republish).
+/// Invalidate a specific cache entry or all entries matching a layer/function prefix.
 pub fn invalidate(key: &str) {
     if let Ok(mut state) = cache().lock() {
-        state.entries.remove(key);
+        let prefix = format!("{key}:");
+        state
+            .entries
+            .retain(|existing, _| existing != key && !existing.starts_with(&prefix));
+        state
+            .order
+            .retain(|existing| existing != key && !existing.starts_with(&prefix));
     }
 }
