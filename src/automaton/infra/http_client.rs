@@ -110,6 +110,7 @@ pub struct OpenAiHttpClient {
     client: reqwest::Client,
     surface: OpenAiApiSurface,
     store: bool,
+    allow_private: bool,
 }
 
 impl OpenAiHttpClient {
@@ -126,6 +127,7 @@ impl OpenAiHttpClient {
             client: build_http_client(),
             surface: OpenAiApiSurface::Responses,
             store: false,
+            allow_private: false,
         }
     }
 
@@ -138,6 +140,7 @@ impl OpenAiHttpClient {
             client: build_http_client(),
             surface: OpenAiApiSurface::ChatCompletions,
             store: false,
+            allow_private: false,
         }
     }
 
@@ -226,6 +229,10 @@ impl OpenAiHttpClient {
                 _ => None,
             })
             .unwrap_or(false);
+        let allow_private = secret
+            .get("allow_private")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Some(Self {
             base_url,
             response_path,
@@ -234,6 +241,7 @@ impl OpenAiHttpClient {
             client: build_http_client(),
             surface,
             store,
+            allow_private,
         })
     }
 }
@@ -249,7 +257,19 @@ impl OpenAiHttpClient {
 
     async fn post_json(&self, body: &Value) -> Result<Value, String> {
         let url = self.response_url();
-        crate::pipeline::security::validate_outbound_http_url(&url, "llm.http")
+        let policy = if self.allow_private {
+            let host = reqwest::Url::parse(&url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .filter(|h| !h.starts_with("169.254."));
+            crate::pipeline::security::OutboundHttpPolicy {
+                allow_private: host.is_some(),
+                allowed_hosts: host.into_iter().collect(),
+            }
+        } else {
+            crate::pipeline::security::OutboundHttpPolicy::default()
+        };
+        crate::pipeline::security::validate_outbound_http_url_with_policy(&url, "llm.http", &policy)
             .map_err(|e| format!("{}: {}", e.code, e.message))?;
         let resp = self
             .client

@@ -49,6 +49,15 @@ pub struct ChainStep {
 /// to stream progress to clients without coupling the agent to pipeline types.
 pub type StepCallback = Box<dyn Fn(&ChainStep) + Send + Sync>;
 
+/// Boxed future used by async tool executors and verifiers.
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Maximum allowed step budget per agent run.
+pub const MAX_STEP_BUDGET: u32 = 64;
+
+/// Maximum tool invocations executed in a single LLM turn.
+pub const MAX_TOOL_CALLS_PER_TURN: usize = 16;
+
 /// Semantic verifier: `(candidate, goal) -> (pass, reason)`.
 ///
 /// Where the JSON success contract checks *shape*, the verifier checks *truth*:
@@ -58,7 +67,7 @@ pub type StepCallback = Box<dyn Fn(&ChainStep) + Send + Sync>;
 ///
 /// Kept as an opaque closure so the agent stays decoupled from the platform —
 /// the same design as the tool `executor`.
-pub type VerifyFn = dyn Fn(&str, &str) -> (bool, String) + Send + Sync;
+pub type VerifyFn = dyn Fn(&str, &str) -> BoxFuture<'static, (bool, String)> + Send + Sync;
 
 /// Configuration for ZebtuneAgent.
 #[derive(Debug, Clone)]
@@ -155,7 +164,7 @@ impl ZebtuneAgent {
         let step_budget = if config.step_budget == 0 {
             10
         } else {
-            config.step_budget
+            config.step_budget.min(MAX_STEP_BUDGET)
         };
         Self {
             config: ZebtuneConfig {
@@ -170,19 +179,22 @@ impl ZebtuneAgent {
     ///
     /// Uses native function calling (OpenAI tools API).
     /// `tool_defs` describes which tools the LLM may call.
-    /// `executor` resolves each tool call: `(name, args_json) -> Result<output, error>`.
+    /// `executor` resolves each tool call: `(name, args_json) -> Future<Result<output, error>>`.
     /// `verifier` is an optional semantic check applied to the final answer.
     /// It runs *after* the cheap JSON `success_schema` check passes,
     /// so a malformed answer never wastes a verifier call. `None` disables it.
     /// `step_callback` is called synchronously after each chain step.
-    pub async fn run(
+    pub async fn run<E>(
         &self,
         goal: &str,
         tool_defs: Vec<ToolDef>,
-        executor: impl Fn(&str, &str) -> Result<String, String>,
+        executor: E,
         verifier: Option<&VerifyFn>,
         step_callback: Option<&StepCallback>,
-    ) -> ZebtuneResult {
+    ) -> ZebtuneResult
+    where
+        E: Fn(&str, &str) -> BoxFuture<'static, Result<String, String>>,
+    {
         let Some(ref llm) = self.llm else {
             return ZebtuneResult {
                 final_content:
@@ -325,7 +337,7 @@ impl ZebtuneAgent {
                                     "running verifier",
                                     &format_elapsed(start),
                                 );
-                                let (pass, reason) = vf(&trimmed, goal);
+                                let (pass, reason) = vf(&trimmed, goal).await;
                                 trace
                                     .push(format!("verify:{}", if pass { "pass" } else { "fail" }));
                                 if !pass {
@@ -404,9 +416,10 @@ impl ZebtuneAgent {
                 }
 
                 CallResult::ToolCalls(calls) => {
-                    tool_calls += calls.len() as u32;
+                    let bounded_calls: Vec<_> =
+                        calls.into_iter().take(MAX_TOOL_CALLS_PER_TURN).collect();
                     // Emit a "thinking" step summarising what the LLM is doing
-                    let thinking_desc = calls
+                    let thinking_desc = bounded_calls
                         .first()
                         .map(|c| format!("calling {}", c.name))
                         .unwrap_or_else(|| "tool use".to_string());
@@ -419,7 +432,7 @@ impl ZebtuneAgent {
                     );
 
                     // Append assistant tool_calls message
-                    let tool_calls_json: Vec<Value> = calls
+                    let tool_calls_json: Vec<Value> = bounded_calls
                         .iter()
                         .map(|tc| {
                             json!({
@@ -435,8 +448,24 @@ impl ZebtuneAgent {
                         "tool_calls": tool_calls_json,
                     }));
 
-                    // Execute each tool and append results
-                    for tc in &calls {
+                    // Execute each tool and append results. The first tool call
+                    // in a turn is covered by the turn's step budget decrement;
+                    // each additional tool call in the same turn consumes one
+                    // step of budget so single-turn fanout cannot bypass step_budget.
+                    for (idx, tc) in bounded_calls.iter().enumerate() {
+                        if idx > 0 {
+                            if budget == 0 {
+                                let skipped = "Tool error: step budget exhausted".to_string();
+                                messages.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": skipped,
+                                }));
+                                continue;
+                            }
+                            budget = budget.saturating_sub(1);
+                        }
+                        tool_calls += 1;
                         self.emit(
                             &mut chain,
                             step_callback,
@@ -446,7 +475,7 @@ impl ZebtuneAgent {
                         );
                         trace.push(format!("tool:{}", tc.name));
 
-                        let tool_out = match executor(&tc.name, &tc.arguments) {
+                        let tool_out = match executor(&tc.name, &tc.arguments).await {
                             Ok(out) => out,
                             Err(e) => format!("Tool error: {}", e),
                         };
@@ -598,6 +627,41 @@ pub fn system_content_for(config: &ZebtuneConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automaton::infra::llm_interface::{Message, ToolCall, Usage};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FanoutLlm {
+        fanout: usize,
+        turns: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmCall for FanoutLlm {
+        async fn call(&self, _messages: Vec<Message>) -> Result<String, String> {
+            Ok("done".to_string())
+        }
+
+        async fn call_with_tools(
+            &self,
+            _messages: Vec<Value>,
+            _tools: &[ToolDef],
+        ) -> Result<(CallResult, Usage), String> {
+            let turn = self.turns.fetch_add(1, Ordering::SeqCst);
+            if turn == 0 {
+                let calls = (0..self.fanout)
+                    .map(|i| ToolCall {
+                        id: format!("tc-{i}"),
+                        name: "echo".to_string(),
+                        arguments: format!(r#"{{"i":{i}}}"#),
+                    })
+                    .collect();
+                Ok((CallResult::ToolCalls(calls), Usage::default()))
+            } else {
+                Ok((CallResult::Text("finished".to_string()), Usage::default()))
+            }
+        }
+    }
 
     #[test]
     fn the_first_turn_carries_the_schema_and_the_no_schema_turn_is_unchanged() {
@@ -611,5 +675,80 @@ mod tests {
         let without = ZebtuneConfig { system_prompt: Some("You fill posters.".into()), ..Default::default() };
         assert_eq!(system_content_for(&without), "You fill posters.");
         assert!(system_content_for(&ZebtuneConfig::default()).starts_with("You are Zebtune"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_fanout_and_budget_are_bounded() {
+        // 1. With step_budget = 4 and 100 tool calls in a single LLM turn,
+        //    at most 4 tool invocations may execute before budget is exhausted.
+        let llm = Arc::new(FanoutLlm {
+            fanout: 100,
+            turns: AtomicUsize::new(0),
+        });
+        let agent = ZebtuneAgent::new(
+            ZebtuneConfig {
+                step_budget: 4,
+                ..Default::default()
+            },
+            Some(llm),
+        );
+        let executed = Arc::new(AtomicUsize::new(0));
+        let executed_clone = Arc::clone(&executed);
+        let res = agent
+            .run(
+                "run tools",
+                vec![],
+                move |_name, args| {
+                    let counter = Arc::clone(&executed_clone);
+                    let args_owned = args.to_string();
+                    Box::pin(async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Ok(args_owned)
+                    })
+                },
+                None,
+                None,
+            )
+            .await;
+
+        assert_eq!(executed.load(Ordering::SeqCst), 4);
+        assert_eq!(res.metrics.tool_calls, 4);
+        assert!(res.budget_exhausted);
+
+        // 2. Even with a high step_budget (e.g. 50), a single turn with 100 tool calls
+        //    is capped at MAX_TOOL_CALLS_PER_TURN (16).
+        let llm2 = Arc::new(FanoutLlm {
+            fanout: 100,
+            turns: AtomicUsize::new(0),
+        });
+        let agent2 = ZebtuneAgent::new(
+            ZebtuneConfig {
+                step_budget: 50,
+                ..Default::default()
+            },
+            Some(llm2),
+        );
+        let executed2 = Arc::new(AtomicUsize::new(0));
+        let executed2_clone = Arc::clone(&executed2);
+        let res2 = agent2
+            .run(
+                "run tools",
+                vec![],
+                move |_name, args| {
+                    let counter = Arc::clone(&executed2_clone);
+                    let args_owned = args.to_string();
+                    Box::pin(async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Ok(args_owned)
+                    })
+                },
+                None,
+                None,
+            )
+            .await;
+
+        assert_eq!(executed2.load(Ordering::SeqCst), MAX_TOOL_CALLS_PER_TURN);
+        assert_eq!(res2.metrics.tool_calls, MAX_TOOL_CALLS_PER_TURN as u32);
+        assert_eq!(res2.final_content, "finished");
     }
 }

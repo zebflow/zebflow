@@ -534,6 +534,12 @@ impl Node {
     }
 }
 
+tokio::task_local! {
+    static AGENT_RECURSION_DEPTH: u32;
+}
+
+const MAX_AGENT_RECURSION_DEPTH: u32 = 3;
+
 #[async_trait]
 impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
@@ -554,6 +560,15 @@ impl NodeHandler for Node {
             return Err(PipelineError::new(
                 "FW_NODE_AI_TEXT_GENERATE_INPUT_PIN",
                 format!("unsupported input pin '{}'", input.input_pin),
+            ));
+        }
+        let current_depth = AGENT_RECURSION_DEPTH.try_with(|d| *d).unwrap_or(0);
+        if current_depth >= MAX_AGENT_RECURSION_DEPTH {
+            return Err(PipelineError::new(
+                "FW_NODE_AI_TEXT_GENERATE_RECURSION_LIMIT",
+                format!(
+                    "ai.text.generate recursion depth limit ({MAX_AGENT_RECURSION_DEPTH}) exceeded"
+                ),
             ));
         }
         let owner = input.metadata.get("owner").and_then(|v| v.as_str()).unwrap_or("");
@@ -581,25 +596,29 @@ impl NodeHandler for Node {
             Some(llm),
         );
 
-        // Tool executor: a function pipeline by slug. The async → sync bridge
-        // is what the agent's synchronous executor signature needs.
+        // Tool executor: a function pipeline by slug executed asynchronously without block_in_place.
         let platform_for_tools = self.platform.clone();
         let (owner_s, project_s) = (owner.to_string(), project.to_string());
-        let executor = move |tool_name: &str, args_json: &str| -> Result<String, String> {
-            let Some(platform) = &platform_for_tools else {
-                return Err(format!("tool '{tool_name}' not found"));
-            };
+        let executor = move |tool_name: &str,
+                             args_json: &str|
+              -> crate::automaton::agents::zebtune::BoxFuture<
+            'static,
+            Result<String, String>,
+        > {
+            let platform_opt = platform_for_tools.clone();
+            let slug = tool_name.to_string();
             let args: Value = serde_json::from_str(args_json).unwrap_or(json!({}));
-            let platform = Arc::clone(platform);
-            let (slug, owner_s, project_s) = (tool_name.to_string(), owner_s.clone(), project_s.clone());
-            let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    platform
-                        .execute_function_pipeline(&owner_s, &project_s, &slug, args)
-                        .await
-                })
-            });
-            function_tool_result_for_agent(result)
+            let owner_s = owner_s.clone();
+            let project_s = project_s.clone();
+            Box::pin(async move {
+                let Some(platform) = platform_opt else {
+                    return Err(format!("tool '{slug}' not found"));
+                };
+                let result = platform
+                    .execute_function_pipeline(&owner_s, &project_s, &slug, args)
+                    .await;
+                function_tool_result_for_agent(result)
+            })
         };
 
         // Step events → pipeline signals on the execution bus (SSE to the client).
@@ -633,34 +652,44 @@ impl NodeHandler for Node {
                 (Some(slug), Some(platform_arc)) => {
                     let platform = Arc::clone(platform_arc);
                     let (owner_v, project_v) = (owner.to_string(), project.to_string());
-                    Some(Box::new(move |candidate: &str, goal: &str| -> (bool, String) {
+                    Some(Box::new(move |candidate: &str, goal: &str| {
                         let platform = Arc::clone(&platform);
-                        let (slug, owner_v, project_v) = (slug.clone(), owner_v.clone(), project_v.clone());
+                        let (slug, owner_v, project_v) =
+                            (slug.clone(), owner_v.clone(), project_v.clone());
                         let input = json!({ "candidate": candidate, "goal": goal });
-                        let res = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(async move {
-                                platform
-                                    .execute_function_pipeline(&owner_v, &project_v, &slug, input)
-                                    .await
-                            })
-                        });
-                        match res {
-                            Ok(v) => match v.get("pass").and_then(|x| x.as_bool()) {
-                                Some(pass) => (
-                                    pass,
-                                    v.get("reason").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                                ),
-                                None => (false, format!("verifier did not return a boolean 'pass' field; got: {v}")),
-                            },
-                            Err(e) => (false, format!("verifier pipeline error: {e}")),
-                        }
+                        Box::pin(async move {
+                            let res = platform
+                                .execute_function_pipeline(&owner_v, &project_v, &slug, input)
+                                .await;
+                            match res {
+                                Ok(v) => match v.get("pass").and_then(|x| x.as_bool()) {
+                                    Some(pass) => (
+                                        pass,
+                                        v.get("reason")
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    ),
+                                    None => (
+                                        false,
+                                        format!(
+                                            "verifier did not return a boolean 'pass' field; got: {v}"
+                                        ),
+                                    ),
+                                },
+                                Err(e) => (false, format!("verifier pipeline error: {e}")),
+                            }
+                        })
                     }))
                 }
                 _ => None,
             };
 
-        let result = agent
-            .run(&goal, tools, executor, verify_fn.as_deref(), callback.as_ref())
+        let result = AGENT_RECURSION_DEPTH
+            .scope(
+                current_depth + 1,
+                agent.run(&goal, tools, executor, verify_fn.as_deref(), callback.as_ref()),
+            )
             .await;
 
         // A provider failure is a node failure, not an answer: the error groups
@@ -837,7 +866,7 @@ mod tests {
                     title: id.to_string(),
                     kind: kind.to_string(),
                     // A generated value, never a real key.
-                    secret: json!({ "api_key": uuid::Uuid::new_v4().to_string(), "base_url": base_url }),
+                    secret: json!({ "api_key": uuid::Uuid::new_v4().to_string(), "base_url": base_url, "allow_private": true }),
                     notes: String::new(),
                 },
             )
