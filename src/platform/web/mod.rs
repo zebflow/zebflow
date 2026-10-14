@@ -23469,7 +23469,12 @@ fn verify_webhook_auth(
 
     match auth_type {
         "jwt" => {
-            use jsonwebtoken::{Validation, decode};
+            if credential.kind != "jwt_signing_key" {
+                return Err(AuthError::Internal(format!(
+                    "credential '{}' is kind '{}', expected 'jwt_signing_key'",
+                    credential.credential_id, credential.kind
+                )));
+            }
 
             // Check Authorization: Bearer header first, then Cookie: <cookie_name>.
             //
@@ -23504,21 +23509,21 @@ fn verify_webhook_auth(
                     redirect_url: auth_redirect.clone(),
                 })?;
 
-            let (algorithm, decoding_key) =
-                crate::pipeline::nodes::basic::auth::sign::decoding_key(&credential.secret)
-                    .map_err(|e| AuthError::Internal(e.to_string()))?;
-
-            let mut validation = Validation::new(algorithm);
-            validation.validate_exp = true;
-
-            let token_data = decode::<Value>(&token, &decoding_key, &validation).map_err(|e| {
-                AuthError::Unauthenticated {
-                    message: format!("JWT invalid: {e}"),
-                    redirect_url: auth_redirect.clone(),
+            let claims = crate::pipeline::nodes::basic::auth::sign::verify_app_token(
+                &credential.secret,
+                &token,
+            )
+            .map_err(|err| match err {
+                crate::pipeline::nodes::basic::auth::sign::VerifyError::Key(e) => {
+                    AuthError::Internal(e.to_string())
+                }
+                crate::pipeline::nodes::basic::auth::sign::VerifyError::Token(e) => {
+                    AuthError::Unauthenticated {
+                        message: format!("JWT invalid: {e}"),
+                        redirect_url: auth_redirect.clone(),
+                    }
                 }
             })?;
-
-            let claims = token_data.claims;
 
             // Role check — only applies when the trigger specifies required roles.
             // The claim is meant to be an array of strings; a string is read as
@@ -23543,6 +23548,13 @@ fn verify_webhook_auth(
 
         "hmac" => {
             use hmac::{Hmac, Mac};
+
+            if credential.kind != "hmac" {
+                return Err(AuthError::Internal(format!(
+                    "credential '{}' is kind '{}', expected 'hmac'",
+                    credential.credential_id, credential.kind
+                )));
+            }
 
             // Read configurable fields from credential secret.
             let provider = credential
@@ -23727,6 +23739,13 @@ fn verify_webhook_auth(
         }
 
         "api_key" => {
+            if credential.kind != "api_key" {
+                return Err(AuthError::Internal(format!(
+                    "credential '{}' is kind '{}', expected 'api_key'",
+                    credential.credential_id, credential.kind
+                )));
+            }
+
             let provided = headers
                 .get("X-API-Key")
                 .or_else(|| headers.get("x-api-key"))
@@ -29870,5 +29889,43 @@ mod home_directory_tests {
         // controller reads the same bytes it always did.
         let shown = serde_json::to_value(&worker.projects[1]).expect("serialize");
         assert!(shown.get("hidden").is_none());
+    }
+
+    #[test]
+    fn webhook_auth_checks_credential_kind_before_using_secret() {
+        let p = crate::pipeline::nodes::shared::test_platform::test_platform();
+        p.credentials
+            .upsert_project_credential(
+                "superadmin",
+                "default",
+                &crate::platform::model::UpsertProjectCredentialRequest {
+                    credential_id: "hook-hmac".to_string(),
+                    title: "HMAC".to_string(),
+                    kind: "hmac".to_string(),
+                    secret: json!({ "secret": uuid::Uuid::new_v4().to_string() }),
+                    notes: String::new(),
+                },
+            )
+            .expect("hmac credential");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer fake.jwt.token"),
+        );
+        match verify_webhook_auth(
+            &headers,
+            &Bytes::new(),
+            "jwt",
+            "hook-hmac",
+            &[],
+            &p.credentials,
+            "superadmin",
+            "default",
+        ) {
+            Err(AuthError::Internal(msg)) => {
+                assert!(msg.contains("expected 'jwt_signing_key'"), "{msg}");
+            }
+            _ => panic!("hmac credential must not be accepted for jwt auth"),
+        }
     }
 }

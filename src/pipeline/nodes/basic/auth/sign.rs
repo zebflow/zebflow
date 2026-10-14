@@ -92,19 +92,38 @@ pub enum VerifyError {
     Token(String),
 }
 
-/// An app token as `auth.token.create` signed it: the signature with the
-/// credential's algorithm and `exp` (and `nbf` when present). Its `aud`, if
-/// any, is not this check's business — `auth.oauth.approve` reads who
-/// signed in, not whom the token was for.
+/// True when the JWT header's `typ` marks a published-MCP OAuth access token
+/// (`at+jwt` / `application/at+jwt`, RFC 9068).
+pub fn is_access_token_typ(typ: Option<&str>) -> bool {
+    typ.is_some_and(|t| {
+        t.eq_ignore_ascii_case("at+jwt") || t.eq_ignore_ascii_case("application/at+jwt")
+    })
+}
+
+/// An app session token as `auth.token.create` signed it (without `--audience`):
+/// the signature with the credential's algorithm and `exp` (and `nbf` when
+/// present), never a published-MCP access token (`typ: at+jwt`) or a
+/// single-purpose audience-scoped token (`aud` present).
 pub fn verify_app_token(secret: &Value, token: &str) -> Result<Value, VerifyError> {
     let (algorithm, key) = decoding_key(secret).map_err(VerifyError::Key)?;
+    let header = jsonwebtoken::decode_header(token).map_err(|e| VerifyError::Token(e.to_string()))?;
+    if is_access_token_typ(header.typ.as_deref()) {
+        return Err(VerifyError::Token(
+            "published MCP access token (typ at+jwt) cannot be used as an app token".to_string(),
+        ));
+    }
     let mut validation = Validation::new(algorithm);
     validation.validate_exp = true;
     validation.validate_nbf = true;
-    validation.validate_aud = false;
-    jsonwebtoken::decode::<Value>(token, &key, &validation)
-        .map(|data| data.claims)
-        .map_err(|e| VerifyError::Token(e.to_string()))
+    validation.validate_aud = true;
+    let data = jsonwebtoken::decode::<Value>(token, &key, &validation)
+        .map_err(|e| VerifyError::Token(e.to_string()))?;
+    if data.claims.get("aud").is_some_and(|v| !v.is_null()) {
+        return Err(VerifyError::Token(
+            "audience-scoped token cannot be used as an unscoped app token".to_string(),
+        ));
+    }
+    Ok(data.claims)
 }
 
 #[cfg(test)]
@@ -122,13 +141,27 @@ mod tests {
     }
 
     #[test]
-    fn an_app_token_verifies_whatever_its_audience() {
+    fn verify_app_token_rejects_at_jwt_and_scoped_audience_and_webhook_auth_checks_credential_kind() {
         let secret = json!({ "algorithm": "HS256", "secret": uuid::Uuid::new_v4().to_string() });
         let (algorithm, key) = encoding_key(&secret).unwrap();
         let now = chrono::Utc::now().timestamp();
         let sign = |claims: Value| jsonwebtoken::encode(&jsonwebtoken::Header::new(algorithm), &claims, &key).unwrap();
-        let claims = verify_app_token(&secret, &sign(json!({ "sub": "u1", "aud": "app", "exp": now + 60 }))).unwrap();
+        let claims = verify_app_token(&secret, &sign(json!({ "sub": "u1", "exp": now + 60 }))).unwrap();
         assert_eq!(claims["sub"], "u1");
+        assert!(
+            matches!(
+                verify_app_token(&secret, &sign(json!({ "sub": "u1", "aud": "password-reset", "exp": now + 60 }))),
+                Err(VerifyError::Token(_))
+            ),
+            "audience-scoped token must not verify as an unscoped app session token"
+        );
+        let mut at_jwt_header = jsonwebtoken::Header::new(algorithm);
+        at_jwt_header.typ = Some("at+jwt".to_string());
+        let at_jwt = jsonwebtoken::encode(&at_jwt_header, &json!({ "sub": "u1", "exp": now + 60 }), &key).unwrap();
+        assert!(
+            matches!(verify_app_token(&secret, &at_jwt), Err(VerifyError::Token(_))),
+            "published MCP access token (typ at+jwt) must not verify as an app token"
+        );
         assert!(matches!(verify_app_token(&secret, &sign(json!({ "sub": "u1", "exp": now - 120 }))), Err(VerifyError::Token(_))));
         let other = json!({ "secret": uuid::Uuid::new_v4().to_string() });
         assert!(matches!(verify_app_token(&other, &sign(json!({ "exp": now + 60 }))), Err(VerifyError::Token(_))));

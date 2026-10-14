@@ -234,18 +234,38 @@ impl NodeHandler for Node {
             PipelineError::new(code, err.to_string())
         })?;
 
+        let header = match jsonwebtoken::decode_header(token) {
+            Ok(header) => header,
+            Err(err) => return Ok(invalid(&input.payload, &err.to_string())),
+        };
+        if super::sign::is_access_token_typ(header.typ.as_deref()) {
+            return Ok(invalid(
+                &input.payload,
+                "published MCP access token (typ at+jwt) cannot be verified as an app token",
+            ));
+        }
+
         let mut validation = Validation::new(algorithm);
         // A session token without an expiry is a session that never ends.
         validation.required_spec_claims = ["exp"].iter().map(|s| s.to_string()).collect();
         if !self.config.issuer.trim().is_empty() {
             validation.set_issuer(&[self.config.issuer.trim()]);
         }
-        if !self.config.audience.trim().is_empty() {
-            validation.set_audience(&[self.config.audience.trim()]);
+        let expected_audience = self.config.audience.trim();
+        if !expected_audience.is_empty() {
+            validation.set_audience(&[expected_audience]);
         }
 
         match jsonwebtoken::decode::<Value>(token, &key, &validation) {
             Ok(data) => {
+                if expected_audience.is_empty()
+                    && data.claims.get("aud").is_some_and(|v| !v.is_null())
+                {
+                    return Ok(invalid(
+                        &input.payload,
+                        "token carries an audience claim but --audience was not specified",
+                    ));
+                }
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_VALID.to_string()],
                     payload: crate::pipeline::nodes::shared::util::with_answer(
