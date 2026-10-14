@@ -17627,59 +17627,96 @@ async fn api_check_addressing_host(
         &headers,
         &owner,
         &project,
-        ProjectCapability::SettingsRead,
+        ProjectCapability::SettingsWrite,
     ) {
         return response;
     }
-    let host = crate::platform::services::addressing::normalize_host(&req.host);
-    if host.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "host is required"}))).into_response();
-    }
+    let host = match crate::platform::services::addressing::validate_host(&req.host) {
+        Ok(host) => host,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "code": err.code, "error": err.message})),
+            )
+                .into_response();
+        }
+    };
     let expected = format!("{}/{}", slug_segment(&owner), slug_segment(&project));
     let dns_host = host.clone();
-    let resolved: Vec<String> = tokio::task::spawn_blocking(move || {
+    let resolved_ips: Vec<std::net::IpAddr> = tokio::task::spawn_blocking(move || {
         use std::net::ToSocketAddrs;
         (dns_host.as_str(), 443u16)
             .to_socket_addrs()
-            .map(|addrs| addrs.map(|a| a.ip().to_string()).collect::<Vec<_>>())
+            .map(|addrs| addrs.map(|a| a.ip()).collect::<Vec<_>>())
             .unwrap_or_default()
     })
     .await
     .unwrap_or_default();
+    if resolved_ips
+        .iter()
+        .copied()
+        .any(crate::pipeline::security::is_blocked_egress_ip)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "code": "ADDRESSING_HOST_PRIVATE_IP",
+                "error": "host resolves to a private, loopback, or reserved address"
+            })),
+        )
+            .into_response();
+    }
+    let resolved: Vec<String> = resolved_ips.iter().map(ToString::to_string).collect();
     let mut verify = json!({ "ok": false, "tried": [] });
-    if !resolved.is_empty() {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(8))
-            .build();
-        if let Ok(client) = client {
-            let mut tried = Vec::new();
-            for scheme in ["https", "http"] {
-                let section = state
-                    .platform
-                    .addressing
-                    .sections(&owner, &project)
-                    .and_then(|table| table.hosts.get(&host).and_then(|h| h.section.clone()));
-                let token = host_verify::mint(&slug_segment(&owner), &slug_segment(&project), section.as_deref());
-                let url = format!("{scheme}://{host}{}/{token}", host_verify::PREFIX);
-                match client.get(&url).send().await {
-                    Ok(resp) => {
-                        let ok = resp.status() == StatusCode::NO_CONTENT;
-                        let other = resp.headers().get("x-zebflow-verify").is_some();
-                        tried.push(json!({ "url": format!("{scheme}://{host}/"), "status": resp.status().as_u16() }));
-                        if ok {
-                            verify = json!({ "ok": true, "url": format!("{scheme}://{host}/"), "status": 200, "tried": tried });
-                            break;
-                        }
-                        if scheme == "http" {
-                            verify = json!({ "ok": false, "tried": tried, "reason": if other { "answers for another project" } else { "answers, but not from Zebflow — is the proxy passing the Host header?" } });
-                        }
+    if !resolved_ips.is_empty() {
+        let mut tried = Vec::new();
+        for scheme in ["https", "http"] {
+            let port = if scheme == "https" { 443u16 } else { 80u16 };
+            let pinned_addrs: Vec<std::net::SocketAddr> = resolved_ips
+                .iter()
+                .copied()
+                .map(|ip| std::net::SocketAddr::new(ip, port))
+                .collect();
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(8))
+                .resolve_to_addrs(&host, &pinned_addrs)
+                .build();
+            let Ok(client) = client else {
+                break;
+            };
+            let section = state
+                .platform
+                .addressing
+                .sections(&owner, &project)
+                .and_then(|table| table.hosts.get(&host).and_then(|h| h.section.clone()));
+            let token = host_verify::mint(&slug_segment(&owner), &slug_segment(&project), section.as_deref());
+            let url = format!("{scheme}://{host}{}/{token}", host_verify::PREFIX);
+            if let Err(err) = crate::pipeline::security::validate_outbound_http_url(&url, "addressing.check") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "code": err.code, "error": err.message})),
+                )
+                    .into_response();
+            }
+            match client.get(&url).send().await {
+                Ok(resp) => {
+                    let ok = resp.status() == StatusCode::NO_CONTENT;
+                    let other = resp.headers().get("x-zebflow-verify").is_some();
+                    tried.push(json!({ "url": format!("{scheme}://{host}/"), "status": resp.status().as_u16() }));
+                    if ok {
+                        verify = json!({ "ok": true, "url": format!("{scheme}://{host}/"), "status": 200, "tried": tried });
+                        break;
                     }
-                    Err(err) => {
-                        tried.push(json!({ "url": url, "error": err.to_string() }));
-                        if scheme == "http" {
-                            verify = json!({ "ok": false, "tried": tried, "reason": "nothing answered — the proxy is not up yet, or a firewall is in the way" });
-                        }
+                    if scheme == "http" {
+                        verify = json!({ "ok": false, "tried": tried, "reason": if other { "answers for another project" } else { "answers, but not from Zebflow — is the proxy passing the Host header?" } });
+                    }
+                }
+                Err(_) => {
+                    tried.push(json!({ "url": format!("{scheme}://{host}/"), "error": "connection failed" }));
+                    if scheme == "http" {
+                        verify = json!({ "ok": false, "tried": tried, "reason": "nothing answered — the proxy is not up yet, or a firewall is in the way" });
                     }
                 }
             }

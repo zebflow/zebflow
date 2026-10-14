@@ -284,7 +284,7 @@ fn normalize_host(host: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn is_blocked_egress_ip(ip: IpAddr) -> bool {
+pub fn is_blocked_egress_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [a, b, _, _] = ip.octets();
@@ -298,6 +298,9 @@ fn is_blocked_egress_ip(ip: IpAddr) -> bool {
                 || (a == 100 && (64..=127).contains(&b))
         }
         IpAddr::V6(ip) => {
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                return is_blocked_egress_ip(IpAddr::V4(v4));
+            }
             let segments = ip.segments();
             ip.is_unspecified()
                 || ip.is_loopback()

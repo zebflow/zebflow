@@ -811,6 +811,13 @@ fn valid_host(host: &str) -> bool {
     !host.is_empty()
         && host.len() <= 253
         && host.contains('.')
+        && host.parse::<std::net::IpAddr>().is_err()
+        && !host
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .all(|c| c.is_ascii_digit())
         && host.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
@@ -818,6 +825,40 @@ fn valid_host(host: &str) -> bool {
                 && !label.starts_with('-')
                 && !label.ends_with('-')
         })
+}
+
+/// Validate a custom project hostname before storing or probing it via DNS/HTTP.
+pub fn validate_host(raw: &str) -> Result<String, PlatformError> {
+    let host = normalize_host(raw);
+    if host.is_empty() {
+        return Err(PlatformError::new("ADDRESSING_HOST_INVALID", "host is required"));
+    }
+    if sections::is_platform_host(raw) {
+        return Err(PlatformError::new(
+            "ADDRESSING_HOST_RESERVED",
+            format!("`{host}` is the platform's own address; a project cannot hold it"),
+        ));
+    }
+    if !valid_host(&host) {
+        return Err(PlatformError::new(
+            "ADDRESSING_HOST_INVALID",
+            format!("`{raw}` is not a public hostname (letters, digits, `-`, dots; no IP literal, port, or path)"),
+        ));
+    }
+    if AddressingService::parse_dev_host(&host).is_some()
+        || AddressingService::parse_dev_file_host(&host).is_some()
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.ends_with(".cluster.local")
+    {
+        return Err(PlatformError::new(
+            "ADDRESSING_HOST_RESERVED",
+            format!("`{host}` is a reserved or internal hostname"),
+        ));
+    }
+    Ok(host)
 }
 
 /// A route path: starts with `/`; a prefix ends with `/`; pages may only be
@@ -1313,5 +1354,31 @@ mod config_tests {
             assert!(!text.contains("x-zebflow-project"), "{id}: no header names the project");
         }
         assert!(server_configs(&ProxyFacts { hosts: &[], ..facts }).is_empty());
+    }
+
+    #[test]
+    fn addressing_check_validates_host_and_blocks_internal_dns_and_ip_literals() {
+        for rejected in [
+            "",
+            "localhost",
+            "127.0.0.1",
+            "169.254.169.254",
+            "203.0.113.10",
+            "northside.superadmin.localhost",
+            "northside.superadmin.fs.localhost",
+            "redis.default.svc.cluster.local",
+            "db.internal",
+            "printer.local",
+            "metadata.google.internal",
+        ] {
+            assert!(
+                validate_host(rejected).is_err(),
+                "expected '{rejected}' to be rejected by validate_host"
+            );
+        }
+        assert_eq!(
+            validate_host("Site-A.Example.com:443").expect("valid public host"),
+            "site-a.example.com"
+        );
     }
 }
