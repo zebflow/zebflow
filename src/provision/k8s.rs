@@ -292,12 +292,13 @@ fn init_cluster(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
 
-        let cluster_name = root
+        let raw_cluster_name = root
             .file_name()
             .and_then(|value| value.to_str())
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or("zebflow-cluster")
-            .to_string();
+            .unwrap_or("zebflow-cluster");
+        let cluster_name = raw_cluster_name.trim().to_ascii_lowercase();
+        validate_resource_name(&cluster_name, "cluster name")?;
 
         let cfg = ClusterConfig {
             cluster_name,
@@ -413,9 +414,7 @@ fn set_resource_suffix(root: &Path, suffix: &str) -> Result<(), Box<dyn std::err
 }
 
 fn set_image(root: &Path, image: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if image.trim().is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "image cannot be empty").into());
-    }
+    validate_image_ref(image)?;
     with_cluster_lock(root, || {
         let mut cfg = load_cluster_config(root)?;
         cfg.managed_image = image.trim().to_string();
@@ -1272,6 +1271,26 @@ fn validate_resource_name(value: &str, label: &str) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+fn validate_image_ref(image: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let trimmed = image.trim();
+    if trimmed.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "image cannot be empty").into());
+    }
+    if !trimmed.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '/' | ':' | '@' | '-')
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "image '{}' contains invalid characters; only [A-Za-z0-9._/:@-] are allowed",
+                image
+            ),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn replace_managed_block(
     content: &str,
     block_name: &str,
@@ -1644,5 +1663,30 @@ mod tests {
         assert!(jobs.contains("name: migrate-zebflow-site-v4-to-zebflow-site-v4-v6"));
         assert!(jobs.contains("claimName: data-zebflow-site-v4-0"));
         assert!(jobs.contains("claimName: data-zebflow-site-v4-v6-0"));
+    }
+
+    #[test]
+    fn rejects_yaml_injection_in_image_and_cluster_name() {
+        let (_tmp, root) = temp_cluster_dir();
+        init_cluster(&root).expect("init");
+
+        for bad_image in [
+            "example.com/zebflow:latest\n          command: [\"/bin/sh\", \"-c\", \"id\"]",
+            "example.com/zebflow:latest\" # injected",
+            "example.com/zebflow:latest with spaces",
+            "",
+        ] {
+            assert!(
+                set_image(&root, bad_image).is_err(),
+                "expected set_image to reject '{bad_image}'"
+            );
+        }
+
+        let bad_dir = root.join("bad\"cluster\nname");
+        fs::create_dir_all(&bad_dir).expect("mkdir");
+        assert!(
+            init_cluster(&bad_dir).is_err(),
+            "expected init_cluster to reject directory name with quotes/newlines"
+        );
     }
 }
