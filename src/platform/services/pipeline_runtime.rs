@@ -510,6 +510,12 @@ fn check_trigger_flags(
             .to_string()
     };
     let refuse = |err| trigger_refused(meta, node, err);
+    if node.kind == "trigger.room" && text("room").trim().is_empty() {
+        return Err(refuse(crate::pipeline::PipelineError::new(
+            code,
+            "--room is required: name the room or pattern this trigger opens (e.g. --room lobby or --room \"match-*\")",
+        )));
+    }
     let auth = choice(&text("auth"), &webhook::AUTH_MODES, "none", "--auth", code).map_err(refuse)?;
     // A guard without its key would refuse every request at run time; say so
     // once, at activation, instead.
@@ -858,8 +864,13 @@ mod trigger_tests {
             let err = compile(dsl).err().unwrap_or_else(|| panic!("accepted: {dsl}"));
             assert_eq!(err.code, "FW_NODE_TRIGGER_WEBHOOK_CONFIG", "{dsl}");
         }
-        let err = compile("| trigger.room --auth sometimes").err().expect("refused");
+        let err = compile("| trigger.room --room lobby --auth sometimes").err().expect("refused");
         assert_eq!(err.code, "FW_NODE_TRIGGER_ROOM_CONFIG");
+        for dsl in ["| trigger.room --event move", r#"| trigger.room --room "   " --event move"#] {
+            let missing_room = compile(dsl).err().expect("missing --room is refused");
+            assert_eq!(missing_room.code, "FW_NODE_TRIGGER_ROOM_CONFIG", "{dsl}");
+            assert!(missing_room.message.contains("--room is required"), "{dsl}: {}", missing_room.message);
+        }
     }
 
     #[test]

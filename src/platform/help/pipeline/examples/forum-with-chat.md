@@ -79,14 +79,14 @@ register forum/api-room-create --
 
 ### ws-chat-message — WebSocket chat handler
 
-`trigger.room --room` is a literal filter, never an expression, so it is left
-off here and every room's traffic reaches this one pipeline; the trigger
+`trigger.room --room` names the room or pattern this trigger opens (`--room "*"`
+or `--room "room-*"` for dynamic room ids); the trigger
 answers under `room` — `input.room.room_id` right after the trigger, or
 `$trigger.room_id` anywhere later — says which room a given event came from.
 
 ```zf
 register forum/ws-chat-message --
-[a] trigger.room --event chat.message
+[a] trigger.room --room "*" --event chat.message
 [guard] logic.if --when "!!(input.room.payload && input.room.payload.user && input.room.payload.text)"
 [save] javascript.script.run -- "return { id: Date.now().toString(), room: $trigger.room_id, user: $trigger.payload.user, text: $trigger.payload.text, ts: Date.now() };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.save.script.id }}" --param "2={{ $nodes.save.script.room }}" --param "3={{ $nodes.save.script.user }}" --param "4={{ $nodes.save.script.text }}" --param "5={{ $nodes.save.script.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
@@ -107,7 +107,7 @@ to it, and returning `null` from a script would not have stopped anything
 ## Nodes Used
 
 - `trigger.webhook` — HTTP endpoints
-- `trigger.room --event chat.message` — WebSocket event handler; `--room` omitted (it is a literal filter, not per-connection routing)
+- `trigger.room --room "*" --event chat.message` — WebSocket event handler (`--room` is required; `*` or `room-*` matches dynamic rooms)
 - `sekejap.query.run` — rooms and messages storage; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `logic.if` — validate before saving
 - `javascript.script.run` — shape rows, carry the room lookup forward via `$nodes`; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept

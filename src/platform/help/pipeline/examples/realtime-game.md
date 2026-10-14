@@ -85,7 +85,7 @@ node:
 
 ```zf
 register game/ws-player-join --
-[a] trigger.room --event player.join
+[a] trigger.room --room "room-*" --event player.join
 [merge] ws.state.update --key "/players/{{ input.room.payload.player_id }}" --value "{{ { id: input.room.payload.player_id, name: input.room.payload.name, score: 0, joined_at: Date.now() } }}"
 [emit] ws.message.send --event state.updated --body "{{ { player_id: $trigger.payload.player_id } }}"
 
@@ -97,7 +97,7 @@ register game/ws-player-join --
 
 ```zf
 register game/ws-player-move --
-[a] trigger.room --event player.move
+[a] trigger.room --room "room-*" --event player.move
 [guard] logic.if --when "!!(input.room.payload && input.room.payload.player_id && input.room.payload.move)"
 [set] ws.state.put --key /last_move --value "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move, ts: Date.now() } }}"
 [emit] ws.message.send --event player.moved --body "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move } }}"
@@ -114,7 +114,7 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 ### ws-player-leave — player disconnects
 
 ```
-| trigger.room --event player.leave
+| trigger.room --room "room-*" --event player.leave
 | ws.message.send --event player.left --body "{{ { player_id: input.room.payload.player_id } }}"
 ```
 
@@ -123,7 +123,7 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 ## Nodes Used
 
 - `trigger.webhook` — HTTP lobby and room pages
-- `trigger.room --event <name>` — WebSocket event handlers (join, move, leave); `--room` omitted, it is a literal filter, not per-connection routing
+- `trigger.room --room "room-*" --event <name>` — WebSocket event handlers (join, move, leave); `--room` is required and accepts exact names or patterns (`room-*`, `room-:id`)
 - `sekejap.query.run` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `javascript.script.run` — shape the lobby rows and new room ids; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept
 - `logic.if` — move validation
@@ -159,17 +159,17 @@ The server raises two reserved events on every connection's own ordered queue:
   It runs even if the client never said goodbye, and after every event that
   socket sent, so a late `move` can never resurrect a player who left.
 
-Only a trigger that names them receives them (`trigger.room --event $disconnect`);
-a catch-all `trigger.room` does not, and clients cannot send `$` events. Presence
+Only a trigger that names them receives them (`trigger.room --room "room-*" --event $disconnect`);
+a catch-all event trigger does not, and clients cannot send `$` events. Presence
 is two small pipelines:
 
 ```
 register pipelines/presence-in --
-| trigger.room --event $connect
+| trigger.room --room "room-*" --event $connect
 | ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ { since: Date.now() } }}"
 
 register pipelines/presence-out --
-| trigger.room --event $disconnect
+| trigger.room --room "room-*" --event $disconnect
 | ws.state.delete --key "/players/{{ input.room.session_id }}"
 ```
 
@@ -178,9 +178,9 @@ empty leaves `/players/`, which is refused (`FW_NODE_WS_STATE_UPDATE_KEY`,
 `FW_NODE_WS_STATE_DELETE_KEY`), never a write to `/players` itself. When the last connection leaves, the room and its state are
 disposed; the next visitor starts from `{}`.
 
-A connection is admitted to a room when the room has no `trigger.room`, or one of
-them is open, or it passes the auth of at least one of them; otherwise the socket
-is closed with code 4401 before any state is sent.
+A connection is admitted to a room only when at least one active `trigger.room --room`
+matches the room id and the connection satisfies every auth guard declared on that room;
+otherwise the socket is closed with code 4401 before any state is sent.
 
 ---
 

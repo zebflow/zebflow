@@ -57,7 +57,7 @@ project's own platform forms pass, as on any of its hosts).
 | Surface | Default | Default path on a project host | Platform form (valid on every host) |
 |---|---|---|---|
 | `pages` — active `trigger.webhook` routes | on | `/` (**root**; the only surface that can be) | `/wh/{o}/{p}/…` |
-| `ws` — `trigger.room` rooms | on | `/_ws/rooms/{room}` | `/ws/{o}/{p}/rooms/{room}` |
+| `ws` — `trigger.room` rooms | **off** | `/_ws/rooms/{room}` | `/ws/{o}/{p}/rooms/{room}` |
 | `files` — objects [`ZebFsAcl`](./kinds/zebfs-acl/README.md) exposes, through the ZebFS gateway | **off** | `/_files/…` when switched on; always on the project's file hosts (§2b) | — (no platform form) |
 | `static` — project assets, `_rwe/lib`, `_rwe/scripts` | on | `/_static/…` | `/static/{o}/{p}/…` |
 | `ms` — published map layers | **off** | `/_ms/…` | `/ms/{o}/{p}/…` |

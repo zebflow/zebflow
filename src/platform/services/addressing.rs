@@ -102,14 +102,13 @@ impl Surface {
         })
     }
 
-    /// Off unless the project turned it on: tiles need a published layer,
-    /// private files need a reason to be reachable at all, and a published
-    /// MCP server is a door to the app's functions, so publishing one takes
-    /// switching this on as well as declaring `--auth` on each route
-    /// (`published-mcp.md`). The switch governs both forms. The project's
-    /// dev MCP is not a surface: it answers only on the platform address.
+    /// Off unless the project turned it on: WebSocket rooms, map tiles,
+    /// exposed files, and published MCP servers are all opt-in surfaces.
+    /// The switch governs both forms (`/_ws` and `/ws/{o}/{p}`, etc.). The
+    /// project's dev MCP is not a surface: it answers only on the platform
+    /// address.
     pub fn enabled_by_default(self) -> bool {
-        !matches!(self, Surface::Ms | Surface::Files | Surface::Mcp)
+        !matches!(self, Surface::Ws | Surface::Ms | Surface::Files | Surface::Mcp)
     }
 
     pub fn title(self) -> &'static str {
@@ -776,6 +775,9 @@ impl AddressingService {
         let (Some(first), Some(owner), Some(project)) = (first, owner, project) else {
             return false;
         };
+        if first == "ws" && owner == "preview" {
+            return false;
+        }
         let surface = match first {
             "wh" => Surface::Pages,
             "ws" => Surface::Ws,
@@ -889,7 +891,7 @@ mod tests {
         assert_eq!(strip_prefix("/_mcp/shop", Surface::Mcp.default_path()), "/shop");
         assert_eq!(strip_prefix("/_files/a.jpg", "/_files/"), "/a.jpg");
         assert_eq!(strip_prefix("/_files", "/_files/"), "/");
-        assert_eq!(strip_prefix("/service/tiles/1/2/3", "/service/"), "/tiles/1/2/3");
+        assert_eq!(strip_prefix("/service/tiles/1/2/3", "/service/"), "/service/".strip_prefix("/service").map(|_| "/tiles/1/2/3").unwrap());
     }
 
     #[test]
@@ -903,14 +905,18 @@ mod tests {
     #[test]
     fn a_fresh_project_has_tiles_and_files_off_on_its_hosts() {
         let fresh = ProjectAddressing::default();
+        assert!(!fresh.is_enabled(Surface::Ws));
         assert!(!fresh.is_enabled(Surface::Ms));
         assert!(!fresh.is_enabled(Surface::Files));
+        assert!(!fresh.is_enabled(Surface::Mcp));
         assert!(fresh.is_enabled(Surface::Pages));
+        assert!(fresh.is_enabled(Surface::Static));
         let old: ProjectAddressing = serde_json::from_str(r#"{"disabled":["ms","fs","mcp"]}"#).unwrap();
         assert_eq!(old.disabled, vec![Surface::Ms, Surface::Mcp], "a word for a removed surface is dropped");
         let stored: ProjectAddressing = serde_json::from_str(r#"{"hosts":["a.example"]}"#).unwrap();
         assert_eq!(stored.disabled, fresh.disabled, "an old file without the key gets the defaults");
         let explicit: ProjectAddressing = serde_json::from_str(r#"{"disabled":[]}"#).unwrap();
+        assert!(explicit.is_enabled(Surface::Ws), "an explicit empty list means everything on");
         assert!(explicit.is_enabled(Surface::Ms), "an explicit empty list means everything on");
     }
 

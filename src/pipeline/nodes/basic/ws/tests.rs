@@ -256,7 +256,7 @@ async fn a_key_part_from_the_payload_is_written_with_braces_and_resolved_by_the_
     let (hub, handle, _guard) = hub_with("lobby");
     let graph = build_pipeline_graph(
         "ws-state",
-        r#"| trigger.room | ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}""#,
+        r#"| trigger.room --room lobby | ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}""#,
     )
     .expect("graph");
     let ctx = PipelineContext {
@@ -291,7 +291,7 @@ async fn a_room_send_after_trigger_room_reaches_the_triggering_room() {
     let (hub, handle, _guard) = hub_with("lobby");
     let graph = build_pipeline_graph(
         "ws-send",
-        r#"| trigger.room --event move | ws.message.send --event moved --recipient others --body "{{ input.room.payload }}""#,
+        r#"| trigger.room --room lobby --event move | ws.message.send --event moved --recipient others --body "{{ input.room.payload }}""#,
     )
     .expect("graph");
     let envelope = room_envelope("lobby", "s1");

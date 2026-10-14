@@ -1601,6 +1601,9 @@ async fn addressing_gate(
                 .iter()
                 .any(|p| path == *p || path.starts_with(&format!("{p}/")));
         let mut mount = None;
+        if platform_form && state.platform.addressing.platform_form_disabled(&path) {
+            return (StatusCode::NOT_FOUND, "this surface is switched off for the project (Settings → Addressing)").into_response();
+        }
         if !platform_form {
             // A host whose routes match nothing answers 404 for the project;
             // it never falls through to the platform's own routes (§2).

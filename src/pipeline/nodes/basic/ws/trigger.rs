@@ -148,7 +148,7 @@ pub fn definition() -> NodeDefinition {
             "properties": {
                 "room": {
                     "type": "string",
-                    "description": "Room id to match. Empty string (default) matches any room. Exact string equality — no wildcards."
+                    "description": "Room id or pattern to match (e.g. lobby, match-*, thread-:id). Required; only rooms declared by trigger.room can be joined."
                 },
                 "event": {
                     "type": "string",
@@ -174,10 +174,10 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--room".to_string(),
                 config_key: "room".to_string(),
-                description: "Room id to scope this trigger to. Omit to match any room."
+                description: "Room name or pattern this trigger registers (e.g. lobby, match-*, thread-:id). Required."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
-                required: false,
+                required: true,
                 value: "text".to_string(),
                 ..Default::default()
             },
@@ -197,7 +197,7 @@ pub fn definition() -> NodeDefinition {
                 name: "room".to_string(),
                 label: "Room".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Room name pattern to listen on.".to_string()),
+                help: Some("Room name or pattern to listen on (required).".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {

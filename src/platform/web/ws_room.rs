@@ -31,25 +31,59 @@ pub(super) const DISCONNECT_EVENT: &str = "$disconnect";
 /// Close code sent when a connection is not admitted to a room.
 const CLOSE_UNAUTHORIZED: u16 = 4401;
 
+/// Whether a `trigger.room --room` value (exact name, `prefix*` glob, or
+/// `prefix:param` pattern) matches `room_id`. An empty `t_room` never matches:
+/// a room exists only when declared by `trigger.room --room <name-or-pattern>`.
+pub(super) fn room_matches(t_room: &str, room_id: &str) -> bool {
+    let t_room = t_room.trim();
+    let room_id = room_id.trim();
+    if t_room.is_empty() || room_id.is_empty() {
+        return false;
+    }
+    if t_room == room_id || t_room == "*" {
+        return true;
+    }
+    if let Some((prefix, suffix)) = t_room.split_once('*')
+        && !suffix.contains('*')
+    {
+        return room_id.len() > prefix.len() + suffix.len()
+            && room_id.starts_with(prefix)
+            && room_id.ends_with(suffix);
+    }
+    if let Some((prefix, param)) = t_room.split_once(':')
+        && !param.is_empty()
+        && param.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return room_id
+            .strip_prefix(prefix)
+            .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'));
+    }
+    false
+}
+
 /// Whether a `trigger.room` with `t_room` / `t_event` handles `event` in `room_id`.
 /// Reserved `$` events reach only triggers that name them.
 pub(super) fn trigger_matches(t_room: &str, t_event: &str, room_id: &str, event: &str) -> bool {
-    let room_match = t_room.is_empty() || t_room == room_id;
+    let room_match = room_matches(t_room, room_id);
     let event_match = t_event == event || (t_event.is_empty() && !event.starts_with('$'));
     room_match && event_match
 }
 
 /// Whether a connection may enter a room, from the auth its triggers require.
 ///
-/// `requires_auth` holds one entry per `trigger.room` that can fire in the room.
-/// A room with no triggers, or with any open trigger, admits everyone (anything
-/// it shows can be acted on without signing in anyway); otherwise the connection
-/// must pass at least one trigger's auth.
-pub(super) fn admission(requires_auth: &[bool], passes_one: impl FnOnce() -> bool) -> bool {
-    if requires_auth.is_empty() || requires_auth.iter().any(|required| !required) {
+/// `requires_auth` holds one entry per `trigger.room` that matches the room.
+/// A room with no matching `trigger.room` does not exist and is refused; if
+/// every trigger on the room is open (`--auth none`), everyone is admitted; if
+/// any trigger on the room requires auth, every required guard on the room must
+/// pass (an unguarded event trigger in the same room never bypasses room auth).
+pub(super) fn admission(requires_auth: &[bool], passes_all: impl FnOnce() -> bool) -> bool {
+    if requires_auth.is_empty() {
+        return false;
+    }
+    if requires_auth.iter().all(|required| !required) {
         return true;
     }
-    passes_one()
+    passes_all()
 }
 
 fn is_open(auth_type: &str) -> bool {
@@ -231,7 +265,7 @@ fn admit(ctx: &SessionCtx, auth: &mut AuthCache) -> bool {
     let specs: Vec<_> = pipelines
         .iter()
         .flat_map(|p| p.ws_triggers.iter())
-        .filter(|t| t.room.is_empty() || t.room == ctx.room_id)
+        .filter(|t| room_matches(&t.room, &ctx.room_id))
         .collect();
     let requires: Vec<bool> = specs.iter().map(|t| !is_open(&t.auth_type)).collect();
     // The room's own `--auth`, from the visitor's headers, on every office: a
@@ -239,12 +273,14 @@ fn admit(ctx: &SessionCtx, auth: &mut AuthCache) -> bool {
     // controller's call header proves only who forwarded it.
     admission(&requires, || {
         for spec in specs.iter().filter(|t| !is_open(&t.auth_type)) {
-            if let Ok(claims) = verify_trigger_auth(ctx, spec) {
-                auth.0.insert(AuthCache::key(spec), claims.unwrap_or(Value::Null));
-                return true;
+            match verify_trigger_auth(ctx, spec) {
+                Ok(claims) => {
+                    auth.0.insert(AuthCache::key(spec), claims.unwrap_or(Value::Null));
+                }
+                Err(()) => return false,
             }
         }
-        false
+        true
     })
 }
 
@@ -356,19 +392,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reserved_events_reach_only_triggers_that_name_them() {
-        assert!(trigger_matches("", "$disconnect", "lobby", "$disconnect"));
-        assert!(!trigger_matches("", "", "lobby", "$disconnect"), "a catch-all trigger must not see lifecycle events");
-        assert!(trigger_matches("", "", "lobby", "move"));
+    fn reserved_events_reach_only_triggers_that_name_them_and_require_room() {
+        assert!(!trigger_matches("", "$disconnect", "lobby", "$disconnect"), "empty --room never matches");
+        assert!(trigger_matches("lobby", "$disconnect", "lobby", "$disconnect"));
+        assert!(!trigger_matches("lobby", "", "lobby", "$disconnect"), "a catch-all event trigger must not see lifecycle events");
+        assert!(trigger_matches("lobby", "", "lobby", "move"));
         assert!(!trigger_matches("arena", "move", "lobby", "move"));
+        assert!(trigger_matches("match-*", "move", "match-42", "move"));
+        assert!(!trigger_matches("match-*", "move", "match-", "move"));
+        assert!(trigger_matches("thread-:id", "chat", "thread-7", "chat"));
+        assert!(!trigger_matches("thread-:id", "chat", "thread-", "chat"));
     }
 
     #[test]
     fn admission_follows_the_rooms_triggers() {
-        assert!(admission(&[], || false), "no triggers: open");
-        assert!(admission(&[true, false], || false), "any open trigger: open");
-        assert!(!admission(&[true, true], || false), "all need auth and none passed");
-        assert!(admission(&[true], || true), "passed one");
+        assert!(!admission(&[], || true), "undeclared room (no matching trigger.room) is refused");
+        assert!(admission(&[false], || false), "declared room with only open triggers admits");
+        assert!(!admission(&[true, false], || false), "an open trigger in the same room does not bypass a guarded trigger");
+        assert!(admission(&[true, false], || true), "guarded room admits when required auth passes");
+        assert!(!admission(&[true, true], || false), "all need auth and failed");
+        assert!(admission(&[true], || true), "passed required auth");
     }
 
     #[tokio::test]
