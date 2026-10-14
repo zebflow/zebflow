@@ -2327,6 +2327,7 @@ impl ProjectService {
         self.ensure_template_editable(&owner, &project, from_path, "moved")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let (from_rel, from_abs) = resolve_repo_entry(&layout, from_path, false)?;
+        self.ensure_template_editable(&owner, &project, &from_rel, "moved")?;
         if !from_abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_MISSING",
@@ -2335,6 +2336,7 @@ impl ProjectService {
         }
         let is_file = from_abs.is_file();
         let (to_rel, to_abs) = resolve_repo_entry(&layout, to_path, is_file)?;
+        self.ensure_template_editable(&owner, &project, &to_rel, "moved")?;
         if repo_entry_is_machine_owned(&from_rel) || repo_entry_is_machine_owned(&to_rel) {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_MACHINE_OWNED",

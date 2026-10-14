@@ -857,12 +857,12 @@ impl PlatformOps {
                 }
             }
         };
-        let mut dsl = format!("register {frp}");
+        let mut dsl = format!("register {}", quote_dsl_arg(&frp));
         if let Some(t) = title {
-            dsl.push_str(&format!(" --title \"{t}\""));
+            dsl.push_str(&format!(" --title {}", quote_dsl_arg(t)));
         }
         if let Some(d) = description.filter(|d| !d.trim().is_empty()) {
-            dsl.push_str(&format!(" --description \"{d}\""));
+            dsl.push_str(&format!(" --description {}", quote_dsl_arg(d)));
         }
         dsl.push(' ');
         dsl.push_str(body);
@@ -872,7 +872,7 @@ impl PlatformOps {
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor.execute_one_command(&dsl).await;
         let text = output
             .lines
             .iter()
@@ -894,32 +894,45 @@ impl PlatformOps {
     pub async fn pipeline_check(&self, body: Option<&str>, file_rel_path: Option<&str>) -> OpsResult {
         let body = body.map(str::trim).filter(|b| !b.is_empty());
         let file_rel_path = file_rel_path.map(str::trim).filter(|p| !p.is_empty());
-        let dsl = match (body, file_rel_path) {
-            (Some(body), _) if body.starts_with('|') || body.starts_with('[') => format!("check {body}"),
-            (Some(body), _) => format!("check | {body}"),
-            (None, Some(path)) => format!("check pipeline {path}"),
-            (None, None) => return OpsResult::err("pipeline_check takes a body (the DSL you would register) or a file_rel_path (a saved pipeline)"),
+        let (check_path, check_body) = match (body, file_rel_path) {
+            (Some(body), _) if body.starts_with('|') || body.starts_with('[') => {
+                (String::new(), body.to_string())
+            }
+            (Some(body), _) => (String::new(), format!("| {body}")),
+            (None, Some(path)) => (path.to_string(), String::new()),
+            (None, None) => {
+                return OpsResult::err(
+                    "pipeline_check takes a body (the DSL you would register) or a file_rel_path (a saved pipeline)",
+                )
+            }
         };
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(),
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor
+            .execute_verb(crate::platform::shell::parser::DslVerb::Check {
+                file_rel_path: check_path,
+                body: check_body,
+            })
+            .await;
         OpsResult::ok(output.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n"))
     }
 
     pub async fn pipeline_describe(&self, file_rel_path: &str, compact: bool) -> OpsResult {
-        let mut dsl = format!("describe pipeline {file_rel_path}");
-        if compact {
-            dsl.push_str(" --compact");
-        }
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(),
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor
+            .execute_verb(crate::platform::shell::parser::DslVerb::Describe {
+                kind: "pipeline".to_string(),
+                name: file_rel_path.to_string(),
+                compact,
+            })
+            .await;
         OpsResult::ok(
             output
                 .lines
@@ -939,7 +952,12 @@ impl PlatformOps {
         body: Option<&str>,
     ) -> OpsResult {
         let target = if target.trim().is_empty() { "node" } else { target.trim() };
-        let mut dsl = format!("patch pipeline {file_rel_path} {target} {node_id}");
+        let mut dsl = format!(
+            "patch pipeline {} {} {}",
+            quote_dsl_arg(file_rel_path),
+            quote_dsl_arg(target),
+            quote_dsl_arg(node_id)
+        );
         if let Some(f) = flags {
             dsl.push(' ');
             dsl.push_str(f);
@@ -952,7 +970,7 @@ impl PlatformOps {
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor.execute_one_command(&dsl).await;
         OpsResult::ok(
             output
                 .lines
@@ -964,13 +982,16 @@ impl PlatformOps {
     }
 
     pub async fn pipeline_activate(&self, file_rel_path: &str) -> OpsResult {
-        let dsl = format!("activate pipeline {file_rel_path}");
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(),
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor
+            .execute_verb(crate::platform::shell::parser::DslVerb::Activate {
+                file_rel_path: file_rel_path.to_string(),
+            })
+            .await;
         let text = output
             .lines
             .iter()
@@ -1059,13 +1080,16 @@ impl PlatformOps {
     }
 
     pub async fn pipeline_deactivate(&self, file_rel_path: &str) -> OpsResult {
-        let dsl = format!("deactivate pipeline {file_rel_path}");
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(),
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor
+            .execute_verb(crate::platform::shell::parser::DslVerb::Deactivate {
+                file_rel_path: file_rel_path.to_string(),
+            })
+            .await;
         OpsResult::ok(
             output
                 .lines
@@ -1077,19 +1101,24 @@ impl PlatformOps {
     }
 
     pub async fn pipeline_execute(&self, file_rel_path: &str, input: Option<&str>) -> OpsResult {
-        let mut dsl = format!("execute pipeline {file_rel_path}");
-        if let Some(i) = input {
-            // Wrap in single quotes so the DSL tokenizer treats JSON objects (which may
-            // contain spaces) as a single token. JSON does not use single quotes so this
-            // is safe. The tokenizer strips the outer single quotes before parsing.
-            dsl.push_str(&format!(" --input '{i}'"));
-        }
+        let parsed_input = match input.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => match serde_json::from_str::<Value>(raw) {
+                Ok(v) => v,
+                Err(e) => return OpsResult::err(format!("execute: invalid --input JSON: {e}")),
+            },
+            None => json!({}),
+        };
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(),
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor
+            .execute_verb(crate::platform::shell::parser::DslVerb::Execute {
+                file_rel_path: file_rel_path.to_string(),
+                input: parsed_input,
+            })
+            .await;
         OpsResult::ok(
             output
                 .lines
@@ -1814,45 +1843,33 @@ impl PlatformOps {
     }
 
     fn move_template(&self, from_path: &str, to_path: &str) -> OpsResult {
-        let layout = match self
+        match self
             .platform
-            .file
-            .ensure_project_layout(&self.owner, &self.project)
+            .projects
+            .move_repo_entry(&self.owner, &self.project, from_path, to_path)
         {
-            Err(e) => return OpsResult::err(e.to_string()),
-            Ok(l) => l,
-        };
-
-        let root = &layout.repo_source_dir();
-        let from_abs = root.join(from_path);
-        let to_abs = root.join(to_path);
-
-        if !from_abs.starts_with(root) || !to_abs.starts_with(root) {
-            return OpsResult::err("Path escapes template root");
+            Ok(to_rel) => OpsResult::ok(format!("Moved template {} → {}", from_path, to_rel)),
+            Err(e) => OpsResult::err(e.to_string()),
         }
-
-        if !from_abs.is_file() {
-            return OpsResult::err(format!("Template '{}' not found", from_path));
-        }
-
-        if to_abs.exists() {
-            return OpsResult::err(format!("Destination '{}' already exists", to_path));
-        }
-
-        if let Some(parent) = to_abs.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return OpsResult::err(format!("Failed to create parent dirs: {e}"));
-            }
-        }
-
-        if let Err(e) = std::fs::rename(&from_abs, &to_abs) {
-            return OpsResult::err(format!("Failed to move file: {e}"));
-        }
-
-        OpsResult::ok(format!("Moved template {} → {}", from_path, to_path))
     }
 }
 
+fn quote_dsl_arg(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\r' | '\n' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
 
 /// Returns true if the path looks like a pipeline file.
 ///
@@ -1861,7 +1878,16 @@ impl PlatformOps {
 /// asking to move a pipeline, and the two halves must both be satisfiable for
 /// the move to be refused as cross-domain.
 fn pipeline_path_heuristic(layout: &ResolvedProjectLayout, path: &str) -> bool {
-    path.ends_with(PIPELINE_DEFINITION_EXTENSION) || layout.is_in_source(path)
+    if path.ends_with(PIPELINE_DEFINITION_EXTENSION) {
+        return true;
+    }
+    // A file with any other extension is a template, even inside the source
+    // root (which, declared as the repository root, contains every path).
+    let leaf = path.rsplit('/').next().unwrap_or(path);
+    if leaf.contains('.') {
+        return false;
+    }
+    layout.is_in_source(path)
 }
 
 /// Parses JSON source, sets the `"id"` field to `new_file_rel_path`, returns pretty-printed JSON.
@@ -2089,7 +2115,7 @@ impl PlatformOps {
         args: Option<&str>,
         message: Option<&str>,
     ) -> OpsResult {
-        let mut dsl = format!("git {subcommand}");
+        let mut dsl = format!("git {}", quote_dsl_arg(subcommand));
         if let Some(a) = args {
             dsl.push(' ');
             dsl.push_str(a);
@@ -2102,7 +2128,7 @@ impl PlatformOps {
             &self.owner,
             &self.project,
         );
-        let output = executor.execute_dsl(&dsl).await;
+        let output = executor.execute_one_command(&dsl).await;
         OpsResult::ok(
             output
                 .lines
@@ -3532,4 +3558,126 @@ mod save_check_tests {
         assert!(problems.iter().any(|p| p.starts_with("pages/a.tsx:") && p.contains("does not parse")), "{answer}");
         assert!(problems.iter().any(|p| p.starts_with("pages/b.tsx:2:") && p.contains("`cx`")), "{answer}");
     }
+
+    #[tokio::test]
+    async fn ops_rejects_dsl_command_chaining_and_enforces_pipeline_and_template_locks() {
+        let platform = test_platform();
+        platform
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let ops = PlatformOps::new((*platform).clone(), "superadmin", "default");
+
+        let saved = ops
+            .pipeline_register(
+                "| trigger.webhook --route /keep --method GET | web.response.send",
+                Some("api/keep"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert!(saved.text.contains("registered"), "{}", saved.text);
+
+        // 1. Chained `&&` in `pipeline_describe` must not execute a second DSL command (`register`).
+        let _ = ops
+            .pipeline_describe(
+                "api/keep && register api/injected-desc -- | trigger.webhook --route /inj1 | web.response.send",
+                false,
+            )
+            .await;
+        assert!(
+            platform
+                .projects
+                .get_pipeline_meta_by_file_id("superadmin", "default", "api/injected-desc")
+                .expect("meta")
+                .is_none(),
+            "pipeline_describe allowed && command chaining to register api/injected-desc"
+        );
+
+        // 2. Single quotes + `&&` in `pipeline_execute` input must not break out into DSL commands.
+        let _ = ops
+            .pipeline_execute(
+                "api/keep",
+                Some(r#"{"note":"x' && register api/injected-exec -- | trigger.webhook --route /inj2 | web.response.send"}"#),
+            )
+            .await;
+        assert!(
+            platform
+                .projects
+                .get_pipeline_meta_by_file_id("superadmin", "default", "api/injected-exec")
+                .expect("meta")
+                .is_none(),
+            "pipeline_execute input allowed single-quote breakout and && command chaining"
+        );
+
+        // 3. Double quotes + `&&` in `pipeline_register` title must not chain DSL commands.
+        let _ = ops
+            .pipeline_register(
+                "| trigger.webhook --route /other --method GET | web.response.send",
+                Some("api/other"),
+                None,
+                None,
+                Some(r#"x" && register api/injected-reg -- | trigger.webhook --route /inj3 | web.response.send"#),
+                None,
+            )
+            .await;
+        assert!(
+            platform
+                .projects
+                .get_pipeline_meta_by_file_id("superadmin", "default", "api/injected-reg")
+                .expect("meta")
+                .is_none(),
+            "pipeline_register title allowed quote breakout and && command chaining"
+        );
+
+        // 4. `move_resource` moves an unlocked template, and refuses moving a locked template or into a locked folder.
+        let page = "export default function Page() {\n  return <div>ok</div>;\n}\n";
+        ops.file_write("pages/locked.tsx", page);
+        ops.file_write("pages/unlocked.tsx", page);
+        platform
+            .zebflow_cfg
+            .set_template_locked("superadmin", "default", "pages/locked.tsx", true)
+            .expect("lock template");
+        platform
+            .zebflow_cfg
+            .set_template_locked("superadmin", "default", "pages/guarded", true)
+            .expect("lock folder");
+
+        let moved_ok = ops
+            .move_resource("pages/unlocked.tsx", "pages/unlocked-moved.tsx")
+            .await;
+        assert!(
+            !moved_ok.text.starts_with("Error:"),
+            "moving an unlocked template should succeed: {}",
+            moved_ok.text
+        );
+
+        let moved_locked = ops
+            .move_resource("pages/locked.tsx", "pages/renamed.tsx")
+            .await;
+        assert!(
+            moved_locked.text.starts_with("Error:"),
+            "moving a locked template must be refused: {}",
+            moved_locked.text
+        );
+        assert!(
+            platform
+                .projects
+                .read_repo_file_text("superadmin", "default", "pages/locked.tsx")
+                .is_ok(),
+            "locked template must remain at original path"
+        );
+
+        let moved_into_locked = ops
+            .move_resource("pages/unlocked-moved.tsx", "pages/guarded/unlocked.tsx")
+            .await;
+        assert!(
+            moved_into_locked.text.starts_with("Error:"),
+            "moving a template into a locked folder must be refused: {}",
+            moved_into_locked.text
+        );
+    }
 }
+

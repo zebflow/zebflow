@@ -76,7 +76,30 @@ impl DslExecutor {
         combined
     }
 
-    async fn execute_verb(&self, verb: DslVerb) -> DslOutput {
+    /// Execute a single DSL command without permitting `&&` command chaining.
+    pub async fn execute_one_command(&self, dsl: &str) -> DslOutput {
+        let commands = split_commands(dsl);
+        if commands.is_empty() {
+            return DslOutput::err("Empty command");
+        }
+        if commands.len() > 1 {
+            return DslOutput::err(
+                "Chained `&&` commands are not permitted in a single operation",
+            );
+        }
+        let cmd = commands[0].trim();
+        let verb = parse_one_command(cmd);
+        if let DslVerb::Unknown { raw } = &verb {
+            let verb_word = raw.split_whitespace().next().unwrap_or("?");
+            return DslOutput::err(format!(
+                "Unknown command: '{}'. Type help for available commands.",
+                verb_word
+            ));
+        }
+        self.execute_verb(verb).await
+    }
+
+    pub async fn execute_verb(&self, verb: DslVerb) -> DslOutput {
         match verb {
             DslVerb::Get {
                 resource,
