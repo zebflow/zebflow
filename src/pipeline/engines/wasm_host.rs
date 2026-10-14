@@ -167,7 +167,16 @@ pub fn run_wasm_export(
         )
     })?;
     let mut store = Store::new(&engine, ());
-    let instance = Instance::new(&mut store, &module, &[]).map_err(|err| {
+    let mut linker = wasmtime::Linker::new(&engine);
+    linker
+        .define_unknown_imports_as_default_values(&mut store, &module)
+        .map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_WASM_INSTANTIATE",
+                format!("WASM node '{kind}' failed to stub imports: {err}"),
+            )
+        })?;
+    let instance = linker.instantiate(&mut store, &module).map_err(|err| {
         PipelineError::new(
             "FW_NODE_WASM_INSTANTIATE",
             format!("WASM node '{kind}' failed to instantiate: {err}"),
@@ -188,10 +197,18 @@ pub fn run_wasm_export(
 
 fn resolve_package_file(package_dir: &str, rel_path: &str) -> Result<PathBuf, PipelineError> {
     let rel = Path::new(rel_path);
-    if rel.is_absolute()
-        || rel
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
+    if rel_path.trim().is_empty()
+        || rel_path.contains('\\')
+        || rel_path.contains('\0')
+        || rel.is_absolute()
+        || rel.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
     {
         return Err(PipelineError::new(
             "FW_NODE_WASM_PATH",
@@ -343,4 +360,48 @@ fn read_memory(
         ));
     }
     Ok(data[ptr..end].to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_package_file_rejects_traversal_and_stubs_beyond_32_unknown_imports() {
+        assert!(resolve_package_file("/pkg", "../escape.wasm").is_err());
+        assert!(resolve_package_file("/pkg", "/abs.wasm").is_err());
+        assert!(resolve_package_file("/pkg", "a\\b.wasm").is_err());
+        assert_eq!(
+            resolve_package_file("/pkg", "mod/node.wasm").unwrap(),
+            PathBuf::from("/pkg/mod/node.wasm")
+        );
+
+        // Verify per-invocation Linker::define_unknown_imports_as_default_values works across >32 unknown imports without exhaustion.
+        let engine = Engine::default();
+        for idx in 0..40u8 {
+            let n0 = b'a' + (idx / 26);
+            let n1 = b'a' + (idx % 26);
+            let wasm_bytes: &[u8] = &[
+                0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+                0x01, 0x0a, 0x02, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f, // types: (i32)->i32, ()->i32
+                0x02, 0x0a, 0x01, 0x03, b'e', b'n', b'v', 0x02, n0, n1, 0x00, 0x00, // import env.<n0><n1> : func 0
+                0x03, 0x02, 0x01, 0x01, // func 1 : type 1
+                0x07, 0x08, 0x01, 0x04, b'c', b'a', b'l', b'l', 0x00, 0x01, // export "call" = func 1
+                0x0a, 0x08, 0x01, 0x06, 0x00, 0x41, 0x07, 0x10, 0x00, 0x0b, // code: i32.const 7; call 0; end
+            ];
+            let module = Module::new(&engine, wasm_bytes).expect("compile wasm");
+            let mut store = Store::new(&engine, ());
+            let mut linker = wasmtime::Linker::new(&engine);
+            linker
+                .define_unknown_imports_as_default_values(&mut store, &module)
+                .expect("stub unknown imports");
+            let instance = linker
+                .instantiate(&mut store, &module)
+                .expect("instantiate with stubbed import");
+            let f = instance
+                .get_typed_func::<(), i32>(&mut store, "call")
+                .expect("export");
+            assert_eq!(f.call(&mut store, ()).expect("call"), 0);
+        }
+    }
 }
