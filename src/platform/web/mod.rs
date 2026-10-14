@@ -3827,17 +3827,34 @@ async fn home_clone_project_submit(
         .join(&project)
         .join("repo");
 
-    // Build authenticated clone URL
-    let auth_url = match build_git_clone_auth_url(
-        &req.provider,
+    if state
+        .platform
+        .projects
+        .get_project(&owner, &project)
+        .ok()
+        .flatten()
+        .is_some()
+        || repo_dir.exists()
+    {
+        return (StatusCode::CONFLICT, "Project already exists").into_response();
+    }
+
+    // Build bare, credential-free remote URL and validate against SSRF / local path policy.
+    let clean_repo_url = match crate::platform::services::git_sync::resolve_clean_git_remote_url(
         &req.instance_url,
         &req.repo_url,
-        &req.username,
-        &req.token,
     ) {
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
+    if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+        &clean_repo_url,
+        &state.platform.config.data_root,
+    ) {
+        return (StatusCode::BAD_REQUEST, err.message).into_response();
+    }
+    let auth_header =
+        crate::platform::services::git_sync::git_http_basic_auth_header(&req.username, &req.token);
 
     // Ensure parent dir exists before cloning
     if let Some(parent) = repo_dir.parent() {
@@ -3861,11 +3878,17 @@ async fn home_clone_project_submit(
         return (StatusCode::BAD_REQUEST, "not a valid branch name").into_response();
     }
     let mut clone_cmd = crate::platform::services::git_sync::git_command();
+    if let Some(ref header) = auth_header {
+        clone_cmd
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "http.extraheader")
+            .env("GIT_CONFIG_VALUE_0", header);
+    }
     clone_cmd.arg("clone");
     if !remote_branch.is_empty() {
         clone_cmd.arg("-b").arg(&remote_branch);
     }
-    clone_cmd.arg("--").arg(&auth_url).arg(&repo_dir);
+    clone_cmd.arg("--").arg(&clean_repo_url).arg(&repo_dir);
     let clone_out = clone_cmd.output();
 
     match clone_out {
@@ -3882,6 +3905,13 @@ async fn home_clone_project_submit(
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
         Ok(_) => {}
+    }
+
+    if let Err(err) = crate::platform::services::git_sync::sanitize_cloned_repo_origin(
+        &repo_dir,
+        &clean_repo_url,
+    ) {
+        return internal_error(err);
     }
 
     // Compute effective local branch name; rename if it differs from the remote branch.
@@ -3957,7 +3987,7 @@ async fn home_clone_project_submit(
     };
     if let Err(err) = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
         cfg.configs.git.remote.credential_id = cred_id.clone();
-        cfg.configs.git.remote.repo_url = req.repo_url.clone();
+        cfg.configs.git.remote.repo_url = clean_repo_url.clone();
         cfg.configs.git.remote.branch = effective_local.clone();
     }) {
         return internal_error(err);
@@ -3970,7 +4000,7 @@ async fn home_clone_project_submit(
         "token": req.token,
         "git_name": git_name.clone(),
         "git_email": git_email.clone(),
-        "repo_url": req.repo_url,
+        "repo_url": clean_repo_url,
         "instance_url": req.instance_url,
     });
     let upsert_req = UpsertProjectCredentialRequest {
@@ -3978,7 +4008,7 @@ async fn home_clone_project_submit(
         title: cred_title,
         kind: req.provider.clone(),
         secret,
-        notes: format!("Auto-created on project clone from {}", req.repo_url),
+        notes: format!("Auto-created on project clone from {}", clean_repo_url),
     };
     let _ = state
         .platform
@@ -4021,13 +4051,20 @@ async fn home_clone_project_submit(
 
         if commit_out.map(|o| o.status.success()).unwrap_or(false) {
             // Push to establish the default branch on the remote
-            let push_out = crate::platform::services::git_sync::git_command()
+            let mut push_cmd = crate::platform::services::git_sync::git_command();
+            if let Some(ref header) = auth_header {
+                push_cmd
+                    .env("GIT_CONFIG_COUNT", "1")
+                    .env("GIT_CONFIG_KEY_0", "http.extraheader")
+                    .env("GIT_CONFIG_VALUE_0", header);
+            }
+            let push_out = push_cmd
                 .arg("-C")
                 .arg(&repo_dir)
                 .arg("push")
                 .arg("--set-upstream")
                 .arg("--end-of-options")
-                .arg(&auth_url)
+                .arg("origin")
                 .arg(format!("HEAD:{}", effective_local))
                 .output();
             if let Ok(ref o) = push_out {
@@ -4051,67 +4088,6 @@ async fn home_clone_project_submit(
     }
 
     Redirect::to(HOME_PATH).into_response()
-}
-
-/// Builds an authenticated HTTPS git clone URL for the given provider.
-/// Returns an error string on malformed input.
-fn build_git_clone_auth_url(
-    _provider: &str,
-    instance_url: &str,
-    repo_url: &str,
-    username: &str,
-    token: &str,
-) -> Result<String, String> {
-    let enc_user = percent_encode_userinfo(username);
-    let enc_token = percent_encode_userinfo(token);
-
-    // Determine base host from repo_url if possible, otherwise fall back to instance_url
-    let base = if repo_url.starts_with("http://") || repo_url.starts_with("https://") {
-        repo_url.to_string()
-    } else if !instance_url.is_empty() {
-        // Treat repo_url as a path relative to instance
-        let base = instance_url.trim_end_matches('/');
-        let path = repo_url.trim_start_matches('/');
-        format!("{}/{}", base, path)
-    } else {
-        return Err(format!("Invalid repo URL: {repo_url}"));
-    };
-
-    // Insert credentials into the URL
-    if let Some(after_scheme) = base.strip_prefix("https://") {
-        Ok(format!(
-            "https://{}:{}@{}",
-            enc_user, enc_token, after_scheme
-        ))
-    } else if let Some(after_scheme) = base.strip_prefix("http://") {
-        Ok(format!(
-            "http://{}:{}@{}",
-            enc_user, enc_token, after_scheme
-        ))
-    } else {
-        Err(format!(
-            "Repo URL must start with https:// or http://: {base}"
-        ))
-    }
-}
-
-/// Percent-encodes characters not allowed in userinfo (RFC 3986).
-fn percent_encode_userinfo(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| {
-            if c.is_ascii_alphanumeric()
-                || matches!(
-                    c,
-                    '-' | '.' | '_' | '~' | '!' | '$' | '\'' | '(' | ')' | '*' | '+' | ',' | ';'
-                )
-            {
-                vec![c as u8]
-            } else {
-                format!("%{:02X}", c as u32).into_bytes()
-            }
-        })
-        .map(|b| b as char)
-        .collect()
 }
 
 /// Replaces occurrences of `token` in `s` with `***` (for safe error messages).

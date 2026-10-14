@@ -540,6 +540,87 @@ fn run_env(repo: &Path, pre: &[String], args: &[&str], env: &[(&str, &str)]) -> 
     }
 }
 
+/// Resolves a remote HTTP(S) git URL from `instance_url` and `repo_url` with any
+/// embedded `username:password@` userinfo stripped so credentials never land in
+/// `.git/config` or `zebflow.yaml`.
+pub fn resolve_clean_git_remote_url(instance_url: &str, repo_url: &str) -> Result<String, String> {
+    let trimmed_repo = repo_url.trim();
+    let trimmed_instance = instance_url.trim();
+    let base = if trimmed_repo.starts_with("http://") || trimmed_repo.starts_with("https://") {
+        trimmed_repo.to_string()
+    } else if !trimmed_instance.is_empty() {
+        format!(
+            "{}/{}",
+            trimmed_instance.trim_end_matches('/'),
+            trimmed_repo.trim_start_matches('/')
+        )
+    } else {
+        return Err(format!("Invalid repo URL: {trimmed_repo}"));
+    };
+    let mut parsed =
+        reqwest::Url::parse(&base).map_err(|e| format!("Invalid repo URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "Repo URL must start with https:// or http://: {trimmed_repo}"
+        ));
+    }
+    if parsed.host_str().is_none() {
+        return Err("Repo URL must include a host".to_string());
+    }
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Ok(parsed.to_string())
+}
+
+/// Builds an HTTP Basic `AUTHORIZATION` header value for a git operation without
+/// embedding the token into the remote URL.
+pub fn git_http_basic_auth_header(username: &str, token: &str) -> Option<String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let user = if username.trim().is_empty() {
+        "x-access-token"
+    } else {
+        username.trim()
+    };
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{token}"));
+    Some(format!("AUTHORIZATION: basic {basic}"))
+}
+
+/// Ensures `remote.origin.url` in `repo_dir/.git/config` is set to the bare,
+/// credential-free URL after a clone or remote update.
+pub fn sanitize_cloned_repo_origin(
+    repo_dir: &Path,
+    clean_remote_url: &str,
+) -> Result<(), PlatformError> {
+    let parsed = reqwest::Url::parse(clean_remote_url)
+        .map_err(|e| PlatformError::new("GIT_REMOTE_REFUSED", format!("invalid remote URL: {e}")))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(PlatformError::new(
+            "GIT_REMOTE_REFUSED",
+            "remote origin URL must not contain embedded credentials",
+        ));
+    }
+    let current = run(repo_dir, &[], &["remote", "get-url", "origin"]).ok();
+    match current {
+        Some(_) => run(
+            repo_dir,
+            &[],
+            &["remote", "set-url", "--end-of-options", "origin", clean_remote_url],
+        )
+        .map(|_| ()),
+        None => run(
+            repo_dir,
+            &[],
+            &["remote", "add", "--end-of-options", "origin", clean_remote_url],
+        )
+        .map(|_| ()),
+    }
+}
+
 /// A token never reaches a log line or a panel, whichever command leaked it.
 fn scrub_secrets(text: &str) -> String {
     let re = regex::Regex::new(r"(?i)(authorization: basic )[A-Za-z0-9+/=]+|://[^/\s:]+:[^@\s]+@").unwrap();
@@ -694,5 +775,41 @@ mod tests {
     fn secrets_never_survive_an_error_message() {
         assert_eq!(scrub_secrets("fatal: https://user:ghp_abc@github.com/x/y failed"), "fatal: https://[redacted]@github.com/x/y failed");
         assert_eq!(scrub_secrets("header AUTHORIZATION: basic dXNlcjp0b2tlbg== rejected"), "header AUTHORIZATION: basic [redacted] rejected");
+    }
+
+    #[test]
+    fn git_clone_strips_credentials_from_origin_url_and_refuses_existing_project() {
+        let secret_val = uuid::Uuid::new_v4().to_string();
+        let embedded = format!("https://oauth2:{secret_val}@git.example.com/org/site-a.git");
+        let clean = resolve_clean_git_remote_url("", &embedded).expect("clean URL");
+        assert_eq!(clean, "https://git.example.com/org/site-a.git");
+        assert!(!clean.contains(&secret_val));
+
+        let repo = std::env::temp_dir().join(format!("zf-git-origin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git_command().arg("init").arg("-q").arg(&repo).status().unwrap().success());
+        assert!(
+            git_command()
+                .arg("-C")
+                .arg(&repo)
+                .args(["remote", "add", "origin", &embedded])
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        // Passing a URL with embedded credentials to sanitize_cloned_repo_origin is refused:
+        assert!(sanitize_cloned_repo_origin(&repo, &embedded).is_err());
+
+        // Sanitizing with the clean URL removes the credential from .git/config:
+        sanitize_cloned_repo_origin(&repo, &clean).expect("sanitize origin");
+        let git_config = std::fs::read_to_string(repo.join(".git/config")).expect("read .git/config");
+        assert!(
+            !git_config.contains(&secret_val),
+            ".git/config must not contain the provider secret after clone sanitization"
+        );
+        assert!(git_config.contains("https://git.example.com/org/site-a.git"));
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }
