@@ -229,12 +229,23 @@ impl NodeHandler for Node {
         // the PDF is pulled into a scratch folder, exported there, and the
         // export is put into this node's store.
         match source_store.fs.head(&rel_path) {
-            Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {}
+            Ok(stat) if stat.kind == crate::zebfs::ZebFsEntryKind::Object => {
+                if stat.size > MAX_PDF_INPUT_BYTES {
+                    return Err(PipelineError::new(
+                        SOURCE_CODE,
+                        format!(
+                            "--from: PDF '{rel_path}' is {} bytes, exceeding limit of {MAX_PDF_INPUT_BYTES} bytes",
+                            stat.size
+                        ),
+                    ));
+                }
+            }
             _ => return Err(PipelineError::new(SOURCE_CODE, format!("--from: no PDF at '{rel_path}'"))),
         }
         let scratch = StoreScratch::new(CODE)?;
         let abs_path = scratch.pull(&source_store.fs, &rel_path)?;
         validate_pdf_magic(&abs_path)?;
+        validate_pdf_limits(&abs_path, dpi, emit_page_raster)?;
 
         let output_rel_dir = target_key(Some(&resolve_output_dir(&self.config.folder, &rel_path)), "", "", CONFIG_CODE)?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
@@ -343,6 +354,11 @@ fn prefixed_output_path(output_rel_dir: &str, leaf: &str) -> String {
     }
 }
 
+const MAX_PDF_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PDF_PAGES: u64 = 500;
+const MAX_PDF_RASTER_DIM: f32 = 8_192.0;
+const MAX_PDF_RASTER_PIXELS: f32 = 33_554_432.0;
+
 fn validate_pdf_magic(path: &PathBuf) -> Result<(), PipelineError> {
     use std::io::Read;
     // Five bytes say whether it is a PDF; the file is not read whole for that.
@@ -356,16 +372,122 @@ fn validate_pdf_magic(path: &PathBuf) -> Result<(), PipelineError> {
     Ok(())
 }
 
+fn validate_pdf_limits(
+    path: &Path,
+    dpi: f32,
+    emit_page_raster: bool,
+) -> Result<(), PipelineError> {
+    let meta = std::fs::metadata(path)
+        .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: {err}")))?;
+    if meta.len() > MAX_PDF_INPUT_BYTES {
+        return Err(PipelineError::new(
+            SOURCE_CODE,
+            format!(
+                "--from: PDF is {} bytes, exceeding limit of {MAX_PDF_INPUT_BYTES} bytes",
+                meta.len()
+            ),
+        ));
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: {err}")))?;
+    let text = String::from_utf8_lossy(&bytes);
+
+    // Check declared /Count <N> in page tree dictionaries.
+    let mut rest = text.as_ref();
+    while let Some(pos) = rest.find("/Count") {
+        rest = &rest[pos + 6..];
+        let trimmed = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let digits: String = trimmed
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(count) = digits.parse::<u64>() {
+            if count > MAX_PDF_PAGES {
+                return Err(PipelineError::new(
+                    SOURCE_CODE,
+                    format!(
+                        "--from: PDF declares {count} pages, exceeding limit of {MAX_PDF_PAGES}"
+                    ),
+                ));
+            }
+        }
+    }
+
+    if emit_page_raster {
+        let mut box_rest = text.as_ref();
+        while let Some(pos) = box_rest.find("/MediaBox") {
+            box_rest = &box_rest[pos + 9..];
+            if let Some(open) = box_rest.find('[') {
+                let after_open = &box_rest[open + 1..];
+                if let Some(close) = after_open.find(']') {
+                    let nums: Vec<f32> = after_open[..close]
+                        .split_whitespace()
+                        .filter_map(|t| t.parse::<f32>().ok())
+                        .collect();
+                    if nums.len() == 4 {
+                        let width_pt = (nums[2] - nums[0]).abs();
+                        let height_pt = (nums[3] - nums[1]).abs();
+                        let width_px = (width_pt / 72.0) * dpi;
+                        let height_px = (height_pt / 72.0) * dpi;
+                        let pixels = width_px * height_px;
+                        if !width_px.is_finite()
+                            || !height_px.is_finite()
+                            || !pixels.is_finite()
+                            || width_px > MAX_PDF_RASTER_DIM
+                            || height_px > MAX_PDF_RASTER_DIM
+                            || pixels > MAX_PDF_RASTER_PIXELS
+                        {
+                            return Err(PipelineError::new(
+                                SOURCE_CODE,
+                                format!(
+                                    "--from: PDF page raster size ({:.0}x{:.0} px at {dpi} DPI) exceeds maximum allowed dimensions",
+                                    width_px, height_px
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use serde_json::json;
 
-    use super::{CONFIG_CODE, Config, Node, SOURCE_CODE, dpi, include, prefixed_output_path, resolve_output_dir};
+    use super::{CONFIG_CODE, Config, Node, SOURCE_CODE, dpi, include, prefixed_output_path, resolve_output_dir, validate_pdf_limits};
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
+
+    #[test]
+    fn rejects_oversized_pdf_page_count_and_raster_dimensions() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let huge_box_pdf = tmp.path().join("huge-box.pdf");
+        std::fs::write(
+            &huge_box_pdf,
+            b"%PDF-1.4\n1 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\n2 0 obj\n<< /Type /Page /MediaBox [0 0 14400 14400] >>\nendobj\n",
+        )
+        .expect("write huge box pdf");
+        let err = validate_pdf_limits(&huge_box_pdf, 600.0, true).expect_err("huge mediabox at 600 dpi must fail");
+        assert_eq!(err.code, SOURCE_CODE);
+        assert!(err.message.contains("exceeds maximum allowed dimensions"), "{err:?}");
+
+        let many_pages_pdf = tmp.path().join("many-pages.pdf");
+        std::fs::write(
+            &many_pages_pdf,
+            b"%PDF-1.4\n1 0 obj\n<< /Type /Pages /Count 5000 >>\nendobj\n",
+        )
+        .expect("write many pages pdf");
+        let err = validate_pdf_limits(&many_pages_pdf, 144.0, false).expect_err("excessive page count must fail");
+        assert_eq!(err.code, SOURCE_CODE);
+        assert!(err.message.contains("exceeding limit"), "{err:?}");
+    }
 
     #[test]
     fn derives_default_output_dir_from_source_stem() {
