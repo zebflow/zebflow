@@ -63,7 +63,7 @@ use crate::platform::sekejap;
 use crate::platform::services::hub_repository::{
     DEFAULT_HUB_REPOSITORY_PRIORITY, HUB_REPOSITORY_KIND_API, HUB_REPOSITORY_KIND_STATIC,
     HubRepositoryChannel, HubRepositoryPackage, HubRepositoryRef, is_direct_hub_base,
-    validate_remote_hub_url,
+    validate_remote_hub_url, validate_remote_package_id, validate_remote_version,
 };
 use crate::platform::services::project::{
     derive_trigger_kind_from_source, normalize_pipeline_file_rel_path,
@@ -3485,6 +3485,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<HubArtifactChannel, PlatformError> {
+        let package_id = validate_remote_package_id(package_id)?;
+        let version = validate_remote_version(version)?;
         let store_base = self.remote_artifact_cache_root();
         let source = channel.source();
         for file in files {
@@ -3492,9 +3494,10 @@ impl HubService {
                 continue;
             };
             validate_artifact_digest(&artifact.sha256)?;
+            let url = channel.artifact_url(package_id, version, &artifact.sha256)?;
             fetch_referenced_artifact(
                 &store_base,
-                &channel.artifact_url(package_id, version, &artifact.sha256),
+                &url,
                 &source.read_token,
                 &file.rel_path,
                 artifact,
@@ -4771,6 +4774,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<(HubRepositoryChannel, HubPackageSpec), PlatformError> {
+        let package_id = validate_remote_package_id(package_id)?;
+        let version = validate_remote_version(version)?;
         let repo = self
             .list_effective_repositories(target_owner, target_project)?
             .into_iter()
@@ -4890,6 +4895,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<(HubRepositoryChannel, HubPackageSpec), PlatformError> {
+        let package_id = validate_remote_package_id(package_id)?;
+        let version = validate_remote_version(version)?;
         let source_owner = slug_segment(source_owner);
         let repo = self
             .list_platform_repositories(&source_owner)?

@@ -275,6 +275,8 @@ impl HubRepositoryChannel {
         package_id: &str,
         version: &str,
     ) -> Result<HubPackageSpec, PlatformError> {
+        let package_id = validate_remote_package_id(package_id)?;
+        let version = validate_remote_version(version)?;
         match self {
             Self::Api(repo) => {
                 let url = remote_hub_url(
@@ -358,15 +360,78 @@ impl HubRepositoryChannel {
     /// release that names it, so the hub applies that release's own visibility
     /// rules; a static repository has no rules to apply and serves one
     /// content-addressed directory beside its index.
-    pub fn artifact_url(&self, package_id: &str, version: &str, sha256: &str) -> String {
-        match self {
+    pub fn artifact_url(
+        &self,
+        package_id: &str,
+        version: &str,
+        sha256: &str,
+    ) -> Result<String, PlatformError> {
+        let package_id = validate_remote_package_id(package_id)?;
+        let version = validate_remote_version(version)?;
+        let sha256 = validate_remote_sha256(sha256)?;
+        Ok(match self {
             Self::Api(repo) => remote_hub_url(
                 repo,
                 &format!("remote/assets/{package_id}/{version}/artifacts/{sha256}"),
             ),
             Self::Static(repo) => static_repository_url(repo, &format!("artifacts/{sha256}")),
-        }
+        })
     }
+}
+
+pub fn validate_remote_package_id(package_id: &str) -> Result<&str, PlatformError> {
+    let trimmed = package_id.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= 256
+        && trimmed.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'-' | b'_')
+        })
+        && !trimmed.starts_with('.')
+        && !trimmed.ends_with('.')
+        && !trimmed.contains("..");
+    if !valid {
+        return Err(PlatformError::new(
+            "HUB_PACKAGE_ID_INVALID",
+            format!("package_id '{trimmed}' must be a valid safe package identifier"),
+        ));
+    }
+    Ok(trimmed)
+}
+
+pub fn validate_remote_version(version: &str) -> Result<&str, PlatformError> {
+    let trimmed = version.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= 80
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+        && !trimmed.starts_with('.')
+        && !trimmed.ends_with('.')
+        && !trimmed.contains("..");
+    if !valid {
+        return Err(PlatformError::new(
+            "HUB_PUBLISH_INVALID",
+            format!("version '{trimmed}' must be a valid safe version segment"),
+        ));
+    }
+    Ok(trimmed)
+}
+
+pub fn validate_remote_sha256(sha256: &str) -> Result<&str, PlatformError> {
+    let trimmed = sha256.trim();
+    let valid = trimmed.len() == 64
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !valid {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_DIGEST_INVALID",
+            "artifact digest must be 64 lowercase hexadecimal digits",
+        ));
+    }
+    Ok(trimmed)
 }
 
 /// One index fetch, decoded and validated.
@@ -549,10 +614,40 @@ fn remote_hub_url(repo: &HubRepositoryRef, suffix: &str) -> String {
 }
 
 pub fn validate_remote_hub_url(url: &str) -> Result<(), PlatformError> {
-    if hub_localhost_remote_allowed(url) {
+    let trimmed = url.trim();
+    if trimmed.contains('\\')
+        || trimmed.contains('?')
+        || trimmed.contains('#')
+        || trimmed.chars().any(char::is_control)
+    {
+        return Err(PlatformError::new(
+            "HUB_REPOSITORY_INVALID",
+            "remote hub URL must not contain query parameters, fragments, backslashes, or control characters",
+        ));
+    }
+    let after_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    if let Some((_, raw_path)) = after_scheme.split_once('/') {
+        let lower_path = raw_path.to_ascii_lowercase();
+        if lower_path.contains("%2e")
+            || lower_path.contains("%2f")
+            || lower_path.contains("%5c")
+            || raw_path
+                .split('/')
+                .any(|segment| segment == "." || segment == "..")
+        {
+            return Err(PlatformError::new(
+                "HUB_REPOSITORY_INVALID",
+                "remote hub URL must not contain relative path traversal segments",
+            ));
+        }
+    }
+    if hub_localhost_remote_allowed(trimmed) {
         return Ok(());
     }
-    crate::pipeline::security::validate_outbound_http_url(url, "hub.remote")
+    crate::pipeline::security::validate_outbound_http_url(trimmed, "hub.remote")
         .map_err(|err| PlatformError::new(err.code, err.message))
 }
 
@@ -601,7 +696,9 @@ mod tests {
         );
         let channel = HubRepositoryChannel::open(&repo).expect("open");
         assert_eq!(
-            channel.artifact_url("acme.tools", "1.0.0", &"a".repeat(64)),
+            channel
+                .artifact_url("acme.tools", "1.0.0", &"a".repeat(64))
+                .expect("artifact url"),
             format!(
                 "https://raw.githubusercontent.com/zebflow/hub/main/artifacts/{}",
                 "a".repeat(64)
@@ -623,7 +720,9 @@ mod tests {
         };
         let channel = HubRepositoryChannel::open(&repo).expect("open");
         assert_eq!(
-            channel.artifact_url("acme.tools", "1.0.0", &"b".repeat(64)),
+            channel
+                .artifact_url("acme.tools", "1.0.0", &"b".repeat(64))
+                .expect("artifact url"),
             format!(
                 "https://hub.zebflow.com/api/hub/remote/assets/acme.tools/1.0.0/artifacts/{}",
                 "b".repeat(64)
@@ -647,5 +746,75 @@ mod tests {
         repo.kind = "torrent".to_string();
         let error = HubRepositoryChannel::open(&repo).expect_err("unknown kind");
         assert!(error.to_string().contains("torrent"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn hub_repository_rejects_path_traversal_in_package_id_version_release_path_and_sha256() {
+        let repo = HubRepositoryRef {
+            repository_id: "zebflow-com".to_string(),
+            title: "Zebflow Hub".to_string(),
+            kind: HUB_REPOSITORY_KIND_API.to_string(),
+            base_url: "https://hub.zebflow.com/api".to_string(),
+            remote_owner: String::new(),
+            remote_project: String::new(),
+            read_token: String::new(),
+            priority: 10,
+        };
+        let channel = HubRepositoryChannel::open(&repo).expect("open");
+
+        for bad_pkg in [
+            "../../../api/projects",
+            "acme..tools",
+            "acme/tools",
+            ".acme.tools",
+            "acme.tools?admin=1",
+        ] {
+            let err = channel
+                .fetch(bad_pkg, "1.0.0")
+                .await
+                .expect_err("traversal package_id must fail before network");
+            assert_eq!(err.code, "HUB_PACKAGE_ID_INVALID");
+            assert!(
+                channel
+                    .artifact_url(bad_pkg, "1.0.0", &"a".repeat(64))
+                    .is_err()
+            );
+        }
+
+        for bad_ver in [
+            "../../secret",
+            "1.0.0/../../secret",
+            "1..0",
+            "1.0.0?x=1",
+            "1.0.0#frag",
+        ] {
+            let err = channel
+                .fetch("acme.tools", bad_ver)
+                .await
+                .expect_err("traversal version must fail before network");
+            assert_eq!(err.code, "HUB_PUBLISH_INVALID");
+            assert!(
+                channel
+                    .artifact_url("acme.tools", bad_ver, &"a".repeat(64))
+                    .is_err()
+            );
+        }
+
+        for bad_sha in ["../secret", "abc", &"A".repeat(64)] {
+            let err = channel
+                .artifact_url("acme.tools", "1.0.0", bad_sha)
+                .expect_err("invalid sha256 must fail");
+            assert_eq!(err.code, "HUB_ARTIFACT_DIGEST_INVALID");
+        }
+
+        for bad_url in [
+            "https://hub.zebflow.com/api/hub/remote/assets/../../../secret",
+            "https://hub.zebflow.com/api/hub/remote/assets/%2e%2e/secret",
+            "https://hub.zebflow.com/api/hub/remote/assets?x=1",
+            "https://hub.zebflow.com/api/hub/remote/assets#frag",
+        ] {
+            let err = validate_remote_hub_url(bad_url).expect_err("traversal URL must be rejected");
+            assert_eq!(err.code, "HUB_REPOSITORY_INVALID");
+        }
     }
 }

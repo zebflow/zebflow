@@ -269,7 +269,8 @@ fn validate_package_id(path: &str, value: &str) -> Result<(), ContractError> {
                 || byte == b'_'
         })
         && !value.starts_with('.')
-        && !value.ends_with('.');
+        && !value.ends_with('.')
+        && !value.contains("..");
     if !ok {
         return Err(ContractError::invalid(format!(
             "{path} '{value}' must be lowercase letters, digits, '.', '-', or '_'"
@@ -296,9 +297,12 @@ fn validate_asset_kind(path: &str, value: &str) -> Result<(), ContractError> {
 fn validate_version(path: &str, value: &str) -> Result<(), ContractError> {
     let ok = !value.is_empty()
         && value.len() <= 256
-        && !value.contains('/')
-        && !value.contains('\\')
-        && !value.chars().any(char::is_control);
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !value.contains("..");
     if !ok {
         return Err(ContractError::invalid(format!(
             "{path} '{value}' must be a non-empty single-line token containing no path separator"
@@ -332,6 +336,9 @@ fn validate_relative_file(path: &str, value: &str) -> Result<(), ContractError> 
         || value.len() > MAX_HUB_REPOSITORY_INDEX_TEXT_BYTES
         || value.contains('\\')
         || value.contains("//")
+        || value.contains('?')
+        || value.contains('#')
+        || value.contains('%')
         || value.chars().any(char::is_control)
         || value_path.is_absolute()
         || value_path.components().any(|component| {
