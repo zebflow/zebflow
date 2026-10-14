@@ -26916,24 +26916,28 @@ async fn api_create_project_invite(
     // The ceiling applies to the invitation, not only to the membership it
     // becomes — otherwise a Maintainer invites someone as Owner and the refusal
     // arrives days later, at acceptance, addressed to the wrong person.
-    let actor_role = match state
-        .platform
-        .project_members
-        .role_of_public(&owner, &project, &actor)
-    {
-        Ok(role) => role,
-        Err(err) => return internal_error(err),
-    };
-    if !crate::platform::services::access::roles::can_grant(actor_role, req.role_preset) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": {
-                "code": "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
-                "message": format!("a {} cannot invite someone as {}",
-                    actor_role.title(), req.role_preset.title())
-            }})),
-        )
-            .into_response();
+    if let Err(err) = state.platform.project_members.validate_grant(
+        &actor,
+        &owner,
+        &project,
+        req.role_preset,
+        &req.custom_policy_ids,
+        &req.mcp_capability_ceiling,
+    ) {
+        if err.code == "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR" {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"ok": false, "error": {
+                    "code": err.code,
+                    "message": format!("a {} cannot invite someone as {}: {}",
+                        state.platform.project_members.role_of_public(&owner, &project, &actor).map(|r| r.title()).unwrap_or("member"),
+                        req.role_preset.title(),
+                        err.message)
+                }})),
+            )
+                .into_response();
+        }
+        return internal_error(err);
     }
     match state
         .platform

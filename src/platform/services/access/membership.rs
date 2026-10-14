@@ -99,6 +99,96 @@ impl ProjectMembershipService {
             .unwrap_or(ProjectAccessRolePreset::Guest))
     }
 
+    /// Verify that `actor_user` holds at least the requested `role_preset`,
+    /// every policy in `custom_policy_ids`, and every capability in
+    /// `mcp_capability_ceiling`. Shared by `upsert_member` and `create_invite`.
+    pub fn validate_grant(
+        &self,
+        actor_user: &str,
+        owner: &str,
+        project: &str,
+        role_preset: ProjectAccessRolePreset,
+        custom_policy_ids: &[String],
+        mcp_capability_ceiling: &[crate::platform::model::ProjectCapability],
+    ) -> Result<ProjectAccessRolePreset, PlatformError> {
+        let actor_user = slug_segment(actor_user);
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        self.authz.ensure_project_defaults(&owner, &project)?;
+        ensure_managed_role_policies(&self.data, &owner, &project)?;
+
+        let actor_role = self.role_of(&owner, &project, &actor_user)?;
+        if !crate::platform::services::access::roles::can_grant(actor_role, role_preset) {
+            return Err(PlatformError::new(
+                "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                format!(
+                    "a {} cannot grant the {} role",
+                    actor_role.title(),
+                    role_preset.title()
+                ),
+            ));
+        }
+
+        let actor_caps = self.authz.resolve_project_capabilities(
+            &crate::platform::model::ProjectAccessSubject::user(&actor_user),
+            &owner,
+            &project,
+        )?;
+        let policies = self.data.list_project_policies(&owner, &project)?;
+        for raw_id in custom_policy_ids {
+            let policy_id = raw_id.trim();
+            if policy_id.is_empty() {
+                continue;
+            }
+            if let Some(preset) = crate::platform::services::access::roles::ROLE_LADDER
+                .iter()
+                .copied()
+                .find(|r| r.policy_id() == policy_id)
+                && (!crate::platform::services::access::roles::can_grant(actor_role, preset)
+                    || !crate::platform::services::access::roles::can_grant(role_preset, preset))
+            {
+                return Err(PlatformError::new(
+                    "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                    format!(
+                        "a {} cannot grant policy '{}' on a {} membership",
+                        actor_role.title(),
+                        policy_id,
+                        role_preset.title()
+                    ),
+                ));
+            }
+            let Some(policy) = policies.iter().find(|p| p.policy_id == policy_id) else {
+                return Err(PlatformError::new(
+                    "PLATFORM_MEMBER_POLICY_NOT_FOUND",
+                    format!("policy '{policy_id}' not found"),
+                ));
+            };
+            if policy.capabilities.iter().any(|cap| !actor_caps.contains(cap)) {
+                return Err(PlatformError::new(
+                    "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                    format!(
+                        "a {} cannot grant policy '{}' above their own capabilities",
+                        actor_role.title(),
+                        policy_id
+                    ),
+                ));
+            }
+        }
+        for cap in mcp_capability_ceiling {
+            if !actor_caps.contains(cap) {
+                return Err(PlatformError::new(
+                    "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                    format!(
+                        "a {} cannot grant MCP capability '{}' above their own capabilities",
+                        actor_role.title(),
+                        cap.key()
+                    ),
+                ));
+            }
+        }
+        Ok(actor_role)
+    }
+
     pub fn upsert_member(
         &self,
         actor_user: &str,
@@ -130,9 +220,6 @@ impl ProjectMembershipService {
             .get_user_auth(&user_id)?
             .ok_or_else(|| PlatformError::new("PLATFORM_MEMBER_USER_MISSING", "user not found"))?;
 
-        self.authz.ensure_project_defaults(&owner, &project)?;
-        ensure_managed_role_policies(&self.data, &owner, &project)?;
-
         if user_id == owner && req.role_preset != ProjectAccessRolePreset::Owner {
             return Err(PlatformError::new(
                 "PLATFORM_MEMBER_OWNER_ROLE_INVALID",
@@ -143,14 +230,22 @@ impl ProjectMembershipService {
         // Nobody hands out more than they hold. Without this, anyone who can
         // edit members can promote themselves: `MembersWrite` belongs to
         // Maintainer, and a Maintainer could mint an Owner and then be made one.
-        let actor_role = self.role_of(&owner, &project, &actor_user)?;
-        if !crate::platform::services::access::roles::can_grant(actor_role, req.role_preset) {
+        let actor_role = self.validate_grant(
+            &actor_user,
+            &owner,
+            &project,
+            req.role_preset,
+            &req.custom_policy_ids,
+            &req.mcp_capability_ceiling,
+        )?;
+        let existing_role = self.role_of(&owner, &project, &user_id)?;
+        if !crate::platform::services::access::roles::can_grant(actor_role, existing_role) {
             return Err(PlatformError::new(
                 "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
                 format!(
-                    "a {} cannot grant the {} role",
+                    "a {} cannot modify a {}",
                     actor_role.title(),
-                    req.role_preset.title()
+                    existing_role.title()
                 ),
             ));
         }
@@ -295,5 +390,88 @@ mod tests {
             ids,
             vec!["custom.debug".to_string(), "developer".to_string()]
         );
+    }
+
+    #[test]
+    fn a_maintainer_cannot_escalate_via_custom_policy_ids_or_self_edit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: dir.path().to_path_buf(),
+                ..crate::platform::model::PlatformConfig::default()
+            },
+        )
+        .expect("platform");
+        let pw = uuid::Uuid::new_v4().to_string();
+        platform
+            .users
+            .create_user(&crate::platform::model::CreateUserRequest {
+                owner: "maint".to_string(),
+                password: pw.clone(),
+                role: "member".to_string(),
+                git_name: String::new(),
+                git_email: String::new(),
+            })
+            .expect("create maint");
+        platform
+            .users
+            .create_user(&crate::platform::model::CreateUserRequest {
+                owner: "dev".to_string(),
+                password: pw,
+                role: "member".to_string(),
+                git_name: String::new(),
+                git_email: String::new(),
+            })
+            .expect("create dev");
+
+        // Owner makes `maint` a Maintainer on `superadmin/default`.
+        platform
+            .project_members
+            .upsert_member(
+                "superadmin",
+                "superadmin",
+                "default",
+                &UpsertProjectMemberRequest {
+                    user_id: "maint".to_string(),
+                    role_preset: ProjectAccessRolePreset::Maintainer,
+                    custom_policy_ids: Vec::new(),
+                    mcp_capability_ceiling: Vec::new(),
+                },
+            )
+            .expect("owner grants maintainer");
+
+        // Maintainer tries to attach the `owner` policy via `custom_policy_ids` while keeping role_preset = Maintainer.
+        let err = platform
+            .project_members
+            .upsert_member(
+                "maint",
+                "superadmin",
+                "default",
+                &UpsertProjectMemberRequest {
+                    user_id: "dev".to_string(),
+                    role_preset: ProjectAccessRolePreset::Maintainer,
+                    custom_policy_ids: vec!["owner".to_string()],
+                    mcp_capability_ceiling: Vec::new(),
+                },
+            )
+            .expect_err("maintainer must not bind owner policy via custom_policy_ids");
+        assert_eq!(err.code, "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR");
+
+        // Normal Maintainer grant of Developer with no escalation succeeds.
+        let member = platform
+            .project_members
+            .upsert_member(
+                "maint",
+                "superadmin",
+                "default",
+                &UpsertProjectMemberRequest {
+                    user_id: "dev".to_string(),
+                    role_preset: ProjectAccessRolePreset::Developer,
+                    custom_policy_ids: Vec::new(),
+                    mcp_capability_ceiling: Vec::new(),
+                },
+            )
+            .expect("maintainer grants developer");
+        assert_eq!(member.role_preset, ProjectAccessRolePreset::Developer);
     }
 }
