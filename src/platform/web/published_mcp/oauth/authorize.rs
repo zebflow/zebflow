@@ -105,9 +105,17 @@ pub(super) async fn authorize(ctx: &Ctx<'_>, query: &str) -> Response {
         return back("invalid_target", "resource is not this MCP server");
     }
     let requested: Vec<&str> = get("scope").unwrap_or("mcp").split_whitespace().collect();
-    if requested.iter().any(|s| !SCOPES.contains(s)) {
+    if requested.is_empty()
+        || !requested.contains(&"mcp")
+        || requested.iter().any(|s| !SCOPES.contains(s))
+    {
         return back("invalid_scope", "scope may be mcp and offline_access");
     }
+    let scope = if requested.contains(&"offline_access") {
+        "mcp offline_access".to_string()
+    } else {
+        "mcp".to_string()
+    };
     let ticket = Ticket {
         route: ctx.route.to_string(),
         client_id: client_id.to_string(),
@@ -117,7 +125,7 @@ pub(super) async fn authorize(ctx: &Ctx<'_>, query: &str) -> Response {
         challenge,
         resource: issuer.clone(),
         issuer: issuer.clone(),
-        scope: "mcp".to_string(),
+        scope,
         state: state.map(str::to_string),
         credential: ctx.spec.auth_credential.clone(),
         created_at: now_unix(),

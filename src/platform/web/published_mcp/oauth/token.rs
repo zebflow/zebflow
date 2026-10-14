@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::{Ctx, access, json_answer, oauth_error};
 use crate::platform::services::published_oauth::{ACCESS_TTL, REFRESH_FAMILY_TTL, Refresh, Spent, now_unix, rules};
@@ -90,6 +90,26 @@ pub(super) fn token(ctx: &Ctx<'_>, headers: &HeaderMap, body: &Bytes) -> Respons
             }
         }
         Some("refresh_token") => {
+            if rules::is_issued_client_id(client_id) {
+                match store.client(owner, project, route, client_id) {
+                    Ok(Some(client)) if !client.grant_types.iter().any(|g| g == "refresh_token") => {
+                        return refuse(
+                            StatusCode::BAD_REQUEST,
+                            "unauthorized_client",
+                            "this client is not registered for refresh_token grants",
+                        );
+                    }
+                    Ok(None) => {
+                        return refuse(
+                            StatusCode::UNAUTHORIZED,
+                            "invalid_client",
+                            "this client is not registered with this server",
+                        );
+                    }
+                    Ok(Some(_)) => {}
+                    Err(err) => return unavailable(err),
+                }
+            }
             let Some(presented) = get("refresh_token") else {
                 return refuse(StatusCode::BAD_REQUEST, "invalid_request", "refresh_token is required");
             };
@@ -109,7 +129,7 @@ pub(super) fn token(ctx: &Ctx<'_>, headers: &HeaderMap, body: &Bytes) -> Respons
     issue(ctx, &refresh)
 }
 
-/// The access token and the family's next refresh token.
+/// The access token and (when permitted for the client) the family's next refresh token.
 fn issue(ctx: &Ctx<'_>, refresh: &Refresh) -> Response {
     let credential = ctx
         .state
@@ -131,20 +151,44 @@ fn issue(ctx: &Ctx<'_>, refresh: &Refresh) -> Response {
         }
     };
     let store = &ctx.state.platform.published_oauth;
-    let refresh_token = match store.issue_refresh(ctx.owner, ctx.project, ctx.route, refresh) {
-        Ok(token) => token,
-        Err(err) => {
-            eprintln!("warning: oauth refresh token not stored for {}/{}: {}", ctx.owner, ctx.project, err.0);
-            return oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", "try again");
-        }
+    let allow_refresh = if rules::is_issued_client_id(&refresh.client_id) {
+        store
+            .client(ctx.owner, ctx.project, ctx.route, &refresh.client_id)
+            .ok()
+            .flatten()
+            .map(|c| c.grant_types.iter().any(|g| g == "refresh_token"))
+            .unwrap_or(true)
+    } else {
+        true
     };
     store.renew_client(ctx.owner, ctx.project, ctx.route, &refresh.client_id);
-    let answer: Value = json!({
-        "access_token": access_token,
-        "token_type": "Bearer",
-        "expires_in": ACCESS_TTL,
-        "refresh_token": refresh_token,
-        "scope": refresh.scope,
-    });
-    json_answer(StatusCode::OK, answer)
+    if allow_refresh {
+        let refresh_token = match store.issue_refresh(ctx.owner, ctx.project, ctx.route, refresh) {
+            Ok(token) => token,
+            Err(err) => {
+                eprintln!("warning: oauth refresh token not stored for {}/{}: {}", ctx.owner, ctx.project, err.0);
+                return oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", "try again");
+            }
+        };
+        json_answer(
+            StatusCode::OK,
+            json!({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": ACCESS_TTL,
+                "refresh_token": refresh_token,
+                "scope": refresh.scope,
+            }),
+        )
+    } else {
+        json_answer(
+            StatusCode::OK,
+            json!({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": ACCESS_TTL,
+                "scope": refresh.scope,
+            }),
+        )
+    }
 }

@@ -121,3 +121,52 @@ fn an_expired_code_or_ticket_is_refused() {
     assert_eq!(oauth.take_code(O, P, ROUTE, &code_secret).unwrap(), Spent::Refused);
     assert_eq!(oauth.take_ticket(O, P, &ticket_secret).unwrap(), None);
 }
+
+#[test]
+fn offline_access_scope_and_active_row_caps_are_enforced() {
+    let (_dir, oauth) = service();
+    let mut ticket = Ticket {
+        route: ROUTE.into(),
+        client_id: "zfc_aaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        client_name: "Reader app".into(),
+        redirect_uri: "https://client.example/cb".into(),
+        redirect_host: "client.example".into(),
+        challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".into(),
+        resource: "r".into(),
+        issuer: "r".into(),
+        scope: "mcp offline_access".into(),
+        state: Some("s1".into()),
+        credential: "library-jwt".into(),
+        created_at: now_unix(),
+    };
+    let secret = oauth.open_ticket(O, P, &ticket).unwrap().expect("ticket opened");
+    let loaded = oauth.take_ticket(O, P, &secret).unwrap().expect("ticket taken");
+    assert_eq!(loaded.scope, "mcp offline_access");
+
+    // Project-wide registration cap across multiple routes prevents cross-route store flooding.
+    let mut allowed = 0;
+    for i in 0..((MAX_REGISTRATIONS_PER_DAY * 2) + 5) {
+        let route_i = format!("/route-{}", i / MAX_REGISTRATIONS_PER_DAY);
+        let client = Client {
+            client_id: rules::new_client_id(),
+            client_name: "Reader app".into(),
+            redirect_uris: vec!["https://client.example/cb".into()],
+            grant_types: vec!["authorization_code".into()],
+            created_at: now_unix(),
+        };
+        if oauth.register_client(O, P, &route_i, &client).unwrap() {
+            allowed += 1;
+        }
+    }
+    assert!(allowed <= (MAX_REGISTRATIONS_PER_DAY * 2) as usize);
+
+    // Project-wide ticket cap across multiple routes prevents cross-route ticket flooding.
+    let mut tickets_allowed = 0;
+    for i in 0..((MAX_TICKETS_PER_MINUTE * 2) + 5) {
+        ticket.route = format!("/t-route-{}", i / MAX_TICKETS_PER_MINUTE);
+        if oauth.open_ticket(O, P, &ticket).unwrap().is_some() {
+            tickets_allowed += 1;
+        }
+    }
+    assert!(tickets_allowed <= (MAX_TICKETS_PER_MINUTE * 2) as usize);
+}

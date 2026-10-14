@@ -171,10 +171,13 @@ impl PublishedOAuthService {
 
     // ── clients ──────────────────────────────────────────────────────────
 
-    /// Registers a client, unless the route's registrations today are spent.
+    /// Registers a client, unless the route's or project's registrations today are spent.
     pub fn register_client(&self, owner: &str, project: &str, route: &str, client: &Client) -> Result<bool, StoreError> {
         let day = chrono::Utc::now().format("%Y%m%d");
         if !self.count(owner, project, &key(route, &format!("rate/register/{day}")), 2 * 86_400, MAX_REGISTRATIONS_PER_DAY)? {
+            return Ok(false);
+        }
+        if !self.count(owner, project, &format!("zf.oauth/rate/register/{day}"), 2 * 86_400, MAX_REGISTRATIONS_PER_DAY * 2)? {
             return Ok(false);
         }
         self.put(owner, project, &key(route, &format!("client/{}", client.client_id)), client, CLIENT_TTL)?;
@@ -198,10 +201,13 @@ impl PublishedOAuthService {
     // ── tickets ──────────────────────────────────────────────────────────
 
     /// Stores a ticket under its hash and answers the ticket, unless the
-    /// route's authorizations this minute are spent (`None`).
+    /// route's or project's authorizations this minute are spent (`None`).
     pub fn open_ticket(&self, owner: &str, project: &str, ticket: &Ticket) -> Result<Option<String>, StoreError> {
         let minute = chrono::Utc::now().format("%Y%m%d%H%M");
         if !self.count(owner, project, &key(&ticket.route, &format!("rate/ticket/{minute}")), 120, MAX_TICKETS_PER_MINUTE)? {
+            return Ok(None);
+        }
+        if !self.count(owner, project, &format!("zf.oauth/rate/ticket/{minute}"), 120, MAX_TICKETS_PER_MINUTE * 2)? {
             return Ok(None);
         }
         let secret = rules::new_secret();
@@ -219,6 +225,10 @@ impl PublishedOAuthService {
 
     /// Stores an authorization code and answers it.
     pub fn issue_code(&self, owner: &str, project: &str, route: &str, code: &Code) -> Result<String, StoreError> {
+        let minute = chrono::Utc::now().format("%Y%m%d%H%M");
+        if !self.count(owner, project, &key(route, &format!("rate/code/{minute}")), 120, MAX_TICKETS_PER_MINUTE * 2)? {
+            return Err(StoreError("rate limit exceeded for authorization codes".to_string()));
+        }
         let secret = rules::new_secret();
         self.put(owner, project, &key(route, &format!("code/{}", rules::sha256_hex(&secret))), code, CODE_TTL)?;
         Ok(secret)
@@ -244,6 +254,10 @@ impl PublishedOAuthService {
 
     /// Stores a refresh token of its family and answers it.
     pub fn issue_refresh(&self, owner: &str, project: &str, route: &str, refresh: &Refresh) -> Result<String, StoreError> {
+        let minute = chrono::Utc::now().format("%Y%m%d%H%M");
+        if !self.count(owner, project, &key(route, &format!("rate/refresh/{minute}")), 120, MAX_TICKETS_PER_MINUTE * 4)? {
+            return Err(StoreError("rate limit exceeded for refresh tokens".to_string()));
+        }
         let secret = rules::new_secret();
         let ttl = (refresh.family_expires_at - now_unix()).max(1) as u64;
         self.put(owner, project, &key(route, &format!("refresh/{}", rules::sha256_hex(&secret))), refresh, ttl)?;
