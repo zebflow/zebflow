@@ -2237,11 +2237,25 @@ mod tests {
             volume: 1.0,
             max_wav_bytes: 1024,
         };
+        // A variable this process really holds that is not on the safe list —
+        // a cargo variable when there is one. Only its name goes to the child.
+        let names: Vec<String> = std::env::vars_os()
+            .filter_map(|(key, _)| key.into_string().ok())
+            .filter(|key| !super::SAFE_PIPER_ENV_VARS.contains(&key.as_str()))
+            .filter(|key| !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .collect();
+        let unlisted = names
+            .iter()
+            .find(|key| key.starts_with("CARGO"))
+            .or_else(|| names.first())
+            .expect("the test process holds a variable outside the safe list");
+        assert!(std::env::var_os("PATH").is_some(), "the test process has a PATH to forward");
         let check_isolated_script = r#"
 import json, os, sys
 _ = json.load(sys.stdin)
 assert sys.flags.isolated == 1, "expected python -I isolated mode"
-assert "ZEBFLOW_CREDENTIAL_KEY" not in os.environ, "secret env var leaked"
+assert "__UNLISTED__" not in os.environ, "an unlisted variable reached the bridge"
+assert "PATH" in os.environ, "PATH is on the safe list and must be forwarded"
 json.dump({
     "ok": True,
     "sample_rate": 22050,
@@ -2251,7 +2265,8 @@ json.dump({
     "audio_blob_base64": "UklGRg=="
 }, sys.stdout)
 "#;
-        let res = super::run_piper_bridge(&req, check_isolated_script, 4096)
+        let check_isolated_script = check_isolated_script.replace("__UNLISTED__", unlisted);
+        let res = super::run_piper_bridge(&req, &check_isolated_script, 4096)
             .await
             .expect("isolated python3 bridge should succeed");
         assert_eq!(res.sample_rate, 22050);
