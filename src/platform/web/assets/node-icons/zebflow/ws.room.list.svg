@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg">
+  <g id="base-object" transform="translate(2.8679 -6.6038) scale(1.660377)">
+    <rect x="9" y="16" width="46" height="32" rx="8" fill="none" stroke="#30384a" stroke-width="7"/>
+    <path d="M 19 32 H 45" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 18 48 L 13 57 M 46 48 L 51 57" fill="none" stroke="#30384a" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <g id="operation-badge" transform="translate(72.9091 72.9091) scale(0.909091)">
+    <path d="M 14 17 H 50 M 14 32 H 50 M 14 47 H 50" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -675,6 +675,60 @@
         "ws.state.update",
         "ws.state.delete"
       ]
+    },
+    "ws.room.open": {
+      "label": "OPEN",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/ws.room.open.svg",
+      "source_url": "",
+      "supports": [
+        "ws.room.open"
+      ]
+    },
+    "ws.room.close": {
+      "label": "CLOSE",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/ws.room.close.svg",
+      "source_url": "",
+      "supports": [
+        "ws.room.close"
+      ]
+    },
+    "ws.room.list": {
+      "label": "ROOMS",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/ws.room.list.svg",
+      "source_url": "",
+      "supports": [
+        "ws.room.list"
+      ]
+    },
+    "ws.ticket.create": {
+      "label": "TICKET",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/ws.ticket.create.svg",
+      "source_url": "",
+      "supports": [
+        "ws.ticket.create"
+      ]
+    },
+    "ws.session.close": {
+      "label": "KICK",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/ws.session.close.svg",
+      "source_url": "",
+      "supports": [
+        "ws.session.close"
+      ]
+    },
+    "ws.session.tag": {
+      "label": "TAG",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/ws.session.tag.svg",
+      "source_url": "",
+      "supports": [
+        "ws.session.tag"
+      ]
     }
   },
   "schema": 1

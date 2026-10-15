@@ -443,6 +443,30 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/ws.state.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/ws.room.open.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.room.open.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/ws.room.close.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.room.close.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/ws.room.list.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.room.list.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/ws.ticket.create.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.ticket.create.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/ws.session.close.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.session.close.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/ws.session.tag.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/ws.session.tag.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/ai.embedding.generate.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/ai.embedding.generate.svg"),
     },
@@ -1365,6 +1389,39 @@ mod vendor_tests {
         }
         assert!(platform_node_icon_for_kind("logic.if").is_some());
         assert!(platform_node_icon_for_kind("crypto.nothing.here").is_none());
+    }
+
+    /// Every room node draws the room frame `trigger.room` draws and differs
+    /// only in its badge, so the family reads as one in the editor. Each icon
+    /// is small and carries no editor metadata, which is where a name or a
+    /// path would hide.
+    #[test]
+    fn every_room_node_has_a_small_icon_with_the_room_frame() {
+        fn base_object(svg: &str) -> &str {
+            let start = svg.find("<g id=\"base-object\"").expect("base-object group");
+            let end = start + svg[start..].find("</g>").expect("base-object end");
+            &svg[start..end]
+        }
+        let room = std::str::from_utf8(platform_node_icon_for_kind("trigger.room").expect("trigger.room icon")).unwrap();
+        let kinds = [
+            "ws.room.open",
+            "ws.room.close",
+            "ws.room.list",
+            "ws.ticket.create",
+            "ws.session.close",
+            "ws.session.tag",
+        ];
+        for kind in kinds {
+            let bytes = platform_node_icon_for_kind(kind).unwrap_or_else(|| panic!("{kind} has no icon"));
+            let svg = std::str::from_utf8(bytes).unwrap();
+            assert!(bytes.len() < 2048, "{kind} icon is {} bytes", bytes.len());
+            assert!(svg.contains("viewBox=\"0 0 128 128\""), "{kind}");
+            assert_eq!(base_object(svg), base_object(room), "{kind} redraws the room frame");
+            assert!(svg.contains("<g id=\"operation-badge\""), "{kind} has no badge");
+            for banned in ["<metadata", "inkscape", "sodipodi", "<title", "/Users/", "/home/"] {
+                assert!(!svg.contains(banned), "{kind} icon carries {banned}");
+            }
+        }
     }
 
     /// The Studio vendors every library its own pages import.
