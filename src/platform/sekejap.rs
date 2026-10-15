@@ -596,13 +596,25 @@ fn sql_type_of(kind: &str) -> Option<String> {
         return None;
     }
     if base == "GEOMETRY" && raw.contains('(') {
-        // Keep the subtype's own case: `GEOMETRY(Point,4326)`.
-        let inner = raw[raw.find('(')? + 1..].trim_end_matches(')').trim();
-        let parts = inner.split(',').map(str::trim).collect::<Vec<_>>();
-        let shape = parts.first().copied().unwrap_or("");
-        let valid = !shape.is_empty() && shape.chars().all(|c| c.is_ascii_alphabetic())
-            && parts.get(1).is_none_or(|srid| srid.chars().all(|c| c.is_ascii_digit()));
-        return valid.then(|| format!("GEOMETRY({})", parts.join(",")));
+        // `GEOMETRY(shape)` or `GEOMETRY(shape,srid)`, nothing more. The type
+        // is rebuilt from the two validated pieces, never echoed, and keeps
+        // the shape's own case: `GEOMETRY(Point,4326)`.
+        let inner = raw[raw.find('(')? + 1..].strip_suffix(')')?;
+        let mut parts = inner.split(',').map(str::trim);
+        let shape = parts
+            .next()
+            .filter(|shape| !shape.is_empty() && shape.chars().all(|c| c.is_ascii_alphabetic()))?;
+        let srid = parts.next();
+        if parts.next().is_some() {
+            return None;
+        }
+        return match srid {
+            None => Some(format!("GEOMETRY({shape})")),
+            Some(srid) if !srid.is_empty() && srid.chars().all(|c| c.is_ascii_digit()) => {
+                Some(format!("GEOMETRY({shape},{})", srid.parse::<u32>().ok()?))
+            }
+            Some(_) => None,
+        };
     }
     if base == "VECTOR" {
         let dims = upper.split('(').nth(1)?.trim_end_matches(')').trim().parse::<usize>().ok()?;
@@ -613,7 +625,9 @@ fn sql_type_of(kind: &str) -> Option<String> {
 
 /// A column DEFAULT as SQL, never as raw text: a number, a boolean, `NULL`,
 /// one of the generators, or an already quoted string stay as written;
-/// anything else is a text constant and is quoted here.
+/// anything else is a text constant and is quoted here. Sekejap's lexer knows
+/// one escape inside a string, `''`; a backslash is an ordinary character, so
+/// it is neither doubled nor refused.
 fn default_sql(raw: &str) -> String {
     let value = raw.trim();
     if value.is_empty() {
@@ -625,12 +639,11 @@ fn default_sql(raw: &str) -> String {
     let is_quoted = value.len() >= 2
         && value.starts_with('\'')
         && value.ends_with('\'')
-        && !value.contains('\\')
         && !value[1..value.len() - 1].replace("''", "").contains('\'');
     if is_number || is_keyword || is_quoted {
         value.to_string()
     } else {
-        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
+        format!("'{}'", value.replace('\'', "''"))
     }
 }
 
@@ -4159,6 +4172,51 @@ mod tests {
         let err = apply_schema_export(tmp.path(), "demo", "site-a", &bad_edge)
             .expect_err("injected edge fields must be rejected");
         assert_eq!(err.code, "PLATFORM_SEKEJAP_TABLE_INVALID");
+    }
+
+    #[test]
+    fn geometry_type_is_rebuilt_from_at_most_two_validated_parts() {
+        assert_eq!(sql_type_of("GEOMETRY(Point,4326)").as_deref(), Some("GEOMETRY(Point,4326)"));
+        assert_eq!(sql_type_of("geometry( Polygon , 3857 )").as_deref(), Some("GEOMETRY(Polygon,3857)"));
+        assert_eq!(sql_type_of("GEOMETRY(Point)").as_deref(), Some("GEOMETRY(Point)"));
+        assert_eq!(sql_type_of("GEOMETRY").as_deref(), Some("GEOMETRY"));
+        for bad in [
+            "GEOMETRY(Point,4326,0) DEFAULT 1); DROP TABLE users; --)",
+            "GEOMETRY(Point,4326,x)",
+            "GEOMETRY(Point,4326)) ; DROP TABLE users; --)",
+            "GEOMETRY(Point,)",
+            "GEOMETRY(Point",
+            "GEOMETRY(,4326)",
+        ] {
+            assert_eq!(sql_type_of(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn default_text_escapes_only_quotes_the_way_sekejap_reads_them() {
+        assert_eq!(default_sql(r"C:\data"), r"'C:\data'");
+        assert_eq!(default_sql("it's"), "'it''s'");
+        assert_eq!(default_sql(r"'a\b'"), r"'a\b'");
+        assert_eq!(default_sql("x'); DROP TABLE users; --"), "'x''); DROP TABLE users; --'");
+        assert_eq!(default_sql("42"), "42");
+        assert_eq!(default_sql("now()"), "now()");
+        assert_eq!(default_sql("'pending'"), "'pending'");
+    }
+
+    #[test]
+    fn a_backslash_default_reads_back_as_written() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = get_db(tmp.path(), "demo", "site-a").expect("open");
+        let ddl = format!(
+            "CREATE TABLE notes (_key TEXT PRIMARY KEY, path TEXT DEFAULT {})",
+            default_sql(r"C:\data\")
+        );
+        db.execute(&ddl, &[]).expect("create");
+        db.execute("INSERT INTO notes (_key) VALUES ('n1')", &[]).expect("insert");
+        let rows = db.query("SELECT path FROM notes WHERE _key = 'n1'", &[]).expect("select");
+        assert_eq!(rows.rows[0].json("path"), Some(serde_json::json!(r"C:\data\")));
+        drop(db);
+        evict_project_pool(tmp.path(), "demo", "site-a");
     }
 
 }
