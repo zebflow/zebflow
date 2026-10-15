@@ -1508,6 +1508,9 @@ impl DslExecutor {
             "abort" => reply(svc.abort(&self.owner, &self.project)),
             "resolve" => {
                 let path = args.first().cloned().unwrap_or_default();
+                if let Err(reason) = review_git_positional(&path) {
+                    return Some(DslOutput::err(format!("git resolve: {reason}")));
+                }
                 let how = args.get(1).map(|s| s.to_lowercase()).unwrap_or_default();
                 let (resolution, content) = match how.as_str() {
                     "mine" => (Resolution::Mine, None),
@@ -2232,7 +2235,11 @@ fn git_path_escapes(token: &str) -> bool {
         return false;
     }
     let unified = token.replace('\\', "/");
-    if unified.starts_with('/') || unified.starts_with("~/") || unified == "~" {
+    if unified.starts_with('/')
+        || unified.starts_with("~/")
+        || unified == "~"
+        || unified.starts_with(':')
+    {
         return true;
     }
     if unified.len() >= 2
@@ -2385,6 +2392,67 @@ mod git_policy_tests {
         let error = review_git_arguments("diff", &args(&["--no-index"])).unwrap_err();
         assert!(error.contains("--no-index"), "{error}");
         assert!(error.contains("--stat"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn git_pathspec_magic_is_refused() {
+        for (subcommand, argv) in [
+            ("add", &[":(top)x"][..]),
+            ("diff", &[":!x"][..]),
+            ("add", &[":/x"][..]),
+            ("add", &[":(exclude)x"][..]),
+            ("add", &[":(glob)x"][..]),
+            ("add", &[":(icase)x"][..]),
+        ] {
+            let err = review_git_arguments(subcommand, &args(argv))
+                .expect_err(&format!("git {subcommand} {argv:?} should be refused"));
+            assert!(err.contains("leaves the repository"), "{err}");
+        }
+        review_git_arguments("add", &args(&["pages/home.tsx"]))
+            .expect("git add pages/home.tsx should be allowed");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::platform::PlatformConfig::default();
+        config.data_root = tmp.path().join("platform");
+        config.default_password = uuid::Uuid::new_v4().to_string();
+        let platform = std::sync::Arc::new(
+            crate::platform::services::PlatformService::from_config(config).expect("platform"),
+        );
+        let layout = platform
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        std::fs::create_dir_all(layout.repo_source_dir().join("pages")).expect("mkdir pages");
+        std::fs::write(
+            layout.repo_source_dir().join("pages/home.tsx"),
+            "export default function Page() { return <main/>; }\n",
+        )
+        .expect("write page");
+        assert!(
+            crate::platform::services::git_sync::git_command()
+                .arg("init")
+                .arg("-q")
+                .arg(&layout.repo_dir)
+                .status()
+                .expect("git init")
+                .success()
+        );
+        let executor = super::DslExecutor::new(platform, "superadmin", "default");
+
+        for dsl in ["git add ':(top)x'", "git diff ':!x'", "git add :/x"] {
+            let out = executor.execute_dsl(dsl).await;
+            assert!(!out.ok, "{dsl} should be refused");
+            let joined = out
+                .lines
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(joined.contains("leaves the repository"), "{dsl}: {joined}");
+        }
+
+        let ok = executor.execute_dsl("git add pages/home.tsx").await;
+        assert!(ok.ok, "git add pages/home.tsx failed: {:?}", ok.lines);
     }
 }
 
