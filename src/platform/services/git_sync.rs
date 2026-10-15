@@ -133,16 +133,10 @@ impl GitSyncService {
         if !git_credential_matches_remote(&cred.kind, &cred.secret, repo_url) {
             return Vec::new();
         }
-        let username = cred.secret["username"].as_str().unwrap_or("");
-        let token = cred.secret["token"].as_str().unwrap_or("");
-        let Some(header) = git_http_basic_auth_header(username, token) else {
-            return Vec::new();
-        };
-        vec![
-            ("GIT_CONFIG_COUNT", "1".to_string()),
-            ("GIT_CONFIG_KEY_0", "http.extraheader".to_string()),
-            ("GIT_CONFIG_VALUE_0", header),
-        ]
+        git_http_auth_env(
+            cred.secret["username"].as_str().unwrap_or(""),
+            cred.secret["token"].as_str().unwrap_or(""),
+        )
     }
 
     fn identity_args(&self, actor: Option<&str>, project: &str) -> Vec<String> {
@@ -554,7 +548,7 @@ fn run_env(repo: &Path, pre: &[String], args: &[&str], env: &[(&str, &str)]) -> 
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let msg = if stderr.is_empty() { stdout.trim().to_string() } else { stderr };
-        Err(PlatformError::new("GIT_FAILED", scrub_secrets(&msg)))
+        Err(PlatformError::new("GIT_FAILED", scrub_secrets(&msg, &[])))
     }
 }
 
@@ -592,9 +586,23 @@ pub fn resolve_clean_git_remote_url(instance_url: &str, repo_url: &str) -> Resul
     Ok(parsed.to_string())
 }
 
-/// Builds an HTTP Basic `AUTHORIZATION` header value for a git operation without
-/// embedding the token into the remote URL.
-pub fn git_http_basic_auth_header(username: &str, token: &str) -> Option<String> {
+/// The environment that hands git an HTTP Basic `AUTHORIZATION` header for
+/// the one command it is set on — the only way a token reaches git. Passing it
+/// as `GIT_CONFIG_*` variables keeps it out of the URL, `.git/config` and the
+/// child's `argv` (`/proc/<pid>/cmdline`). Empty when there is no token.
+pub fn git_http_auth_env(username: &str, token: &str) -> Vec<(&'static str, String)> {
+    let Some(header) = git_http_basic_auth_header(username, token) else {
+        return Vec::new();
+    };
+    vec![
+        ("GIT_CONFIG_COUNT", "1".to_string()),
+        ("GIT_CONFIG_KEY_0", "http.extraheader".to_string()),
+        ("GIT_CONFIG_VALUE_0", header),
+    ]
+}
+
+/// An HTTP Basic `AUTHORIZATION` header value; `None` without a token.
+fn git_http_basic_auth_header(username: &str, token: &str) -> Option<String> {
     let token = token.trim();
     if token.is_empty() {
         return None;
@@ -640,12 +648,34 @@ pub fn sanitize_cloned_repo_origin(
 }
 
 /// A token never reaches a log line or a panel, whichever command leaked it.
-fn scrub_secrets(text: &str) -> String {
-    let re = regex::Regex::new(r"(?i)(authorization: basic )[A-Za-z0-9+/=]+|://[^/\s:]+:[^@\s]+@").unwrap();
-    re.replace_all(text, |c: &regex::Captures| {
-        if c.get(1).is_some() { format!("{}[redacted]", &c[1]) } else { "://[redacted]@".to_string() }
-    })
-    .to_string()
+/// The one scrubber for git output: every `known` secret (as typed and
+/// percent-encoded), the value of an `Authorization` header, and the whole
+/// userinfo of a URL — `user:token@`, a bare `token@`, and a password that
+/// itself holds `@`.
+pub fn scrub_secrets(text: &str, known: &[&str]) -> String {
+    let mut out = text.to_string();
+    for secret in known.iter().filter(|s| !s.is_empty()) {
+        out = out.replace(secret, "[redacted]");
+        let mut upper = String::with_capacity(secret.len());
+        for b in secret.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                upper.push(b as char);
+            } else {
+                upper.push_str(&format!("%{b:02X}"));
+            }
+        }
+        if upper != *secret {
+            out = out.replace(&upper, "[redacted]").replace(&upper.to_ascii_lowercase(), "[redacted]");
+        }
+    }
+    static SECRET_FORMS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(authorization:\s*(?:basic|bearer|token)\s+)[^\s'"]+|://[^/\s]*@"#).unwrap()
+    });
+    SECRET_FORMS
+        .replace_all(&out, |c: &regex::Captures| {
+            if c.get(1).is_some() { format!("{}[redacted]", &c[1]) } else { "://[redacted]@".to_string() }
+        })
+        .to_string()
 }
 
 trait WithCode {
@@ -873,8 +903,35 @@ mod tests {
 
     #[test]
     fn secrets_never_survive_an_error_message() {
-        assert_eq!(scrub_secrets("fatal: https://user:ghp_abc@github.com/x/y failed"), "fatal: https://[redacted]@github.com/x/y failed");
-        assert_eq!(scrub_secrets("header AUTHORIZATION: basic dXNlcjp0b2tlbg== rejected"), "header AUTHORIZATION: basic [redacted] rejected");
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let scrub = |text: String| scrub_secrets(&text, &[]);
+        // The forms that were already caught still are.
+        assert_eq!(scrub(format!("fatal: https://user:{token}@git.example.com/x/y failed")), "fatal: https://[redacted]@git.example.com/x/y failed");
+        assert_eq!(scrub("header AUTHORIZATION: basic dXNlcjp0b2tlbg== rejected".into()), "header AUTHORIZATION: basic [redacted] rejected");
+        // A bare token as the user name.
+        assert_eq!(scrub(format!("fatal: unable to access 'https://{token}@git.example.com/a.git/'")), "fatal: unable to access 'https://[redacted]@git.example.com/a.git/'");
+        // A password holding `@`: nothing of it survives.
+        let scrubbed = scrub(format!("fatal: https://user:{token}@tail@git.example.com/a.git failed"));
+        assert_eq!(scrubbed, "fatal: https://[redacted]@git.example.com/a.git failed");
+        // A known secret, as typed and percent-encoded.
+        let special = format!("{token}/+@");
+        let text = format!("bad {special} and {}", special.replace('/', "%2F").replace('+', "%2B").replace('@', "%40"));
+        let scrubbed = scrub_secrets(&text, &[&special]);
+        assert!(!scrubbed.contains(&token), "{scrubbed}");
+        // Ordinary output is left alone.
+        assert_eq!(scrub("Everything up-to-date".into()), "Everything up-to-date");
+    }
+
+    #[test]
+    fn git_auth_env_is_built_once_for_every_caller() {
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let env = git_http_auth_env("ci-bot", &token);
+        assert_eq!(env.len(), 3);
+        assert_eq!(env[0], ("GIT_CONFIG_COUNT", "1".to_string()));
+        assert_eq!(env[1], ("GIT_CONFIG_KEY_0", "http.extraheader".to_string()));
+        let expected = base64::engine::general_purpose::STANDARD.encode(format!("ci-bot:{token}"));
+        assert_eq!(env[2], ("GIT_CONFIG_VALUE_0", format!("AUTHORIZATION: basic {expected}")));
+        assert!(git_http_auth_env("ci-bot", "  ").is_empty(), "no token, no header");
     }
 
     #[test]

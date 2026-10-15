@@ -3855,8 +3855,8 @@ async fn home_clone_project_submit(
         Ok(u) => u,
         Err(err) => return (StatusCode::BAD_REQUEST, err.message).into_response(),
     };
-    let auth_header =
-        crate::platform::services::git_sync::git_http_basic_auth_header(&req.username, &req.token);
+    let auth_env =
+        crate::platform::services::git_sync::git_http_auth_env(&req.username, &req.token);
 
     // Ensure parent dir exists before cloning
     if let Some(parent) = repo_dir.parent() {
@@ -3880,12 +3880,7 @@ async fn home_clone_project_submit(
         return (StatusCode::BAD_REQUEST, "not a valid branch name").into_response();
     }
     let mut clone_cmd = crate::platform::services::git_sync::git_command();
-    if let Some(ref header) = auth_header {
-        clone_cmd
-            .env("GIT_CONFIG_COUNT", "1")
-            .env("GIT_CONFIG_KEY_0", "http.extraheader")
-            .env("GIT_CONFIG_VALUE_0", header);
-    }
+    clone_cmd.envs(auth_env.iter().cloned());
     clone_cmd.arg("clone");
     if !remote_branch.is_empty() {
         clone_cmd.arg("-b").arg(&remote_branch);
@@ -3901,8 +3896,10 @@ async fn home_clone_project_submit(
             ));
         }
         Ok(out) if !out.status.success() => {
-            let stderr =
-                scrub_token_from_str(String::from_utf8_lossy(&out.stderr).as_ref(), &req.token);
+            let stderr = crate::platform::services::git_sync::scrub_secrets(
+                String::from_utf8_lossy(&out.stderr).as_ref(),
+                &[&req.token],
+            );
             let msg = format!("git clone failed: {stderr}");
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
@@ -4054,12 +4051,7 @@ async fn home_clone_project_submit(
         if commit_out.map(|o| o.status.success()).unwrap_or(false) {
             // Push to establish the default branch on the remote
             let mut push_cmd = crate::platform::services::git_sync::git_command();
-            if let Some(ref header) = auth_header {
-                push_cmd
-                    .env("GIT_CONFIG_COUNT", "1")
-                    .env("GIT_CONFIG_KEY_0", "http.extraheader")
-                    .env("GIT_CONFIG_VALUE_0", header);
-            }
+            push_cmd.envs(auth_env.iter().cloned());
             let push_out = push_cmd
                 .arg("-C")
                 .arg(&repo_dir)
@@ -4071,8 +4063,10 @@ async fn home_clone_project_submit(
                 .output();
             if let Ok(ref o) = push_out {
                 if !o.status.success() {
-                    let stderr =
-                        scrub_token_from_str(&String::from_utf8_lossy(&o.stderr), &req.token);
+                    let stderr = crate::platform::services::git_sync::scrub_secrets(
+                        &String::from_utf8_lossy(&o.stderr),
+                        &[&req.token],
+                    );
                     return (
                         StatusCode::BAD_REQUEST,
                         format!("Initial push to empty repo failed: {stderr}"),
@@ -4090,32 +4084,6 @@ async fn home_clone_project_submit(
     }
 
     Redirect::to(HOME_PATH).into_response()
-}
-
-/// Replaces occurrences of `token` (both raw and percent-encoded userinfo form) in `s` with `***`.
-fn scrub_token_from_str(s: &str, token: &str) -> String {
-    if token.is_empty() {
-        return s.to_string();
-    }
-    let mut out = s.replace(token, "***");
-    let mut encoded_upper = String::with_capacity(token.len());
-    let mut encoded_lower = String::with_capacity(token.len());
-    for b in token.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            encoded_upper.push(b as char);
-            encoded_lower.push(b as char);
-        } else {
-            encoded_upper.push_str(&format!("%{b:02X}"));
-            encoded_lower.push_str(&format!("%{b:02x}"));
-        }
-    }
-    if !encoded_upper.is_empty() && encoded_upper != token {
-        out = out.replace(&encoded_upper, "***");
-    }
-    if !encoded_lower.is_empty() && encoded_lower != token {
-        out = out.replace(&encoded_lower, "***");
-    }
-    out
 }
 
 /// The header a controller presents when it calls one of *its* offices.
@@ -13156,12 +13124,13 @@ fn git_identity_args(
 fn git_failure_message(output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    match (stderr.is_empty(), stdout.is_empty()) {
+    let text = match (stderr.is_empty(), stdout.is_empty()) {
         (false, false) => format!("{stderr}\n{stdout}"),
         (false, true) => stderr,
         (true, false) => stdout,
         (true, true) => format!("git exited with status {}", output.status),
-    }
+    };
+    crate::platform::services::git_sync::scrub_secrets(&text, &[])
 }
 
 async fn api_git_commit(
