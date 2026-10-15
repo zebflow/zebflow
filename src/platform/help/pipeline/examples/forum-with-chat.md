@@ -11,9 +11,9 @@ for live chat. Messages persist in Sekejap. Public read, open write (add
 ## Pipelines
 
 1. `GET /forum` → list rooms → render listing
-2. `GET /forum/:room` → fetch room + recent messages → render room page
+2. `GET /forum/:room` → open the chat room if it is not open → fetch room + recent messages → render room page
 3. `POST /api/forum/rooms` → create room → return JSON
-4. `WS /ws/{owner}/{project}/rooms/:room` → WebSocket room (built-in route, no pipeline needed)
+4. `WS /ws/{owner}/{project}/rooms/forum-:room` → the chat room (built-in route; it exists only once opened)
 5. `WS event: chat.message` → validate → save message → broadcast to room
 
 ---
@@ -40,18 +40,27 @@ CREATE TABLE forum_messages (_key TEXT PRIMARY KEY, room TEXT, user TEXT, text T
 
 ### forum-room — room view with recent messages
 
+A chat room exists only once the server opens it — no visitor can make one
+by naming it. The page opens `forum-<id>` on the way: when the room is
+already open, `ws.room.open` refuses (`FW_NODE_WS_ROOM_OPEN_TAKEN`) and its
+`:error` pin carries on to the same queries. An open room closes after
+sitting empty for `--idle`, and the next visit opens it again.
+
 Two queries, so the room lookup is carried forward by graph id instead of
 being overwritten by the messages query:
 
 ```zf
 register forum/room --
 [a] trigger.webhook --route /forum/:room --method GET
-[room] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
+[open] ws.room.open --room "forum-{{ input.webhook.params.room }}" --idle 1h
+[room] sekejap.query.run --param "1={{ $trigger.params.room }}" -- "SELECT * FROM forum_rooms WHERE _key = $1"
 [msgs] sekejap.query.run --param "1={{ $trigger.params.room }}" -- "SELECT * FROM forum_messages WHERE room = $1 ORDER BY ts DESC LIMIT 50"
 [merge] javascript.script.run -- "return { room: $nodes.room.query.rows[0] || null, messages: input.query.rows.slice().reverse() };"
 [b] web.response.send --template pages/forum-room.tsx
 
-[a] -> [room]
+[a] -> [open]
+[open] -> [room]
+[open]:error -> [room]
 [room] -> [msgs]
 [msgs] -> [merge]
 [merge] -> [b]
@@ -79,14 +88,14 @@ register forum/api-room-create --
 
 ### ws-chat-message — WebSocket chat handler
 
-`trigger.room --room` names the room or pattern this trigger opens (`--room "*"`
-or `--room "room-*"` for dynamic room ids); the trigger
-answers under `room` — `input.room.room_id` right after the trigger, or
-`$trigger.room_id` anywhere later — says which room a given event came from.
+`trigger.room --room "forum-:id"` declares the opened chat rooms (a pattern;
+`*` alone is not a room); the trigger answers under `room` —
+`input.room.room_id` right after the trigger, or `$trigger.room_id` anywhere
+later — says which room a given event came from.
 
 ```zf
 register forum/ws-chat-message --
-[a] trigger.room --room "*" --event chat.message
+[a] trigger.room --room "forum-:id" --event chat.message
 [guard] logic.if --when "!!(input.room.payload && input.room.payload.user && input.room.payload.text)"
 [save] javascript.script.run -- "return { id: Date.now().toString(), room: $trigger.room_id, user: $trigger.payload.user, text: $trigger.payload.text, ts: Date.now() };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.save.script.id }}" --param "2={{ $nodes.save.script.room }}" --param "3={{ $nodes.save.script.user }}" --param "4={{ $nodes.save.script.text }}" --param "5={{ $nodes.save.script.ts }}" -- "INSERT INTO forum_messages (_key, room, user, text, ts) VALUES ($1, $2, $3, $4, $5)"
@@ -107,7 +116,8 @@ to it, and returning `null` from a script would not have stopped anything
 ## Nodes Used
 
 - `trigger.webhook` — HTTP endpoints
-- `trigger.room --room "*" --event chat.message` — WebSocket event handler (`--room` is required; `*` or `room-*` matches dynamic rooms)
+- `trigger.room --room "forum-:id" --event chat.message` — WebSocket event handler (`--room` is required: an exact name is a fixed room, a pattern declares opened rooms; `*` alone is refused)
+- `ws.room.open --room "forum-{{ … }}"` — opens a chat room; refused when it is already open, which the `:error` pin turns into "carry on"
 - `sekejap.query.run` — rooms and messages storage; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `logic.if` — validate before saving
 - `javascript.script.run` — shape rows, carry the room lookup forward via `$nodes`; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept
@@ -119,7 +129,7 @@ to it, and returning `null` from a script would not have stopped anything
 ## WebSocket Client Setup (in TSX template)
 
 ```tsx
-const ws = new WebSocket(`/ws/${owner}/${project}/rooms/${roomId}`);
+const ws = new WebSocket(`/ws/${owner}/${project}/rooms/forum-${roomId}`);
 ws.onmessage = (e) => {
   const msg = JSON.parse(e.data);
   if (msg.type === 'event' && msg.event === 'chat.message') {

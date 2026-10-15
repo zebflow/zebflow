@@ -12,7 +12,7 @@ Players join rooms, send moves, state updates are broadcast.
 
 1. `GET /game` → render game lobby page
 2. `GET /game/:room` → render game room with initial state
-3. `POST /api/game/rooms` → create room with initial state
+3. `POST /api/game/rooms` → record the room and open it (`ws.room.open`)
 4. `WS event: player.join` → add player to room state → broadcast
 5. `WS event: player.move` → validate move → update game state → broadcast
 6. `WS event: player.leave` → remove player → broadcast
@@ -27,7 +27,9 @@ CREATE TABLE game_rooms (_key TEXT PRIMARY KEY, name TEXT, status TEXT, created_
 
 Room *state* (players, board, last move) lives in the WebSocket room's shared
 state object (`ws.state.put` / `ws.state.update` / `ws.state.delete`), not in this table — the table only tracks
-which rooms exist and whether they're joinable.
+which rooms were made and whether they're joinable. The live room itself
+exists only because `api-room-create` opened it: a visitor naming a room
+nobody opened is refused (close code `4404`).
 
 ---
 
@@ -60,21 +62,31 @@ register game/room --
 [c]:false -> [f]
 ```
 
-### api-room-create — create game room
+### api-room-create — create and open a game room
+
+`ws.room.open` opens the room under the `room-*` pattern the WebSocket
+handlers below declare; `--max-sessions` caps it (a join past it closes with
+`4429`) and the room closes by itself after sitting empty for `--idle`.
 
 ```zf
 register game/api-room-create --
 [trig] trigger.webhook --route /api/game/rooms --method POST
 [draft] javascript.script.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.webhook.body && input.webhook.body.name) || id };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.draft.script.id }}" --param "2={{ $nodes.draft.script.name }}" --param "3={{ Date.now() }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
+[open] ws.room.open --room "{{ $nodes.draft.script.id }}" --max-sessions 8 --idle 30m
 [ok] javascript.script.run -- "return { ok: true, room_id: $nodes.draft.script.id };"
 [resp] web.response.send --body "{{ $nodes.ok.script }}"
 
 [trig] -> [draft]
 [draft] -> [ins]
-[ins] -> [ok]
+[ins] -> [open]
+[open] -> [ok]
 [ok] -> [resp]
 ```
+
+A private room (`--private`) admits only players holding a ticket from
+`ws.ticket.create --room <room> --user <sub>`, issued by a webhook that checks
+the player belongs there; the client connects with `?ticket=…`.
 
 ### ws-player-join — player joins room
 
@@ -123,7 +135,8 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 ## Nodes Used
 
 - `trigger.webhook` — HTTP lobby and room pages
-- `trigger.room --room "room-*" --event <name>` — WebSocket event handlers (join, move, leave); `--room` is required and accepts exact names or patterns (`room-*`, `room-:id`)
+- `trigger.room --room "room-*" --event <name>` — WebSocket event handlers (join, move, leave); `--room` is required: an exact name is a fixed room, a pattern (`room-*`, `room-:id`) declares opened rooms
+- `ws.room.open` — opens a game room under that pattern; `ws.room.close` ends it (every player gets `4410`)
 - `sekejap.query.run` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `javascript.script.run` — shape the lobby rows and new room ids; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept
 - `logic.if` — move validation
@@ -155,7 +168,10 @@ event reaches that one socket and no other.
 The server raises two reserved events on every connection's own ordered queue:
 
 - `$connect` — after `joined`.
-- `$disconnect` — when the socket ends, payload `{ "reason": "close" | "error" }`.
+- `$disconnect` — when the socket ends, payload `{ "reason": … }`: `left`
+  (the client closed), `dropped` (the connection broke), `closed`
+  (`ws.session.close`), `room_closed` (`ws.room.close`), `expired` (the
+  login's `exp` passed) or `flood` (too many events waiting).
   It runs even if the client never said goodbye, and after every event that
   socket sent, so a late `move` can never resurrect a player who left.
 
@@ -175,12 +191,17 @@ register pipelines/presence-out --
 
 Every segment of `--key` must say something: `{{ input.room.session_id }}` resolving
 empty leaves `/players/`, which is refused (`FW_NODE_WS_STATE_UPDATE_KEY`,
-`FW_NODE_WS_STATE_DELETE_KEY`), never a write to `/players` itself. When the last connection leaves, the room and its state are
-disposed; the next visitor starts from `{}`.
+`FW_NODE_WS_STATE_DELETE_KEY`), never a write to `/players` itself. An
+opened room keeps its state when the last player leaves, until it is closed
+or sits empty past its `--idle`; a fixed room (an exact `--room`) forgets its
+state with its last session.
 
-A connection is admitted to a room only when at least one active `trigger.room --room`
-matches the room id and the connection satisfies every auth guard declared on that room;
-otherwise the socket is closed with code 4401 before any state is sent.
+A connection joins a room only when an active `trigger.room` declares it and
+the room is open (`4404` otherwise), the room's join rule — the `--auth` /
+`--credential` / `--role` every trigger on that room declares alike — admits
+it (`4401`), and a seat is free (`4429`). The rule is checked once, at
+connect; what it proved rides on every event as `input.room.auth`, and the
+session closes with `4408` when the login expires.
 
 ---
 
