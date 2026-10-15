@@ -245,7 +245,10 @@ impl NodeHandler for Node {
         let scratch = StoreScratch::new(CODE)?;
         let abs_path = scratch.pull(&source_store.fs, &rel_path)?;
         validate_pdf_magic(&abs_path)?;
-        validate_pdf_limits(&abs_path, dpi, emit_page_raster)?;
+        let limits_path = abs_path.clone();
+        tokio::task::spawn_blocking(move || validate_pdf_limits(&limits_path, dpi, emit_page_raster))
+            .await
+            .map_err(|err| PipelineError::new(CODE, format!("pdf inspect task failed: {err}")))??;
 
         let output_rel_dir = target_key(Some(&resolve_output_dir(&self.config.folder, &rel_path)), "", "", CONFIG_CODE)?;
         let store = open_store(&self.platform, owner, project, self.config.store.as_deref())?;
@@ -372,12 +375,18 @@ fn validate_pdf_magic(path: &PathBuf) -> Result<(), PipelineError> {
     Ok(())
 }
 
+/// pdfwrangler draws a page that names no MediaBox on a 1000 x 1000 pt canvas.
+const RENDERER_DEFAULT_PAGE_PT: f32 = 1_000.0;
+
+/// The page count and every page's raster size, read by the same PDF library
+/// that will render it: the page tree is walked after object streams are
+/// decompressed and inherited MediaBoxes resolved, so a compressed page tree
+/// cannot hide a page, and an outline's `/Count` is not mistaken for one.
 fn validate_pdf_limits(
     path: &Path,
     dpi: f32,
     emit_page_raster: bool,
 ) -> Result<(), PipelineError> {
-    use std::io::Read;
     let meta = std::fs::metadata(path)
         .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: {err}")))?;
     if meta.len() > MAX_PDF_INPUT_BYTES {
@@ -389,71 +398,44 @@ fn validate_pdf_limits(
             ),
         ));
     }
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    std::fs::File::open(path)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: {err}")))?;
-    let text = String::from_utf8_lossy(&bytes);
-
-    // Check declared /Count <N> in page tree dictionaries.
-    let mut rest = text.as_ref();
-    while let Some(pos) = rest.find("/Count") {
-        rest = &rest[pos + 6..];
-        let trimmed = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
-        let digits: String = trimmed
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if let Ok(count) = digits.parse::<u64>() {
-            if count > MAX_PDF_PAGES {
-                return Err(PipelineError::new(
-                    SOURCE_CODE,
-                    format!(
-                        "--from: PDF declares {count} pages, exceeding limit of {MAX_PDF_PAGES}"
-                    ),
-                ));
-            }
+    let report = pdfwrangler::inspect_pdf(path)
+        .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: not a readable PDF: {err:#}")))?;
+    if report.page_count as u64 > MAX_PDF_PAGES {
+        return Err(PipelineError::new(
+            SOURCE_CODE,
+            format!(
+                "--from: PDF has {} pages, exceeding limit of {MAX_PDF_PAGES}",
+                report.page_count
+            ),
+        ));
+    }
+    if !emit_page_raster {
+        return Ok(());
+    }
+    for page in &report.pages {
+        let (width_pt, height_pt) = match page.media_box {
+            Some(b) => ((b.x1 - b.x0).abs(), (b.y1 - b.y0).abs()),
+            None => (RENDERER_DEFAULT_PAGE_PT, RENDERER_DEFAULT_PAGE_PT),
+        };
+        let width_px = (width_pt / 72.0) * dpi;
+        let height_px = (height_pt / 72.0) * dpi;
+        let pixels = width_px * height_px;
+        if !width_px.is_finite()
+            || !height_px.is_finite()
+            || !pixels.is_finite()
+            || width_px > MAX_PDF_RASTER_DIM
+            || height_px > MAX_PDF_RASTER_DIM
+            || pixels > MAX_PDF_RASTER_PIXELS
+        {
+            return Err(PipelineError::new(
+                SOURCE_CODE,
+                format!(
+                    "--from: PDF page {} raster size ({:.0}x{:.0} px at {dpi} DPI) exceeds maximum allowed dimensions",
+                    page.page_number, width_px, height_px
+                ),
+            ));
         }
     }
-
-    if emit_page_raster {
-        let mut box_rest = text.as_ref();
-        while let Some(pos) = box_rest.find("/MediaBox") {
-            box_rest = &box_rest[pos + 9..];
-            if let Some(open) = box_rest.find('[') {
-                let after_open = &box_rest[open + 1..];
-                if let Some(close) = after_open.find(']') {
-                    let nums: Vec<f32> = after_open[..close]
-                        .split_whitespace()
-                        .filter_map(|t| t.parse::<f32>().ok())
-                        .collect();
-                    if nums.len() == 4 {
-                        let width_pt = (nums[2] - nums[0]).abs();
-                        let height_pt = (nums[3] - nums[1]).abs();
-                        let width_px = (width_pt / 72.0) * dpi;
-                        let height_px = (height_pt / 72.0) * dpi;
-                        let pixels = width_px * height_px;
-                        if !width_px.is_finite()
-                            || !height_px.is_finite()
-                            || !pixels.is_finite()
-                            || width_px > MAX_PDF_RASTER_DIM
-                            || height_px > MAX_PDF_RASTER_DIM
-                            || pixels > MAX_PDF_RASTER_PIXELS
-                        {
-                            return Err(PipelineError::new(
-                                SOURCE_CODE,
-                                format!(
-                                    "--from: PDF page raster size ({:.0}x{:.0} px at {dpi} DPI) exceeds maximum allowed dimensions",
-                                    width_px, height_px
-                                ),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -471,25 +453,82 @@ mod tests {
     #[test]
     fn rejects_oversized_pdf_page_count_and_raster_dimensions() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let huge_box_pdf = tmp.path().join("huge-box.pdf");
-        std::fs::write(
-            &huge_box_pdf,
-            b"%PDF-1.4\n1 0 obj\n<< /Type /Pages /Count 1 >>\nendobj\n2 0 obj\n<< /Type /Page /MediaBox [0 0 14400 14400] >>\nendobj\n",
-        )
-        .expect("write huge box pdf");
+        let write = |name: &str, bytes: Vec<u8>| {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, bytes).expect("write pdf");
+            path
+        };
+
+        let huge_box_pdf = write(
+            "huge-box.pdf",
+            classic_pdf(&[
+                "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400] >>".to_string(),
+            ]),
+        );
         let err = validate_pdf_limits(&huge_box_pdf, 600.0, true).expect_err("huge mediabox at 600 dpi must fail");
         assert_eq!(err.code, SOURCE_CODE);
         assert!(err.message.contains("exceeds maximum allowed dimensions"), "{err:?}");
+        validate_pdf_limits(&huge_box_pdf, 600.0, false).expect("no raster, no raster limit");
 
-        let many_pages_pdf = tmp.path().join("many-pages.pdf");
-        std::fs::write(
-            &many_pages_pdf,
-            b"%PDF-1.4\n1 0 obj\n<< /Type /Pages /Count 5000 >>\nendobj\n",
-        )
-        .expect("write many pages pdf");
+        // 501 real pages in the page tree.
+        let pages = 501;
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            format!(
+                "<< /Type /Pages /Kids [{}] /Count {pages} >>",
+                (0..pages).map(|i| format!("{} 0 R", i + 3)).collect::<Vec<_>>().join(" ")
+            ),
+        ];
+        objects.extend((0..pages).map(|_| "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_string()));
+        let many_pages_pdf = write("many-pages.pdf", classic_pdf(&objects));
         let err = validate_pdf_limits(&many_pages_pdf, 144.0, false).expect_err("excessive page count must fail");
         assert_eq!(err.code, SOURCE_CODE);
-        assert!(err.message.contains("exceeding limit"), "{err:?}");
+        assert!(err.message.contains("501 pages, exceeding limit"), "{err:?}");
+
+        let garbage = write("garbage.pdf", b"%PDF-1.4\nnot a pdf at all\n".to_vec());
+        let err = validate_pdf_limits(&garbage, 144.0, true).expect_err("unreadable PDF must fail");
+        assert_eq!(err.code, SOURCE_CODE);
+
+        validate_pdf_limits(&write("ok.pdf", minimal_pdf_bytes("ok")), 144.0, true).expect("an ordinary page passes");
+    }
+
+    /// An outline's `/Count` is the number of open bookmarks, not pages: a
+    /// one-page PDF with a large outline is not refused.
+    #[test]
+    fn an_outline_count_is_not_a_page_count() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("outline.pdf");
+        std::fs::write(
+            &path,
+            classic_pdf(&[
+                "<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>".to_string(),
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_string(),
+                "<< /Type /Outlines /Count 5000 >>".to_string(),
+            ]),
+        )
+        .expect("write pdf");
+        validate_pdf_limits(&path, 144.0, true).expect("one page, whatever the outline says");
+    }
+
+    /// A page tree inside a Flate-compressed object stream, reached through a
+    /// cross-reference stream: no `/MediaBox` appears in the file's bytes,
+    /// yet the page is still measured.
+    #[test]
+    fn a_page_box_inside_a_compressed_object_stream_is_measured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("objstm.pdf");
+        let bytes = object_stream_pdf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400] >>");
+        assert!(!bytes.windows(9).any(|w| w == b"/MediaBox"), "the box is compressed");
+        std::fs::write(&path, &bytes).expect("write pdf");
+        let err = validate_pdf_limits(&path, 600.0, true).expect_err("hidden huge mediabox must fail");
+        assert!(err.message.contains("exceeds maximum allowed dimensions"), "{err:?}");
+
+        std::fs::write(&path, object_stream_pdf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"))
+            .expect("write pdf");
+        validate_pdf_limits(&path, 144.0, true).expect("an ordinary compressed page passes");
     }
 
     #[test]
@@ -623,65 +662,94 @@ mod tests {
         );
     }
 
-    fn minimal_pdf_bytes(text: &str) -> Vec<u8> {
-        fn push_obj(buf: &mut Vec<u8>, offsets: &mut Vec<usize>, id: usize, body: &str) {
-            offsets.push(buf.len());
-            buf.extend_from_slice(format!("{id} 0 obj\n{body}\nendobj\n").as_bytes());
+    /// A PDF 1.4 file with a classic cross-reference table; `objects[i]` is
+    /// object `i + 1`.
+    fn classic_pdf(objects: &[String]) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
         }
-
-        let content = format!("BT /F1 24 Tf 72 72 Td ({}) Tj ET", escape_pdf_text(text));
-        let mut pdf = Vec::new();
-        pdf.extend_from_slice(b"%PDF-1.4\n");
-        let mut offsets = vec![0usize];
-        push_obj(
-            &mut pdf,
-            &mut offsets,
-            1,
-            "<< /Type /Catalog /Pages 2 0 R >>",
-        );
-        push_obj(
-            &mut pdf,
-            &mut offsets,
-            2,
-            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        );
-        push_obj(
-            &mut pdf,
-            &mut offsets,
-            3,
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-        );
-        push_obj(
-            &mut pdf,
-            &mut offsets,
-            4,
-            &format!(
-                "<< /Length {} >>\nstream\n{}\nendstream",
-                content.len(),
-                content
-            ),
-        );
-        push_obj(
-            &mut pdf,
-            &mut offsets,
-            5,
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        );
         let xref_offset = pdf.len();
-        pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+        pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len() + 1).as_bytes());
         pdf.extend_from_slice(b"0000000000 65535 f \n");
-        for offset in offsets.iter().skip(1) {
+        for offset in &offsets {
             pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
         }
         pdf.extend_from_slice(
             format!(
-                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
-                offsets.len(),
-                xref_offset
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+                offsets.len() + 1
             )
             .as_bytes(),
         );
         pdf
+    }
+
+    /// A PDF 1.5 file whose page tree (objects 2 and 3) sits in a
+    /// Flate-compressed object stream (object 4), indexed by a
+    /// cross-reference stream (object 5).
+    fn object_stream_pdf(page: &str) -> Vec<u8> {
+        use std::io::Write;
+        let pages = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>";
+        let header = format!("2 0 3 {} ", pages.len() + 1);
+        let body = format!("{header}{pages}\n{page}");
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(body.as_bytes()).expect("deflate");
+        let packed = encoder.finish().expect("deflate");
+
+        let mut pdf = b"%PDF-1.5\n".to_vec();
+        let catalog_at = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let objstm_at = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj\n<< /Type /ObjStm /N 2 /First {} /Filter /FlateDecode /Length {} >>\nstream\n",
+                header.len(),
+                packed.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&packed);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        let xref_at = pdf.len();
+        let entry = |kind: u8, field: u32, index: u16| {
+            let mut row = vec![kind];
+            row.extend_from_slice(&field.to_be_bytes());
+            row.extend_from_slice(&index.to_be_bytes());
+            row
+        };
+        let rows = [
+            entry(0, 0, 0xffff),
+            entry(1, catalog_at as u32, 0),
+            entry(2, 4, 0),
+            entry(2, 4, 1),
+            entry(1, objstm_at as u32, 0),
+            entry(1, xref_at as u32, 0),
+        ]
+        .concat();
+        pdf.extend_from_slice(
+            format!(
+                "5 0 obj\n<< /Type /XRef /Size 6 /W [1 4 2] /Root 1 0 R /Length {} >>\nstream\n",
+                rows.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&rows);
+        pdf.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+        pdf
+    }
+
+    fn minimal_pdf_bytes(text: &str) -> Vec<u8> {
+        let content = format!("BT /F1 24 Tf 72 72 Td ({}) Tj ET", escape_pdf_text(text));
+        classic_pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ])
     }
 
     fn escape_pdf_text(text: &str) -> String {
