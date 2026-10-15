@@ -28,3 +28,5 @@ mod migration_startup;
 mod sections;
 #[path = "platform/system_panel.rs"]
 mod system_panel;
+#[path = "platform/studio_oauth.rs"]
+mod studio_oauth;

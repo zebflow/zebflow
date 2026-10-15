@@ -17170,9 +17170,9 @@ async fn api_oauth2_authorize(
     url.push_str("&access_type=offline&prompt=consent");
 
     let mut resp = Json(serde_json::json!({ "redirect_url": url })).into_response();
-    if let Ok(cookie_val) = HeaderValue::from_str(&format!(
-        "{OAUTH_NONCE_COOKIE_NAME}={nonce}; Path=/oauth/callback; HttpOnly; SameSite=Lax; Max-Age=600"
-    )) {
+    if let Ok(cookie_val) =
+        HeaderValue::from_str(&oauth_nonce_cookie_header(&nonce, 600, platform_cookie_secure()))
+    {
         resp.headers_mut()
             .append(axum::http::header::SET_COOKIE, cookie_val);
     }
@@ -17180,6 +17180,16 @@ async fn api_oauth2_authorize(
 }
 
 const OAUTH_NONCE_COOKIE_NAME: &str = "zebflow_oauth_nonce";
+
+/// The Studio OAuth nonce cookie: set with the nonce for ten minutes, or
+/// cleared with an empty value and `Max-Age=0`. `Secure` as the session
+/// cookie has it.
+fn oauth_nonce_cookie_header(nonce: &str, max_age: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{OAUTH_NONCE_COOKIE_NAME}={nonce}; Path=/oauth/callback; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure_attr}"
+    )
+}
 
 fn pending_oauth_nonces() -> &'static std::sync::Mutex<std::collections::HashMap<String, i64>> {
     static NONCES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
@@ -17230,9 +17240,25 @@ struct OAuthCallbackQuery {
     error_description: Option<String>,
 }
 
-/// OAuth2 callback handler — requires matching single-use browser nonce cookie and signed state.
+/// OAuth2 callback handler — requires matching single-use browser nonce
+/// cookie and signed state. The nonce cookie is cleared on every answer: a
+/// denial, a bad state and a forwarded exchange end the attempt as surely as
+/// a finished one.
 async fn oauth2_callback_handler(
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    query: axum::extract::Query<OAuthCallbackQuery>,
+) -> Response {
+    let mut resp = oauth2_callback_outcome(state, headers, uri, query).await;
+    if let Ok(clear) = HeaderValue::from_str(&oauth_nonce_cookie_header("", 0, platform_cookie_secure())) {
+        resp.headers_mut().append(axum::http::header::SET_COOKIE, clear);
+    }
+    resp
+}
+
+async fn oauth2_callback_outcome(
+    state: PlatformAppState,
     headers: HeaderMap,
     uri: Uri,
     axum::extract::Query(query): axum::extract::Query<OAuthCallbackQuery>,
@@ -17302,7 +17328,7 @@ async fn oauth2_callback_handler(
             }
         };
 
-    let mut resp = match state
+    match state
         .platform
         .credentials
         .exchange_oauth2_code(&owner, &project, &credential_id, code, &redirect_uri)
@@ -17316,14 +17342,7 @@ async fn oauth2_callback_handler(
             let target = format!("/projects/{owner}/{project}/credentials?oauth=error");
             axum::response::Redirect::to(&target).into_response()
         }
-    };
-    resp.headers_mut().append(
-        axum::http::header::SET_COOKIE,
-        HeaderValue::from_static(
-            "zebflow_oauth_nonce=; Path=/oauth/callback; HttpOnly; SameSite=Lax; Max-Age=0",
-        ),
-    );
-    resp
+    }
 }
 
 fn sign_oauth_state(
@@ -26976,8 +26995,10 @@ fn session_cookie_header(token: &str, max_age: i64) -> String {
 /// holding a session it will not send. `Lax` is the narrowest attribute that
 /// survives a top-level GET hand-off, and it is what every SSO callback uses
 /// for the same reason. A locally-authenticated session stays `Strict`.
-fn session_cookie_header_same_site(token: &str, max_age: i64, same_site: &str) -> String {
-    let secure = match std::env::var("ZEBFLOW_COOKIE_SECURE") {
+/// Whether the platform's cookies carry `Secure`: unless bound to loopback,
+/// with `ZEBFLOW_COOKIE_SECURE` overriding.
+fn platform_cookie_secure() -> bool {
+    match std::env::var("ZEBFLOW_COOKIE_SECURE") {
         Ok(value) => matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
@@ -26988,8 +27009,11 @@ fn session_cookie_header_same_site(token: &str, max_age: i64, same_site: &str) -
                 .as_str(),
             "127.0.0.1" | "localhost" | "::1"
         ),
-    };
-    let secure_attr = if secure { "; Secure" } else { "" };
+    }
+}
+
+fn session_cookie_header_same_site(token: &str, max_age: i64, same_site: &str) -> String {
+    let secure_attr = if platform_cookie_secure() { "; Secure" } else { "" };
     format!(
         "{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite={same_site}; Max-Age={max_age}{secure_attr}",
     )
@@ -30179,6 +30203,22 @@ mod home_directory_tests {
             }
             _ => panic!("hmac credential must not be accepted for jwt auth"),
         }
+    }
+
+    #[test]
+    fn the_oauth_nonce_cookie_is_secure_as_the_session_cookie_is() {
+        let set = oauth_nonce_cookie_header("n1", 600, true);
+        assert!(set.starts_with("zebflow_oauth_nonce=n1; Path=/oauth/callback; HttpOnly; SameSite=Lax; Max-Age=600"), "{set}");
+        assert!(set.ends_with("; Secure"), "{set}");
+        let loopback = oauth_nonce_cookie_header("n1", 600, false);
+        assert!(!loopback.contains("Secure"), "{loopback}");
+        let clear = oauth_nonce_cookie_header("", 0, true);
+        assert!(clear.starts_with("zebflow_oauth_nonce=; ") && clear.contains("Max-Age=0"), "{clear}");
+        // One decision for both cookies, whatever this process's environment says.
+        assert_eq!(
+            oauth_nonce_cookie_header("n1", 600, platform_cookie_secure()).ends_with("; Secure"),
+            session_cookie_header_same_site("t", 60, "Strict").ends_with("; Secure"),
+        );
     }
 
     #[test]
