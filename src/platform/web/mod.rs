@@ -26426,6 +26426,10 @@ async fn parse_multipart_envelope(
 }
 
 const MAX_FORM_ARRAY_INDEX: usize = 1024;
+/// How far past an array's current end a `field[n]` may land. Further out,
+/// the key stays literal text: a 10-byte field must not allocate a kilobyte
+/// of nulls, and a form's own indices arrive in order or nearly so.
+const FORM_INDEX_SLACK: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MultipartValueKey {
@@ -26481,9 +26485,19 @@ fn urlencoded_form_to_json(body: &[u8]) -> Option<Value> {
 }
 
 fn insert_form_value(map: &mut serde_json::Map<String, Value>, raw_name: &str, value: Value) {
-    let key = parse_multipart_value_key(raw_name);
+    let mut key = parse_multipart_value_key(raw_name);
     if key.base.is_empty() {
         return;
+    }
+    if let Some(index) = key.index {
+        let current_len = match map.get(&key.base) {
+            Some(Value::Array(items)) => items.len(),
+            Some(_) => 1,
+            None => 0,
+        };
+        if index > current_len + FORM_INDEX_SLACK {
+            key = MultipartValueKey { base: raw_name.trim().to_string(), index: None, force_array: false };
+        }
     }
 
     if let Some(index) = key.index.filter(|&i| i <= MAX_FORM_ARRAY_INDEX) {
@@ -26586,6 +26600,33 @@ mod webhook_ingress_tests {
         assert_eq!(key.base, "meta[name]");
         assert_eq!(key.index, None);
         assert!(!key.force_array);
+    }
+
+    /// `a1[1024]=x&a2[1024]=x…` must not allocate a kilobyte-long array per
+    /// ten-byte field: an index lands only near the array's current end, and
+    /// anything further stays a literal key. Ordered, reversed and slightly
+    /// gapped indices still build an array.
+    #[test]
+    fn form_indices_grow_an_array_only_near_its_current_end() {
+        let mut body = String::new();
+        for n in 0..50 {
+            body.push_str(&format!("a{n}%5B1024%5D=x&"));
+        }
+        body.push_str("rows%5B0%5D=a&rows%5B2%5D=c&rows%5B1%5D=b&rows%5B40%5D=far");
+        let form = urlencoded_form_to_json(body.as_bytes()).unwrap();
+        let form = form.as_object().unwrap();
+        for n in 0..50 {
+            assert_eq!(form[&format!("a{n}[1024]")], json!("x"), "a{n} stays a literal key");
+            assert!(!form.contains_key(&format!("a{n}")), "a{n} allocated an array");
+        }
+        assert_eq!(form["rows"], json!(["a", "b", "c"]));
+        assert_eq!(form["rows[40]"], json!("far"));
+
+        let mut values = Map::new();
+        insert_form_value(&mut values, "photos[16]", json!("p"));
+        assert_eq!(values["photos"].as_array().map(Vec::len), Some(17), "within the slack of an empty array");
+        insert_form_value(&mut values, "photos[3]", json!("q"));
+        assert_eq!(values["photos"][3], json!("q"));
     }
 
     #[test]
