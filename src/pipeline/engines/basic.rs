@@ -1255,6 +1255,9 @@ impl BasicPipelineEngine {
         if let Some(handler) = kv::build(&node.kind, &node.config, self.state_bus.clone())? {
             return Ok(NodeDispatch::Kv(handler));
         }
+        if let Some(handler) = ws::build(&node.kind, &node.config, self.ws_hub.clone())? {
+            return Ok(NodeDispatch::WsRoom(handler));
+        }
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
                 serde_json::from_value(node.config.clone())
@@ -2260,6 +2263,7 @@ impl BasicPipelineEngine {
                     NodeDispatch::WsState(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Crypto(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Kv(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::WsRoom(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::TriggerFunction(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -5687,6 +5691,8 @@ enum NodeDispatch {
     /// Any `crypto.*` kind.
     Crypto(Box<dyn crate::pipeline::nodes::NodeHandler>),
     Kv(Box<dyn crate::pipeline::nodes::NodeHandler>),
+    /// The room-management `ws.*` kinds (`ws/mod.rs`).
+    WsRoom(Box<dyn crate::pipeline::nodes::NodeHandler>),
     TriggerFunction(trigger_function::Node),
     FunctionCall(function::call::Node),
     FilePut(fs::put::Node),

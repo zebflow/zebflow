@@ -109,7 +109,7 @@ async fn state_after(handle: &RoomHandle, run: impl std::future::Future<Output =
 }
 
 #[test]
-fn the_family_is_four_kinds_with_their_signatures() {
+fn the_family_has_its_kinds_with_their_signatures() {
     let signatures: Vec<String> = super::definitions()
         .iter()
         .filter(|def| !def.kind.starts_with("trigger."))
@@ -122,6 +122,11 @@ fn the_family_is_four_kinds_with_their_signatures() {
             "ws.state.put --key TEXT --value JSON [--room TEXT] [--batch] → state",
             "ws.state.update --key TEXT --value JSON [--room TEXT] [--batch] → state",
             "ws.state.delete --key TEXT [--room TEXT] [--batch] → state",
+            "ws.room.open --room TEXT [--private] [--max-sessions N] [--meta JSON] [--idle DURATION] [--hold DURATION] [--max-state SIZE] → room",
+            "ws.room.close [--room TEXT] → room",
+            "ws.room.list [--room TEXT] [--members] → room",
+            "ws.ticket.create --room TEXT --user TEXT [--ttl DURATION] → ticket",
+            "ws.session.close [--room TEXT] [--session TEXT] [--user TEXT] → session",
         ]
     );
 }

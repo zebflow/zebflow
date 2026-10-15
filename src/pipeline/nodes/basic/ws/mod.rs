@@ -6,6 +6,11 @@
 //! | `ws.state.put` | `state.rs` | `state: { key, room }` |
 //! | `ws.state.update` | `state.rs` | `state: { key, room }` |
 //! | `ws.state.delete` | `state.rs` | `state: { key, room }` |
+//! | `ws.room.open` | `room_open.rs` | `room: { room, kind, private, meta, sessions, … }` |
+//! | `ws.room.close` | `room_close.rs` | `room: { room, closed, sessions }` |
+//! | `ws.room.list` | `room_list.rs` | `room: { rooms: [ … ], total }` |
+//! | `ws.ticket.create` | `ticket_create.rs` | `ticket: { room, ticket, expires_at }` |
+//! | `ws.session.close` | `session_close.rs` | `session: { room, closed }` |
 //!
 //! The trigger that starts a pipeline from a room event (`trigger.room`,
 //! `trigger.rs`) lives with the family it serves.
@@ -15,15 +20,26 @@
 //! under `room`); a run started any other way names its room.
 
 pub mod message_send;
+pub mod room_close;
+pub mod room_list;
+pub mod room_open;
+pub mod session_close;
 pub mod state;
+pub mod ticket_create;
 pub mod trigger;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod manage_tests;
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::infra::transport::ws::HubRefusal;
+use crate::infra::transport::ws::{HubRefusal, RoomPattern, WsHub};
+use crate::pipeline::nodes::NodeHandler;
 use crate::pipeline::PipelineError;
 use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::nodes::NodeExecutionOutput;
@@ -40,7 +56,35 @@ pub fn definitions() -> Vec<NodeDefinition> {
         state::definition(state::Verb::Put),
         state::definition(state::Verb::Update),
         state::definition(state::Verb::Delete),
+        room_open::definition(),
+        room_close::definition(),
+        room_list::definition(),
+        ticket_create::definition(),
+        session_close::definition(),
     ]
+}
+
+/// The room-management kinds, one builder for them (as `kv/mod.rs`); `None`
+/// for any other kind.
+pub fn build(kind: &str, config: &Value, hub: Option<Arc<WsHub>>) -> Result<Option<Box<dyn NodeHandler>>, PipelineError> {
+    let hub = |code: &'static str| hub.clone().ok_or_else(|| PipelineError::new(code, "ws hub is not configured on this framework engine"));
+    let node: Box<dyn NodeHandler> = match kind {
+        room_open::NODE_KIND => Box::new(room_open::Node::new(parse(config, room_open::CONFIG_CODE)?, hub(room_open::UNAVAILABLE_CODE)?)?),
+        room_close::NODE_KIND => Box::new(room_close::Node::new(parse(config, room_close::CONFIG_CODE)?, hub(room_close::UNAVAILABLE_CODE)?)?),
+        room_list::NODE_KIND => Box::new(room_list::Node::new(parse(config, room_list::CONFIG_CODE)?, hub(room_list::UNAVAILABLE_CODE)?)?),
+        ticket_create::NODE_KIND => {
+            Box::new(ticket_create::Node::new(parse(config, ticket_create::CONFIG_CODE)?, hub(ticket_create::UNAVAILABLE_CODE)?)?)
+        }
+        session_close::NODE_KIND => {
+            Box::new(session_close::Node::new(parse(config, session_close::CONFIG_CODE)?, hub(session_close::UNAVAILABLE_CODE)?)?)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(node))
+}
+
+fn parse<T: serde::de::DeserializeOwned>(config: &Value, code: &'static str) -> Result<T, PipelineError> {
+    serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(code, err.to_string()))
 }
 
 // ── Shared by the kinds ──────────────────────────────────────────────────────
@@ -56,6 +100,16 @@ fn flag(name: &str, key: &str, description: &str, value: &str, required: bool) -
         value: value.to_string(),
         ..Default::default()
     }
+}
+
+/// A switch (`--private`, `--members`).
+fn switch(name: &str, key: &str, description: &str) -> DslFlag {
+    DslFlag { kind: DslFlagKind::Bool, ..flag(name, key, description, "", false) }
+}
+
+/// A checkbox for a switch.
+fn checkbox(name: &str, label: &str, help: &str) -> NodeFieldDef {
+    NodeFieldDef { field_type: NodeFieldType::Checkbox, ..field(name, label, help) }
 }
 
 fn field(name: &str, label: &str, help: &str) -> NodeFieldDef {
@@ -81,6 +135,47 @@ fn text_of(value: &Value, flag: &str, code: &'static str) -> Result<String, Pipe
             format!("{flag} must be text, not a JSON {}", if value.is_array() { "list" } else { "object" }),
         )),
     }
+}
+
+/// One exact room: a name, never a pattern.
+fn exact_room(room: &str, flag: &str, code: &'static str) -> Result<String, PipelineError> {
+    match RoomPattern::parse(room) {
+        Ok(RoomPattern::Exact(name)) => Ok(name),
+        Ok(RoomPattern::Wild { .. }) => Err(PipelineError::new(code, format!("{flag} '{room}' is a pattern; this takes one exact room"))),
+        Err(why) => Err(PipelineError::new(code, why)),
+    }
+}
+
+/// A selection of rooms: an exact name, a pattern or `*` (every room).
+fn selection(room: &str, flag: &str, code: &'static str) -> Result<String, PipelineError> {
+    if room == "*" {
+        return Ok(room.to_string());
+    }
+    RoomPattern::parse(room).map(|_| room.to_string()).map_err(|why| PipelineError::new(code, format!("{flag}: {why}")))
+}
+
+/// An optional duration flag inside `min..=max`.
+fn duration_flag(value: &Value, flag: &str, code: &'static str, min: Duration, max: Duration) -> Result<Option<Duration>, PipelineError> {
+    use crate::pipeline::nodes::shared::units::{describe_duration, duration};
+    let text = text_of(value, flag, code)?;
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let parsed = duration(&text, flag, code)?;
+    if parsed < min || parsed > max {
+        return Err(PipelineError::new(
+            code,
+            format!("{flag} {text} must be between {} and {}", describe_duration(min), describe_duration(max)),
+        ));
+    }
+    Ok(Some(parsed))
+}
+
+/// A unix time as the answers write it.
+fn rfc3339(secs: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// The room a node acts on: `--room`, else the room of the `trigger.room`
