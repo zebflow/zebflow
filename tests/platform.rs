@@ -30,3 +30,5 @@ mod sections;
 mod system_panel;
 #[path = "platform/studio_oauth.rs"]
 mod studio_oauth;
+#[path = "platform/git_remote.rs"]
+mod git_remote;

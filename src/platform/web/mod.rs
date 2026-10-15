@@ -13301,11 +13301,16 @@ async fn api_git_commit(
                     return response;
                 }
             }
-            if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
-                req.repo_url.as_deref().unwrap_or_default().trim(),
-                &state.platform.config.data_root,
-            ) {
-                return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+            // Only a URL that is sent is checked: a request carrying just a
+            // branch or a credential keeps the saved remote.
+            let sent_url = req.repo_url.as_deref().unwrap_or_default().trim();
+            if !sent_url.is_empty() {
+                if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+                    sent_url,
+                    &state.platform.config.data_root,
+                ) {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+                }
             }
             let branch = req.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "main".to_string());
             if let Err(e) = state.platform.zebflow_cfg.update(&owner_slug, &project_slug, |cfg| {
@@ -13517,19 +13522,28 @@ async fn api_git_put_remote(
             Err(err) => internal_error(err),
         };
     }
-    let branch = if req.branch.trim().is_empty() {
+    // An empty URL is "no remote": the Studio's disconnect. The remote is
+    // cleared whole, because a branch or a credential without a URL is not a
+    // remote the project configuration can hold.
+    let disconnect = req.repo_url.trim().is_empty();
+    let branch = if disconnect {
+        String::new()
+    } else if req.branch.trim().is_empty() {
         "main".to_string()
     } else {
         req.branch.trim().to_string()
     };
-    if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
-        req.repo_url.trim(),
-        &state.platform.config.data_root,
-    ) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+    if !disconnect {
+        if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+            req.repo_url.trim(),
+            &state.platform.config.data_root,
+        ) {
+            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+        }
     }
     match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
-        cfg.configs.git.remote.credential_id = req.credential_id.trim().to_string();
+        cfg.configs.git.remote.credential_id =
+            if disconnect { String::new() } else { req.credential_id.trim().to_string() };
         cfg.configs.git.remote.repo_url = req.repo_url.trim().to_string();
         cfg.configs.git.remote.branch = branch;
     }) {
