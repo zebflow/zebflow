@@ -439,6 +439,27 @@ impl ProjectService {
         Ok(())
     }
 
+    /// [`Self::ensure_template_editable`] for a move or a delete: also refuses
+    /// when a locked template lies beneath `rel_path`.
+    fn ensure_template_tree_editable(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        action: &str,
+    ) -> Result<(), PlatformError> {
+        if self
+            .zebflow_cfg
+            .is_template_tree_locked(owner, project, rel_path)?
+        {
+            return Err(PlatformError::new(
+                "PLATFORM_TEMPLATE_LOCKED",
+                format!("'{}' is or holds a locked template and cannot be {}", rel_path, action),
+            ));
+        }
+        Ok(())
+    }
+
     /// Validates a repository path for `GitSyncService::resolve`, enforcing
     /// `.git` directory protection, machine-owned file protection, symlink
     /// containment, and template/pipeline lock checks.
@@ -2319,9 +2340,10 @@ impl ProjectService {
     ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        self.ensure_template_editable(&owner, &project, rel_path, "deleted")?;
+        self.ensure_template_tree_editable(&owner, &project, rel_path, "deleted")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let (rel, abs) = resolve_repo_entry(&layout, rel_path, false)?;
+        self.ensure_template_tree_editable(&owner, &project, &rel, "deleted")?;
         if !abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_MISSING",
@@ -2373,10 +2395,10 @@ impl ProjectService {
     ) -> Result<String, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        self.ensure_template_editable(&owner, &project, from_path, "moved")?;
+        self.ensure_template_tree_editable(&owner, &project, from_path, "moved")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let (from_rel, from_abs) = resolve_repo_entry(&layout, from_path, false)?;
-        self.ensure_template_editable(&owner, &project, &from_rel, "moved")?;
+        self.ensure_template_tree_editable(&owner, &project, &from_rel, "moved")?;
         if !from_abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_MISSING",
@@ -2385,7 +2407,7 @@ impl ProjectService {
         }
         let is_file = from_abs.is_file();
         let (to_rel, to_abs) = resolve_repo_entry(&layout, to_path, is_file)?;
-        self.ensure_template_editable(&owner, &project, &to_rel, "moved")?;
+        self.ensure_template_tree_editable(&owner, &project, &to_rel, "moved")?;
         if repo_entry_is_machine_owned(&from_rel) || repo_entry_is_machine_owned(&to_rel) {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_MACHINE_OWNED",
@@ -4951,6 +4973,30 @@ mod tests {
             .delete_repo_entry("superadmin", "default", &payload.rel_path)
             .expect_err("a locked file refuses a delete");
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+
+        // A folder above a locked file cannot be moved or deleted either: it
+        // would take the locked file with it. A sibling folder still can.
+        for (path, body) in [("area/inner/kept.tsx", "export {};\n"), ("area/other/free.tsx", "export {};\n")] {
+            svc.write_repo_file("superadmin", "default", path, body).expect("create");
+        }
+        svc.zebflow_cfg
+            .set_template_locked("superadmin", "default", "area/inner/kept.tsx", true)
+            .expect("lock the nested file");
+        for parent in ["area", "area/inner", "area/inner/"] {
+            let err = svc
+                .move_repo_entry("superadmin", "default", parent, "moved-away")
+                .expect_err("a folder holding a locked file refuses a move");
+            assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED", "{parent}");
+            let err = svc
+                .delete_repo_entry("superadmin", "default", parent)
+                .expect_err("a folder holding a locked file refuses a delete");
+            assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED", "{parent}");
+        }
+        assert!(svc.read_repo_file_text("superadmin", "default", "area/inner/kept.tsx").is_ok());
+        svc.move_repo_entry("superadmin", "default", "area/other", "area/renamed")
+            .expect("a folder with no lock beneath it moves");
+        svc.delete_repo_entry("superadmin", "default", "area/renamed")
+            .expect("a folder with no lock beneath it deletes");
 
         // Locking a folder covers what is written beneath it.
         svc.zebflow_cfg

@@ -34,6 +34,20 @@ pub fn is_template_path_locked(locked: &[String], rel_path: &str) -> bool {
     })
 }
 
+/// Returns true if moving or deleting `rel_path` would touch a lock: the path
+/// itself or a folder above it is locked, or a locked entry lies beneath it
+/// (a folder taken away takes everything inside with it).
+pub fn is_template_tree_locked(locked: &[String], rel_path: &str) -> bool {
+    let rel = rel_path.trim_matches('/');
+    if rel.is_empty() {
+        return !locked.is_empty();
+    }
+    is_template_path_locked(locked, rel)
+        || locked
+            .iter()
+            .any(|p| p.trim_matches('/').starts_with(&format!("{rel}/")))
+}
+
 /// One cached read of a project's declarations, and the file identity it was
 /// read from.
 ///
@@ -582,6 +596,18 @@ impl ProjectConfigurationService {
             &cfg.configs.locks.templates,
             rel_path,
         ))
+    }
+
+    /// Returns whether moving or deleting `rel_path` would take a locked
+    /// template with it — see [`is_template_tree_locked`].
+    pub fn is_template_tree_locked(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<bool, PlatformError> {
+        let cfg = self.read_or_default(owner, project)?;
+        Ok(is_template_tree_locked(&cfg.configs.locks.templates, rel_path))
     }
 
     /// Adds or removes `rel_path` from the locked templates list.
