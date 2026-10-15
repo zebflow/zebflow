@@ -377,6 +377,7 @@ fn validate_pdf_limits(
     dpi: f32,
     emit_page_raster: bool,
 ) -> Result<(), PipelineError> {
+    use std::io::Read;
     let meta = std::fs::metadata(path)
         .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: {err}")))?;
     if meta.len() > MAX_PDF_INPUT_BYTES {
@@ -388,7 +389,9 @@ fn validate_pdf_limits(
             ),
         ));
     }
-    let bytes = std::fs::read(path)
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_to_end(&mut bytes))
         .map_err(|err| PipelineError::new(SOURCE_CODE, format!("--from: {err}")))?;
     let text = String::from_utf8_lossy(&bytes);
 
