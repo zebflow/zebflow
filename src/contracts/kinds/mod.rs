@@ -27,8 +27,9 @@ pub use hub_package::{
     HubPackageSpec, MAX_HUB_PACKAGE_ACTIVE_PIPELINES, MAX_HUB_PACKAGE_BYTES,
     MAX_HUB_PACKAGE_CARRIED_FILE_BYTES, MAX_HUB_PACKAGE_DESCRIPTION_BYTES, MAX_HUB_PACKAGE_FILES,
     MAX_HUB_PACKAGE_INITIAL_DATA_STEPS, MAX_HUB_PACKAGE_LIBRARIES,
-    MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES, MAX_HUB_PACKAGE_TEXT_BYTES, decode_hub_package,
-    encode_hub_package,
+    MAX_HUB_PACKAGE_ID_BYTES, MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES, MAX_HUB_PACKAGE_TEXT_BYTES,
+    MAX_HUB_PACKAGE_VERSION_BYTES, decode_hub_package, encode_hub_package, is_hub_package_id,
+    is_hub_package_version,
 };
 pub use hub_repository_index::{
     HUB_REPOSITORY_INDEX_FILE, HubRepositoryIndexContract, HubRepositoryIndexPackage,

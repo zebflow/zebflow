@@ -46,6 +46,43 @@ pub const MAX_HUB_PACKAGE_TEXT_BYTES: usize = 4096;
 /// Maximum length of the release's one-line description.
 pub const MAX_HUB_PACKAGE_DESCRIPTION_BYTES: usize = 64 * 1024;
 
+/// Longest package id: `publisher.asset`.
+pub const MAX_HUB_PACKAGE_ID_BYTES: usize = 256;
+
+/// Longest release version.
+pub const MAX_HUB_PACKAGE_VERSION_BYTES: usize = 80;
+
+/// Whether `value` is a package id: lowercase letters, digits, `.`, `-` and
+/// `_`, with no leading, trailing or doubled dot. The id is a listing key, a
+/// URL path segment and part of a store path, so it can never hold a
+/// separator. This is the one rule; the contract, the remote fetch and the
+/// publish path all ask it.
+pub fn is_hub_package_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_HUB_PACKAGE_ID_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_'))
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !value.contains("..")
+}
+
+/// Whether `value` is a release version: letters, digits, `.`, `-`, `_` and
+/// `+` (SemVer build metadata), with no leading, trailing or doubled dot. A
+/// version is an opaque token that also becomes a path segment, so it holds
+/// no separator, space or control character.
+pub fn is_hub_package_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_HUB_PACKAGE_VERSION_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && !value.contains("..")
+}
+
 /// Encodings a carried file may declare.
 ///
 /// The empty string means the same as `text` and is accepted because packages

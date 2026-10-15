@@ -4,6 +4,7 @@ use std::path::{Component, Path};
 use serde::{Deserialize, Serialize};
 
 use crate::contracts::{ContractError, ContractKind, ContractMetadata, PlatformContract};
+use crate::contracts::kinds::{is_hub_package_id, is_hub_package_version};
 
 /// The file name a static repository serves its index at.
 ///
@@ -259,19 +260,7 @@ fn validate_single_line(path: &str, value: &str) -> Result<(), ContractError> {
 /// a project slug at install and a listing key in a client, and a name that can
 /// hold a separator would be a path in one of those places.
 fn validate_package_id(path: &str, value: &str) -> Result<(), ContractError> {
-    let ok = !value.is_empty()
-        && value.len() <= 256
-        && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || byte == b'.'
-                || byte == b'-'
-                || byte == b'_'
-        })
-        && !value.starts_with('.')
-        && !value.ends_with('.')
-        && !value.contains("..");
-    if !ok {
+    if !is_hub_package_id(value) {
         return Err(ContractError::invalid(format!(
             "{path} '{value}' must be lowercase letters, digits, '.', '-', or '_'"
         )));
@@ -295,17 +284,9 @@ fn validate_asset_kind(path: &str, value: &str) -> Result<(), ContractError> {
 
 /// A version is an opaque single-line token that is never a path segment.
 fn validate_version(path: &str, value: &str) -> Result<(), ContractError> {
-    let ok = !value.is_empty()
-        && value.len() <= 256
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
-        && !value.starts_with('.')
-        && !value.ends_with('.')
-        && !value.contains("..");
-    if !ok {
+    if !is_hub_package_version(value) {
         return Err(ContractError::invalid(format!(
-            "{path} '{value}' must be a non-empty single-line token containing no path separator"
+            "{path} '{value}' must be letters, digits, '.', '-', '_' or '+', and contain no path separator"
         )));
     }
     Ok(())
@@ -426,6 +407,22 @@ mod tests {
         });
         let error = decode_hub_repository_index(&bytes).expect_err("dangling latest");
         assert!(error.to_string().contains("names no release"), "{error}");
+    }
+
+    /// The index asks the same version rule as the publish path and the
+    /// remote fetch: build metadata is a version, and 80 bytes is the limit.
+    #[test]
+    fn a_release_version_follows_the_one_package_version_rule() {
+        let with_version = |version: &str| {
+            mutate(V1_INDEX, |value| {
+                release_field(value)["version"] = serde_json::json!(version);
+                value["spec"]["packages"][0]["latest_version"] = serde_json::json!(version);
+            })
+        };
+        decode_hub_repository_index(&with_version("1.0.0+build.5")).expect("build metadata");
+        decode_hub_repository_index(&with_version(&"1".repeat(80))).expect("80 bytes");
+        decode_hub_repository_index(&with_version(&"1".repeat(81))).expect_err("81 bytes");
+        decode_hub_repository_index(&with_version("1/0")).expect_err("separator");
     }
 
     #[test]

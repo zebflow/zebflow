@@ -63,7 +63,7 @@ use crate::platform::sekejap;
 use crate::platform::services::hub_repository::{
     DEFAULT_HUB_REPOSITORY_PRIORITY, HUB_REPOSITORY_KIND_API, HUB_REPOSITORY_KIND_STATIC,
     HubRepositoryChannel, HubRepositoryPackage, HubRepositoryRef, is_direct_hub_base,
-    validate_remote_hub_url, validate_remote_package_id, validate_remote_version,
+    validate_remote_hub_url, validate_package_id, validate_package_version,
 };
 use crate::platform::services::project::{
     derive_trigger_kind_from_source, normalize_pipeline_file_rel_path,
@@ -2618,7 +2618,7 @@ impl HubService {
                 "package id and version must not be empty",
             ));
         }
-        validate_hub_version(version)?;
+        validate_package_version(version)?;
         // Before the source is even read: a republish must not reach the
         // artifact file or the version row.
         self.enforce_release_immutability(&store, &package_id, version)?;
@@ -3060,7 +3060,7 @@ impl HubService {
             ));
         }
         let package_id = canonical_hub_package_id(&publisher.publisher_id, &package.package_id)?;
-        validate_hub_version(&package.version)?;
+        validate_package_version(&package.version)?;
         self.enforce_release_immutability(&self.local_store, &package_id, &package.version)?;
         let existing_package = self.local_store.data.get_hub_asset_package(&package_id)?;
         let entries: Vec<HubPackageFile> = package
@@ -3141,7 +3141,7 @@ impl HubService {
         let source_type = normalize_source_type(source_type);
         let package_id = canonical_hub_package_id(&publisher_id, package_id)?;
         let version = version.trim().to_string();
-        validate_hub_version(&version)?;
+        validate_package_version(&version)?;
         let Some(publisher) = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
@@ -3485,8 +3485,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<HubArtifactChannel, PlatformError> {
-        let package_id = validate_remote_package_id(package_id)?;
-        let version = validate_remote_version(version)?;
+        let package_id = validate_package_id(package_id)?;
+        let version = validate_package_version(version)?;
         let store_base = self.remote_artifact_cache_root();
         let source = channel.source();
         for file in files {
@@ -4388,7 +4388,7 @@ impl HubService {
                 "authority, publisher, package id, and version must not be empty",
             ));
         }
-        validate_hub_version(&version)?;
+        validate_package_version(&version)?;
         let Some(publisher) = store.data.get_hub_publisher(
             HUB_SERVICE_SCOPE_OWNER,
             HUB_SERVICE_SCOPE_PROJECT,
@@ -4774,8 +4774,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<(HubRepositoryChannel, HubPackageSpec), PlatformError> {
-        let package_id = validate_remote_package_id(package_id)?;
-        let version = validate_remote_version(version)?;
+        let package_id = validate_package_id(package_id)?;
+        let version = validate_package_version(version)?;
         let repo = self
             .list_effective_repositories(target_owner, target_project)?
             .into_iter()
@@ -4895,8 +4895,8 @@ impl HubService {
         package_id: &str,
         version: &str,
     ) -> Result<(HubRepositoryChannel, HubPackageSpec), PlatformError> {
-        let package_id = validate_remote_package_id(package_id)?;
-        let version = validate_remote_version(version)?;
+        let package_id = validate_package_id(package_id)?;
+        let version = validate_package_version(version)?;
         let source_owner = slug_segment(source_owner);
         let repo = self
             .list_platform_repositories(&source_owner)?
@@ -6405,23 +6405,6 @@ fn retraction_message(package_id: &str, version: &str, reason: &str) -> String {
         format!(
             "{package_id}@{version} was retracted by its publisher and its bytes are gone: {reason}"
         )
-    }
-}
-
-fn validate_hub_version(version: &str) -> Result<(), PlatformError> {
-    let valid = !version.is_empty()
-        && version.len() <= 80
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        && !version.contains("..");
-    if valid {
-        Ok(())
-    } else {
-        Err(PlatformError::new(
-            "HUB_PUBLISH_INVALID",
-            "version must be a safe path segment",
-        ))
     }
 }
 
@@ -10168,11 +10151,24 @@ mod tests {
 
     #[test]
     fn hub_versions_are_single_safe_path_segments() {
-        assert!(validate_hub_version("1.0.0").is_ok());
-        assert!(validate_hub_version("1.0.0-beta_1").is_ok());
-        assert!(validate_hub_version("../secret").is_err());
-        assert!(validate_hub_version("1/2").is_err());
-        assert!(validate_hub_version("release candidate").is_err());
+        assert!(validate_package_version("1.0.0").is_ok());
+        assert!(validate_package_version("1.0.0-beta_1").is_ok());
+        assert!(validate_package_version("../secret").is_err());
+        assert!(validate_package_version("1/2").is_err());
+        assert!(validate_package_version("release candidate").is_err());
+        // The publish path, the remote fetch and the index contract share one
+        // rule: SemVer build metadata is a version everywhere, and so is the
+        // same length limit.
+        assert!(validate_package_version("1.0.0+build.5").is_ok());
+        assert!(validate_package_version(&"1".repeat(80)).is_ok());
+        assert!(validate_package_version(&"1".repeat(81)).is_err());
+        assert!(validate_package_version(".1").is_err());
+        assert!(validate_package_version("1.").is_err());
+        assert!(validate_package_id("site-a.catalog").is_ok());
+        assert!(validate_package_id(&format!("a.{}", "b".repeat(254))).is_ok());
+        assert!(validate_package_id(&format!("a.{}", "b".repeat(255))).is_err());
+        assert!(validate_package_id("Site-A.catalog").is_err());
+        assert!(validate_package_id("site-a/catalog").is_err());
     }
 
     /// Builds a platform with the hub service enabled, one publisher that may

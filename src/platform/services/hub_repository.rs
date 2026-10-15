@@ -27,7 +27,7 @@ use crate::contracts::decode_contract_value;
 use crate::contracts::kinds::{
     HUB_REPOSITORY_INDEX_FILE, HubPackageContract, HubPackageSpec, HubRepositoryIndexSpec,
     MAX_HUB_PACKAGE_BYTES, MAX_HUB_REPOSITORY_INDEX_BYTES, decode_hub_repository_index,
-    encode_hub_package,
+    encode_hub_package, is_hub_package_id, is_hub_package_version,
 };
 use crate::platform::error::PlatformError;
 use crate::platform::model::{PlatformHubRepository, ProjectHubRepository};
@@ -275,8 +275,8 @@ impl HubRepositoryChannel {
         package_id: &str,
         version: &str,
     ) -> Result<HubPackageSpec, PlatformError> {
-        let package_id = validate_remote_package_id(package_id)?;
-        let version = validate_remote_version(version)?;
+        let package_id = validate_package_id(package_id)?;
+        let version = validate_package_version(version)?;
         match self {
             Self::Api(repo) => {
                 let url = remote_hub_url(
@@ -366,8 +366,8 @@ impl HubRepositoryChannel {
         version: &str,
         sha256: &str,
     ) -> Result<String, PlatformError> {
-        let package_id = validate_remote_package_id(package_id)?;
-        let version = validate_remote_version(version)?;
+        let package_id = validate_package_id(package_id)?;
+        let version = validate_package_version(version)?;
         let sha256 = validate_remote_sha256(sha256)?;
         Ok(match self {
             Self::Api(repo) => remote_hub_url(
@@ -379,19 +379,11 @@ impl HubRepositoryChannel {
     }
 }
 
-pub fn validate_remote_package_id(package_id: &str) -> Result<&str, PlatformError> {
+/// A package id from a request, a stored row or a remote index, checked
+/// against the one rule (`is_hub_package_id`). Answers it trimmed.
+pub fn validate_package_id(package_id: &str) -> Result<&str, PlatformError> {
     let trimmed = package_id.trim();
-    let valid = !trimmed.is_empty()
-        && trimmed.len() <= 256
-        && trimmed.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'.' | b'-' | b'_')
-        })
-        && !trimmed.starts_with('.')
-        && !trimmed.ends_with('.')
-        && !trimmed.contains("..");
-    if !valid {
+    if !is_hub_package_id(trimmed) {
         return Err(PlatformError::new(
             "HUB_PACKAGE_ID_INVALID",
             format!("package_id '{trimmed}' must be a valid safe package identifier"),
@@ -400,17 +392,11 @@ pub fn validate_remote_package_id(package_id: &str) -> Result<&str, PlatformErro
     Ok(trimmed)
 }
 
-pub fn validate_remote_version(version: &str) -> Result<&str, PlatformError> {
+/// A release version, checked against the one rule
+/// (`is_hub_package_version`). Answers it trimmed.
+pub fn validate_package_version(version: &str) -> Result<&str, PlatformError> {
     let trimmed = version.trim();
-    let valid = !trimmed.is_empty()
-        && trimmed.len() <= 80
-        && trimmed
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
-        && !trimmed.starts_with('.')
-        && !trimmed.ends_with('.')
-        && !trimmed.contains("..");
-    if !valid {
+    if !is_hub_package_version(trimmed) {
         return Err(PlatformError::new(
             "HUB_PUBLISH_INVALID",
             format!("version '{trimmed}' must be a valid safe version segment"),
