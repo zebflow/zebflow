@@ -99,7 +99,9 @@ twice, or a `client` / `redirect_host` the page did not show — it delivers
 - Access tokens are JWTs signed with `--credential`, an hour long, carrying the
   app token's claims (`sub`, `roles`, …) and `aud` = `R`: they open this route
   and nothing else — not another route, not a `--auth jwt` webhook.
-- Refresh tokens rotate; one used twice ends the whole sign-in.
+- A refresh token comes only with the `offline_access` scope (and a client
+  registered for the `refresh_token` grant). Refresh tokens rotate; one used
+  twice ends the whole sign-in.
 - Codes last two minutes and are used once; tickets ten minutes.
 - A role change takes effect at the next sign-in: a token carries the roles
   it was approved with.

@@ -95,7 +95,9 @@ A project has two MCPs, and they are never mixed:
   Zebflow cookie is read or set anywhere in its flow.
 - OAuth state lives in the project's durable store under `zf.oauth/…` (no
   `kv.*` node takes a `zf.` key), secrets only as hashes: tickets 10 min and
-  codes 2 min, each used once; refresh tokens rotate, and one presented twice
+  codes 2 min, each used once; a refresh token is issued only when the
+  sign-in asked for `offline_access` and the client registered the
+  `refresh_token` grant; refresh tokens rotate, and one presented twice
   revokes its family; registrations and authorizations are capped per route
   (`MAX_REGISTRATIONS_PER_DAY`, `MAX_TICKETS_PER_MINUTE` in
   `services/published_oauth`).

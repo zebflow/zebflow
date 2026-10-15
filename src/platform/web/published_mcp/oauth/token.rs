@@ -6,7 +6,9 @@
 //!   issued to this `client_id`, for this exact `redirect_uri` and this
 //!   route, and `BASE64URL(SHA256(code_verifier))` must be its challenge.
 //! - `refresh_token`: spent and replaced (rotation); a spent one presented
-//!   again revokes its family. The family ends 30 days after sign-in.
+//!   again revokes its family. The family ends 30 days after sign-in. A
+//!   refresh token is issued only when the sign-in asked for
+//!   `offline_access` and the client registered the `refresh_token` grant.
 //!
 //! Public clients only: there is no client secret, so a request that
 //! authenticates the client any other way is `invalid_client`. Every
@@ -129,7 +131,9 @@ pub(super) fn token(ctx: &Ctx<'_>, headers: &HeaderMap, body: &Bytes) -> Respons
     issue(ctx, &refresh)
 }
 
-/// The access token and (when permitted for the client) the family's next refresh token.
+/// The access token and, when the sign-in granted `offline_access` and the
+/// client registered the `refresh_token` grant, the family's next refresh
+/// token.
 fn issue(ctx: &Ctx<'_>, refresh: &Refresh) -> Response {
     let credential = ctx
         .state
@@ -151,7 +155,8 @@ fn issue(ctx: &Ctx<'_>, refresh: &Refresh) -> Response {
         }
     };
     let store = &ctx.state.platform.published_oauth;
-    let allow_refresh = if rules::is_issued_client_id(&refresh.client_id) {
+    let offline = refresh.scope.split_whitespace().any(|s| s == "offline_access");
+    let client_takes_refresh = if rules::is_issued_client_id(&refresh.client_id) {
         store
             .client(ctx.owner, ctx.project, ctx.route, &refresh.client_id)
             .ok()
@@ -161,6 +166,7 @@ fn issue(ctx: &Ctx<'_>, refresh: &Refresh) -> Response {
     } else {
         true
     };
+    let allow_refresh = offline && client_takes_refresh;
     store.renew_client(ctx.owner, ctx.project, ctx.route, &refresh.client_id);
     if allow_refresh {
         let refresh_token = match store.issue_refresh(ctx.owner, ctx.project, ctx.route, refresh) {

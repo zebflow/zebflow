@@ -116,7 +116,7 @@ fn authorize_uri(client_id: &str, redirect: &str, extra: &[(&str, &str)]) -> Str
         ("code_challenge_method", "S256"),
         ("state", "st-1"),
         ("resource", R),
-        ("scope", "mcp"),
+        ("scope", "mcp offline_access"),
     ];
     for (key, value) in extra {
         pairs.retain(|(k, _)| k != key);
@@ -143,7 +143,12 @@ async fn approve(app: &axum::Router, login_location: &str, roles: Value, doctor:
 
 /// authorize → login page → approve: the code the client receives.
 async fn sign_in(app: &axum::Router, client_id: &str, redirect: &str, roles: Value) -> String {
-    let started = http(app, "GET", &authorize_uri(client_id, redirect, &[]), &[], Body::empty()).await;
+    sign_in_scoped(app, client_id, redirect, roles, "mcp offline_access").await
+}
+
+/// [`sign_in`], asking for `scope`.
+async fn sign_in_scoped(app: &axum::Router, client_id: &str, redirect: &str, roles: Value, scope: &str) -> String {
+    let started = http(app, "GET", &authorize_uri(client_id, redirect, &[("scope", scope)]), &[], Body::empty()).await;
     assert_eq!(started.status, StatusCode::SEE_OTHER, "{}", started.body);
     let back = approve(app, &started.location(), roles, None, None).await;
     assert_eq!(back.status, StatusCode::SEE_OTHER, "{}", back.body);
@@ -278,7 +283,7 @@ async fn the_whole_flow_signs_in_through_the_apps_login_and_calls_a_tool() {
     let tokens = exchange(&app, &client, REDIRECT, &code, VERIFIER).await;
     assert_eq!(tokens.status, StatusCode::OK, "{}", tokens.body);
     let tokens = tokens.json();
-    assert_eq!((tokens["token_type"].as_str(), tokens["expires_in"].as_i64(), tokens["scope"].as_str()), (Some("Bearer"), Some(3600), Some("mcp")));
+    assert_eq!((tokens["token_type"].as_str(), tokens["expires_in"].as_i64(), tokens["scope"].as_str()), (Some("Bearer"), Some(3600), Some("mcp offline_access")));
     let access = tokens["access_token"].as_str().expect("access").to_string();
 
     assert_eq!(mcp(&app, "library", Some(&access), initialize()).await.status, StatusCode::OK);
@@ -309,6 +314,7 @@ async fn the_whole_flow_signs_in_through_the_apps_login_and_calls_a_tool() {
     assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.body);
     let r2 = rotated.json()["refresh_token"].as_str().expect("r2").to_string();
     assert_ne!(r1, r2);
+    assert_eq!(rotated.json()["scope"], "mcp offline_access", "the scope survives a refresh");
     let new_access = rotated.json()["access_token"].as_str().expect("access").to_string();
     assert_eq!(mcp(&app, "library", Some(&new_access), list()).await.status, StatusCode::OK);
     let replay = token(&app, &[("grant_type", "refresh_token"), ("refresh_token", &r1), ("client_id", &client)]).await;
@@ -350,6 +356,49 @@ async fn a_code_is_bound_single_use_and_proven_with_pkce() {
     assert_eq!(token(&app, &form).await.json()["error"], "invalid_target");
     let unsupported = token(&app, &[("grant_type", "password"), ("client_id", &client)]).await;
     assert_eq!(unsupported.json()["error"], "unsupported_grant_type");
+}
+
+#[tokio::test]
+async fn refresh_tokens_need_offline_access_and_the_refresh_grant() {
+    let root = temp_dir("oauth-offline");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    library_app(&app, &cookie).await;
+    let client = register(&app, REDIRECT).await;
+
+    // `mcp` alone: an access token and no refresh token.
+    let code = sign_in_scoped(&app, &client, REDIRECT, json!(["reader"]), "mcp").await;
+    let online = exchange(&app, &client, REDIRECT, &code, VERIFIER).await;
+    assert_eq!(online.status, StatusCode::OK, "{}", online.body);
+    assert_eq!(online.json()["scope"], "mcp");
+    assert!(online.json().get("refresh_token").is_none(), "no offline_access, no refresh token: {}", online.body);
+
+    // A client that did not register the refresh grant gets none either.
+    let registered = http(
+        &app,
+        "POST",
+        "/_mcp/library/_oauth/register",
+        &[("content-type", "application/json")],
+        Body::from(json!({ "client_name": "Code-only agent", "redirect_uris": [REDIRECT], "grant_types": ["authorization_code"] }).to_string()),
+    )
+    .await;
+    assert_eq!(registered.status, StatusCode::CREATED, "{}", registered.body);
+    let code_only = registered.json()["client_id"].as_str().expect("client_id").to_string();
+    let code = sign_in(&app, &code_only, REDIRECT, json!(["reader"])).await;
+    let tokens = exchange(&app, &code_only, REDIRECT, &code, VERIFIER).await;
+    assert_eq!(tokens.status, StatusCode::OK, "{}", tokens.body);
+    assert!(tokens.json().get("refresh_token").is_none(), "{}", tokens.body);
+
+    // And it cannot spend someone else's: refused for the grant, before the token is touched.
+    let code = sign_in(&app, &client, REDIRECT, json!(["reader"])).await;
+    let tokens = exchange(&app, &client, REDIRECT, &code, VERIFIER).await;
+    let r1 = tokens.json()["refresh_token"].as_str().expect("offline_access earns a refresh token").to_string();
+    let refused = token(&app, &[("grant_type", "refresh_token"), ("refresh_token", &r1), ("client_id", &code_only)]).await;
+    assert_eq!((refused.status, refused.json()["error"].clone()), (StatusCode::BAD_REQUEST, json!("unauthorized_client")), "{}", refused.body);
+    let rotated = token(&app, &[("grant_type", "refresh_token"), ("refresh_token", &r1), ("client_id", &client)]).await;
+    assert_eq!(rotated.status, StatusCode::OK, "the refusal did not spend it: {}", rotated.body);
+    assert_eq!(rotated.json()["scope"], "mcp offline_access");
+    assert!(rotated.json()["refresh_token"].is_string());
 }
 
 #[tokio::test]
