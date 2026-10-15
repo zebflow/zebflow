@@ -71,6 +71,9 @@ pub const MAX_TOOLS: u32 = 32;
 
 const CONFIG_CODE: &str = "FW_NODE_AI_TEXT_GENERATE_CONFIG";
 const CREDENTIAL_CODE: &str = "FW_NODE_AI_TEXT_GENERATE_CREDENTIAL";
+/// A tool pipeline that runs `ai.text.generate` again, deeper than
+/// [`MAX_AGENT_RECURSION_DEPTH`] — the project's design, not its config.
+const DEPTH_CODE: &str = "FW_NODE_AI_TEXT_GENERATE_DEPTH";
 
 /// The providers, each with the credential kind that holds its key. Both
 /// speak the OpenAI wire format; `openai` the Responses API, `openrouter`
@@ -301,6 +304,7 @@ pub fn definition() -> NodeDefinition {
         failure_semantics: vec![
             crate::pipeline::model::NodeFailureSemantic { code: CONFIG_CODE.into(), description: "The config breaks the provider's profile (an unknown or {{ }} --provider, an --option it does not take), or a value has the wrong type.".into(), ..Default::default() },
             crate::pipeline::model::NodeFailureSemantic { code: CREDENTIAL_CODE.into(), description: "`--credential` is missing, names no credential, or names one whose kind is not the provider's.".into(), ..Default::default() },
+            crate::pipeline::model::NodeFailureSemantic { code: DEPTH_CODE.into(), description: "A tool pipeline ran ai.text.generate, which called a tool that ran it again, past the nesting limit of 3.".into(), ..Default::default() },
             crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_TEXT_GENERATE_PROMPT".into(), description: "`--prompt` (or the `--` body) resolved empty.".into(), ..Default::default() },
             crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_TEXT_GENERATE_SCHEMA".into(), description: "`--schema` is set but is not valid JSON (quote it with single quotes in the DSL).".into(), ..Default::default() },
             crate::pipeline::model::NodeFailureSemantic { code: "FW_NODE_AI_TEXT_GENERATE_CALL".into(), description: "The provider refused or the request failed; the message carries the provider's text.".into(), retryable: true, retry_hint: "429 and 5xx recover on retry; a 401 needs a new key.".into() },
@@ -569,9 +573,9 @@ impl NodeHandler for Node {
         let current_depth = AGENT_RECURSION_DEPTH.try_with(|d| *d).unwrap_or(0);
         if current_depth >= MAX_AGENT_RECURSION_DEPTH {
             return Err(PipelineError::new(
-                CONFIG_CODE,
+                DEPTH_CODE,
                 format!(
-                    "ai.text.generate recursion depth limit ({MAX_AGENT_RECURSION_DEPTH}) exceeded"
+                    "ai.text.generate recursion depth limit ({MAX_AGENT_RECURSION_DEPTH}) exceeded: a tool pipeline runs ai.text.generate again, {current_depth} deep"
                 ),
             ));
         }
@@ -887,6 +891,32 @@ mod tests {
             bus: None,
         })
         .await
+    }
+
+    /// A run nested at the depth limit is refused under its own code, before
+    /// any model call; one level shallower still answers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_recursion_past_the_depth_limit_is_refused_under_its_own_code() {
+        let (base_url, server) = stub_provider().await;
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        credential(&platform, "router", "openrouter", &base_url);
+        let config = json!({ "provider": "openrouter", "credential_id": "router", "prompt": "When?" });
+
+        let err = AGENT_RECURSION_DEPTH
+            .scope(MAX_AGENT_RECURSION_DEPTH, run(&platform, config.clone()))
+            .await
+            .expect_err("too deep");
+        assert_eq!(err.code, DEPTH_CODE);
+        assert_ne!(err.code, CONFIG_CODE);
+        assert!(err.message.contains("recursion depth limit (3)"), "{}", err.message);
+        assert!(definition().failure_semantics.iter().any(|f| f.code == DEPTH_CODE), "the code is documented");
+
+        let nested = AGENT_RECURSION_DEPTH
+            .scope(MAX_AGENT_RECURSION_DEPTH - 1, run(&platform, config))
+            .await
+            .expect("one level shallower answers");
+        assert_eq!(nested.payload["text"]["value"], "Opens Saturdays.");
+        server.abort();
     }
 
     /// The answer is `text`, the payload kept; `--answer-only` drops the step

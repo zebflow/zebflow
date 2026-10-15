@@ -509,6 +509,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_AI_TEXT_GENERATE_CALL", ErrorClass::Failed),
     ("FW_NODE_AI_TEXT_GENERATE_CONFIG", ErrorClass::Refused),
     ("FW_NODE_AI_TEXT_GENERATE_CREDENTIAL", ErrorClass::Refused),
+    ("FW_NODE_AI_TEXT_GENERATE_DEPTH", ErrorClass::Refused),
     ("FW_NODE_AI_TEXT_GENERATE_INPUT_PIN", ErrorClass::Refused),
     ("FW_NODE_AI_TEXT_GENERATE_PROMPT", ErrorClass::Refused),
     ("FW_NODE_AI_TEXT_GENERATE_SCHEMA", ErrorClass::Refused),
