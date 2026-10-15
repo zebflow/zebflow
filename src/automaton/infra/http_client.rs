@@ -99,6 +99,22 @@ fn format_llm_status_error(status: reqwest::StatusCode, val: &Value) -> String {
     format!("LLM error {status}")
 }
 
+/// The credential's `allowed_hosts`: a JSON list, or the form's text field
+/// (hosts separated by commas, spaces or new lines).
+fn allowed_hosts_from_secret(secret: &Value) -> Vec<String> {
+    let items: Vec<String> = match secret.get("allowed_hosts") {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        Some(Value::String(text)) => text.split([',', ' ', '\n', '\t']).map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    items.into_iter().map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect()
+}
+
+/// How a credential reaches a model on the project's own network, named in
+/// every egress refusal so the fix is one read away.
+const SELF_HOSTED_OPT_IN: &str = "a self-hosted model on a private address needs allow_private \
+     set to true and its host listed in allowed_hosts on the LLM credential";
+
 /// OpenAI-family HTTP client.
 ///
 /// `openai` credentials use the modern Responses API. `openrouter`
@@ -113,6 +129,7 @@ pub struct OpenAiHttpClient {
     surface: OpenAiApiSurface,
     store: bool,
     allow_private: bool,
+    allowed_hosts: Vec<String>,
 }
 
 impl OpenAiHttpClient {
@@ -130,6 +147,7 @@ impl OpenAiHttpClient {
             surface: OpenAiApiSurface::Responses,
             store: false,
             allow_private: false,
+            allowed_hosts: Vec::new(),
         }
     }
 
@@ -143,6 +161,7 @@ impl OpenAiHttpClient {
             surface: OpenAiApiSurface::ChatCompletions,
             store: false,
             allow_private: false,
+            allowed_hosts: Vec::new(),
         }
     }
 
@@ -233,7 +252,11 @@ impl OpenAiHttpClient {
             .unwrap_or(false);
         let allow_private = secret
             .get("allow_private")
-            .and_then(Value::as_bool)
+            .and_then(|v| match v {
+                Value::Bool(b) => Some(*b),
+                Value::String(s) => Some(s.trim().eq_ignore_ascii_case("true")),
+                _ => None,
+            })
             .unwrap_or(false);
         Some(Self {
             base_url,
@@ -244,6 +267,7 @@ impl OpenAiHttpClient {
             surface,
             store,
             allow_private,
+            allowed_hosts: allowed_hosts_from_secret(secret),
         })
     }
 }
@@ -259,20 +283,25 @@ impl OpenAiHttpClient {
 
     async fn post_json(&self, body: &Value) -> Result<Value, String> {
         let url = self.response_url();
-        let policy = if self.allow_private {
-            let host = reqwest::Url::parse(&url)
-                .ok()
-                .and_then(|u| u.host_str().map(str::to_string))
-                .filter(|h| !h.starts_with("169.254."));
-            crate::pipeline::security::OutboundHttpPolicy {
-                allow_private: host.is_some(),
-                allowed_hosts: host.into_iter().collect(),
-            }
-        } else {
-            crate::pipeline::security::OutboundHttpPolicy::default()
+        // As in `secure_request`: `allow_private` alone opens nothing; the
+        // private host must also be named in `allowed_hosts`.
+        if self.allow_private && self.allowed_hosts.is_empty() {
+            return Err(format!(
+                "FW_EGRESS_DENIED: llm.http allow_private names no host; {SELF_HOSTED_OPT_IN}"
+            ));
+        }
+        let policy = crate::pipeline::security::OutboundHttpPolicy {
+            allow_private: self.allow_private,
+            allowed_hosts: self.allowed_hosts.clone(),
         };
         crate::pipeline::security::validate_outbound_http_url_with_policy(&url, "llm.http", &policy)
-            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+            .map_err(|e| {
+                if e.code == "FW_EGRESS_DENIED" {
+                    format!("{}: {}; {SELF_HOSTED_OPT_IN}", e.code, e.message)
+                } else {
+                    format!("{}: {}", e.code, e.message)
+                }
+            })?;
         let resp = self
             .client
             .post(&url)
@@ -652,6 +681,7 @@ mod tests {
             "api_key": uuid::Uuid::new_v4().to_string(),
             "base_url": format!("http://{addr}"),
             "allow_private": true,
+            "allowed_hosts": ["127.0.0.1"],
         });
         let client = OpenAiHttpClient::from_provider_secret("openrouter", &secret, None).expect("client");
         (client, server)
@@ -679,6 +709,61 @@ mod tests {
         let (client, server) = local_provider(ok).await;
         assert_eq!(client.call(ask()).await.expect("answers"), "hello");
         server.abort();
+    }
+
+    /// The self-hosted opt-in is `allow_private` plus an explicit host, as in
+    /// `secure_request`: the flag alone reaches nothing, a listed host is
+    /// reached (as the form's text or a JSON list), and every refusal names
+    /// the opt-in.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_self_hosted_model_needs_allow_private_and_an_explicit_host() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let hits_route = hits.clone();
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let hits_route = hits_route.clone();
+                async move {
+                    hits_route.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "choices": [{ "message": { "content": "local answer" } }] }))
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = |extra: serde_json::Value| {
+            let mut secret = json!({
+                "api_key": uuid::Uuid::new_v4().to_string(),
+                "base_url": format!("http://{addr}"),
+            });
+            for (key, value) in extra.as_object().expect("object") {
+                secret[key] = value.clone();
+            }
+            OpenAiHttpClient::from_provider_secret("openrouter", &secret, None).expect("client")
+        };
+
+        for refused in [
+            json!({}),
+            json!({ "allow_private": true }),
+            json!({ "allow_private": "true" }),
+            json!({ "allowed_hosts": ["127.0.0.1"] }),
+            json!({ "allow_private": true, "allowed_hosts": "203.0.113.10" }),
+        ] {
+            let err = client(refused.clone()).call(ask()).await.expect_err("refused");
+            assert!(err.starts_with("FW_EGRESS_DENIED"), "{refused}: {err}");
+            assert!(err.contains("allow_private") && err.contains("allowed_hosts"), "{refused}: {err}");
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing refused was sent");
+
+        let listed_as_text = client(json!({ "allow_private": "true", "allowed_hosts": "203.0.113.10, 127.0.0.1" }));
+        assert_eq!(listed_as_text.call(ask()).await.expect("text list"), "local answer");
+        let listed_as_json = client(json!({ "allow_private": true, "allowed_hosts": ["127.0.0.1"] }));
+        assert_eq!(listed_as_json.call(ask()).await.expect("json list"), "local answer");
+        server.abort();
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
     /// No total timeout of the client's own: a model may think for minutes and

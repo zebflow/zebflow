@@ -19,7 +19,9 @@
 //! provider's profile names the credential kind that holds its key, so a
 //! `--credential` of another provider's kind is refused. The credential is
 //! the only source of an LLM secret; its secret holds the key, base URL and
-//! default model.
+//! default model. A self-hosted model on a private address is reached only
+//! when the credential sets `allow_private` and lists the model's host in
+//! `allowed_hosts`, the same opt-in as `secure_request`.
 //!
 //! # Tools
 //!
@@ -121,7 +123,9 @@ pub fn definition() -> NodeDefinition {
             parsed as JSON, checked, repaired once on failure and returned as `text.data`. Tools are the project's \
             function pipelines, named by --tool; nothing is offered unless named. Adds `text: { value, verified, data, … }` \
             and keeps the payload. Step signals (thinking, tool_call, tool_result, final) stream over SSE when the \
-            webhook is called with Accept: text/event-stream."
+            webhook is called with Accept: text/event-stream. Private and loopback addresses are refused; a \
+            self-hosted model on the project's own network needs Allow Private Host set to true and its host in \
+            Private Hosts (`allow_private`, `allowed_hosts`) on the credential."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -866,7 +870,7 @@ mod tests {
                     title: id.to_string(),
                     kind: kind.to_string(),
                     // A generated value, never a real key.
-                    secret: json!({ "api_key": uuid::Uuid::new_v4().to_string(), "base_url": base_url, "allow_private": true }),
+                    secret: json!({ "api_key": uuid::Uuid::new_v4().to_string(), "base_url": base_url, "allow_private": true, "allowed_hosts": ["127.0.0.1"] }),
                     notes: String::new(),
                 },
             )

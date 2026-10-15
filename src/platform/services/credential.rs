@@ -786,6 +786,17 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
                     help: Some("Responses API store flag. Zebflow defaults to no provider-side response storage.".into()),
                     ..f("store", "Provider Storage")
                 },
+                F {
+                    field_type: "select".into(),
+                    default: Some("false".into()),
+                    options: vec![
+                        O { value: "false".into(), label: "Public addresses only".into() },
+                        O { value: "true".into(), label: "Allow the private hosts below".into() },
+                    ],
+                    help: Some("For a self-hosted model on your own network. Private and loopback addresses are refused unless this is on and the host is listed in Private Hosts.".into()),
+                    ..f("allow_private", "Allow Private Host")
+                },
+                F { full_width: true, placeholder: Some("203.0.113.10, models.example.com".into()), help: Some("Hosts of the self-hosted model, separated by commas. Required with Allow Private Host; when set, any other host is refused.".into()), ..f("allowed_hosts", "Private Hosts") },
             ],
             ..Default::default()
         },
@@ -809,6 +820,17 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
                 },
                 F { placeholder: Some("/chat/completions".into()), default: Some("/chat/completions".into()), help: Some("Path appended to Base URL for text/tool responses.".into()), ..f("response_path", "Response Path") },
                 F { placeholder: Some("/embeddings".into()), default: Some("/embeddings".into()), help: Some("Path appended to Base URL for embeddings if the provider/model supports them.".into()), ..f("embedding_path", "Embedding Path") },
+                F {
+                    field_type: "select".into(),
+                    default: Some("false".into()),
+                    options: vec![
+                        O { value: "false".into(), label: "Public addresses only".into() },
+                        O { value: "true".into(), label: "Allow the private hosts below".into() },
+                    ],
+                    help: Some("For a self-hosted model on your own network. Private and loopback addresses are refused unless this is on and the host is listed in Private Hosts.".into()),
+                    ..f("allow_private", "Allow Private Host")
+                },
+                F { full_width: true, placeholder: Some("203.0.113.10, models.example.com".into()), help: Some("Hosts of the self-hosted model, separated by commas. Required with Allow Private Host; when set, any other host is refused.".into()), ..f("allowed_hosts", "Private Hosts") },
             ],
             ..Default::default()
         },
@@ -1119,6 +1141,30 @@ mod tests {
         assert_eq!(shown.secret, json!({"anything": {"deep": [SECRET_MASK, SECRET_MASK]}}));
         let all = serde_json::to_string(&shown).unwrap();
         assert!(!all.contains("\"a\""));
+    }
+
+    /// The Studio form is drawn from these types, so both LLM kinds offer the
+    /// self-hosted opt-in, and an editor sees what it is set to.
+    #[test]
+    fn llm_credential_forms_offer_the_self_hosted_opt_in() {
+        for kind in ["openai", "openrouter"] {
+            let def = builtin_credential_types().into_iter().find(|def| def.kind == kind).expect("type");
+            let field = |key: &str| def.fields.iter().find(|field| field.key == key).cloned();
+            let flag = field("allow_private").unwrap_or_else(|| panic!("{kind} has no allow_private field"));
+            assert_eq!(flag.field_type, "select");
+            assert_eq!(flag.default.as_deref(), Some("false"), "{kind} is off by default");
+            let hosts = field("allowed_hosts").unwrap_or_else(|| panic!("{kind} has no allowed_hosts field"));
+            assert_eq!(hosts.field_type, "text");
+            assert!(field("api_key").is_some_and(|key| key.field_type == "password"));
+
+            let shown = redacted(credential(
+                kind,
+                json!({"api_key": "<stored-key>", "allow_private": "true", "allowed_hosts": "203.0.113.10"}),
+            ));
+            assert_eq!(shown.secret["allow_private"], "true");
+            assert_eq!(shown.secret["allowed_hosts"], "203.0.113.10");
+            assert_eq!(shown.secret["api_key"], SECRET_MASK);
+        }
     }
 
     #[test]
