@@ -106,7 +106,7 @@ async fn api_key_credential(app: &axum::Router, cookie: &str) {
 }
 
 /// One JSON-RPC message to an MCP endpoint, as a streamable-HTTP client sends it.
-async fn rpc(app: &axum::Router, uri: &str, host: Option<&str>, headers: &[(&str, &str)], message: Value) -> (StatusCode, Value) {
+pub(super) async fn rpc(app: &axum::Router, uri: &str, host: Option<&str>, headers: &[(&str, &str)], message: Value) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .uri(uri)
         .method("POST")

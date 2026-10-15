@@ -17,6 +17,7 @@ mod sections;
 mod stored_answer;
 mod webhook_url;
 mod ws_room;
+mod ws_rooms_api;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -849,6 +850,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/pipelines/hits",
             get(api_pipeline_hits),
         )
+        .route("/api/projects/{owner}/{project}/ws/rooms", get(ws_rooms_api::api_ws_rooms_list))
+        .route("/api/projects/{owner}/{project}/ws/rooms/{room}/close", post(ws_rooms_api::api_ws_room_close))
         .route(
             "/api/projects/{owner}/{project}/pipelines/invocations",
             get(api_pipeline_invocations),

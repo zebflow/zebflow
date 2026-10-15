@@ -4515,6 +4515,10 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "pipeline_execute" => Some(ProjectCapability::PipelinesExecute),
         "pipeline_run" => Some(ProjectCapability::PipelinesExecute),
         "pipeline_get_invocations" => Some(ProjectCapability::PipelinesRead),
+        // The project's live rooms (`rooms.md` § Listing): the same
+        // operations as `GET …/ws/rooms` and `POST …/ws/rooms/{room}/close`.
+        "ws_rooms_list" => Some(ProjectCapability::PipelinesRead),
+        "ws_room_close" => Some(ProjectCapability::PipelinesExecute),
         // One file vocabulary over the repository. `docs_project_*` is gone with
         // it: a `.md` is a file like any other, and had no reason to be reached
         // by its own three tools.

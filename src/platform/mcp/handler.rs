@@ -315,6 +315,20 @@ struct PipelineDeactivateParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct WsRoomsListParams {
+    /// Which rooms: a pattern ("match-*") or an exact name. Default "*", every open room.
+    room: Option<String>,
+    /// Also list each room's members (their sub). Default false.
+    members: Option<bool>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct WsRoomCloseParams {
+    /// The room to close: an exact name, or a pattern closing every open room it matches.
+    room: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct PipelineExecuteParams {
     /// Source-relative path of the registered active pipeline to execute (e.g. "api/blog-home.zf.json").
     file_rel_path: String,
@@ -898,6 +912,48 @@ impl ZebflowMcpHandler {
             )])),
             Err(e) => Err(McpError::invalid_params(format!("{}: {}", e.code, e.message), None)),
         }
+    }
+
+    #[tool(
+        description = "List this project's open WebSocket rooms, as `ws.room.list` answers them: \
+                       { rooms: [ { room, kind, private, mode, meta, sessions, max_sessions, opened_at, opened_by, \
+                       last_activity_at, state_bytes, counters } ], total: { rooms, sessions } }. \
+                       `room` narrows by pattern; `members` adds each room's identities."
+    )]
+    async fn ws_rooms_list(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<WsRoomsListParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "ws_rooms_list")?;
+        let selection = params.room.unwrap_or_else(|| "*".to_string());
+        let list = self
+            .platform
+            .ws_hub
+            .list(&session.owner, &session.project, &selection, params.members.unwrap_or(false))
+            .map_err(|refusal| McpError::invalid_params(refusal.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&list).unwrap_or_default())]))
+    }
+
+    #[tool(
+        description = "Close a WebSocket room, as `ws.room.close` does: an exact name, or a pattern closing every open \
+                       room it matches. Each session is closed with 4410 and raises `$disconnect { reason: \"room_closed\" }`; \
+                       the state is dropped. Answers { room, closed, sessions }."
+    )]
+    async fn ws_room_close(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<WsRoomCloseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "ws_room_close")?;
+        let report = self
+            .platform
+            .ws_hub
+            .close_report(&session.owner, &session.project, &params.room)
+            .map_err(|refusal| McpError::invalid_params(refusal.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&report).unwrap_or_default())]))
     }
 
     #[tool(

@@ -7,14 +7,14 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use super::published_mcp::{OWNER, PROJECT, addressing, app_at, dsl, login, publish, send, temp_dir};
+use super::published_mcp::{OWNER, PROJECT, addressing, app_at, call, dsl, login, publish, rpc, send, temp_dir, text_of};
 
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Switch the `ws` surface on (it is off by default) and serve `app` on a
 /// free port, as the binary does; the address.
 async fn serve(app: axum::Router, cookie: &str) -> std::net::SocketAddr {
-    addressing(&app, cookie, json!({ "hosts": [], "routes": [], "disabled": ["files", "ms", "mcp"] })).await;
+    addressing(&app, cookie, json!({ "hosts": [], "routes": [], "disabled": ["files", "ms"] })).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
     tokio::spawn(async move {
@@ -127,4 +127,110 @@ async fn a_socket_joins_only_an_open_room_its_rule_admits() {
     let gone = next_of(&mut b, "event").await;
     assert_eq!(gone["event"], "gone");
     assert_eq!(gone["payload"], json!({ "reason": "left" }));
+}
+
+/// A webhook of the test project, called with a JSON body; its answer.
+async fn hook(app: &axum::Router, route: &str, body: Value) -> Value {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .uri(format!("/wh/{OWNER}/{PROJECT}{route}"))
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("request");
+    let response = app.clone().oneshot(request).await.expect("response");
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
+}
+
+async fn ticket(app: &axum::Router, room: &str, user: &str) -> String {
+    let answer = hook(app, "/ticket", json!({ "room": room, "user": user })).await;
+    answer["ticket"].as_str().unwrap_or_else(|| panic!("a ticket: {answer}")).to_string()
+}
+
+#[tokio::test]
+async fn an_opened_private_room_admits_ticket_holders_up_to_its_cap_and_closes() {
+    let root = temp_dir("ws-rooms-opened");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "match-chat", r#"| trigger.room --room "match-:id" --event chat | ws.message.send --event said --body "{{ input.room.auth }}""#).await;
+    publish(&app, &cookie, "match-left", r#"| trigger.room --room "match-:id" --event $disconnect | ws.message.send --event gone --body "{{ input.room.payload }}""#).await;
+    publish(&app, &cookie, "open", r#"| trigger.webhook --route /open --method POST | ws.room.open --room "match-{{ input.webhook.body.id }}" --private --max-sessions 2 | web.response.send --body "{{ input.room }}""#).await;
+    publish(&app, &cookie, "ticket", r#"| trigger.webhook --route /ticket --method POST --errors show | ws.ticket.create --room "{{ input.webhook.body.room }}" --user "{{ input.webhook.body.user }}" | web.response.send --body "{{ input.ticket }}""#).await;
+    publish(&app, &cookie, "kick", r#"| trigger.webhook --route /kick --method POST | ws.session.close --room "{{ input.webhook.body.room }}" --user "{{ input.webhook.body.user }}" | web.response.send --body "{{ input.session }}""#).await;
+    let address = serve(app.clone(), &cookie).await;
+
+    let opened = hook(&app, "/open", json!({ "id": "1" })).await;
+    assert_eq!((opened["room"].as_str(), opened["private"].as_bool(), opened["max_sessions"].as_u64()), (Some("match-1"), Some(true), Some(2)), "{opened}");
+    assert_eq!(refused(address, "match-1", &[]).await, 4401, "a private room admits ticket holders only");
+
+    let first = ticket(&app, "match-1", "u-17").await;
+    let mut a = connect(address, &format!("match-1?ticket={first}"), &[]).await;
+    next_of(&mut a, "joined").await;
+    a.send(Message::Text(json!({ "event": "chat", "payload": {} }).to_string().into())).await.unwrap();
+    assert_eq!(next_of(&mut a, "event").await["payload"], json!({ "sub": "u-17" }), "under --auth none the ticket's user is the identity");
+    assert_eq!(refused(address, &format!("match-1?ticket={first}"), &[]).await, 4401, "a ticket is used once");
+
+    let second = ticket(&app, "match-1", "u-18").await;
+    let third = ticket(&app, "match-1", "u-19").await;
+    let mut b = connect(address, &format!("match-1?ticket={second}"), &[]).await;
+    next_of(&mut b, "joined").await;
+    assert_eq!(refused(address, &format!("match-1?ticket={third}"), &[]).await, 4429, "past --max-sessions");
+    let full = hook(&app, "/ticket", json!({ "room": "match-1", "user": "u-19" })).await;
+    assert!(full.to_string().contains("FW_NODE_WS_TICKET_CREATE_FULL"), "{full}");
+
+    let kicked = hook(&app, "/kick", json!({ "room": "match-1", "user": "u-18" })).await;
+    assert_eq!(kicked, json!({ "room": "match-1", "closed": 1 }));
+    assert_eq!(next(&mut b).await.expect_err("closed"), 4409);
+    let gone = next_of(&mut a, "event").await;
+    assert_eq!((gone["event"].as_str(), gone["payload"]["reason"].as_str()), (Some("gone"), Some("closed")));
+
+    // The Studio API and the project MCP see and close the same rooms.
+    let (status, list) = send(&app, &cookie, "GET", &format!("/api/projects/{OWNER}/{PROJECT}/ws/rooms?room=match-*&members=1"), Value::Null).await;
+    assert_eq!(status.as_u16(), 200, "{list}");
+    assert_eq!(list["total"], json!({ "rooms": 1, "sessions": 1 }));
+    let room = &list["rooms"][0];
+    assert_eq!(room["members"], json!(["u-17"]));
+    assert!(room["counters"]["messages_in"].as_u64() >= Some(1) && room["counters"]["pipeline_runs"].as_u64() >= Some(1), "{room}");
+    let (_, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"), json!({ "capabilities": ["pipelines.read", "pipelines.execute"] })).await;
+    let bearer = format!("Bearer {}", session["session"]["token"].as_str().expect("token"));
+    let mcp = format!("/api/projects/{OWNER}/{PROJECT}/mcp");
+    let (_, listed) = rpc(&app, &mcp, None, &[("authorization", &bearer)], call("ws_rooms_list", json!({ "room": "match-*" }))).await;
+    let listed: Value = serde_json::from_str(&text_of(&listed)).unwrap_or_else(|_| panic!("{listed}"));
+    assert_eq!(listed["total"], list["total"]);
+    assert!(listed["rooms"][0].get("members").is_none(), "no identities without members");
+
+    let (status, closed) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/ws/rooms/match-1/close"), Value::Null).await;
+    assert_eq!(status.as_u16(), 200, "{closed}");
+    assert_eq!(closed, json!({ "room": "match-1", "closed": ["match-1"], "sessions": 1 }));
+    assert_eq!(next(&mut a).await.expect_err("closed"), 4410);
+    let (status, _) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/ws/rooms/match-1/close"), Value::Null).await;
+    assert_eq!(status.as_u16(), 404, "a room that is not open");
+    let (_, again) = rpc(&app, &mcp, None, &[("authorization", &bearer)], call("ws_room_close", json!({ "room": "match-1" }))).await;
+    assert!(again.to_string().contains("not open"), "{again}");
+    assert_eq!(refused(address, "match-1", &[]).await, 4404, "closed: not open any more");
+}
+
+#[tokio::test]
+async fn a_login_is_checked_once_and_closes_the_session_when_it_expires() {
+    let root = temp_dir("ws-rooms-expiry");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    let secret = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    credential(&app, &cookie, json!({ "credential_id": "members", "title": "Members", "kind": "jwt_signing_key", "notes": "", "secret": { "algorithm": "HS256", "secret": secret } })).await;
+    publish(&app, &cookie, "members-chat", r#"| trigger.room --room members --event chat --auth jwt --credential members | ws.message.send --event said --body "{{ input.room.auth.sub }}""#).await;
+    let address = serve(app, &cookie).await;
+    let now = chrono::Utc::now().timestamp();
+    let token = |exp: i64| {
+        let claims = json!({ "sub": "u-17", "iat": now, "exp": exp });
+        jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes())).expect("token")
+    };
+
+    assert_eq!(refused(address, "members", &[]).await, 4401);
+    let bearer = format!("Bearer {}", token(now + 3));
+    let mut socket = connect(address, "members", &[("authorization", &bearer)]).await;
+    next_of(&mut socket, "joined").await;
+    socket.send(Message::Text(json!({ "event": "chat", "payload": {} }).to_string().into())).await.unwrap();
+    assert_eq!(next_of(&mut socket, "event").await["payload"], "u-17", "the claims proved at connect ride on the event");
+    assert_eq!(next(&mut socket).await.expect_err("the login expired"), 4408);
 }

@@ -260,6 +260,15 @@ impl WsHub {
         Ok(closed)
     }
 
+    /// [`WsHub::close`] as `ws.room.close`, the API and the MCP answer it:
+    /// `{ room, closed: [names], sessions }`.
+    pub fn close_report(&self, owner: &str, project: &str, selection: &str) -> Result<Value, HubRefusal> {
+        let closed = self.close(owner, project, selection)?;
+        let sessions: usize = closed.iter().map(|(_, n)| n).sum();
+        let names: Vec<&str> = closed.iter().map(|(name, _)| name.as_str()).collect();
+        Ok(json!({ "room": selection, "closed": names, "sessions": sessions }))
+    }
+
     /// Close the sessions `which` selects (a session id or a user) in the
     /// rooms a selection reaches, with `4409`. Answers (rooms, sessions).
     pub fn close_sessions(&self, owner: &str, project: &str, selection: &str, which: &EmitTarget) -> Result<(usize, usize), HubRefusal> {

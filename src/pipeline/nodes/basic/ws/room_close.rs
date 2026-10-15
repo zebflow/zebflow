@@ -108,13 +108,8 @@ impl NodeHandler for Node {
             return Err(PipelineError::new(ROOM_CODE, "no room: give --room, or start the run from trigger.room"));
         }
         let (owner, project) = project_of(&input.metadata);
-        let closed = self.hub.close(owner, project, &room).map_err(|refusal| refused(refusal, CONFIG_CODE))?;
-        let sessions: usize = closed.iter().map(|(_, n)| n).sum();
-        let names: Vec<&str> = closed.iter().map(|(name, _)| name.as_str()).collect();
-        Ok(answer(
-            &input.payload,
-            json!({ "room": { "room": room, "closed": names, "sessions": sessions } }),
-            format!("node_kind={NODE_KIND} room={room} closed={} sessions={sessions}", names.len()),
-        ))
+        let report = self.hub.close_report(owner, project, &room).map_err(|refusal| refused(refusal, CONFIG_CODE))?;
+        let trace = format!("node_kind={NODE_KIND} room={room} sessions={}", report["sessions"]);
+        Ok(answer(&input.payload, json!({ "room": report }), trace))
     }
 }
