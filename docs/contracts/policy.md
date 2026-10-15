@@ -22,7 +22,12 @@ MCP session        Bearer token per project · capabilities allow-listed per ses
                    templates.write, pipelines.execute …) · rotation epoch · auto-reset · revocable
 project JWT        auth.token.create / auth.token.verify · algorithm pinned by the credential,
                    never by the token header (RS256 verifier refuses an HS256 token) · exp always
-                   checked · aud checked when set · roles claim as string or array
+                   checked · auth.token.verify --audience requires that aud, and without it refuses
+                   a token carrying any aud · a webhook's --auth jwt and auth.oauth.approve accept
+                   the app's own aud (auth.token.create --audience) and refuse a platform token:
+                   header typ at+jwt, or an aud that is a published MCP connect URL (http(s) URL
+                   whose path is /_mcp/ROUTE or /mcp/{owner}/{project}/ROUTE) · roles claim as
+                   string or array
 passwords          argon2 (platform users) · bcrypt available to pipelines (crypto.password.hash)
 ```
 
@@ -83,7 +88,8 @@ reads only its own credentials (`owner/project` is the store's key).
 
 `web/mod.rs` `session_cookie_header_same_site`, `SESSION_TTL_SECS`,
 `logout_submit`; `services/mcp_session.rs`; `nodes/basic/auth/token_verify.rs`
-(algorithm pin, `set_audience`); `infra/secrets/keyring.rs`;
+(algorithm pin, `set_audience`); `nodes/basic/auth/sign.rs`
+`verify_app_token`, `is_platform_audience`; `infra/secrets/keyring.rs`;
 `adapters/data/sqlite.rs` keyring report and reencrypt;
 `services/credential.rs` confidential registry; `nodes/basic/fs/put.rs`;
 `confinement.md`. Absences in §4 are grep results on the same day, not a

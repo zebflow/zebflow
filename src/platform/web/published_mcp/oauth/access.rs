@@ -4,10 +4,11 @@
 //! Claims are the approved app token's — `sub`, `roles` and whatever the
 //! app signed — without its own `iat exp nbf iss aud jti _zf_public`, plus
 //! `iss` and `aud` (both the connect URL), `iat`, `exp` (an hour), `jti`,
-//! `client_id` and `scope`. The header says `typ: at+jwt`. Because `aud` is
-//! required here and refused by a webhook's `--auth jwt`, an access token
-//! never opens a `jwt` webhook, and the app's own session token (no `aud`,
-//! no `at+jwt`) never opens an `oauth` route.
+//! `client_id` and `scope`. The header says `typ: at+jwt`. A webhook's
+//! `--auth jwt` refuses `at+jwt` and an `aud` that is a connect URL
+//! (`sign::is_platform_audience`), so an access token never opens a `jwt`
+//! webhook, and the app's own session token (no `at+jwt`) never opens an
+//! `oauth` route.
 
 use jsonwebtoken::{Header, Validation};
 use serde_json::{Map, Value, json};

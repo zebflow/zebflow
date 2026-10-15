@@ -100,10 +100,37 @@ pub fn is_access_token_typ(typ: Option<&str>) -> bool {
     })
 }
 
-/// An app session token as `auth.token.create` signed it (without `--audience`):
-/// the signature with the credential's algorithm and `exp` (and `nbf` when
-/// present), never a published-MCP access token (`typ: at+jwt`) or a
-/// single-purpose audience-scoped token (`aud` present).
+/// True when an `aud` claim (a string or an array of them) names a platform
+/// audience: the connect URL of a published MCP route, `<origin>/_mcp/ROUTE`
+/// on a project host or `<origin>/mcp/{owner}/{project}/ROUTE` on the
+/// platform. That is the audience the platform's own access tokens carry
+/// (`published_mcp/oauth/access.rs`); an app's own audiences (`app`,
+/// `password-reset`, `https://api.example.com`) are not.
+pub fn is_platform_audience(aud: &Value) -> bool {
+    match aud {
+        Value::String(one) => is_mcp_connect_url(one),
+        Value::Array(many) => many.iter().any(|v| v.as_str().is_some_and(is_mcp_connect_url)),
+        _ => false,
+    }
+}
+
+fn is_mcp_connect_url(aud: &str) -> bool {
+    let lower = aud.trim().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://")) else {
+        return false;
+    };
+    let Some(slash) = rest.find('/') else {
+        return false;
+    };
+    let path = rest[slash..].split(['?', '#']).next().unwrap_or_default();
+    path == "/_mcp" || path.starts_with("/_mcp/") || path.starts_with("/mcp/")
+}
+
+/// An app token as `auth.token.create` signed it: the signature with the
+/// credential's algorithm and `exp` (and `nbf` when present). Its own `aud`
+/// (`--audience`) is the app's business and passes; a platform token never
+/// does — neither a published-MCP access token (`typ: at+jwt`) nor a token
+/// whose `aud` is a platform audience ([`is_platform_audience`]).
 pub fn verify_app_token(secret: &Value, token: &str) -> Result<Value, VerifyError> {
     let (algorithm, key) = decoding_key(secret).map_err(VerifyError::Key)?;
     let header = jsonwebtoken::decode_header(token).map_err(|e| VerifyError::Token(e.to_string()))?;
@@ -115,12 +142,14 @@ pub fn verify_app_token(secret: &Value, token: &str) -> Result<Value, VerifyErro
     let mut validation = Validation::new(algorithm);
     validation.validate_exp = true;
     validation.validate_nbf = true;
-    validation.validate_aud = true;
+    // jsonwebtoken refuses any `aud` when no audience is expected; the
+    // platform-audience check below is the one this token needs.
+    validation.validate_aud = false;
     let data = jsonwebtoken::decode::<Value>(token, &key, &validation)
         .map_err(|e| VerifyError::Token(e.to_string()))?;
-    if data.claims.get("aud").is_some_and(|v| !v.is_null()) {
+    if data.claims.get("aud").is_some_and(is_platform_audience) {
         return Err(VerifyError::Token(
-            "audience-scoped token cannot be used as an unscoped app token".to_string(),
+            "a token for a published MCP route (platform audience) cannot be used as an app token".to_string(),
         ));
     }
     Ok(data.claims)
@@ -141,20 +170,31 @@ mod tests {
     }
 
     #[test]
-    fn verify_app_token_rejects_at_jwt_and_scoped_audience_and_webhook_auth_checks_credential_kind() {
+    fn verify_app_token_keeps_app_audiences_and_refuses_platform_ones() {
         let secret = json!({ "algorithm": "HS256", "secret": uuid::Uuid::new_v4().to_string() });
         let (algorithm, key) = encoding_key(&secret).unwrap();
         let now = chrono::Utc::now().timestamp();
         let sign = |claims: Value| jsonwebtoken::encode(&jsonwebtoken::Header::new(algorithm), &claims, &key).unwrap();
         let claims = verify_app_token(&secret, &sign(json!({ "sub": "u1", "exp": now + 60 }))).unwrap();
         assert_eq!(claims["sub"], "u1");
-        assert!(
-            matches!(
-                verify_app_token(&secret, &sign(json!({ "sub": "u1", "aud": "password-reset", "exp": now + 60 }))),
-                Err(VerifyError::Token(_))
-            ),
-            "audience-scoped token must not verify as an unscoped app session token"
-        );
+        // `auth.token.create --audience` is the app's own and verifies.
+        for aud in [json!("app"), json!("password-reset"), json!("https://api.example.com/v1"), json!(["app", "web"])] {
+            let claims = verify_app_token(&secret, &sign(json!({ "sub": "u1", "aud": aud, "exp": now + 60 })))
+                .unwrap_or_else(|e| panic!("app audience {aud} must verify: {e:?}"));
+            assert_eq!(claims["aud"], aud);
+        }
+        // A published MCP route's connect URL is a platform audience.
+        for aud in [
+            json!("https://library.example.com/_mcp/library"),
+            json!("http://library.site-a.localhost:10610/_mcp/library"),
+            json!("https://studio.example.com/mcp/owner-a/demo/library"),
+            json!(["app", "HTTPS://library.example.com/_mcp/library"]),
+        ] {
+            assert!(
+                matches!(verify_app_token(&secret, &sign(json!({ "sub": "u1", "aud": aud, "exp": now + 60 }))), Err(VerifyError::Token(_))),
+                "platform audience {aud} must not verify as an app token"
+            );
+        }
         let mut at_jwt_header = jsonwebtoken::Header::new(algorithm);
         at_jwt_header.typ = Some("at+jwt".to_string());
         let at_jwt = jsonwebtoken::encode(&at_jwt_header, &json!({ "sub": "u1", "exp": now + 60 }), &key).unwrap();
