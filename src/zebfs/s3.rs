@@ -1082,6 +1082,20 @@ pub(crate) mod tests {
 
     #[test]
     fn rejects_invalid_bucket_names_and_range_overflow() {
+        let cred = |bucket: &str| {
+            serde_json::json!({
+                "endpoint": "https://s3.example.com",
+                "bucket": bucket,
+                "access_key_id": "ak",
+                "secret_access_key": uuid::Uuid::new_v4().to_string(),
+            })
+        };
+        // The same credential with an ordinary bucket name is accepted, so
+        // each refusal below is the bucket name's and nothing else's.
+        for good_bucket in ["site-a-files", "demo.bucket.1", "a1b", " catalog "] {
+            let config = S3Config::from_credential(&cred(good_bucket)).expect(good_bucket);
+            assert_eq!(config.bucket, good_bucket.trim());
+        }
         for bad_bucket in [
             "bucket/../../admin",
             "bucket?list-type=2",
@@ -1092,14 +1106,9 @@ pub(crate) mod tests {
             "trailing-hyphen-",
             "UpperCaseBucket",
         ] {
-            let cred = serde_json::json!({
-                "endpoint": "https://s3.example.com",
-                "bucket": bad_bucket,
-                "access_key_id": "ak",
-                "secret_access_key": uuid::Uuid::new_v4().to_string(),
-            });
-            let err = S3Config::from_credential(&cred).expect_err(bad_bucket);
+            let err = S3Config::from_credential(&cred(bad_bucket)).expect_err(bad_bucket);
             assert_eq!(err.code, "ZEBFS_S3_CREDENTIAL");
+            assert!(err.message.contains("bucket name"), "{bad_bucket}: {}", err.message);
         }
 
         let fs = store(1, "");
