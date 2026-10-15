@@ -297,7 +297,7 @@ fn init_cluster(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|value| value.to_str())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("zebflow-cluster");
-        let cluster_name = raw_cluster_name.trim().to_ascii_lowercase();
+        let cluster_name = cluster_name_slug(raw_cluster_name);
         validate_resource_name(&cluster_name, "cluster name")?;
 
         let cfg = ClusterConfig {
@@ -1249,6 +1249,20 @@ fn validate_office_id(office_id: &str) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+/// The cluster name a directory gives: lowercase, with `_` and `.` turned into
+/// `-`. Anything else stays as it is, so `validate_resource_name` still refuses
+/// a name that cannot sit inside a quoted YAML scalar.
+fn cluster_name_slug(dir_name: &str) -> String {
+    dir_name
+        .trim()
+        .chars()
+        .map(|ch| match ch {
+            '_' | '.' => '-',
+            other => other.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
 fn validate_resource_name(value: &str, label: &str) -> Result<(), Box<dyn std::error::Error>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1688,5 +1702,21 @@ mod tests {
             init_cluster(&bad_dir).is_err(),
             "expected init_cluster to reject directory name with quotes/newlines"
         );
+    }
+
+    #[test]
+    fn cluster_name_is_a_slug_of_the_directory_name() {
+        let (_tmp, root) = temp_cluster_dir();
+        for (dir, expected) in [
+            ("my_cluster", "my-cluster"),
+            ("Site-A.Cluster", "site-a-cluster"),
+            ("demo", "demo"),
+        ] {
+            let path = root.join(dir);
+            init_cluster(&path).unwrap_or_else(|err| panic!("init {dir}: {err}"));
+            let cfg = load_cluster_config(&path).expect("config");
+            assert_eq!(cfg.cluster_name, expected, "slug of {dir}");
+        }
+        assert!(init_cluster(&root.join("bad cluster")).is_err());
     }
 }
