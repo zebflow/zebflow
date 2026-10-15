@@ -565,7 +565,7 @@ impl NodeHandler for Node {
         let current_depth = AGENT_RECURSION_DEPTH.try_with(|d| *d).unwrap_or(0);
         if current_depth >= MAX_AGENT_RECURSION_DEPTH {
             return Err(PipelineError::new(
-                "FW_NODE_AI_TEXT_GENERATE_RECURSION_LIMIT",
+                CONFIG_CODE,
                 format!(
                     "ai.text.generate recursion depth limit ({MAX_AGENT_RECURSION_DEPTH}) exceeded"
                 ),
