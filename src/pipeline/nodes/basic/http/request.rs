@@ -896,16 +896,8 @@ fn secure_request_egress_policy(
                 format!("secure_request resolved URL is invalid: {err}"),
             )
         })?;
-        let host = parsed
-            .host_str()
-            .unwrap_or_default()
-            .trim_matches(['[', ']'])
-            .trim_end_matches('.');
-        let allowed = allowed_hosts.iter().any(|item| {
-            let item = item.trim().trim_matches(['[', ']']).trim_end_matches('.');
-            !item.is_empty() && item.eq_ignore_ascii_case(host)
-        });
-        if !allowed {
+        let host = parsed.host_str().unwrap_or_default();
+        if !crate::pipeline::security::host_is_allowed(&allowed_hosts, host) {
             return Err(PipelineError::new(
                 "FW_NODE_HTTP_RESPONSE_FETCH_EGRESS",
                 format!("secure_request egress does not allow host {host}"),

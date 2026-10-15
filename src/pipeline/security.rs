@@ -191,16 +191,23 @@ pub struct OutboundHttpPolicy {
 
 impl OutboundHttpPolicy {
     fn matches_allowed_host(&self, host: &str) -> bool {
-        let host = normalize_host(host);
-        self.allowed_hosts
-            .iter()
-            .map(|item| normalize_host(item))
-            .any(|allowed| !allowed.is_empty() && allowed == host)
+        host_is_allowed(&self.allowed_hosts, host)
     }
 
     fn allows_host(&self, host: &str) -> bool {
         self.allow_private && self.matches_allowed_host(host)
     }
+}
+
+/// Whether `host` is one of `allowed` — the one allowlist match for a
+/// credential's outbound hosts: exact, case-insensitive, with brackets around
+/// an IPv6 literal and a trailing dot ignored. An empty entry matches nothing.
+pub fn host_is_allowed(allowed: &[String], host: &str) -> bool {
+    let host = normalize_host(host);
+    allowed
+        .iter()
+        .map(|item| normalize_host(item))
+        .any(|item| !item.is_empty() && item == host)
 }
 
 pub fn validate_outbound_http_url_with_policy(
@@ -339,8 +346,8 @@ pub fn is_blocked_egress_ip(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BundleEgress, OutboundHttpPolicy, is_blocked_egress_ip, read_response_capped,
-        validate_outbound_http_url, validate_outbound_http_url_with_policy,
+        BundleEgress, OutboundHttpPolicy, host_is_allowed, is_blocked_egress_ip,
+        read_response_capped, validate_outbound_http_url, validate_outbound_http_url_with_policy,
     };
 
     fn hosts(values: &[&str]) -> Vec<String> {
@@ -536,6 +543,23 @@ mod tests {
         ] {
             assert!(!source.contains(".chunk()"), "{file} keeps its own capped reader");
         }
+    }
+
+    /// One allowlist match: case, brackets and a trailing dot do not matter,
+    /// a different host or an empty entry never matches, and `secure_request`
+    /// matches through it rather than a copy of its own.
+    #[test]
+    fn one_allowlist_match_for_outbound_hosts() {
+        let allowed = hosts(&["API.Example.com.", "[2001:db8::1]", " ", "203.0.113.10"]);
+        for host in ["api.example.com", "api.example.com.", "2001:db8::1", "[2001:db8::1]", "203.0.113.10"] {
+            assert!(host_is_allowed(&allowed, host), "{host}");
+        }
+        for host in ["example.com", "evil.api.example.com", "203.0.113.11", ""] {
+            assert!(!host_is_allowed(&allowed, host), "{host}");
+        }
+        let request = include_str!("nodes/basic/http/request.rs");
+        assert!(request.contains("host_is_allowed("), "secure_request matches through host_is_allowed");
+        assert!(!request.contains("eq_ignore_ascii_case(host)"), "secure_request keeps its own host match");
     }
 
     #[test]
