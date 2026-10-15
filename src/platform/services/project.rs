@@ -1353,6 +1353,55 @@ impl ProjectService {
         Ok(())
     }
 
+    /// One join rule per room (`rooms.md` § The join rule): every active
+    /// `trigger.room` that can match the same room — an exact name, or two
+    /// patterns that overlap — declares the same `--auth` / `--credential` /
+    /// `--role`. The refusal names both pipelines.
+    fn ensure_room_join_rules_agree(
+        &self,
+        owner: &str,
+        project: &str,
+        candidate: &crate::platform::services::pipeline_runtime::CompiledPipeline,
+    ) -> Result<(), PlatformError> {
+        use crate::infra::transport::ws::RoomPattern;
+        use crate::platform::services::pipeline_runtime::CompiledPipeline;
+        let mut declared = Vec::new();
+        for meta in self.list_active_pipeline_meta(owner, project)? {
+            if meta.file_rel_path == candidate.file_rel_path {
+                continue;
+            }
+            let Ok(source) = self.read_active_pipeline_source(owner, project, &meta) else {
+                continue;
+            };
+            let Ok(other) = CompiledPipeline::from_active_meta(&meta, &source, None) else {
+                continue;
+            };
+            declared.extend(other.ws_triggers.into_iter().map(|spec| (meta.file_rel_path.clone(), spec)));
+        }
+        for spec in &candidate.ws_triggers {
+            let Ok(mine) = RoomPattern::parse(&spec.room) else { continue };
+            for (file, other) in &declared {
+                let overlaps = RoomPattern::parse(&other.room).is_ok_and(|theirs| mine.overlaps(&theirs));
+                if overlaps && other.join_rule() != spec.join_rule() {
+                    return Err(PlatformError::new(
+                        "PLATFORM_PIPELINE_ROOM_AUTH_MIXED",
+                        format!(
+                            "a room has one join rule: trigger.room --room {} in pipeline '{}' declares --auth {} and trigger.room --room {} in pipeline '{}' declares --auth {}, and both can match the same room (--credential and --role are compared too); declare the same on both",
+                            other.room,
+                            file,
+                            other.describe_join_rule(),
+                            spec.room,
+                            candidate.file_rel_path,
+                            spec.describe_join_rule()
+                        ),
+                    ));
+                }
+            }
+            declared.push((candidate.file_rel_path.clone(), spec.clone()));
+        }
+        Ok(())
+    }
+
     /// Promotes the current working-tree pipeline source to the production runtime snapshot.
     pub fn activate_pipeline_definition(
         &self,
@@ -1409,6 +1458,9 @@ impl ProjectService {
         )?;
         if !compiled.mcp_triggers.is_empty() {
             self.ensure_mcp_tools_publishable(&owner, &project, &compiled)?;
+        }
+        if !compiled.ws_triggers.is_empty() {
+            self.ensure_room_join_rules_agree(&owner, &project, &compiled)?;
         }
 
         let snapshot_path =

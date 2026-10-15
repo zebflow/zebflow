@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use super::message_send::{self, Config as SendConfig};
 use super::state::{self, Config as StateConfig, Verb};
-use crate::infra::transport::ws::{RoomHandle, SessionGuard, WsHub};
+use crate::infra::transport::ws::{Kick, RoomHandle, RoomSettings, SessionGuard, WsHub};
 use crate::infra::ws_client::WsClientManager;
 use crate::pipeline::engines::BasicPipelineEngine;
 use crate::pipeline::interface::PipelineEngine;
@@ -43,11 +43,25 @@ fn from_room(room: &str, session: &str) -> NodeExecutionInput {
     input
 }
 
-/// A hub with one socket joined to `room` of the test project.
-fn hub_with(room: &str) -> (Arc<WsHub>, Arc<RoomHandle>, SessionGuard) {
+/// A session's seat: the guard, and where a server close would arrive.
+type Seat = (SessionGuard, mpsc::UnboundedReceiver<Kick>);
+
+/// A hub whose project declares `room` (a fixed room), with one socket joined.
+fn hub_with(room: &str) -> (Arc<WsHub>, Arc<RoomHandle>, Seat) {
     let hub = Arc::new(WsHub::new());
-    let (handle, guard) = hub.join_room(&format!("demo/site-a/{room}"));
-    (hub, handle, guard)
+    hub.declare("demo", "site-a", &[(room.to_string(), "pipelines/room".to_string())]);
+    let (handle, guard, kicks) = hub.join("demo", "site-a", room, "s-joined", None, None).expect("a fixed room is open");
+    (hub, handle, (guard, kicks))
+}
+
+/// A hub declaring `pattern` with each of `rooms` opened.
+fn hub_opening(pattern: &str, rooms: &[&str]) -> Arc<WsHub> {
+    let hub = Arc::new(WsHub::new());
+    hub.declare("demo", "site-a", &[(pattern.to_string(), "pipelines/room".to_string())]);
+    for room in rooms {
+        hub.open("demo", "site-a", room, RoomSettings::fixed("pipelines/open")).expect("open");
+    }
+    hub
 }
 
 /// A client socket manager with one open socket, `file:node`, whose sends arrive on the receiver.
@@ -104,7 +118,7 @@ fn the_family_is_four_kinds_with_their_signatures() {
     assert_eq!(
         signatures,
         [
-            "ws.message.send [--room TEXT] [--connection TEXT] --body JSON [--event TEXT] [--recipient all|session|others] → message",
+            "ws.message.send [--room TEXT] [--connection TEXT] --body JSON [--event TEXT] [--recipient TEXT] → message",
             "ws.state.put --key TEXT --value JSON [--room TEXT] [--batch] → state",
             "ws.state.update --key TEXT --value JSON [--room TEXT] [--batch] → state",
             "ws.state.delete --key TEXT [--room TEXT] [--batch] → state",
@@ -125,7 +139,7 @@ async fn a_room_send_reaches_the_rooms_sockets_and_answers_message() {
     assert_eq!(out.payload["kept"], 1, "the rest of the payload is kept");
     assert_eq!(out.payload["room"]["room_id"], "lobby");
     let got = rx.recv().await.expect("event");
-    assert!(got.is_for("s1") && got.is_for("s2"), "all is the default recipient");
+    assert!(got.is_for("s1", None) && got.is_for("s2", None), "all is the default recipient");
     let wire: Value = serde_json::from_str(&got.text).unwrap();
     assert_eq!(wire, json!({ "type": "event", "event": "chat", "payload": { "text": "hi" } }));
 }
@@ -142,11 +156,41 @@ async fn a_named_room_needs_no_trigger_and_the_event_defaults() {
 }
 
 #[tokio::test]
-async fn a_room_nobody_joined_answers_not_sent() {
-    let hub = Arc::new(WsHub::new());
-    let node = send_node(json!({ "room": "empty", "body": "x" }), Some(hub), None).unwrap();
+async fn an_exact_room_that_is_not_open_is_an_error() {
+    let hub = hub_opening("match-:id", &[]);
+    let node = send_node(json!({ "room": "match-1", "body": "x" }), Some(hub.clone()), None).unwrap();
+    assert_eq!(code(node.execute_async(input(json!({}))).await), super::ROOM_NOT_OPEN_CODE);
+    hub.open("demo", "site-a", "match-1", RoomSettings::fixed("t")).unwrap();
+    let out = node.execute_async(input(json!({}))).await.expect("open now");
+    assert_eq!(out.payload["message"], json!({ "sent": true, "room": "match-1", "event": "event" }));
+}
+
+#[tokio::test]
+async fn a_pattern_reaches_every_open_room_it_matches_and_counts_them() {
+    let hub = hub_opening("zone-*", &["zone-1", "zone-2"]);
+    let mut one = hub.room("demo", "site-a", "zone-1").unwrap().subscribe();
+    let mut two = hub.room("demo", "site-a", "zone-2").unwrap().subscribe();
+    let node = send_node(json!({ "room": "zone-*", "body": "hi", "event": "notice" }), Some(hub.clone()), None).unwrap();
     let out = node.execute_async(input(json!({}))).await.unwrap();
-    assert_eq!(out.payload["message"]["sent"], false);
+    assert_eq!(out.payload["message"], json!({ "sent": true, "rooms": 2, "event": "notice" }));
+    assert!(one.recv().await.is_ok() && two.recv().await.is_ok());
+    let none = send_node(json!({ "room": "arena-*", "body": "hi" }), Some(hub), None).unwrap();
+    let out = none.execute_async(input(json!({}))).await.expect("no room is not an error");
+    assert_eq!(out.payload["message"], json!({ "sent": false, "rooms": 0, "event": "event" }));
+}
+
+#[tokio::test]
+async fn a_user_recipient_reaches_every_session_of_that_identity() {
+    let (hub, handle, _seat) = hub_with("notifications");
+    let mut rx = handle.subscribe();
+    let node = send_node(json!({ "room": "notifications", "body": "x", "recipient": "user:u-17" }), Some(hub.clone()), None).unwrap();
+    node.execute_async(input(json!({}))).await.expect("no triggering session needed");
+    let got = rx.recv().await.unwrap();
+    assert!(got.is_for("s1", Some("u-17")) && got.is_for("s2", Some("u-17")));
+    assert!(!got.is_for("s3", Some("u-18")) && !got.is_for("s4", None));
+    for bad in ["user:", "user", "team:red"] {
+        assert_eq!(code(send_node(json!({ "room": "notifications", "body": "x", "recipient": bad }), Some(hub.clone()), None)), message_send::CONFIG_CODE, "{bad}");
+    }
 }
 
 #[tokio::test]
@@ -157,7 +201,7 @@ async fn a_session_or_others_send_targets_the_triggering_socket() {
         let node = send_node(json!({ "body": "x", "recipient": recipient }), Some(hub.clone()), None).unwrap();
         node.execute_async(from_room("lobby", "s1")).await.unwrap();
         let got = rx.recv().await.unwrap();
-        assert_eq!((got.is_for("s1"), got.is_for("s2")), (to_s1, to_s2), "{recipient}");
+        assert_eq!((got.is_for("s1", None), got.is_for("s2", None)), (to_s1, to_s2), "{recipient}");
     }
     // Without a triggering session there is nobody to single out.
     let node = send_node(json!({ "room": "lobby", "body": "x", "recipient": "session" }), Some(hub), None).unwrap();
@@ -311,9 +355,24 @@ async fn a_room_send_after_trigger_room_reaches_the_triggering_room() {
     assert_eq!(out.value["message"], json!({ "sent": true, "room": "lobby", "event": "moved" }));
     assert_eq!(out.value["room"]["session_id"], "s1", "the trigger's answer stays");
     let got = rx.recv().await.expect("event");
-    assert_eq!((got.is_for("s1"), got.is_for("s2")), (false, true), "others: everyone but the sender");
+    assert_eq!((got.is_for("s1", None), got.is_for("s2", None)), (false, true), "others: everyone but the sender");
     let wire: Value = serde_json::from_str(&got.text).unwrap();
     assert_eq!(wire["payload"], json!({ "x": 1 }));
+}
+
+#[tokio::test]
+async fn state_takes_an_open_exact_room_and_refuses_a_write_past_its_cap() {
+    let hub = hub_opening("match-:id", &[]);
+    let put = state_node(Verb::Put, json!({ "key": "/a", "value": 1, "room": "match-1" }), &hub).unwrap();
+    assert_eq!(code(put.execute_async(input(json!({}))).await), super::ROOM_NOT_OPEN_CODE);
+    let pattern = state_node(Verb::Put, json!({ "key": "/a", "value": 1, "room": "match-*" }), &hub).unwrap();
+    assert_eq!(code(pattern.execute_async(input(json!({}))).await), Verb::Put.codes().room);
+
+    hub.open("demo", "site-a", "match-1", RoomSettings { max_state: 32, ..RoomSettings::fixed("t") }).unwrap();
+    put.execute_async(input(json!({}))).await.expect("open now");
+    let big = state_node(Verb::Update, json!({ "key": "/b", "value": { "text": "x".repeat(40) }, "room": "match-1" }), &hub).unwrap();
+    assert_eq!(code(big.execute_async(input(json!({}))).await), Verb::Update.codes().full);
+    assert_eq!(hub.room("demo", "site-a", "match-1").unwrap().get_state(), json!({ "a": 1 }), "the refused write left nothing");
 }
 
 #[test]

@@ -65,7 +65,7 @@ pub struct ScheduleTriggerSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WsTriggerSpec {
     pub node_id: String,
-    /// Room pattern — empty matches any room.
+    /// A fixed room's name, or a pattern of opened rooms (`match-:id`, `zone-*`).
     pub room: String,
     /// Event pattern — empty matches any event.
     pub event: String,
@@ -78,6 +78,27 @@ pub struct WsTriggerSpec {
     /// Required roles — JWT claim `roles` must match one. Empty = any authenticated user.
     #[serde(default)]
     pub auth_required_role: Vec<String>,
+}
+
+impl WsTriggerSpec {
+    /// The join rule this trigger declares for its rooms, compared across
+    /// every trigger that can match the same room: `(auth, credential, roles)`.
+    pub fn join_rule(&self) -> (String, String, Vec<String>) {
+        let auth = if self.auth_type.is_empty() { "none".to_string() } else { self.auth_type.clone() };
+        let mut roles = self.auth_required_role.clone();
+        roles.sort();
+        (auth, self.auth_credential.clone(), roles)
+    }
+
+    /// The join rule as a refusal names it: `jwt (jwt_main, roles a b)`.
+    pub fn describe_join_rule(&self) -> String {
+        let (auth, credential, roles) = self.join_rule();
+        match (credential.is_empty(), roles.is_empty()) {
+            (true, _) => auth,
+            (false, true) => format!("{auth} ({credential})"),
+            (false, false) => format!("{auth} ({credential}, roles {})", roles.join(" ")),
+        }
+    }
 }
 
 /// One extracted KV subscribe trigger from an active compiled pipeline.
@@ -510,11 +531,12 @@ fn check_trigger_flags(
             .to_string()
     };
     let refuse = |err| trigger_refused(meta, node, err);
-    if node.kind == "trigger.room" && text("room").trim().is_empty() {
-        return Err(refuse(crate::pipeline::PipelineError::new(
-            code,
-            "--room is required: name the room or pattern this trigger opens (e.g. --room lobby or --room \"match-*\")",
-        )));
+    // `--room` is a fixed room or a pattern of opened rooms; `*` alone is
+    // every room, which no trigger declares (`rooms.md`).
+    if node.kind == "trigger.room"
+        && let Err(why) = crate::infra::transport::ws::RoomPattern::parse(&text("room"))
+    {
+        return Err(refuse(crate::pipeline::PipelineError::new(code, why)));
     }
     let auth = choice(&text("auth"), &webhook::AUTH_MODES, "none", "--auth", code).map_err(refuse)?;
     // A guard without its key would refuse every request at run time; say so
@@ -629,16 +651,41 @@ fn valid_login_path(path: &str) -> bool {
 pub struct PipelineRuntimeService {
     projects: Arc<ProjectService>,
     node_registry: Arc<NodeRegistryService>,
+    /// Told which rooms each project's active `trigger.room` nodes declare
+    /// whenever the active set changes (`rooms.md`: a fixed room exists
+    /// while its trigger is active).
+    ws_hub: Arc<crate::infra::transport::ws::WsHub>,
     inner: ArcSwap<HashMap<ActivePipelineKey, CompiledPipeline>>,
 }
 
 impl PipelineRuntimeService {
-    pub fn new(projects: Arc<ProjectService>, node_registry: Arc<NodeRegistryService>) -> Self {
+    pub fn new(
+        projects: Arc<ProjectService>,
+        node_registry: Arc<NodeRegistryService>,
+        ws_hub: Arc<crate::infra::transport::ws::WsHub>,
+    ) -> Self {
         Self {
             projects,
             node_registry,
+            ws_hub,
             inner: ArcSwap::new(Arc::new(HashMap::new())),
         }
+    }
+
+    /// Replace the active set and tell the room hub what one project's
+    /// `trigger.room` nodes now declare.
+    fn store(&self, next: HashMap<ActivePipelineKey, CompiledPipeline>, owner: &str, project: &str) {
+        let mut rooms: Vec<(String, String)> = next
+            .values()
+            .filter(|compiled| compiled.owner == owner && compiled.project == project)
+            .flat_map(|compiled| {
+                compiled.ws_triggers.iter().map(|t| (t.room.clone(), compiled.file_rel_path.clone()))
+            })
+            .collect();
+        rooms.sort();
+        rooms.dedup_by(|a, b| a.0 == b.0);
+        self.inner.store(Arc::new(next));
+        self.ws_hub.declare(owner, project, &rooms);
     }
 
     /// Rebuilds one project's active runtime snapshot.
@@ -680,7 +727,7 @@ impl PipelineRuntimeService {
             next.insert(compiled.key.clone(), compiled);
         }
 
-        self.inner.store(Arc::new(next));
+        self.store(next, &owner, &project);
         Ok(())
     }
 
@@ -716,7 +763,7 @@ impl PipelineRuntimeService {
             next.insert(compiled.key.clone(), compiled);
         }
 
-        self.inner.store(Arc::new(next));
+        self.store(next, &owner, &project);
         Ok(())
     }
 
@@ -730,7 +777,9 @@ impl PipelineRuntimeService {
         let key = active_pipeline_key(owner, project, file_rel_path);
         let mut next = (*self.inner.load_full()).clone();
         next.remove(&key);
-        self.inner.store(Arc::new(next));
+        let owner = crate::platform::model::slug_segment(owner);
+        let project = crate::platform::model::slug_segment(project);
+        self.store(next, &owner, &project);
     }
 
     pub fn list_project(&self, owner: &str, project: &str) -> Vec<CompiledPipeline> {
@@ -870,6 +919,14 @@ mod trigger_tests {
             let missing_room = compile(dsl).err().expect("missing --room is refused");
             assert_eq!(missing_room.code, "FW_NODE_TRIGGER_ROOM_CONFIG", "{dsl}");
             assert!(missing_room.message.contains("--room is required"), "{dsl}: {}", missing_room.message);
+        }
+        // `*` alone is every room, not a room; a pattern with a literal part is.
+        for dsl in [r#"| trigger.room --room "*""#, r#"| trigger.room --room ":id""#, r#"| trigger.room --room "a b""#] {
+            let err = compile(dsl).err().unwrap_or_else(|| panic!("accepted: {dsl}"));
+            assert_eq!(err.code, "FW_NODE_TRIGGER_ROOM_CONFIG", "{dsl}");
+        }
+        for dsl in [r#"| trigger.room --room "zone-*""#, r#"| trigger.room --room "match-:id""#, "| trigger.room --room lobby"] {
+            assert!(compile(dsl).is_ok(), "{dsl}");
         }
     }
 

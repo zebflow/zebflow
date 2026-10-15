@@ -32,3 +32,5 @@ mod system_panel;
 mod studio_oauth;
 #[path = "platform/git_remote.rs"]
 mod git_remote;
+#[path = "platform/ws_rooms.rs"]
+mod ws_rooms;

@@ -254,9 +254,11 @@ impl PlatformService {
             config.data_root.clone(),
             config.data_root.join("platform").join("project-operations"),
         ));
+        let ws_hub = Arc::new(WsHub::new());
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(
             projects.clone(),
             node_registry.clone(),
+            ws_hub.clone(),
         ));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
         let mcp_sessions = Arc::new(McpSessionService::new(
@@ -264,7 +266,6 @@ impl PlatformService {
             authz.clone(),
             config.secret_rotation_epoch,
         ));
-        let ws_hub = Arc::new(WsHub::new());
         let mem_hub = Arc::new(MemHub::new());
         // Expired keys are removed even when nobody reads them again.
         mem_hub.start_sweeper(std::time::Duration::from_secs(30));

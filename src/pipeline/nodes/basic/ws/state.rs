@@ -13,8 +13,11 @@
 //!   payload is written with `{{ }}` — `/players/{{ input.room.session_id }}` — and
 //!   a segment that resolves empty is refused: `/players/` would otherwise
 //!   write into, or delete, the whole map.
-//! - Without `--room` the room is the one of the `trigger.room` that started
-//!   the run. A room nobody has joined holds no state, and is skipped.
+//! - `--room` is an exact room; without it the room is the one of the
+//!   `trigger.room` that started the run. A room that is not open is
+//!   `FW_NODE_WS_ROOM_NOT_OPEN`, and a pattern is refused.
+//! - A change that would take the state past the room's `--max-state` is
+//!   refused (`…_FULL`) and the state is left as it was.
 //! - Every client in the room is sent the full state at once; `--batch`
 //!   instead lets the room's 33 ms tick send it, at most once a tick — for
 //!   streams of ten or more changes a second.
@@ -27,8 +30,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, answer, field, flag, room_key, room_of, text_of};
-use crate::infra::transport::ws::{RoomCmd, StateOp, WsHub};
+use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, ROOM_NOT_OPEN_CODE, answer, field, flag, project_of, room_of, text_of};
+use crate::infra::transport::ws::{RoomPattern, StateOp, WsHub};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -49,8 +52,10 @@ pub struct Codes {
     pub config: &'static str,
     /// `--value` missing or resolved to nothing (`put`, `update`).
     pub empty: &'static str,
-    /// No `--room` and no `trigger.room` upstream.
+    /// No `--room` and no `trigger.room` upstream, or a pattern for `--room`.
     pub room: &'static str,
+    /// The change would take the state past the room's `--max-state`.
+    pub full: &'static str,
     /// `--key` is not a pointer, or a segment of it is empty.
     pub key: &'static str,
     /// This engine has no room hub.
@@ -84,6 +89,7 @@ impl Verb {
                 config: "FW_NODE_WS_STATE_PUT_CONFIG",
                 empty: "FW_NODE_WS_STATE_PUT_EMPTY",
                 room: "FW_NODE_WS_STATE_PUT_ROOM",
+                full: "FW_NODE_WS_STATE_PUT_FULL",
                 key: "FW_NODE_WS_STATE_PUT_KEY",
                 unavailable: "FW_NODE_WS_STATE_PUT_UNAVAILABLE",
             },
@@ -91,14 +97,17 @@ impl Verb {
                 config: "FW_NODE_WS_STATE_UPDATE_CONFIG",
                 empty: "FW_NODE_WS_STATE_UPDATE_EMPTY",
                 room: "FW_NODE_WS_STATE_UPDATE_ROOM",
+                full: "FW_NODE_WS_STATE_UPDATE_FULL",
                 key: "FW_NODE_WS_STATE_UPDATE_KEY",
                 unavailable: "FW_NODE_WS_STATE_UPDATE_UNAVAILABLE",
             },
-            // A delete takes no value, so it has no `_EMPTY`.
+            // A delete takes no value, so it has no `_EMPTY`, and only
+            // shrinks the state, so it has no `_FULL`.
             Verb::Delete => Codes {
                 config: "FW_NODE_WS_STATE_DELETE_CONFIG",
                 empty: "FW_NODE_WS_STATE_DELETE_CONFIG",
                 room: "FW_NODE_WS_STATE_DELETE_ROOM",
+                full: "FW_NODE_WS_STATE_DELETE_CONFIG",
                 key: "FW_NODE_WS_STATE_DELETE_KEY",
                 unavailable: "FW_NODE_WS_STATE_DELETE_UNAVAILABLE",
             },
@@ -132,12 +141,12 @@ pub fn definition(verb: Verb) -> NodeDefinition {
         dsl_flags.push(flag("--value", "value", value_help, "json", true));
         fields.push(field("value", "Value", value_help));
     }
-    dsl_flags.push(flag("--room", "room", "The room; default: the room of the trigger.room that started the run.", "text", false));
+    dsl_flags.push(flag("--room", "room", "The exact room; default: the room of the trigger.room that started the run.", "text", false));
     dsl_flags.push(DslFlag {
         kind: DslFlagKind::Bool,
         ..flag("--batch", "batch", "Let the room's 33 ms tick send the state, at most once a tick — for 10+ changes a second.", "", false)
     });
-    fields.push(field("room", "Room", "The room; empty: the room of the trigger.room that started the run."));
+    fields.push(field("room", "Room", "The exact room; empty: the room of the trigger.room that started the run."));
     fields.push(NodeFieldDef {
         field_type: NodeFieldType::Checkbox,
         ..field("batch", "Batch", "Send the state on the room's 33 ms tick instead of at once.")
@@ -170,9 +179,10 @@ pub fn definition(verb: Verb) -> NodeDefinition {
         title: title.to_string(),
         description: format!(
             "{does} The room's shared state is what every client of the room mirrors. `--key` is a JSON pointer; a part from \
-             the payload is written with {{{{ }}}}, and a segment that resolves empty is refused. Without `--room` the room \
-             is the one of the `trigger.room` that started the run. Clients get the full state at once, or with `--batch` \
-             on the room's 33 ms tick. Adds `state: {{ key, room }}` and keeps the rest of the payload. Sending an event \
+             the payload is written with {{{{ }}}}, and a segment that resolves empty is refused. `--room` is an exact room \
+             (a room that is not open is `FW_NODE_WS_ROOM_NOT_OPEN`); without it the room is the one of the `trigger.room` \
+             that started the run. A change past the room's `--max-state` is refused. Clients get the full state at once, \
+             or with `--batch` on the room's 33 ms tick. Adds `state: {{ key, room }}` and keeps the rest of the payload. Sending an event \
              without changing state is `ws.message.send`."
         ),
         input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `state` is added." }),
@@ -272,22 +282,25 @@ impl NodeHandler for Node {
     }
 
     async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
+        let codes = self.verb.codes();
         let room = room_of(&self.room, &input.metadata);
         if room.is_empty() {
-            return Err(PipelineError::new(
-                self.verb.codes().room,
-                "no room: give --room, or start the run from trigger.room",
-            ));
+            return Err(PipelineError::new(codes.room, "no room: give --room, or start the run from trigger.room"));
         }
-        // A room nobody has joined holds no state to change.
-        if let Some(handle) = self.hub.get_room(&room_key(&input.metadata, &room)) {
-            let (op, path, value) = (self.verb.op(), self.key.clone(), self.value.clone());
-            handle.send_cmd(if self.batch {
-                RoomCmd::PatchStateSilent { op, path, value }
-            } else {
-                RoomCmd::PatchState { op, path, value }
-            });
+        if !matches!(RoomPattern::parse(&room), Ok(RoomPattern::Exact(_))) {
+            return Err(PipelineError::new(codes.room, format!("--room '{room}': room state is changed in one exact room")));
         }
+        let (owner, project) = project_of(&input.metadata);
+        let handle = self
+            .hub
+            .room(owner, project, &room)
+            .ok_or_else(|| PipelineError::new(ROOM_NOT_OPEN_CODE, format!("room '{room}' is not open")))?;
+        handle.apply(self.verb.op(), &self.key, self.value.clone(), self.batch).map_err(|full| {
+            PipelineError::new(
+                codes.full,
+                format!("room '{room}': the state would be {} bytes, past its --max-state of {}", full.would_be, full.limit),
+            )
+        })?;
         Ok(answer(
             &input.payload,
             json!({ "state": { "key": self.key, "room": room } }),

@@ -1,75 +1,36 @@
-//! `trigger.room` — trigger a pipeline when a WebSocket event arrives.
+//! `trigger.room` — declare a room and run a pipeline on its events
+//! (`docs/contracts/rooms.md`).
 //!
-//! This node is a **routing declaration**, not an active processor.  At
-//! runtime the WS route handler scans all active pipelines for their
-//! [`WsTriggerSpec`](crate::platform::services::WsTriggerSpec) and fires
-//! matching ones when a client sends an event.  The node answers one key,
-//! `room`, holding the event's envelope (`node-conventions.md` §6) — the same
-//! value `$trigger` holds for the run.
+//! This node is a **declaration**, not an active processor. An exact
+//! `--room lobby` is a fixed room: it exists while this trigger is active. A
+//! pattern (`match-:id`, `zone-*`) declares opened rooms, which exist only
+//! from `ws.room.open` until `ws.room.close` or their `--idle`. `--room` is
+//! required and `*` alone is not a room. The node answers one key, `room`,
+//! holding the event's envelope (`node-conventions.md` §6) — the same value
+//! `$trigger` holds for the run.
 //!
-//! # Config flags
+//! # The join rule
 //!
-//! | Flag | Type | Default | Description |
-//! |---|---|---|---|
-//! | `--room` | string | `""` | Room id pattern to match; empty = any room |
-//! | `--event` | string | `""` | Event name pattern to match; empty = any event |
-//! | `--auth` | `none\|jwt\|hmac\|api_key` | `none` | How the connection is guarded |
-//! | `--credential` | string | | The credential that verifies `--auth` |
-//! | `--role` | string, repeated | | A role allowed in |
+//! `--auth` / `--credential` / `--role` are the room's join rule, read as on
+//! `trigger.webhook` and checked once, when the socket connects; every active
+//! `trigger.room` that can match the same room declares the same rule, or
+//! activation refuses. A refused visitor is closed with `4401`, a room that
+//! is not open with `4404`, a full one with `4429`, an expired login with
+//! `4408`.
 //!
 //! # The answer: `room: { … }`
 //!
-//! The WS route handler builds the envelope before execution:
-//!
 //! | Field | Type | Description |
 //! |---|---|---|
-//! | `room_id` | string | The room id from the WS URL (`/ws/{owner}/{project}/rooms/{room_id}`) |
-//! | `session_id` | string | Unique identifier for the connected client session |
-//! | `event` | string | The event name sent by the client |
+//! | `room_id` | string | The room from the WS URL (`/ws/{owner}/{project}/rooms/{room}`) |
+//! | `session_id` | string | The connected client session |
+//! | `event` | string | The event name sent by the client, or `$connect` / `$disconnect` |
 //! | `payload` | object | The event body sent by the client |
-//! | `auth` | object | Verified claims, when `--auth jwt` admitted the connection |
+//! | `auth` | object or null | What the join rule proved at connect (or `{ sub }` from a ticket) |
 //!
 //! Without `--room`, the room nodes downstream (`ws.state.*`,
 //! `ws.message.send`) act on `$trigger.room_id`, and `ws.message.send
-//! --recipient session|others` targets `$trigger.session_id`; everything else
-//! reads these fields through `{{ input.room.… }}` or `{{ $trigger.… }}`.
-//!
-//! # Matching rules
-//!
-//! - `--room ""` (default) matches **any** room id.
-//! - `--room lobby` matches only clients connected to the `lobby` room.
-//! - `--event ""` (default) matches **any** event sent by the client.
-//! - `--event move` matches only `{ "event": "move" }` messages.
-//!
-//! Matching is exact string equality (no wildcards or regex).
-//!
-//! # Example pipelines
-//!
-//! **Match all events in any room:**
-//! ```text
-//! | trigger.room
-//! | ws.message.send --event echo --recipient session --body "{{ input.room.payload }}"
-//! ```
-//!
-//! **Multiplayer 3D position update (batched at 30 fps):**
-//! ```text
-//! | trigger.room --event move
-//! | ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}" --batch
-//! ```
-//!
-//! **Chat message in a specific room:**
-//! ```text
-//! | trigger.room --room lobby --event chat
-//! | ws.message.send --event message --body "{{ input.room.payload }}"
-//! ```
-//!
-//! **Classroom action (any room, specific event):**
-//! ```text
-//! | trigger.room --event classroom_action
-//! | javascript.script.run -- "/* validate role, build response */"
-//! | ws.state.update --key /classroom --value "{{ $trigger.payload }}"
-//! | ws.message.send --event classroom_updated --body "{{ $trigger.payload }}"
-//! ```
+//! --recipient session|others` targets `$trigger.session_id`.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -93,15 +54,19 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "WebSocket Trigger".to_string(),
-        description: "Runs when a browser connected to this project's WebSocket sends an event. It is the server half of a chat, a live \
-            board, a multiplayer scene. `--room` scopes it to one room (empty = any), `--event` to one event name (empty = any); the \
-            same `--auth` / `--credential` / `--role` flags as `trigger.webhook` guard the connection. Answers one key, `room`: \
-            `{ room_id, session_id, event, payload, auth? }` — what the client sent is `input.room.payload` (`$trigger.payload`). Answer with `ws.message.send` (to the room or one session) or \
-            `ws.state.put` / `ws.state.update` / `ws.state.delete` (shared state every client mirrors); a `web.response.send` here answers nobody. The server raises \
-            `$connect` and `$disconnect` (payload `{ reason }`) on each connection's ordered queue — only `--event $connect` / \
-            `--event $disconnect` receive them, and clients cannot send `$` events. The client is a plain `WebSocket` to \
-            `/ws/{owner}/{project}/rooms/{room}` receiving `joined`, `state_patch`, `event` and `resync` \
-            (help topic `pipeline/examples/realtime-game`)."
+        description: "Declares a room and runs when a client joined to it sends an event — the server half of a chat, a live board, \
+            a match. `--room lobby` (an exact name) is a fixed room, there while this trigger is active; `--room \"match-:id\"` or \
+            `\"zone-*\"` (a pattern) declares opened rooms, which exist only after `ws.room.open` and until `ws.room.close` or their \
+            `--idle`; joining one that is not open closes with 4404. `--room` is required and `*` alone is not a room. `--event` \
+            picks one event name (empty = any client event). `--auth` / `--credential` / `--role` are the room's join rule, read \
+            as on `trigger.webhook` and checked once, at connect (refused: 4401); every active trigger.room that can match the same \
+            room must declare the same rule, or activation refuses. Answers one key, `room`: `{ room_id, session_id, event, payload, \
+            auth }` — `auth` is what the rule proved at connect (or `{ sub }` from a ticket). Answer with `ws.message.send` or \
+            `ws.state.put` / `ws.state.update` / `ws.state.delete`; a `web.response.send` here answers nobody. The server raises \
+            `$connect` and `$disconnect` (payload `{ reason }`: left, dropped, closed, room_closed, expired, flood) on each \
+            connection's ordered queue — only `--event $connect` / `--event $disconnect` receive them, and clients cannot send `$` \
+            events. The client is a plain `WebSocket` to `/ws/{owner}/{project}/rooms/{room}` (`?ticket=` for a private room) \
+            receiving `joined`, `state_patch`, `event` and `resync` (help topic `pipeline/examples/realtime-game`)."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -121,6 +86,9 @@ pub fn definition() -> NodeDefinition {
                 "payload": {
                     "type": "object",
                     "description": "Event body sent by the client."
+                },
+                "auth": {
+                    "description": "What the join rule proved at connect, or { sub } from a ticket; null when nothing was proved."
                 }
             }
         }),
@@ -148,7 +116,7 @@ pub fn definition() -> NodeDefinition {
             "properties": {
                 "room": {
                     "type": "string",
-                    "description": "Room id or pattern to match (e.g. lobby, match-*, thread-:id). Required; only rooms declared by trigger.room can be joined."
+                    "description": "A fixed room (lobby) or a pattern of opened rooms (match-:id, zone-*). Required; * alone is not a room."
                 },
                 "event": {
                     "type": "string",
@@ -174,7 +142,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--room".to_string(),
                 config_key: "room".to_string(),
-                description: "Room name or pattern this trigger registers (e.g. lobby, match-*, thread-:id). Required."
+                description: "A fixed room (lobby) or a pattern of opened rooms (match-:id, zone-*). Required; * alone is not a room."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
@@ -191,13 +159,13 @@ pub fn definition() -> NodeDefinition {
                 value: "text".to_string(),
                 ..Default::default()
             },
-        ].into_iter().chain(auth_flags("the connection")).collect(),
+        ].into_iter().chain(auth_flags("joining the room")).collect(),
         fields: [
             NodeFieldDef {
                 name: "room".to_string(),
                 label: "Room".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Room name or pattern to listen on (required).".to_string()),
+                help: Some("A fixed room (lobby) or a pattern of opened rooms (match-:id, zone-*). Required.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -207,7 +175,7 @@ pub fn definition() -> NodeDefinition {
                 help: Some("WebSocket event name to listen for.".to_string()),
                 ..Default::default()
             },
-        ].into_iter().chain(auth_fields("On failure the event is silently dropped.")).collect(),
+        ].into_iter().chain(auth_fields("The room's join rule, checked once at connect; a refused visitor is closed with 4401.")).collect(),
         layout: vec![
             LayoutItem::Field("room".to_string()),
             LayoutItem::Field("event".to_string()),
@@ -217,7 +185,7 @@ pub fn definition() -> NodeDefinition {
         ai_tool: Default::default(),
         examples: vec![
             crate::pipeline::model::NodeExample::dsl("Chat message in", r#"trigger.room --room lobby --event chat.send"#)
-                .output(serde_json::json!({ "room": { "room_id": "lobby", "session_id": "s_8f2", "event": "chat.send", "payload": { "text": "hello" } } }))
+                .output(serde_json::json!({ "room": { "room_id": "lobby", "session_id": "s_8f2", "event": "chat.send", "payload": { "text": "hello" }, "auth": null } }))
                 .note("Then `| ws.message.send --event chat.message --body \"{{ { from: input.room.session_id, text: input.room.payload.text } }}\"`."),
         ],
         ..Default::default()
@@ -230,9 +198,7 @@ pub fn definition() -> NodeDefinition {
 /// they have no effect during node execution.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// Room id pattern to match.  Empty string (default) matches any room.
-    ///
-    /// Matched against the `room_id` segment of the WS URL.
+    /// A fixed room's name, or a pattern of opened rooms.
     #[serde(default)]
     pub room: String,
 

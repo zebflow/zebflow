@@ -1,133 +1,118 @@
-//! WebSocket engine — real-time room management, state sync, and event broadcast.
-//!
-//! # Module structure
+//! WebSocket rooms: the registry of every project's rooms
+//! (`docs/contracts/rooms.md`).
 //!
 //! | Module | Responsibility |
 //! |---|---|
-//! | [`room`] | Room actor: shared state, broadcast channel, tick-based flush |
-//! | [`WsHub`] | Central registry of all active rooms (held in `PlatformService`) |
+//! | [`pattern`] | room names and the patterns `trigger.room --room` declares |
+//! | [`room`] | one room: settings, sessions, state, broadcast, counters |
+//! | [`ticket`] | signed, single-use passes into one room |
+//! | [`WsHub`] | which rooms exist, and every way one opens, is joined or closes |
 //!
-//! # Room key format
+//! **Every room exists because the server made it.** A fixed room exists
+//! while an active `trigger.room` names it exactly ([`WsHub::declare`]); an
+//! opened room exists from [`WsHub::open`] until [`WsHub::close`], or until
+//! it has sat empty for its `--idle`. Joining a room that does not exist is
+//! refused; no join creates one.
 //!
-//! Rooms are keyed by `"{owner}/{project}/{room_id}"`, e.g.
-//! `"alice/myapp/lobby"` or `"alice/myapp/places/hall"`.
-//! The `room_id` portion is taken from the WS URL and may contain slashes.
-//!
-//! # Quick start for pipeline authors
-//!
-//! ```text
-//! trigger.room    --event move
-//! ws.state.update --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}" --batch
-//! ```
-//!
-//! This accumulates positional updates and broadcasts them at ≈30 fps via
-//! the room tick loop — see [`room::RoomCmd::PatchStateSilent`] for details.
+//! Rooms are keyed `"{owner}/{project}/{room}"`.
 
+pub mod pattern;
 pub mod room;
+pub mod ticket;
 
-pub use room::{EmitTarget, RoomBroadcast, RoomCmd, RoomHandle, SessionGuard, StateOp};
+pub use pattern::RoomPattern;
+pub use room::{
+    Counter, EmitTarget, KICK_CLOSED, KICK_ROOM_CLOSED, Kick, RoomBroadcast, RoomHandle, RoomKind, RoomSettings,
+    StateFull, StateOp,
+};
+pub use ticket::{Ticket, TicketPass};
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
-/// Central WebSocket hub — owns the registry of all active rooms.
-///
-/// Rooms are created lazily by the first [`WsHub::join_room`] and disposed by
-/// the [`WsHub::leave_room`] that removes their last session. Both hold the
-/// registry lock, so a join can never pick up a room that is being disposed.  This struct is cheap to clone (all state is behind
-/// an `Arc`).
-///
-/// Held as `pub ws_hub: Arc<WsHub>` in [`crate::platform::services::PlatformService`].
-#[derive(Clone)]
-pub struct WsHub {
-    rooms: Arc<Mutex<HashMap<String, Arc<RoomHandle>>>>,
+use serde_json::{Value, json};
+use tokio::sync::mpsc;
+
+/// How often empty opened rooms are checked against their `--idle`.
+pub const IDLE_SWEEP: Duration = Duration::from_secs(1);
+
+/// Why the hub refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HubRefusal {
+    /// An exact room that is not open.
+    NotOpen(String),
+    /// The room is at its `--max-sessions`.
+    Full(String),
+    /// `open`: no active `trigger.room` pattern matches the name.
+    Undeclared(String),
+    /// `open`: the name is a fixed room's.
+    Fixed(String),
+    /// `open`: a room of that name is open.
+    Taken(String),
+    /// A name or a selection that does not read.
+    BadName(String),
+    /// The ticket was spent between reading and joining.
+    TicketSpent,
 }
 
-impl WsHub {
-    /// Create an empty hub.
-    pub fn new() -> Self {
-        Self {
-            rooms: Arc::new(Mutex::new(HashMap::new())),
+impl std::fmt::Display for HubRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotOpen(room) => write!(f, "room '{room}' is not open"),
+            Self::Full(room) => write!(f, "room '{room}' is full (--max-sessions)"),
+            Self::Undeclared(room) => {
+                write!(f, "no active trigger.room pattern matches '{room}': declare one (e.g. --room \"match-:id\") first")
+            }
+            Self::Fixed(room) => write!(f, "'{room}' is a fixed room (an exact trigger.room --room); it is always open"),
+            Self::Taken(room) => write!(f, "room '{room}' is already open"),
+            Self::BadName(why) => f.write_str(why),
+            Self::TicketSpent => f.write_str("the ticket was already used"),
         }
     }
+}
 
-    /// Join `room_key` as a new session: return the room (spawned if absent)
-    /// and the session's guard. Hand the guard back to [`WsHub::leave_room`].
-    pub fn join_room(&self, room_key: &str) -> (Arc<RoomHandle>, SessionGuard) {
-        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-        let room = rooms
-            .entry(room_key.to_string())
-            .or_insert_with(RoomHandle::spawn)
-            .clone();
-        let guard = room.join_session();
-        (room, guard)
-    }
+struct Inner {
+    /// Lock order: `declared` before `rooms`.
+    declared: Mutex<HashMap<String, Vec<(RoomPattern, String)>>>,
+    rooms: Mutex<HashMap<String, Arc<RoomHandle>>>,
+    tickets: ticket::TicketBook,
+    sweeping: AtomicBool,
+}
 
-    /// Return an existing room without creating one.
-    ///
-    /// Called by `ws.state.*` and `ws.message.send` when they need a room
-    /// that must have been created by a prior WS connection.  Returns `None`
-    /// if no client has ever joined the room.
-    pub fn get_room(&self, room_key: &str) -> Option<Arc<RoomHandle>> {
-        self.rooms
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(room_key)
-            .cloned()
-    }
+/// Every project's rooms. Cheap to clone; held as `PlatformService::ws_hub`.
+#[derive(Clone)]
+pub struct WsHub {
+    inner: Arc<Inner>,
+}
 
-    /// List all room keys currently tracked by the hub.
-    pub fn list_rooms(&self) -> Vec<String> {
-        self.rooms
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .cloned()
-            .collect()
-    }
+/// One session's seat; leaving is dropping it.
+pub struct SessionGuard {
+    hub: Weak<Inner>,
+    key: String,
+    session_id: String,
+    instance: String,
+}
 
-    /// Leave a room: drop the session's guard and, when it was the last
-    /// session, stop the room actor and forget its state.
-    ///
-    /// The guard is dropped *before* the count is read — reading it while the
-    /// leaving session still held its guard is why rooms used to live forever.
-    pub fn leave_room(&self, room_key: &str, guard: SessionGuard) {
-        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-        drop(guard);
-        if rooms.get(room_key).map(|room| room.session_count() == 0).unwrap_or(false) {
-            if let Some(room) = rooms.remove(room_key) {
-                room.send_cmd(RoomCmd::Shutdown);
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        if let Some(inner) = self.hub.upgrade() {
+            let rooms = inner.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(room) = rooms.get(&self.key).filter(|r| r.instance() == self.instance) {
+                room.remove_member(&self.session_id);
             }
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn project_key(owner: &str, project: &str) -> String {
+    format!("{owner}/{project}")
+}
 
-    #[tokio::test]
-    async fn the_last_session_leaving_disposes_the_room() {
-        let hub = WsHub::new();
-        let (_room, a) = hub.join_room("o/p/lobby");
-        let (_room, b) = hub.join_room("o/p/lobby");
-        hub.leave_room("o/p/lobby", a);
-        assert_eq!(hub.list_rooms(), vec!["o/p/lobby".to_string()], "one session is still there");
-        hub.leave_room("o/p/lobby", b);
-        assert!(hub.list_rooms().is_empty(), "the last leave disposes the room");
-    }
-
-    #[tokio::test]
-    async fn a_room_rejoined_after_disposal_starts_empty() {
-        let hub = WsHub::new();
-        let (room, a) = hub.join_room("o/p/lobby");
-        room.send_cmd(RoomCmd::PatchState { op: StateOp::Set, path: "/players/x".into(), value: Some(serde_json::json!({ "n": 1 })) });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert_eq!(room.get_state()["players"]["x"]["n"], 1);
-        hub.leave_room("o/p/lobby", a);
-        let (fresh, _b) = hub.join_room("o/p/lobby");
-        assert_eq!(fresh.get_state(), serde_json::json!({}), "no ghost state survives disposal");
-    }
+/// The hub's key for a room of a project.
+pub fn room_key(owner: &str, project: &str, room: &str) -> String {
+    format!("{owner}/{project}/{room}")
 }
 
 impl Default for WsHub {
@@ -135,3 +120,249 @@ impl Default for WsHub {
         Self::new()
     }
 }
+
+impl WsHub {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                declared: Mutex::new(HashMap::new()),
+                rooms: Mutex::new(HashMap::new()),
+                tickets: ticket::TicketBook::default(),
+                sweeping: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn rooms(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<RoomHandle>>> {
+        self.inner.rooms.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The rooms a project's active `trigger.room` nodes declare, as
+    /// `(--room, pipeline)`. A fixed room appears with its trigger and closes
+    /// (`4410`) when no active trigger names it any more.
+    pub fn declare(&self, owner: &str, project: &str, rooms: &[(String, String)]) {
+        let parsed: Vec<(RoomPattern, String)> = rooms
+            .iter()
+            .filter_map(|(room, pipeline)| RoomPattern::parse(room).ok().map(|p| (p, pipeline.clone())))
+            .collect();
+        let mut declared = self.inner.declared.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registry = self.rooms();
+        let fixed: HashMap<&str, &str> = parsed
+            .iter()
+            .filter_map(|(p, pipeline)| match p {
+                RoomPattern::Exact(name) => Some((name.as_str(), pipeline.as_str())),
+                _ => None,
+            })
+            .collect();
+        let prefix = format!("{}/", project_key(owner, project));
+        registry.retain(|key, room| {
+            let gone = key.starts_with(&prefix) && room.kind() == RoomKind::Fixed && !fixed.contains_key(room.name());
+            if gone {
+                room.kick(&EmitTarget::All, KICK_ROOM_CLOSED);
+            }
+            !gone
+        });
+        for (name, pipeline) in &fixed {
+            registry
+                .entry(room_key(owner, project, name))
+                .or_insert_with(|| RoomHandle::new(name, RoomKind::Fixed, RoomSettings::fixed(pipeline)));
+        }
+        drop(registry);
+        if parsed.is_empty() {
+            declared.remove(&project_key(owner, project));
+        } else {
+            declared.insert(project_key(owner, project), parsed);
+        }
+    }
+
+    /// Whether `name` is a fixed room, a name an active pattern declares, or neither.
+    pub fn declares(&self, owner: &str, project: &str, name: &str) -> Option<RoomKind> {
+        let declared = self.inner.declared.lock().unwrap_or_else(|e| e.into_inner());
+        let patterns = declared.get(&project_key(owner, project))?;
+        if patterns.iter().any(|(p, _)| !p.is_pattern() && p.matches(name)) {
+            return Some(RoomKind::Fixed);
+        }
+        patterns.iter().any(|(p, _)| p.is_pattern() && p.matches(name)).then_some(RoomKind::Opened)
+    }
+
+    /// Open the room `name` under an active pattern.
+    pub fn open(&self, owner: &str, project: &str, name: &str, settings: RoomSettings) -> Result<Arc<RoomHandle>, HubRefusal> {
+        if !pattern::valid_name(name) {
+            return Err(HubRefusal::BadName(pattern::name_problem(name)));
+        }
+        match self.declares(owner, project, name) {
+            Some(RoomKind::Fixed) => return Err(HubRefusal::Fixed(name.to_string())),
+            None => return Err(HubRefusal::Undeclared(name.to_string())),
+            Some(RoomKind::Opened) => {}
+        }
+        let room = {
+            let mut rooms = self.rooms();
+            let key = room_key(owner, project, name);
+            if rooms.contains_key(&key) {
+                return Err(HubRefusal::Taken(name.to_string()));
+            }
+            let room = RoomHandle::new(name, RoomKind::Opened, settings);
+            rooms.insert(key, room.clone());
+            room
+        };
+        self.ensure_sweeper();
+        Ok(room)
+    }
+
+    /// The open room `name`, exactly.
+    pub fn room(&self, owner: &str, project: &str, name: &str) -> Option<Arc<RoomHandle>> {
+        self.rooms().get(&room_key(owner, project, name)).cloned()
+    }
+
+    /// The rooms a selection reaches: an exact name (which must be open), a
+    /// pattern or `*` (every open room it matches, maybe none).
+    pub fn select(&self, owner: &str, project: &str, selection: &str) -> Result<Vec<Arc<RoomHandle>>, HubRefusal> {
+        let selection = selection.trim();
+        if selection != "*" {
+            match RoomPattern::parse(selection).map_err(HubRefusal::BadName)? {
+                RoomPattern::Exact(name) => {
+                    return self.room(owner, project, &name).map(|r| vec![r]).ok_or(HubRefusal::NotOpen(name));
+                }
+                RoomPattern::Wild { .. } => {}
+            }
+        }
+        let prefix = format!("{}/", project_key(owner, project));
+        let mut found: Vec<Arc<RoomHandle>> = self
+            .rooms()
+            .iter()
+            .filter(|(key, room)| key.starts_with(&prefix) && pattern::selects(selection, room.name()))
+            .map(|(_, room)| room.clone())
+            .collect();
+        found.sort_by(|a, b| a.name().cmp(b.name()));
+        Ok(found)
+    }
+
+    /// Close the rooms a selection reaches: every session gets `4410`, the
+    /// state is dropped. A fixed room comes back at once, empty. Answers each
+    /// room closed with the sessions it held.
+    pub fn close(&self, owner: &str, project: &str, selection: &str) -> Result<Vec<(String, usize)>, HubRefusal> {
+        let selected = self.select(owner, project, selection)?;
+        let mut rooms = self.rooms();
+        let mut closed = Vec::new();
+        for room in selected {
+            let key = room_key(owner, project, room.name());
+            if !rooms.get(&key).is_some_and(|r| Arc::ptr_eq(r, &room)) {
+                continue;
+            }
+            let sessions = room.kick(&EmitTarget::All, KICK_ROOM_CLOSED);
+            if room.kind() == RoomKind::Fixed {
+                rooms.insert(key, RoomHandle::new(room.name(), RoomKind::Fixed, room.settings().clone()));
+            } else {
+                rooms.remove(&key);
+            }
+            closed.push((room.name().to_string(), sessions));
+        }
+        Ok(closed)
+    }
+
+    /// Close the sessions `which` selects (a session id or a user) in the
+    /// rooms a selection reaches, with `4409`. Answers (rooms, sessions).
+    pub fn close_sessions(&self, owner: &str, project: &str, selection: &str, which: &EmitTarget) -> Result<(usize, usize), HubRefusal> {
+        let rooms = self.select(owner, project, selection)?;
+        let sessions = rooms.iter().map(|room| room.kick(which, KICK_CLOSED)).sum();
+        Ok((rooms.len(), sessions))
+    }
+
+    /// `ws.room.list`: the open rooms a selection reaches, and the totals.
+    pub fn list(&self, owner: &str, project: &str, selection: &str, members: bool) -> Result<Value, HubRefusal> {
+        let selection = if selection.trim().is_empty() { "*" } else { selection };
+        let rooms = match self.select(owner, project, selection) {
+            Err(HubRefusal::NotOpen(_)) => Vec::new(),
+            other => other?,
+        };
+        let sessions: usize = rooms.iter().map(|r| r.session_count()).sum();
+        let entries: Vec<Value> = rooms.iter().map(|r| r.describe(members)).collect();
+        Ok(json!({ "rooms": entries, "total": { "rooms": rooms.len(), "sessions": sessions } }))
+    }
+
+    /// A ticket for `user` into the open room `name`; refused for a full room.
+    pub fn ticket(&self, owner: &str, project: &str, name: &str, user: &str, ttl: Duration) -> Result<Ticket, HubRefusal> {
+        let room = self.room(owner, project, name).ok_or_else(|| HubRefusal::NotOpen(name.to_string()))?;
+        if !room.has_seat() {
+            return Err(HubRefusal::Full(name.to_string()));
+        }
+        Ok(self.inner.tickets.issue(&room_key(owner, project, name), room.instance(), user, ttl))
+    }
+
+    /// The pass a ticket gives into the open room `name`, unspent.
+    pub fn read_ticket(&self, owner: &str, project: &str, name: &str, token: &str) -> Result<TicketPass, String> {
+        let room = self.room(owner, project, name).ok_or_else(|| format!("room '{name}' is not open"))?;
+        self.inner.tickets.read(token, &room_key(owner, project, name), room.instance())
+    }
+
+    /// Seat one session in the open room `name` as `user`, spending `pass`.
+    /// Its socket learns of a server close on the returned receiver.
+    pub fn join(
+        &self,
+        owner: &str,
+        project: &str,
+        name: &str,
+        session_id: &str,
+        user: Option<String>,
+        pass: Option<&TicketPass>,
+    ) -> Result<(Arc<RoomHandle>, SessionGuard, mpsc::UnboundedReceiver<Kick>), HubRefusal> {
+        let key = room_key(owner, project, name);
+        let rooms = self.rooms();
+        let room = rooms.get(&key).cloned().ok_or_else(|| HubRefusal::NotOpen(name.to_string()))?;
+        if !room.has_seat() {
+            return Err(HubRefusal::Full(name.to_string()));
+        }
+        if let Some(pass) = pass {
+            if pass.instance != room.instance() {
+                return Err(HubRefusal::NotOpen(name.to_string()));
+            }
+            if !self.inner.tickets.spend(pass) {
+                return Err(HubRefusal::TicketSpent);
+            }
+        }
+        let (kick_tx, kick_rx) = mpsc::unbounded_channel();
+        room.add_member(session_id, user, kick_tx);
+        drop(rooms);
+        let guard = SessionGuard {
+            hub: Arc::downgrade(&self.inner),
+            key,
+            session_id: session_id.to_string(),
+            instance: room.instance().to_string(),
+        };
+        Ok((room, guard, kick_rx))
+    }
+
+    /// Close every opened room that has sat empty past its `--idle` at `now`.
+    pub fn sweep_idle(&self, now: Instant) -> usize {
+        let mut rooms = self.rooms();
+        let before = rooms.len();
+        rooms.retain(|_, room| !room.idle_at(now));
+        before - rooms.len()
+    }
+
+    fn ensure_sweeper(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        if self.inner.sweeping.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let weak = Arc::downgrade(&self.inner);
+        runtime.spawn(async move {
+            let mut every = tokio::time::interval(IDLE_SWEEP);
+            loop {
+                every.tick().await;
+                let Some(inner) = weak.upgrade() else { break };
+                WsHub { inner }.sweep_idle(Instant::now());
+            }
+        });
+    }
+
+    /// Every room key the hub holds.
+    pub fn list_rooms(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.rooms().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -3,24 +3,28 @@
 //!
 //! ```text
 //! ws.message.send (--room ROOM | --connection CONN) --body VALUE [--event NAME]
-//!                 [--recipient all|session|others]
+//!                 [--recipient all|session|others|user:<sub>]
 //! ```
 //!
 //! - **`--room`** reaches the sockets joined to a room of this project as
 //!   `{ "type": "event", "event": <--event>, "payload": <--body> }`. Without
 //!   `--room` or `--connection` the room is the one of the `trigger.room` that
-//!   started the run. `--recipient` (`all` default, `session`, `others`) is
+//!   started the run. An exact room that is not open is
+//!   `FW_NODE_WS_ROOM_NOT_OPEN`; a pattern (`zone-*`) reaches every open room
+//!   it matches and answers how many (`rooms: 0` is not an error).
+//!   `--recipient` (`all` default, `session`, `others`, `user:<sub>`) is
 //!   enforced by the server; `session` and `others` need the triggering
-//!   session, so they work only under `trigger.room`. A room nobody has joined
-//!   is not an error: the answer says `sent: false`.
+//!   session, so they work only under `trigger.room`; `user:<sub>` reaches
+//!   every session of that identity.
 //! - **`--connection`** sends on the socket a `trigger.socket` node holds open:
 //!   its node id (`n0`), or `pipeline/path:node_id` for another pipeline's. A
 //!   text body goes as is, anything else as JSON text. A client socket has no
 //!   event name or recipients, so `--event` and `--recipient` are refused.
 //!
 //! Both `--room` and `--connection` is refused. The answer is
-//! `message: { sent, room, event }` for a room and
-//! `message: { sent, connection }` for a connection; the payload is kept.
+//! `message: { sent, room, event }` for a room, `message: { sent, rooms,
+//! event }` for a pattern and `message: { sent, connection }` for a
+//! connection; the payload is kept.
 
 use std::sync::Arc;
 
@@ -28,11 +32,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, answer, field, flag, room_key, room_of, text_of, trigger_field};
-use crate::infra::transport::ws::{EmitTarget, RoomCmd, WsHub};
+use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, answer, field, flag, project_of, refused, room_of, text_of, trigger_field};
+use crate::infra::transport::ws::{EmitTarget, RoomPattern, WsHub};
 use crate::infra::ws_client::WsClientManager;
-use crate::pipeline::model::{DslFlag, LayoutItem, NodeCapability, NodeExample, NodeFieldType, SelectOptionDef};
-use crate::pipeline::nodes::shared::limits::choice;
+use crate::pipeline::model::{LayoutItem, NodeCapability, NodeExample};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -52,7 +55,7 @@ pub const CONNECTION_CODE: &str = "FW_NODE_WS_MESSAGE_SEND_CONNECTION";
 /// This engine has no room hub or no client socket manager.
 pub const UNAVAILABLE_CODE: &str = "FW_NODE_WS_MESSAGE_SEND_UNAVAILABLE";
 
-const RECIPIENTS: &[&str] = &["all", "session", "others"];
+const RECIPIENTS: &str = "all, session, others or user:<sub>";
 const DEFAULT_EVENT: &str = "event";
 
 pub fn definition() -> NodeDefinition {
@@ -63,52 +66,45 @@ pub fn definition() -> NodeDefinition {
         title: "WS Message Send".to_string(),
         description: "Sends `--body` over a WebSocket. `--room` reaches the sockets joined to a room of this project as an \
             `event` message named `--event` (default `event`); without `--room` the room is the one of the `trigger.room` \
-            that started the run. `--recipient` all (default), session (the triggering socket only) or others (every socket \
-            but that one). `--connection` instead sends on the socket a `trigger.socket` node holds open (its node id, or \
+            that started the run. An exact room that is not open is `FW_NODE_WS_ROOM_NOT_OPEN`; a pattern (`zone-*`) \
+            reaches every open room it matches and answers how many. `--recipient` all (default), session (the triggering \
+            socket only), others (every socket but that one) or user:<sub> (every session of that identity). \
+            `--connection` instead sends on the socket a `trigger.socket` node holds open (its node id, or \
             `pipeline/path:node_id`); it takes no `--event` or `--recipient`. Give one of `--room` and `--connection`, not \
-            both. Adds `message: { sent, room, event }` (or `{ sent, connection }`) and keeps the rest of the payload; \
-            `sent` is false when nobody has joined the room. Does not change room state — that is `ws.state.*`."
+            both. Adds `message: { sent, room, event }` (a pattern: `{ sent, rooms, event }`; a socket: `{ sent, connection }`) \
+            and keeps the rest of the payload. Does not change room state — that is `ws.state.*`."
             .to_string(),
         input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `message` is added." }),
         output_schema: json!({ "type": "object", "properties": { "message": { "type": "object", "properties": {
             "sent": { "type": "boolean", "description": "Whether the message was handed to a room or a socket" },
-            "room": { "type": "string", "description": "The room, for a room send" },
+            "room": { "type": "string", "description": "The room, for a send to an exact room" },
+            "rooms": { "type": "integer", "description": "How many open rooms a pattern reached" },
             "event": { "type": "string", "description": "The event name, for a room send" },
             "connection": { "type": "string", "description": "The connection, for a client socket send" }
         } } } }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         dsl_flags: vec![
-            flag("--room", "room", "The room to send to; default: the room of the trigger.room that started the run.", "text", false),
+            flag("--room", "room", "The room to send to — an exact name, or a pattern reaching every open room it matches; default: the room of the trigger.room that started the run.", "text", false),
             flag("--connection", "connection", "The trigger.socket node whose open socket to send on: its id, or pipeline/path:node_id.", "text", false),
             flag("--body", "body", "What to send — a literal or {{ expr }}.", "json", true),
             flag("--event", "event", "The event name clients receive (rooms only). Default: event.", "text", false),
-            DslFlag {
-                choices: RECIPIENTS.iter().map(|w| w.to_string()).collect(),
-                ..flag(
-                    "--recipient",
-                    "recipient",
-                    "Rooms only: all (default), session (the triggering socket) or others (every socket but that one).",
-                    "",
-                    false,
-                )
-            },
+            flag(
+                "--recipient",
+                "recipient",
+                "Rooms only: all (default), session (the triggering socket), others (every socket but that one) or user:<sub> (every session of that identity).",
+                "text",
+                false,
+            ),
         ],
         fields: vec![
-            field("room", "Room", "The room to send to; empty: the room of the trigger.room that started the run."),
+            field("room", "Room", "An exact room or a pattern (zone-*); empty: the room of the trigger.room that started the run."),
             field("connection", "Connection", "Instead of a room: the trigger.socket node whose socket to send on."),
             field("body", "Body", "What to send — a literal or {{ expr }}."),
             field("event", "Event", "The event name clients receive (rooms only). Default: event."),
-            crate::pipeline::model::NodeFieldDef {
-                field_type: NodeFieldType::Select,
-                options: RECIPIENTS
-                    .iter()
-                    .map(|w| SelectOptionDef { value: w.to_string(), label: w.to_string() })
-                    .collect(),
-                // No default: the form must not write a recipient a
-                // `--connection` send would refuse; empty means all.
-                ..field("recipient", "Recipient", "Rooms only: all (empty), session (the triggering socket) or others.")
-            },
+            // No default: the form must not write a recipient a
+            // `--connection` send would refuse; empty means all.
+            field("recipient", "Recipient", "Rooms only: all (empty), session (the triggering socket), others, or user:<sub>."),
         ],
         layout: vec![
             LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("connection".to_string())] },
@@ -126,6 +122,16 @@ pub fn definition() -> NodeDefinition {
                 "Push from a schedule to a fixed room",
                 r#"ws.message.send --room dashboard --event stats.tick --body "{{ { online: input.online } }}""#,
             ),
+            NodeExample::dsl(
+                "Announce to every open zone",
+                r#"ws.message.send --room "zone-*" --event server.notice --body "{{ { text: 'restart in 5 minutes' } }}""#,
+            )
+            .output(json!({ "message": { "sent": true, "rooms": 3, "event": "server.notice" } })),
+            NodeExample::dsl(
+                "Notify one user on every device",
+                r#"ws.message.send --room notifications --recipient "user:{{ input.order.owner }}" --event order.shipped --body "{{ input.order }}""#,
+            )
+            .note("`notifications` is a fixed room (`trigger.room --room notifications`); every signed-in session of that identity receives it."),
             NodeExample::dsl(
                 "Subscribe after connecting",
                 r#"ws.message.send --connection n0 --body "{{ { op: 'subscribe', symbols: ['AUDUSD'] } }}""#,
@@ -161,13 +167,45 @@ enum Target {
         /// `--room`; empty means the trigger's room.
         room: String,
         event: String,
-        recipient: &'static str,
+        recipient: Recipient,
         hub: Arc<WsHub>,
     },
     Connection {
         connection: String,
         manager: Arc<WsClientManager>,
     },
+}
+
+/// `--recipient`, read.
+#[derive(Debug, Clone)]
+enum Recipient {
+    All,
+    Session,
+    Others,
+    User(String),
+}
+
+impl Recipient {
+    fn parse(text: &str) -> Result<Self, PipelineError> {
+        match text.trim() {
+            "" | "all" => Ok(Self::All),
+            "session" => Ok(Self::Session),
+            "others" => Ok(Self::Others),
+            other => match other.strip_prefix("user:").map(str::trim) {
+                Some(sub) if !sub.is_empty() => Ok(Self::User(sub.to_string())),
+                _ => Err(PipelineError::new(CONFIG_CODE, format!("--recipient '{other}' must be {RECIPIENTS}"))),
+            },
+        }
+    }
+
+    fn word(&self) -> String {
+        match self {
+            Self::All => "all".to_string(),
+            Self::Session => "session".to_string(),
+            Self::Others => "others".to_string(),
+            Self::User(sub) => format!("user:{sub}"),
+        }
+    }
 }
 
 pub struct Node {
@@ -191,7 +229,7 @@ impl Node {
             return Err(PipelineError::new(CONFIG_CODE, "give --room or --connection, not both"));
         }
         let target = if connection.is_empty() {
-            let recipient = choice(&config.recipient, RECIPIENTS, "all", "--recipient", CONFIG_CODE)?;
+            let recipient = Recipient::parse(&config.recipient)?;
             let hub = hub.ok_or_else(|| PipelineError::new(UNAVAILABLE_CODE, "ws hub is not configured on this framework engine"))?;
             let event = if event.is_empty() { DEFAULT_EVENT.to_string() } else { event };
             Target::Room { room, event, recipient, hub }
@@ -234,31 +272,34 @@ impl NodeHandler for Node {
                     ));
                 }
                 let session = trigger_field(&input.metadata, "session_id");
-                let session = session.as_str();
-                let to = match *recipient {
-                    "all" => EmitTarget::All,
-                    other => {
-                        if session.is_empty() {
-                            return Err(PipelineError::new(
-                                SESSION_CODE,
-                                format!("--recipient {other} needs the triggering session; start the run from trigger.room"),
-                            ));
-                        }
-                        if other == "session" { EmitTarget::Session(session.to_string()) } else { EmitTarget::Others(session.to_string()) }
+                let to = match recipient {
+                    Recipient::All => EmitTarget::All,
+                    Recipient::User(sub) => EmitTarget::User(sub.clone()),
+                    other if session.is_empty() => {
+                        return Err(PipelineError::new(
+                            SESSION_CODE,
+                            format!("--recipient {} needs the triggering session; start the run from trigger.room", other.word()),
+                        ));
                     }
+                    Recipient::Session => EmitTarget::Session(session),
+                    Recipient::Others => EmitTarget::Others(session),
                 };
-                // A room nobody has joined has no sockets to reach.
-                let sent = match hub.get_room(&room_key(&input.metadata, &room)) {
-                    Some(handle) => {
-                        handle.send_cmd(RoomCmd::Emit { event: event.clone(), payload: self.body.clone(), to });
-                        true
-                    }
-                    None => false,
+                let (owner, project) = project_of(&input.metadata);
+                let pattern = room == "*" || RoomPattern::parse(&room).is_ok_and(|p| p.is_pattern());
+                let rooms = hub.select(owner, project, &room).map_err(|refusal| refused(refusal, CONFIG_CODE))?;
+                for handle in &rooms {
+                    handle.emit(event, self.body.clone(), to.clone());
+                }
+                let sent = !rooms.is_empty();
+                let answer = if pattern {
+                    json!({ "message": { "sent": sent, "rooms": rooms.len(), "event": event } })
+                } else {
+                    json!({ "message": { "sent": sent, "room": room, "event": event } })
                 };
-                Ok(answer(
+                Ok(super::answer(
                     &input.payload,
-                    json!({ "message": { "sent": sent, "room": room, "event": event } }),
-                    format!("node_kind={NODE_KIND} room={room} event={event} recipient={recipient} sent={sent}"),
+                    answer,
+                    format!("node_kind={NODE_KIND} room={room} event={event} recipient={} rooms={}", recipient.word(), rooms.len()),
                 ))
             }
             Target::Connection { connection, manager } => {

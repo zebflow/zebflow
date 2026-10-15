@@ -23,6 +23,7 @@ mod tests;
 
 use serde_json::Value;
 
+use crate::infra::transport::ws::HubRefusal;
 use crate::pipeline::PipelineError;
 use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::nodes::NodeExecutionOutput;
@@ -101,11 +102,25 @@ fn trigger_field(metadata: &Value, name: &str) -> String {
         .to_string()
 }
 
-/// The hub's key for a room of this run's project.
-fn room_key(metadata: &Value, room: &str) -> String {
+/// The run's project: `(owner, project)`.
+fn project_of(metadata: &Value) -> (&str, &str) {
     let owner = metadata.get("owner").and_then(Value::as_str).unwrap_or_default();
     let project = metadata.get("project").and_then(Value::as_str).unwrap_or_default();
-    format!("{owner}/{project}/{room}")
+    (owner, project)
+}
+
+/// An exact room that is not open (`rooms.md` § Sending), whichever room
+/// node met it.
+pub const ROOM_NOT_OPEN_CODE: &str = "FW_NODE_WS_ROOM_NOT_OPEN";
+
+/// A hub refusal as the node's error: a room not open is
+/// [`ROOM_NOT_OPEN_CODE`], anything else the node's `code`.
+fn refused(refusal: HubRefusal, code: &'static str) -> PipelineError {
+    let code = match refusal {
+        HubRefusal::NotOpen(_) => ROOM_NOT_OPEN_CODE,
+        _ => code,
+    };
+    PipelineError::new(code, refusal.to_string())
 }
 
 /// The node's answer under its noun, the rest of the payload kept.

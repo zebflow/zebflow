@@ -1,181 +1,68 @@
-//! Room actor — maintains shared state, broadcast channel, and tick loop.
+//! One room: its settings, its sessions, its shared state and its broadcast
+//! channel (`docs/contracts/rooms.md`).
 //!
-//! Each room runs a single Tokio task ([`run_room`]) that processes
-//! [`RoomCmd`] messages and drives a 33 ms tick loop for batched state
-//! broadcasts.  The actor is spawned via [`RoomHandle::spawn`] and accessed
-//! through the returned [`Arc<RoomHandle>`].
-//!
-//! # Architecture
-//!
-//! ```text
-//! Pipeline nodes / WS sessions
-//!         │
-//!         │  mpsc::UnboundedSender<RoomCmd>
-//!         ▼
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │  run_room  (Tokio task)                                     │
-//! │                                                             │
-//! │  PatchState      ──► mutate state ──► broadcast immediately │
-//! │  PatchStateSilent──► mutate state ──► set dirty flag        │
-//! │  Emit            ──► broadcast event immediately            │
-//! │  Shutdown        ──► break loop                             │
-//! │                                                             │
-//! │  Tick (33 ms)    ──► if dirty: broadcast state_patch        │
-//! └─────────────────────────────────────────────────────────────┘
-//!         │
-//!         │  broadcast::Sender<RoomBroadcast>  (JSON + target)
-//!         ▼
-//!    Each WS session forwards what is for it
-//! ```
-//!
-//! # Immediate vs tick-batched state updates
-//!
-//! | [`RoomCmd`] variant | Broadcast behaviour |
-//! |---|---|
-//! | [`RoomCmd::PatchState`] | Mutates state + broadcasts `state_patch` immediately |
-//! | [`RoomCmd::PatchStateSilent`] | Mutates state + sets dirty flag — **no broadcast** |
-//! | Tick (33 ms) | Broadcasts `state_patch` once if dirty flag is set, then clears it |
-//!
-//! **Use `PatchState`** for low-frequency, event-driven updates (chat messages,
-//! score changes, door opens).
-//!
-//! **Use `PatchStateSilent`** for high-frequency streams such as 3D positional
-//! updates.  At 30 fps × 20 players = 600 mutations/s, only 30 broadcasts/s
-//! are produced — one compact full-state snapshot per tick.
+//! A room is a plain value the hub ([`super::WsHub`]) registers; nothing runs
+//! for it while nothing happens. A state change is applied by the caller,
+//! under the state lock, and broadcast from there, so two writes are sent in
+//! the order they were made; a `--batch` write marks the state dirty and one
+//! short-lived task sends it 33 ms later, at most once a tick.
 //!
 //! # Wire protocol (server → client JSON)
 //!
 //! | `type` | Additional fields | When |
 //! |---|---|---|
-//! | `"joined"` | `session_id`, `state` | Emitted once by the WS route handler on connect |
-//! | `"state_patch"` | `state` | After any state mutation (immediate or tick) |
-//! | `"event"` | `event`, `payload` | After [`RoomCmd::Emit`] |
-//! | `"resync"` | `state` | Sent by the WS route handler when a session fell behind |
+//! | `"joined"` | `session_id`, `room`, `state` | Sent by the socket handler on connect |
+//! | `"state_patch"` | `state` | After a state change (at once, or on the batch tick) |
+//! | `"event"` | `event`, `payload` | After [`RoomHandle::emit`] |
+//! | `"resync"` | `state` | Sent by the socket handler when a session fell behind |
 //!
 //! Delivery is decided on the server: every [`RoomBroadcast`] carries its
 //! [`EmitTarget`], and each session's socket loop forwards only what
-//! [`RoomBroadcast::is_for`] admits. A session-targeted event never reaches
-//! another socket.
+//! [`RoomBroadcast::is_for`] admits.
 
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::{Duration, interval};
 
-/// Capacity of the per-room broadcast channel.
-///
-/// If a slow subscriber falls more than this many messages behind, it will
-/// receive a [`broadcast::error::RecvError::Lagged`] error and should
-/// re-sync by requesting the current state snapshot.
+/// Capacity of the per-room broadcast channel. A session that falls further
+/// behind is sent `resync` with the whole state.
 pub const BROADCAST_CAPACITY: usize = 256;
 
-/// Interval between tick-loop state-flush broadcasts (≈ 30 fps).
-const TICK_INTERVAL_MS: u64 = 33;
+/// How long a `--batch` change waits before it is sent (≈ 30 fps).
+pub const BATCH_TICK: Duration = Duration::from_millis(33);
 
-// ---- Command types ---------------------------------------------------------
+/// The state cap of a room that names none (`--max-state`).
+pub const DEFAULT_MAX_STATE: u64 = 1_000_000;
 
-/// State mutation operation applied to the shared room state tree.
-///
-/// All operations accept a JSON-pointer `path` (e.g. `"/players/abc123"`),
-/// already resolved and checked by the node (`ws.state.*`).
-#[derive(Debug, Clone)]
+/// How long an opened room may sit empty before it closes (`--idle`).
+pub const DEFAULT_IDLE: Duration = Duration::from_secs(600);
+
+/// State mutation applied to the room's state tree at a JSON pointer.
+#[derive(Debug, Clone, Copy)]
 pub enum StateOp {
-    /// Replace the value at `path` with the supplied value.
-    ///
-    /// Creates intermediate objects if the path does not exist.
+    /// Replace the value at the path, creating the objects above it.
     Set,
-
-    /// Shallow-merge an object into the value at `path`.
-    ///
-    /// The target and the incoming value must both be JSON objects.
-    /// If `path` is empty or `"/"`, merges at the root.
-    /// Useful for updating individual fields of a sub-object without
-    /// replacing the whole thing:
-    ///
-    /// ```text
-    /// state  = { "players": { "abc": { "x": 0, "y": 0, "anim": "idle" } } }
-    /// Merge("/players/abc", { "x": 5, "anim": "walk" })
-    /// result = { "players": { "abc": { "x": 5, "y": 0, "anim": "walk" } } }
-    /// ```
+    /// Shallow-merge an object into the object at the path.
     Merge,
-
-    /// Remove the key at `path` from its parent object.
+    /// Remove the key at the path.
     Delete,
 }
 
-/// Emit target — which connected sessions receive a message.
-///
-/// Enforced by the server before a socket write (see [`RoomBroadcast::is_for`]).
+/// Which sessions receive a message.
 #[derive(Debug, Clone)]
 pub enum EmitTarget {
-    /// Broadcast to all connected sessions (no filtering).
+    /// Every session in the room.
     All,
-
-    /// Deliver only to the session with the given `session_id`.
+    /// The one session with this id.
     Session(String),
-
-    /// Deliver to all sessions *except* the one with the given `session_id`.
-    ///
-    /// Useful for propagating a client's own action to peers without echoing
-    /// it back to the originator (e.g. player movement in a multiplayer game).
+    /// Every session but this one.
     Others(String),
-}
-
-/// Commands processed asynchronously by the room actor task.
-///
-/// Send via [`RoomHandle::send_cmd`] (fire-and-forget, never blocks).
-#[derive(Debug)]
-pub enum RoomCmd {
-    /// Mutate the shared room state and **immediately** broadcast a
-    /// `state_patch` message to all subscribers.
-    ///
-    /// Use for low-frequency events (chat, score, game lifecycle).
-    PatchState {
-        /// The mutation type (`Set`, `Merge`, `Delete`).
-        op: StateOp,
-        /// JSON pointer path, already resolved by the node.
-        path: String,
-        /// New value (ignored for `Delete`).
-        value: Option<Value>,
-    },
-
-    /// Mutate the shared room state **silently** — no broadcast is sent.
-    ///
-    /// A dirty flag is set instead.  The room's 33 ms tick loop will flush
-    /// the accumulated state to all subscribers at most once per tick.
-    ///
-    /// Use for high-frequency streams (≥ 10 fps positional updates, sensor
-    /// readings) to avoid flooding client JS event loops.
-    PatchStateSilent {
-        /// The mutation type (`Set`, `Merge`, `Delete`).
-        op: StateOp,
-        /// JSON pointer path, already resolved by the node.
-        path: String,
-        /// New value (ignored for `Delete`).
-        value: Option<Value>,
-    },
-
-    /// Broadcast a named event to one or more sessions.
-    ///
-    /// Does not modify shared state.  Useful for transient notifications such
-    /// as chat messages, AI narration, or game events that clients should not
-    /// persist.
-    Emit {
-        /// Application-level event name, e.g. `"chat"`, `"ai_update"`.
-        event: String,
-        /// Arbitrary event payload.
-        payload: Value,
-        /// Which sessions should act on this event.
-        to: EmitTarget,
-    },
-
-    /// Signal the room actor to stop its loop and release resources.
-    ///
-    /// Called by [`WsHub::remove_room`] when the last session disconnects.
-    Shutdown,
+    /// Every session of this identity (`user:<sub>`).
+    User(String),
 }
 
 /// One message on a room's broadcast channel: the JSON text and who it is for.
@@ -188,324 +75,550 @@ pub struct RoomBroadcast {
 }
 
 impl RoomBroadcast {
-    fn all(text: String) -> Self {
-        Self { text: text.into(), to: EmitTarget::All }
-    }
-
-    /// Whether the session `session_id` may receive this message.
-    pub fn is_for(&self, session_id: &str) -> bool {
+    /// Whether the session `session_id`, signed in as `user`, may receive this.
+    pub fn is_for(&self, session_id: &str, user: Option<&str>) -> bool {
         match &self.to {
             EmitTarget::All => true,
             EmitTarget::Session(id) => id == session_id,
             EmitTarget::Others(id) => id != session_id,
+            EmitTarget::User(sub) => user == Some(sub.as_str()),
         }
     }
 }
 
-// ---- Session guard ---------------------------------------------------------
-
-/// RAII guard that decrements the room's session count when dropped.
-///
-/// Returned by [`crate::infra::transport::ws::WsHub::join_room`] and handed
-/// back to [`crate::infra::transport::ws::WsHub::leave_room`], which drops it
-/// and disposes the room when it was the last session.
-pub struct SessionGuard {
-    count: Arc<AtomicUsize>,
+/// Whether a room was declared by an exact `trigger.room --room` or opened
+/// by `ws.room.open` under a pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomKind {
+    Fixed,
+    Opened,
 }
 
-impl Drop for SessionGuard {
-    fn drop(&mut self) {
-        self.count.fetch_sub(1, Ordering::Relaxed);
+impl RoomKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RoomKind::Fixed => "fixed",
+            RoomKind::Opened => "opened",
+        }
     }
 }
 
-// ---- Room handle -----------------------------------------------------------
+/// What `ws.room.open` sets; a fixed room has the defaults.
+#[derive(Debug, Clone)]
+pub struct RoomSettings {
+    /// Only ticket holders may join (`--private`).
+    pub private: bool,
+    /// The most sessions at once (`--max-sessions`); `None` is no cap.
+    pub max_sessions: Option<u32>,
+    /// A small JSON object `ws.room.list` shows (`--meta`).
+    pub meta: Value,
+    /// How long the room may sit empty before it closes (`--idle`).
+    pub idle: Duration,
+    /// How long a dropped session's seat is kept (`--hold`); stored, not yet enforced.
+    pub hold: Option<Duration>,
+    /// The most bytes of state (`--max-state`); a write past it is refused.
+    pub max_state: u64,
+    /// The pipeline that opened the room, or that declares a fixed one.
+    pub opened_by: String,
+}
 
-/// Handle to a running room actor — shared cheaply across WS sessions via `Arc`.
-///
-/// All methods are **synchronous and non-blocking**.  State reads use a
-/// [`std::sync::RwLock`] that is never held across an `await` point, so reads
-/// from async contexts are safe without `await`.
+impl RoomSettings {
+    /// A fixed room: public, uncapped, the default state cap.
+    pub fn fixed(declared_by: &str) -> Self {
+        Self {
+            private: false,
+            max_sessions: None,
+            meta: json!({}),
+            idle: DEFAULT_IDLE,
+            hold: None,
+            max_state: DEFAULT_MAX_STATE,
+            opened_by: declared_by.to_string(),
+        }
+    }
+}
+
+/// A counter of [`RoomHandle`]; they only rise.
+#[derive(Debug, Clone, Copy)]
+pub enum Counter {
+    MessagesIn,
+    MessagesOut,
+    PipelineRuns,
+    PipelineErrors,
+    Resyncs,
+    FloodCloses,
+}
+
+#[derive(Default)]
+struct Counters([AtomicU64; 6]);
+
+/// Why a socket is closed by the server, sent as its close frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kick {
+    /// The WebSocket close code.
+    pub code: u16,
+    /// The `$disconnect` reason, also the close frame's reason.
+    pub reason: &'static str,
+}
+
+/// `ws.room.close`: `4410`, `$disconnect { reason: "room_closed" }`.
+pub const KICK_ROOM_CLOSED: Kick = Kick { code: 4410, reason: "room_closed" };
+/// `ws.session.close`: `4409`, `$disconnect { reason: "closed" }`.
+pub const KICK_CLOSED: Kick = Kick { code: 4409, reason: "closed" };
+
+struct Member {
+    user: Option<String>,
+    kick: mpsc::UnboundedSender<Kick>,
+}
+
+/// A state write past the room's `--max-state`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateFull {
+    pub limit: u64,
+    pub would_be: u64,
+}
+
+/// One room. Shared by its sessions and the nodes that reach it.
 pub struct RoomHandle {
-    cmd_tx: mpsc::UnboundedSender<RoomCmd>,
+    name: String,
+    kind: RoomKind,
+    settings: RoomSettings,
+    /// Changes every time a room of this name is opened; a ticket names it.
+    instance: String,
+    opened_at: String,
+    state: RwLock<Value>,
+    state_bytes: AtomicU64,
+    dirty: AtomicBool,
     broadcast_tx: broadcast::Sender<RoomBroadcast>,
-    session_count: Arc<AtomicUsize>,
-    /// Shared room state — readable without going through the actor.
-    state: Arc<RwLock<Value>>,
+    members: Mutex<HashMap<String, Member>>,
+    counters: Counters,
+    last_activity_ms: AtomicI64,
+    empty_since: Mutex<Option<Instant>>,
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn rfc3339(ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 impl RoomHandle {
-    /// Spawn a new room actor and return its handle.
-    ///
-    /// The actor task runs until [`RoomCmd::Shutdown`] is received or the
-    /// last [`mpsc`] sender is dropped.
-    pub fn spawn() -> Arc<Self> {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    /// A new, empty room.
+    pub fn new(name: &str, kind: RoomKind, settings: RoomSettings) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
-        let session_count = Arc::new(AtomicUsize::new(0));
-        let state = Arc::new(RwLock::new(json!({})));
-        // dirty is local to the actor task only — not exposed on the handle.
-        let dirty = Arc::new(AtomicBool::new(false));
-
-        let handle = Arc::new(Self {
-            cmd_tx,
-            broadcast_tx: broadcast_tx.clone(),
-            session_count: session_count.clone(),
-            state: state.clone(),
-        });
-
-        tokio::spawn(run_room(cmd_rx, broadcast_tx, state, dirty));
-        handle
+        let now = now_ms();
+        Arc::new(Self {
+            name: name.to_string(),
+            kind,
+            settings,
+            instance: uuid::Uuid::new_v4().simple().to_string(),
+            opened_at: rfc3339(now),
+            state: RwLock::new(json!({})),
+            state_bytes: AtomicU64::new(2),
+            dirty: AtomicBool::new(false),
+            broadcast_tx,
+            members: Mutex::new(HashMap::new()),
+            counters: Counters::default(),
+            last_activity_ms: AtomicI64::new(now),
+            empty_since: Mutex::new(Some(Instant::now())),
+        })
     }
 
-    /// Subscribe to broadcasts from this room.
-    ///
-    /// The receiver gets every `state_patch` and `event` message with its
-    /// target; forward only those [`RoomBroadcast::is_for`] the session.  If
-    /// the subscriber falls behind by more than
-    /// [`BROADCAST_CAPACITY`] messages, it receives a
-    /// [`broadcast::error::RecvError::Lagged`] error.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn kind(&self) -> RoomKind {
+        self.kind
+    }
+    pub fn settings(&self) -> &RoomSettings {
+        &self.settings
+    }
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+
+    /// Subscribe to this room's broadcasts.
     pub fn subscribe(&self) -> broadcast::Receiver<RoomBroadcast> {
         self.broadcast_tx.subscribe()
     }
 
-    /// Send a command to the room actor (fire-and-forget, never blocks).
-    ///
-    /// The command is queued in an unbounded MPSC channel.  Errors (channel
-    /// closed) are silently ignored — this happens only after [`Shutdown`].
-    pub fn send_cmd(&self, cmd: RoomCmd) {
-        let _ = self.cmd_tx.send(cmd);
+    /// Send a named event to the sessions `to` selects.
+    pub fn emit(&self, event: &str, payload: Value, to: EmitTarget) {
+        let msg = json!({ "type": "event", "event": event, "payload": payload });
+        let _ = self.broadcast_tx.send(RoomBroadcast { text: msg.to_string().into(), to });
+        self.touch();
     }
 
-    /// Get a synchronous snapshot of the current room state.
-    ///
-    /// Acquires a read lock on the shared state — safe to call from both sync
-    /// and async contexts since the lock is never held across an `await`.
+    /// The room's state now.
     pub fn get_state(&self) -> Value {
         self.state.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Register a new session and return a guard that auto-decrements on drop.
-    ///
-    /// Crate-internal: sockets join through [`crate::infra::transport::ws::WsHub::join_room`],
-    /// which holds the registry lock so a join can never race the room's disposal.
-    pub(crate) fn join_session(&self) -> SessionGuard {
-        self.session_count.fetch_add(1, Ordering::Relaxed);
-        SessionGuard {
-            count: self.session_count.clone(),
+    /// The size of the state as last measured, in bytes of JSON.
+    pub fn state_bytes(&self) -> u64 {
+        self.state_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Change the state at `path`. At once, every session is sent the whole
+    /// state; with `batch`, it is sent on the next 33 ms tick. A change that
+    /// would take the state past `--max-state` is undone and refused.
+    pub fn apply(self: &Arc<Self>, op: StateOp, path: &str, value: Option<Value>, batch: bool) -> Result<(), StateFull> {
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+        let saved = json_ptr_get(&state, path).cloned();
+        let before = saved.as_ref().map(json_len).unwrap_or(0);
+        apply_state_op(&mut state, op, path, value);
+        let limit = self.settings.max_state;
+        let undo = |state: &mut Value| match &saved {
+            Some(old) => json_ptr_set(state, path, old.clone()),
+            None => json_ptr_delete(state, path),
+        };
+        if batch {
+            let after = json_ptr_get(&state, path).map(json_len).unwrap_or(0);
+            let estimate = (self.state_bytes() + after).saturating_sub(before);
+            if estimate > limit {
+                undo(&mut state);
+                return Err(StateFull { limit, would_be: estimate });
+            }
+            self.state_bytes.store(estimate, Ordering::Relaxed);
+            drop(state);
+            self.touch();
+            if !self.dirty.swap(true, Ordering::AcqRel) {
+                self.schedule_flush();
+            }
+            return Ok(());
+        }
+        let text = state.to_string();
+        if text.len() as u64 > limit {
+            undo(&mut state);
+            return Err(StateFull { limit, would_be: text.len() as u64 });
+        }
+        self.state_bytes.store(text.len() as u64, Ordering::Relaxed);
+        // A batch change still waiting goes out with this one.
+        self.dirty.store(false, Ordering::Release);
+        let _ = self.broadcast_tx.send(state_patch(&text));
+        drop(state);
+        self.touch();
+        Ok(())
+    }
+
+    fn schedule_flush(self: &Arc<Self>) {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let room = self.clone();
+                runtime.spawn(async move {
+                    tokio::time::sleep(BATCH_TICK).await;
+                    room.flush();
+                });
+            }
+            Err(_) => self.flush(),
         }
     }
 
-    /// Current number of active WS sessions connected to this room.
+    /// Send the state if a batch change is waiting.
+    fn flush(&self) {
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        if self.dirty.swap(false, Ordering::AcqRel) {
+            let text = state.to_string();
+            self.state_bytes.store(text.len() as u64, Ordering::Relaxed);
+            let _ = self.broadcast_tx.send(state_patch(&text));
+        }
+    }
+
+    /// Forget the state (a fixed room whose last session left).
+    fn reset_state(&self) {
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+        *state = json!({});
+        self.state_bytes.store(2, Ordering::Relaxed);
+        self.dirty.store(false, Ordering::Release);
+    }
+
+    /// Add one to a counter.
+    pub fn count(&self, counter: Counter) {
+        self.counters.0[counter as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn counter(&self, counter: Counter) -> u64 {
+        self.counters.0[counter as usize].load(Ordering::Relaxed)
+    }
+
+    /// Mark the room active now.
+    pub fn touch(&self) {
+        self.last_activity_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// Sessions joined now.
     pub fn session_count(&self) -> usize {
-        self.session_count.load(Ordering::Relaxed)
+        self.members.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Whether another session may join.
+    pub(super) fn has_seat(&self) -> bool {
+        self.settings.max_sessions.is_none_or(|max| self.session_count() < max as usize)
+    }
+
+    pub(super) fn add_member(&self, session_id: &str, user: Option<String>, kick: mpsc::UnboundedSender<Kick>) {
+        self.members
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), Member { user, kick });
+        *self.empty_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.touch();
+    }
+
+    /// Remove a session; true when the room is empty after it.
+    pub(super) fn remove_member(&self, session_id: &str) -> bool {
+        let empty = {
+            let mut members = self.members.lock().unwrap_or_else(|e| e.into_inner());
+            members.remove(session_id);
+            members.is_empty()
+        };
+        self.touch();
+        if empty {
+            *self.empty_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            if self.kind == RoomKind::Fixed {
+                self.reset_state();
+            }
+        }
+        empty
+    }
+
+    /// Whether an opened room has sat empty past its `--idle` at `now`.
+    pub(super) fn idle_at(&self, now: Instant) -> bool {
+        self.kind == RoomKind::Opened
+            && self
+                .empty_since
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some_and(|since| now.saturating_duration_since(since) >= self.settings.idle)
+    }
+
+    /// Close the sessions `which` selects with `kick`; how many.
+    pub(super) fn kick(&self, which: &EmitTarget, kick: Kick) -> usize {
+        let members = self.members.lock().unwrap_or_else(|e| e.into_inner());
+        let mut closed = 0;
+        for (id, member) in members.iter() {
+            let hit = match which {
+                EmitTarget::All => true,
+                EmitTarget::Session(s) => s == id,
+                EmitTarget::Others(s) => s != id,
+                EmitTarget::User(sub) => member.user.as_deref() == Some(sub.as_str()),
+            };
+            if hit && member.kick.send(kick).is_ok() {
+                closed += 1;
+            }
+        }
+        closed
+    }
+
+    /// The identities joined, each once, sorted.
+    pub fn member_users(&self) -> Vec<String> {
+        let members = self.members.lock().unwrap_or_else(|e| e.into_inner());
+        let mut users: Vec<String> = members.values().filter_map(|m| m.user.clone()).collect();
+        users.sort();
+        users.dedup();
+        users
+    }
+
+    /// This room as `ws.room.list` shows it.
+    pub fn describe(&self, members: bool) -> Value {
+        let s = &self.settings;
+        let mut entry = json!({
+            "room": self.name,
+            "kind": self.kind.as_str(),
+            "private": s.private,
+            "mode": "event",
+            "meta": s.meta,
+            "sessions": self.session_count(),
+            "max_sessions": s.max_sessions,
+            "opened_at": self.opened_at,
+            "opened_by": s.opened_by,
+            "last_activity_at": rfc3339(self.last_activity_ms.load(Ordering::Relaxed)),
+            "state_bytes": self.state_bytes(),
+            "counters": {
+                "messages_in": self.counter(Counter::MessagesIn),
+                "messages_out": self.counter(Counter::MessagesOut),
+                "ticks": 0,
+                "tick_overruns": 0,
+                "inputs_dropped": 0,
+                "pipeline_runs": self.counter(Counter::PipelineRuns),
+                "pipeline_errors": self.counter(Counter::PipelineErrors),
+                "resyncs": self.counter(Counter::Resyncs),
+                "flood_closes": self.counter(Counter::FloodCloses),
+            },
+        });
+        if members {
+            entry["members"] = json!(self.member_users());
+        }
+        entry
     }
 }
 
-// ---- Room actor ------------------------------------------------------------
-
-/// Room actor loop.
-///
-/// Processes [`RoomCmd`] messages and drives the 33 ms tick loop.
-async fn run_room(
-    mut cmd_rx: mpsc::UnboundedReceiver<RoomCmd>,
-    broadcast_tx: broadcast::Sender<RoomBroadcast>,
-    state: Arc<RwLock<Value>>,
-    dirty: Arc<AtomicBool>,
-) {
-    let mut tick = interval(Duration::from_millis(TICK_INTERVAL_MS));
-
-    loop {
-        tokio::select! {
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    None | Some(RoomCmd::Shutdown) => break,
-
-                    Some(RoomCmd::PatchState { op, path, value }) => {
-                        // Mutate under write lock, release before broadcast.
-                        {
-                            let mut w = state.write().unwrap_or_else(|e| e.into_inner());
-                            apply_state_op(&mut w, &op, &path, value);
-                        }
-                        let snapshot = state.read().unwrap_or_else(|e| e.into_inner()).clone();
-                        let msg = json!({ "type": "state_patch", "state": snapshot });
-                        let _ = broadcast_tx.send(RoomBroadcast::all(msg.to_string()));
-                    }
-
-                    Some(RoomCmd::PatchStateSilent { op, path, value }) => {
-                        // Mutate only — tick loop will flush.
-                        let mut w = state.write().unwrap_or_else(|e| e.into_inner());
-                        apply_state_op(&mut w, &op, &path, value);
-                        dirty.store(true, Ordering::Relaxed);
-                    }
-
-                    Some(RoomCmd::Emit { event, payload, to }) => {
-                        let msg = json!({ "type": "event", "event": event, "payload": payload });
-                        let _ = broadcast_tx.send(RoomBroadcast { text: msg.to_string().into(), to });
-                    }
-                }
-            }
-
-            _ = tick.tick() => {
-                // Flush accumulated silent mutations once per tick (~30 fps).
-                if dirty.swap(false, Ordering::Relaxed) {
-                    let snapshot = state.read().unwrap_or_else(|e| e.into_inner()).clone();
-                    let msg = json!({ "type": "state_patch", "state": snapshot });
-                    let _ = broadcast_tx.send(RoomBroadcast::all(msg.to_string()));
-                }
-            }
-        }
+fn state_patch(state_text: &str) -> RoomBroadcast {
+    RoomBroadcast {
+        text: format!(r#"{{"type":"state_patch","state":{state_text}}}"#).into(),
+        to: EmitTarget::All,
     }
+}
+
+fn json_len(value: &Value) -> u64 {
+    serde_json::to_vec(value).map(|v| v.len() as u64).unwrap_or(0)
 }
 
 // ---- State helpers ---------------------------------------------------------
 
+fn segments(path: &str) -> Vec<&str> {
+    path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect()
+}
+
+fn json_ptr_get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut cur = root;
+    for part in segments(path) {
+        cur = cur.as_object()?.get(part)?;
+    }
+    Some(cur)
+}
+
 /// Apply a [`StateOp`] mutation to the state tree.
-fn apply_state_op(state: &mut Value, op: &StateOp, path: &str, value: Option<Value>) {
+fn apply_state_op(state: &mut Value, op: StateOp, path: &str, value: Option<Value>) {
     match op {
-        StateOp::Set => {
-            if path.is_empty() || path == "/" {
-                if let Some(v) = value {
-                    *state = v;
-                }
-            } else {
-                json_ptr_set(state, path, value.unwrap_or(Value::Null));
-            }
-        }
+        StateOp::Set => json_ptr_set(state, path, value.unwrap_or(Value::Null)),
         StateOp::Merge => {
             if let Some(Value::Object(patch)) = value {
-                if path.is_empty() || path == "/" {
-                    // Merge at root.
-                    if let Value::Object(current) = state {
-                        for (k, v) in patch {
-                            current.insert(k, v);
-                        }
-                    }
-                } else {
-                    // Navigate to target path and merge there.
-                    json_ptr_merge(state, path, patch);
-                }
+                json_ptr_merge(state, path, patch);
             }
         }
-        StateOp::Delete => {
-            json_ptr_delete(state, path);
-        }
+        StateOp::Delete => json_ptr_delete(state, path),
     }
 }
 
-/// Set `value` at `path` (JSON pointer), creating intermediate objects as needed.
+/// Set `value` at `path`, creating intermediate objects as needed.
 fn json_ptr_set(root: &mut Value, path: &str, value: Value) {
-    let parts: Vec<&str> = path
-        .trim_start_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
+    let parts = segments(path);
+    let Some((last, above)) = parts.split_last() else {
         *root = value;
         return;
-    }
+    };
     let mut cur = root;
-    for (i, part) in parts.iter().enumerate() {
-        if i == parts.len() - 1 {
-            if let Value::Object(map) = cur {
-                map.insert((*part).to_string(), value);
-            }
-            return;
-        }
-        if let Value::Object(map) = cur {
-            cur = map.entry(part.to_string()).or_insert_with(|| json!({}));
-        } else {
-            return;
-        }
+    for part in above {
+        let Value::Object(map) = cur else { return };
+        cur = map.entry(part.to_string()).or_insert_with(|| json!({}));
+    }
+    if let Value::Object(map) = cur {
+        map.insert((*last).to_string(), value);
     }
 }
 
 /// Shallow-merge `patch` into the object at `path`, creating it if absent.
 fn json_ptr_merge(root: &mut Value, path: &str, patch: serde_json::Map<String, Value>) {
-    let parts: Vec<&str> = path
-        .trim_start_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
-        if let Value::Object(current) = root {
-            for (k, v) in patch {
-                current.insert(k, v);
-            }
-        }
-        return;
-    }
     let mut cur = root;
-    for part in &parts {
-        if let Value::Object(map) = cur {
-            cur = map.entry(part.to_string()).or_insert_with(|| json!({}));
-        } else {
-            return;
-        }
+    for part in segments(path) {
+        let Value::Object(map) = cur else { return };
+        cur = map.entry(part.to_string()).or_insert_with(|| json!({}));
     }
     if let Value::Object(target) = cur {
-        for (k, v) in patch {
-            target.insert(k, v);
-        }
+        target.extend(patch);
     }
 }
 
 /// Remove the key at `path` from its parent object.
 fn json_ptr_delete(root: &mut Value, path: &str) {
-    let parts: Vec<&str> = path
-        .trim_start_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
-        return;
-    }
+    let parts = segments(path);
+    let Some((last, above)) = parts.split_last() else { return };
     let mut cur = root;
-    for part in &parts[..parts.len() - 1] {
-        if let Value::Object(map) = cur {
-            if let Some(next) = map.get_mut(*part) {
-                cur = next;
-            } else {
-                return;
-            }
-        } else {
-            return;
+    for part in above {
+        match cur.as_object_mut().and_then(|map| map.get_mut(*part)) {
+            Some(next) => cur = next,
+            None => return,
         }
     }
     if let Value::Object(map) = cur {
-        map.remove(*parts.last().unwrap());
+        map.remove(*last);
     }
 }
-
-// ---- Unit tests ------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_session_targeted_message_is_only_for_that_session() {
-        let b = RoomBroadcast { text: "{}".into(), to: EmitTarget::Session("s1".into()) };
-        assert!(b.is_for("s1"));
-        assert!(!b.is_for("s2"));
+    fn room(max_state: u64) -> Arc<RoomHandle> {
+        RoomHandle::new("lobby", RoomKind::Opened, RoomSettings { max_state, ..RoomSettings::fixed("t") })
     }
 
     #[test]
-    fn an_others_message_skips_only_the_sender() {
-        let b = RoomBroadcast { text: "{}".into(), to: EmitTarget::Others("s1".into()) };
-        assert!(!b.is_for("s1"));
-        assert!(b.is_for("s2"));
+    fn a_target_selects_sessions_and_identities() {
+        let b = |to| RoomBroadcast { text: "{}".into(), to };
+        assert!(b(EmitTarget::Session("s1".into())).is_for("s1", None));
+        assert!(!b(EmitTarget::Session("s1".into())).is_for("s2", None));
+        assert!(!b(EmitTarget::Others("s1".into())).is_for("s1", None));
+        assert!(b(EmitTarget::Others("s1".into())).is_for("s2", None));
+        assert!(b(EmitTarget::User("u-17".into())).is_for("s9", Some("u-17")));
+        assert!(!b(EmitTarget::User("u-17".into())).is_for("s9", Some("u-18")));
+        assert!(!b(EmitTarget::User("u-17".into())).is_for("s9", None));
     }
 
     #[tokio::test]
     async fn an_emit_reaches_subscribers_with_its_target() {
-        let room = RoomHandle::spawn();
+        let room = room(DEFAULT_MAX_STATE);
         let mut rx = room.subscribe();
-        room.send_cmd(RoomCmd::Emit { event: "hi".into(), payload: json!({ "a": 1 }), to: EmitTarget::Session("s1".into()) });
+        room.emit("hi", json!({ "a": 1 }), EmitTarget::Session("s1".into()));
         let got = rx.recv().await.expect("broadcast");
-        assert!(got.is_for("s1") && !got.is_for("s2"));
+        assert!(got.is_for("s1", None) && !got.is_for("s2", None));
         let v: Value = serde_json::from_str(&got.text).unwrap();
-        assert_eq!(v["event"], "hi");
-        assert!(v.get("target_session").is_none(), "targets no longer travel to clients");
+        assert_eq!(v, json!({ "type": "event", "event": "hi", "payload": { "a": 1 } }));
+    }
+
+    #[tokio::test]
+    async fn a_change_is_sent_at_once_and_a_batch_on_the_tick() {
+        let room = room(DEFAULT_MAX_STATE);
+        let mut rx = room.subscribe();
+        room.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        let now: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert_eq!(now, json!({ "type": "state_patch", "state": { "a": 1 } }));
+        room.apply(StateOp::Set, "/b", Some(json!(2)), true).unwrap();
+        room.apply(StateOp::Set, "/c", Some(json!(3)), true).unwrap();
+        assert!(rx.try_recv().is_err(), "a batch waits for the tick");
+        let tick: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert_eq!(tick["state"], json!({ "a": 1, "b": 2, "c": 3 }), "two batch changes, one send");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_write_past_max_state_is_refused_and_undone() {
+        let room = room(40);
+        room.apply(StateOp::Set, "/name", Some(json!("ok")), false).expect("fits");
+        let big = json!("x".repeat(64));
+        for batch in [false, true] {
+            let err = room.apply(StateOp::Set, "/name", Some(big.clone()), batch).expect_err("past the cap");
+            assert_eq!(err.limit, 40);
+            assert_eq!(room.get_state(), json!({ "name": "ok" }), "batch={batch}: the old value stays");
+            let err = room.apply(StateOp::Set, "/other", Some(big.clone()), batch).expect_err("a new key too");
+            assert!(err.would_be > 40);
+            assert_eq!(room.get_state(), json!({ "name": "ok" }), "batch={batch}: the new key is removed");
+        }
+        room.apply(StateOp::Delete, "/name", None, false).expect("a delete fits");
+        assert_eq!(room.state_bytes(), 2);
+    }
+
+    #[test]
+    fn put_merge_and_delete_change_the_tree() {
+        let room = room(DEFAULT_MAX_STATE);
+        room.apply(StateOp::Set, "/players/s1", Some(json!({ "x": 0, "y": 0 })), false).unwrap();
+        room.apply(StateOp::Merge, "/players/s1", Some(json!({ "x": 5 })), false).unwrap();
+        assert_eq!(room.get_state(), json!({ "players": { "s1": { "x": 5, "y": 0 } } }));
+        room.apply(StateOp::Delete, "/players/s1", None, false).unwrap();
+        assert_eq!(room.get_state(), json!({ "players": {} }));
+    }
+
+    #[test]
+    fn a_fixed_room_forgets_its_state_with_its_last_session() {
+        let fixed = RoomHandle::new("lobby", RoomKind::Fixed, RoomSettings::fixed("t"));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        fixed.add_member("s1", None, tx);
+        fixed.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        assert!(fixed.remove_member("s1"));
+        assert_eq!(fixed.get_state(), json!({}));
     }
 }
