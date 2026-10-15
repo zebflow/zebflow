@@ -1078,9 +1078,14 @@ mod tests {
         .expect("platform");
         let _ = platform.addressing.resolve("ghost-proj.ghost-owner.localhost", "/");
         let _ = platform.addressing.read("ghost-owner", "ghost-proj").expect("default addressing");
+        // A project lives at `users/{owner}/{project}`.
         assert!(
-            !dir.path().join("users/ghost-owner/projects/ghost-proj").exists(),
+            !dir.path().join("users/ghost-owner/ghost-proj").exists(),
             "missing project must not be created on disk by addressing lookups"
+        );
+        assert!(
+            !dir.path().join("users/ghost-owner").exists(),
+            "a missing project's owner folder must not appear either"
         );
         assert!(
             !platform
@@ -1091,6 +1096,19 @@ mod tests {
                 .projects
                 .contains_key(&("ghost-owner".to_string(), "ghost-proj".to_string())),
             "missing project must not be cached in addressing index"
+        );
+        // A project that exists is read and indexed as before.
+        platform.addressing.read("superadmin", "default").expect("existing project addressing");
+        assert!(dir.path().join("users/superadmin/default").is_dir());
+        assert!(
+            platform
+                .addressing
+                .index
+                .read()
+                .expect("index")
+                .projects
+                .contains_key(&("superadmin".to_string(), "default".to_string())),
+            "an existing project is cached in the addressing index"
         );
     }
 }

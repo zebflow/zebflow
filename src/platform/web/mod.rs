@@ -2784,7 +2784,6 @@ pub(super) fn project_exists_or_on_disk(state: &PlatformAppState, owner: &str, p
             .data_root
             .join("users")
             .join(&owner)
-            .join("projects")
             .join(&project)
             .is_dir()
 }
