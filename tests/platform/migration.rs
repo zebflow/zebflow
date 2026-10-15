@@ -531,19 +531,21 @@ async fn mcp_session_cannot_exceed_creator_capabilities_or_ceiling_and_gates_sta
 
     let limited_cookie = login_as(&app, "maintainer-limited", &limited_pw).await;
 
-    // 1. A maintainer cannot grant a capability they do not hold (`members.write`).
+    // 1. A maintainer cannot grant a capability they do not hold (`project.delete`
+    // is the Owner's alone): refused by the held-capability check, not the ceiling.
     let (status, body) = json_of(
         send(
             &app,
             &limited_cookie,
             "POST",
             &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
-            Some(json!({ "capabilities": ["members.write"] })),
+            Some(json!({ "capabilities": ["project.delete"] })),
         )
         .await,
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "unheld capability must be refused: {body}");
+    assert!(body.to_string().contains("do not hold"), "the held-capability check refuses it: {body}");
 
     // 2. A maintainer with mcp_capability_ceiling=[pipelines.read] cannot mint a session with pipelines.write.
     let (status, body) = json_of(

@@ -576,6 +576,15 @@ mod tests {
     use crate::platform::services::PlatformService;
 
     #[test]
+    fn every_capability_key_names_its_capability() {
+        // A session's capabilities arrive as keys; one that does not parse
+        // back is silently dropped from the request.
+        for capability in C::all() {
+            assert_eq!(C::from_key(capability.key()), Some(capability), "{}", capability.key());
+        }
+    }
+
+    #[test]
     fn a_session_ends_when_its_creator_loses_the_rights_it_carries() {
         let dir = tempfile::tempdir().expect("tempdir");
         let platform = PlatformService::from_config(PlatformConfig {

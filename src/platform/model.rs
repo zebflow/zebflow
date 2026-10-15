@@ -1204,6 +1204,7 @@ impl ProjectCapability {
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "project.read" => Some(Self::ProjectRead),
+            "project.delete" => Some(Self::ProjectDelete),
             "members.read" => Some(Self::MembersRead),
             "members.write" => Some(Self::MembersWrite),
             "credentials.read" => Some(Self::CredentialsRead),
