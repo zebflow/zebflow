@@ -20,5 +20,5 @@ pub use config::{
     DenoSandboxAllowList, DenoSandboxAllowListPatch, DenoSandboxConfig, DenoSandboxConfigPatch,
     DenoSandboxDangerZone, DenoSandboxDangerZonePatch,
 };
-pub use analyze::{ScriptDiagnostic, ScriptPolicy, compile_body};
+pub use analyze::{ScriptDiagnostic, ScriptPolicy, compile_body, static_property_name};
 pub use engine::{CompiledDenoSandboxScript, DenoSandboxEngine};

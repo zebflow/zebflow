@@ -212,7 +212,11 @@ fn line_col(text: &str, offset: usize) -> (u32, u32) {
     (line.max(1), column)
 }
 
-fn static_property_name<'a>(expr: &'a oxc_ast::ast::Expression<'a>) -> Option<&'a str> {
+/// The property a computed member names when it is written as a constant —
+/// `obj["eval"]` or `` obj[`eval`] `` — so `obj[...]` is checked like
+/// `obj.eval`. Anything computed at run time is `None`. The one copy: the
+/// sandbox analyzer and the RWE source check both read members through it.
+pub fn static_property_name<'a>(expr: &'a oxc_ast::ast::Expression<'a>) -> Option<&'a str> {
     match expr {
         oxc_ast::ast::Expression::StringLiteral(lit) => Some(lit.value.as_str()),
         oxc_ast::ast::Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl

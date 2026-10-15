@@ -115,17 +115,6 @@ fn expr_ident_name<'a>(expr: &'a oxc_ast::ast::Expression<'a>) -> Option<&'a str
     }
 }
 
-fn expr_static_string<'a>(expr: &'a oxc_ast::ast::Expression<'a>) -> Option<&'a str> {
-    match expr {
-        oxc_ast::ast::Expression::StringLiteral(lit) => Some(lit.value.as_str()),
-        oxc_ast::ast::Expression::TemplateLiteral(tpl) if tpl.expressions.is_empty() => tpl
-            .quasis
-            .first()
-            .and_then(|q| q.value.cooked.as_ref().map(|s| s.as_str())),
-        _ => None,
-    }
-}
-
 impl<'a> oxc_ast_visit::Visit<'a> for RweAstSecurityVisitor<'_> {
     fn visit_import_expression(&mut self, expr: &oxc_ast::ast::ImportExpression<'a>) {
         if !self.policy.allow_dynamic_import && self.violation.is_none() {
@@ -152,7 +141,9 @@ impl<'a> oxc_ast_visit::Visit<'a> for RweAstSecurityVisitor<'_> {
         &mut self,
         member: &oxc_ast::ast::ComputedMemberExpression<'a>,
     ) {
-        if let Some(prop) = expr_static_string(&member.expression) {
+        if let Some(prop) =
+            crate::language::engines::deno_sandbox::static_property_name(&member.expression)
+        {
             self.check_member_pair(expr_ident_name(&member.object), prop);
         }
         oxc_ast_visit::walk::walk_computed_member_expression(self, member);
@@ -268,3 +259,30 @@ fn is_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A constant computed member is checked like a dotted one, a run-time
+    /// one is left to the runtime, and the constant is read through the
+    /// sandbox's `static_property_name` rather than a copy kept here.
+    #[test]
+    fn computed_members_are_read_through_the_one_static_property_name() {
+        let policy = SecurityPolicy {
+            blocked_globals: vec!["document.cookie".to_string()],
+            ..SecurityPolicy::default()
+        };
+        for source in ["const c = document['cookie'];", "const c = document[`cookie`];"] {
+            let err = check_ast_security(source, &policy).expect_err(source);
+            assert_eq!(err.code, "RWE_SECURITY_GLOBAL", "{source}");
+        }
+        check_ast_security("const k = pick(); const c = document[k];", &policy).expect("run-time key");
+        check_ast_security("const c = document[`a${b}`];", &policy).expect("template with a hole");
+        check_ast_security("const t = document['title'];", &policy).expect("another property");
+
+        let source = include_str!("security.rs");
+        let code = &source[..source.find("#[cfg(test)]").expect("tests marker")];
+        assert!(!code.contains("Expression::TemplateLiteral"), "a second static-name helper lives here");
+        assert!(code.contains("static_property_name("), "computed members go through the shared helper");
+    }
+}
