@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, html};
+use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, html};
 
 /// Converts `<markdown>...</markdown>` blocks into HTML fragments.
 ///
@@ -119,19 +119,43 @@ fn extract_class_attr(tag_snippet: &str) -> Option<String> {
     Some(filtered)
 }
 
-fn safe_markdown_url(url: &str) -> bool {
-    let trimmed = url.trim();
-    if trimmed.is_empty() {
+/// Whether a markdown link or image destination may reach the page as written.
+///
+/// A destination without a scheme (`guide/intro`, `?page=2`, `#top`, `/docs`)
+/// is relative to the page and kept. A scheme is kept only when it is http,
+/// https, mailto or tel. `//host` and `/\\host` are refused: a browser reads
+/// both as another host. The check runs on the destination as a browser parses
+/// it — surrounding control characters trimmed and tabs and newlines removed —
+/// so `java\tscript:` cannot slip past it. pulldown-cmark hands an email
+/// autolink over as the bare address and adds `mailto:` itself, so it is
+/// checked with that prefix.
+fn safe_markdown_url(link_type: LinkType, url: &str) -> bool {
+    let as_browser_reads: String = url
+        .trim_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    if link_type == LinkType::Email {
+        return !as_browser_reads.is_empty()
+            && safe_markdown_url(LinkType::Inline, &format!("mailto:{as_browser_reads}"));
+    }
+    if as_browser_reads.is_empty() {
         return false;
     }
-    let lower = trimmed.to_ascii_lowercase();
-    lower.starts_with("https:")
-        || lower.starts_with("http:")
-        || lower.starts_with("mailto:")
-        || lower.starts_with("tel:")
-        || lower.starts_with('#')
-        || lower.starts_with('.')
-        || (lower.starts_with('/') && !lower.starts_with("//"))
+    let mut leading = as_browser_reads.chars();
+    if matches!(
+        (leading.next(), leading.next()),
+        (Some('/' | '\\'), Some('/' | '\\'))
+    ) {
+        return false;
+    }
+    match as_browser_reads.find([':', '/', '?', '#']) {
+        Some(at) if as_browser_reads[at..].starts_with(':') => {
+            let scheme = as_browser_reads[..at].to_ascii_lowercase();
+            matches!(scheme.as_str(), "http" | "https" | "mailto" | "tel")
+        }
+        _ => true,
+    }
 }
 
 pub fn render_markdown_fragment(md: &str) -> String {
@@ -143,10 +167,10 @@ pub fn render_markdown_fragment(md: &str) -> String {
     options.insert(Options::ENABLE_FOOTNOTES);
     let parser = Parser::new_ext(&stripped, options).map(|event| match event {
         Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
-        Event::Start(Tag::Link { link_type, dest_url, title, id }) if !safe_markdown_url(&dest_url) => {
+        Event::Start(Tag::Link { link_type, dest_url, title, id }) if !safe_markdown_url(link_type, &dest_url) => {
             Event::Start(Tag::Link { link_type, dest_url: CowStr::Borrowed("#"), title, id })
         }
-        Event::Start(Tag::Image { link_type, dest_url, title, id }) if !safe_markdown_url(&dest_url) => {
+        Event::Start(Tag::Image { link_type, dest_url, title, id }) if !safe_markdown_url(link_type, &dest_url) => {
             Event::Start(Tag::Image { link_type, dest_url: CowStr::Borrowed("#"), title, id })
         }
         other => other,
@@ -272,5 +296,40 @@ fn unique_slug(base: String, seen: &mut HashMap<String, usize>) -> String {
             seen.insert(base.clone(), 0);
             base
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_markdown_fragment;
+
+    #[test]
+    fn markdown_keeps_relative_and_email_links_and_refuses_unsafe_schemes() {
+        let html = render_markdown_fragment(
+            "[guide](guide/intro) [next](?page=2) [top](#top) [docs](/docs) \
+             [site](https://example.com/a) [call](tel:+15550100) <someone@example.com>",
+        );
+        for kept in [
+            "href=\"guide/intro\"",
+            "href=\"?page=2\"",
+            "href=\"#top\"",
+            "href=\"/docs\"",
+            "href=\"https://example.com/a\"",
+            "href=\"tel:+15550100\"",
+            "href=\"mailto:someone@example.com\"",
+        ] {
+            assert!(html.contains(kept), "{kept} missing from {html}");
+        }
+
+        let html = render_markdown_fragment(
+            "[a](javascript:alert(1)) [b](JavaScript:alert(1)) [c](data:text/html,x) \
+             [d](//example.com/x) [e](/\\example.com/x) [f](<java\tscript:alert(1)>) \
+             [g](vbscript:x) ![h](javascript:alert(1))",
+        );
+        assert!(!html.to_ascii_lowercase().contains("script:"), "{html}");
+        assert!(!html.contains("data:"), "{html}");
+        assert!(!html.contains("example.com"), "{html}");
+        assert_eq!(html.matches("href=\"#\"").count(), 7, "{html}");
+        assert!(html.contains("src=\"#\""), "{html}");
     }
 }
