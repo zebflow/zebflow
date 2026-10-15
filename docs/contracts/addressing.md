@@ -87,8 +87,9 @@ surface mounts anywhere. A disabled
 surface answers 404 on the project's hosts and on its platform form alike.
 A host belongs to one project on an instance (`ADDRESSING_HOST_TAKEN`), and no
 project may hold the platform's own address (the configured base URL's host, or
-`localhost`, `127.0.0.1` and `[::1]` on any port) or another project's dev or
-dev-file host (`ADDRESSING_HOST_RESERVED`).
+`localhost`, `127.0.0.1` and `[::1]` on any port) or any `*.localhost` name
+(`ADDRESSING_HOST_RESERVED`): those are the dev hosts' namespace, and a
+project's own dev and section dev hosts are implicit, never stored.
 
 There is no dev mode and no production mode: Zebflow is one runtime, and no
 behaviour keys on which host asked — the dev host and a named host obey the

@@ -31,6 +31,13 @@ use sections::SectionTable;
 pub const ADDRESSING_FILE: &str = "addressing.json";
 /// The suffix every dev host ends in.
 pub const DEV_HOST_SUFFIX: &str = ".localhost";
+
+/// `localhost` or a name under it — the dev hosts' namespace, never a
+/// project's stored host.
+fn is_localhost_name(host: &str) -> bool {
+    let host = normalize_host(host);
+    host == "localhost" || host.ends_with(DEV_HOST_SUFFIX)
+}
 /// The suffix every dev file host ends in.
 pub const DEV_FILE_HOST_SUFFIX: &str = ".fs.localhost";
 /// The prefix reserved for platform surfaces on a project host; an app route
@@ -446,10 +453,7 @@ impl AddressingService {
             for project in self.data.list_projects(&user.owner)? {
                 let addressing = self.read_from_disk(&project.owner, &project.project)?;
                 for host in &addressing.hosts {
-                    if sections::is_platform_host(host)
-                        || Self::parse_dev_host(host).is_some()
-                        || Self::parse_dev_file_host(host).is_some()
-                    {
+                    if sections::is_platform_host(host) || is_localhost_name(host) {
                         continue;
                     }
                     index
@@ -571,10 +575,14 @@ impl AddressingService {
                     format!("`{raw}` is not a hostname (letters, digits, `-`, dots; no port, no path)"),
                 ));
             }
-            if Self::parse_dev_host(&host).is_some() || Self::parse_dev_file_host(&host).is_some() {
+            // Every browser sends `*.localhost` to loopback: the names are the
+            // dev hosts'. A project's own dev and section dev hosts were
+            // skipped above as implicit; any other one is another project's,
+            // or a squat on a name one could take later.
+            if is_localhost_name(&host) {
                 return Err(PlatformError::new(
                     "ADDRESSING_HOST_RESERVED",
-                    format!("`{host}` has the shape of a project's dev host"),
+                    format!("`{host}` is a `.localhost` name; only the project's own dev hosts answer there, and they need no saving"),
                 ));
             }
             if !hosts.contains(&host) {
@@ -1024,6 +1032,28 @@ mod tests {
                 .expect_err(host);
             assert_eq!(err.code, "ADDRESSING_HOST_RESERVED", "{host}: {}", err.message);
         }
+        // Any other `.localhost` name is a squat on the dev namespace.
+        for host in ["squat.localhost", "a.b.c.localhost", "site-b.default.superadmin.localhost", "other.superadmin.localhost"] {
+            let err = platform
+                .addressing
+                .write(
+                    "superadmin",
+                    "default",
+                    ProjectAddressing { hosts: vec![host.to_string()], ..ProjectAddressing::default() },
+                )
+                .expect_err(host);
+            assert_eq!(err.code, "ADDRESSING_HOST_RESERVED", "{host}: {}", err.message);
+        }
+        // The project's own dev host is implicit: accepted and never stored.
+        let saved = platform
+            .addressing
+            .write(
+                "superadmin",
+                "default",
+                ProjectAddressing { hosts: vec!["default.superadmin.localhost".to_string()], ..ProjectAddressing::default() },
+            )
+            .expect("own dev host is implicit");
+        assert!(saved.hosts.is_empty());
         // Normal project host still saves cleanly.
         let saved = platform
             .addressing
