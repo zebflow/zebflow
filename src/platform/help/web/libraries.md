@@ -111,6 +111,14 @@ your own CSS or wrap the output in a container with utilities. For rich text
 authored in the platform, prefer the editor's JSON document and
 `zeb/ui/editor-render` (`help("web/editor")`).
 
+`<Markdown>` is rendered on the server, and raw HTML in its source — tags,
+comments, `<script>` — is shown escaped, as text, never run or drawn. Links and
+images keep their destination when it has no scheme (`guide/intro`, `?page=2`,
+`#top`, `/docs`, `./diagram.png`) or when the scheme is `http`, `https`,
+`mailto` or `tel`; an email autolink such as `<someone@example.com>` becomes a
+`mailto:` link. Any other destination — `javascript:`, `data:`, `//host` —
+becomes `#`.
+
 ---
 
 ## zeb/codemirror
