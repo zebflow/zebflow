@@ -139,3 +139,43 @@ async fn disconnecting_a_remote_clears_it_and_a_push_naming_only_a_branch_keeps_
         json_call(&app, &cookie, "PUT", "/git/remote", json!({"credential_id": "", "repo_url": "/srv/bare-path", "branch": "main"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// A token typed into the remote URL is refused at the route, before it can
+/// reach zebflow.yaml (committed and pushed) or .git/config. Credentials
+/// belong in a git credential.
+#[tokio::test]
+async fn a_remote_url_carrying_a_token_is_refused_and_never_stored() {
+    let (data, _remotes, app, cookie, remote_url) = platform_with_bare_remote().await;
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let with_token = format!("https://ci-bot:{token}@203.0.113.10/org/site-a.git");
+
+    let (status, body) =
+        json_call(&app, &cookie, "PUT", "/git/remote", json!({"credential_id": "", "repo_url": with_token, "branch": "main"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(!body.to_string().contains(&token), "{body}");
+
+    let (status, body) = call(&app, &cookie, "PUT", &format!("{BASE}/repo/file?path=docs/notes.md"), "text/plain", "one\n".into()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = json_call(
+        &app,
+        &cookie,
+        "POST",
+        "/git/commit",
+        json!({"files": ["docs/notes.md"], "message": "first", "push": true, "repo_url": with_token, "branch": "main"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(!body.to_string().contains(&token), "{body}");
+
+    let repo = data.path().join("platform/users/superadmin/default/repo");
+    for file in ["zebflow.yaml", ".git/config"] {
+        let text = std::fs::read_to_string(repo.join(file)).unwrap_or_default();
+        assert!(!text.contains(&token), "{file} holds the token");
+    }
+    assert_eq!(saved_remote(&app, &cookie).await["repo_url"], json!(""));
+
+    // The same remote without the token is accepted.
+    let (status, body) =
+        json_call(&app, &cookie, "PUT", "/git/remote", json!({"credential_id": "", "repo_url": remote_url, "branch": "main"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

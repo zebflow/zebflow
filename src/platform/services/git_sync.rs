@@ -452,7 +452,8 @@ fn system_lookup(host: &str, port: u16) -> std::io::Result<Vec<std::net::IpAddr>
 /// - refuses bare filesystem paths, SCP-style `user@host:path`, `ssh://`,
 ///   `git://`, a leading `-`, and `\`, whitespace or control characters
 ///   (a URL parser and git disagree on where the host of `https://a\@b` is);
-/// - for `http://` and `https://`, refuses local and internal names, a blocked
+/// - for `http://` and `https://`, refuses a user name or token in the URL,
+///   local and internal names, a blocked
 ///   address literal, and a name that resolves to a blocked address or does
 ///   not resolve at all;
 /// - for `file://`, requires an absolute path outside `data_root`, and answers
@@ -476,6 +477,13 @@ fn checked_remote_url_with(repo_url: &str, data_root: &Path, lookup: HostLookup<
         let Some(host) = parsed.host_str() else {
             return Err(refused("remote URL must include a host".to_string()));
         };
+        // A token in the URL would be written to zebflow.yaml, which is
+        // committed and pushed, and to .git/config. It belongs in a credential.
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(refused(
+                "remote URL must not carry a user name or token — choose a git credential instead".to_string(),
+            ));
+        }
         let lower = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
         if lower == "localhost"
             || lower.ends_with(".localhost")
@@ -660,6 +668,22 @@ mod tests {
     /// Every name resolves to one public documentation address.
     fn public_lookup(_host: &str, _port: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
         Ok(vec!["203.0.113.10".parse().unwrap()])
+    }
+
+    #[test]
+    fn a_remote_url_carrying_credentials_is_refused() {
+        let root = std::env::temp_dir().join(format!("zf-git-userinfo-{}", std::process::id()));
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        for with_userinfo in [
+            format!("https://ci-bot:{token}@git.example.com/org/site-a.git"),
+            format!("https://{token}@git.example.com/org/site-a.git"),
+            format!("http://ci-bot:{token}@git.example.com/org/site-a.git"),
+        ] {
+            let err = checked_remote_url_with(&with_userinfo, &root, &public_lookup).unwrap_err();
+            assert_eq!(err.code, "GIT_REMOTE_REFUSED");
+            assert!(!err.message.contains(&token));
+        }
+        assert!(checked_remote_url_with("https://git.example.com/org/site-a.git", &root, &public_lookup).is_ok());
     }
 
     #[test]
