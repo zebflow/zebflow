@@ -353,50 +353,47 @@ pub fn git_command() -> Command {
     cmd
 }
 
-/// Validates that `cred` is a git credential (`github`, `gitlab`, `git`) and,
-/// when a provider host is bound or implied, that `repo_url`'s host matches it.
+/// Whether a credential may authenticate to `repo_url`: it must be a git
+/// credential (`github`, `gitlab`, `git`) and the remote must be the origin it
+/// is bound to — same scheme, host and port, so a credential bound to an
+/// `https` origin never travels over `http`. The binding is the secret's
+/// `repo_url`, `url` or `instance_url` (a bare host means `https`); without one,
+/// `github` and `gitlab` are bound to their public `https` origins and a plain
+/// `git` credential is bound to nothing, so it authenticates nowhere.
 pub fn git_credential_matches_remote(kind: &str, secret: &serde_json::Value, repo_url: &str) -> bool {
     if !matches!(kind, "github" | "gitlab" | "git") {
         return false;
     }
-    let Ok(parsed_remote) = reqwest::Url::parse(repo_url) else {
+    let Some(remote) = url_origin(repo_url) else {
         return false;
     };
-    let Some(remote_host) = parsed_remote.host_str().map(|h| h.to_ascii_lowercase()) else {
-        return false;
-    };
-    let bound_url = secret
-        .get("repo_url")
-        .and_then(|v| v.as_str())
+    let bound = ["repo_url", "url", "instance_url"]
+        .iter()
+        .filter_map(|key| secret.get(*key).and_then(|v| v.as_str()))
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            secret
-                .get("url")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-        })
-        .or_else(|| {
-            secret
-                .get("instance_url")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-        });
-    if let Some(bound) = bound_url {
-        let expected_host = reqwest::Url::parse(bound)
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-            .unwrap_or_else(|| bound.trim_end_matches('/').to_ascii_lowercase());
-        return !expected_host.is_empty() && remote_host == expected_host;
+        .find(|s| !s.is_empty());
+    let expected = match (bound, kind) {
+        (Some(bound), _) if bound.contains("://") => url_origin(bound),
+        (Some(bound), _) => url_origin(&format!("https://{}", bound.trim_end_matches('/'))),
+        (None, "github") => url_origin("https://github.com"),
+        (None, "gitlab") => url_origin("https://gitlab.com"),
+        (None, _) => None,
+    };
+    expected.is_some_and(|expected| expected == remote)
+}
+
+/// `(scheme, host, port)` of an `http(s)` URL, lowercased, with the scheme's
+/// default port filled in.
+fn url_origin(url: &str) -> Option<(String, String, u16)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
     }
-    match kind {
-        "github" => remote_host == "github.com",
-        "gitlab" => remote_host == "gitlab.com",
-        "git" => true,
-        _ => false,
+    let host = parsed.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
     }
+    Some((parsed.scheme().to_string(), host, parsed.port_or_known_default()?))
 }
 
 fn normalize_lexical_path(path: &Path) -> PathBuf {
@@ -750,6 +747,31 @@ mod tests {
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_git_credential_goes_only_to_the_origin_it_is_bound_to() {
+        let token = uuid::Uuid::new_v4().to_string();
+        let unbound = json!({ "token": token });
+        let bound = json!({ "token": token, "url": "https://git.example.com" });
+        let bare_host = json!({ "token": token, "url": "gitlab.example.com" });
+        let repo_bound = json!({ "token": token, "repo_url": "https://git.example.com/org/site-a.git" });
+
+        // The normal cases still authenticate.
+        assert!(git_credential_matches_remote("git", &bound, "https://git.example.com/org/site-a.git"));
+        assert!(git_credential_matches_remote("git", &repo_bound, "https://git.example.com:443/org/site-a.git"));
+        assert!(git_credential_matches_remote("github", &unbound, "https://github.com/org/site-a.git"));
+        assert!(git_credential_matches_remote("gitlab", &bare_host, "https://gitlab.example.com/org/site-a.git"));
+
+        // A `git` credential bound to nothing goes nowhere.
+        assert!(!git_credential_matches_remote("git", &unbound, "https://git.example.com/org/site-a.git"));
+        // Same host, other scheme or port: refused.
+        assert!(!git_credential_matches_remote("git", &bound, "http://git.example.com/org/site-a.git"));
+        assert!(!git_credential_matches_remote("git", &bound, "https://git.example.com:8443/org/site-a.git"));
+        assert!(!git_credential_matches_remote("github", &unbound, "http://github.com/org/site-a.git"));
+        assert!(!git_credential_matches_remote("gitlab", &bare_host, "http://gitlab.example.com/org/site-a.git"));
+        // Another host: refused.
+        assert!(!git_credential_matches_remote("git", &repo_bound, "https://other.example.com/org/site-a.git"));
     }
 
     #[test]
