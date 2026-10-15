@@ -3847,12 +3847,14 @@ async fn home_clone_project_submit(
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
-    if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+    // Git is handed the URL exactly as it was checked.
+    let clean_repo_url = match crate::platform::services::git_sync::checked_remote_url(
         &clean_repo_url,
         &state.platform.config.data_root,
     ) {
-        return (StatusCode::BAD_REQUEST, err.message).into_response();
-    }
+        Ok(u) => u,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.message).into_response(),
+    };
     let auth_header =
         crate::platform::services::git_sync::git_http_basic_auth_header(&req.username, &req.token);
 
@@ -13304,17 +13306,22 @@ async fn api_git_commit(
             // Only a URL that is sent is checked: a request carrying just a
             // branch or a credential keeps the saved remote.
             let sent_url = req.repo_url.as_deref().unwrap_or_default().trim();
-            if !sent_url.is_empty() {
-                if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+            let checked_url = if sent_url.is_empty() {
+                None
+            } else {
+                match crate::platform::services::git_sync::checked_remote_url(
                     sent_url,
                     &state.platform.config.data_root,
                 ) {
-                    return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+                    Ok(url) => Some(url),
+                    Err(err) => {
+                        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+                    }
                 }
-            }
+            };
             let branch = req.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "main".to_string());
             if let Err(e) = state.platform.zebflow_cfg.update(&owner_slug, &project_slug, |cfg| {
-                if let Some(u) = req.repo_url.clone().filter(|u| !u.trim().is_empty()) { cfg.configs.git.remote.repo_url = u.trim().to_string(); }
+                if let Some(u) = checked_url { cfg.configs.git.remote.repo_url = u; }
                 if let Some(c) = req.credential_id.clone().filter(|c| !c.trim().is_empty()) { cfg.configs.git.remote.credential_id = c.trim().to_string(); }
                 cfg.configs.git.remote.branch = branch.clone();
             }) {
@@ -13533,18 +13540,23 @@ async fn api_git_put_remote(
     } else {
         req.branch.trim().to_string()
     };
-    if !disconnect {
-        if let Err(err) = crate::platform::services::git_sync::refuse_remote_in_data_root(
+    let repo_url = if disconnect {
+        String::new()
+    } else {
+        match crate::platform::services::git_sync::checked_remote_url(
             req.repo_url.trim(),
             &state.platform.config.data_root,
         ) {
-            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+            Ok(url) => url,
+            Err(err) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.message}))).into_response();
+            }
         }
-    }
+    };
     match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
         cfg.configs.git.remote.credential_id =
             if disconnect { String::new() } else { req.credential_id.trim().to_string() };
-        cfg.configs.git.remote.repo_url = req.repo_url.trim().to_string();
+        cfg.configs.git.remote.repo_url = repo_url;
         cfg.configs.git.remote.branch = branch;
     }) {
         Ok(_) => Json(json!({"ok": true})).into_response(),

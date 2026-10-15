@@ -150,18 +150,19 @@ impl GitSyncService {
         vec!["-c".into(), format!("user.name={}", id.name), "-c".into(), format!("user.email={}", id.email)]
     }
 
-    /// `origin` carries the bare URL. Set on every remote-facing verb, so a
-    /// project configured before this module existed gets it lazily.
-    fn ensure_origin(&self, repo: &Path, repo_url: &str) -> Result<(), PlatformError> {
+    /// `origin` carries the bare URL, checked and normalized; answers that URL.
+    /// Set on every remote-facing verb, so a project configured before this
+    /// module existed gets it lazily.
+    fn ensure_origin(&self, repo: &Path, repo_url: &str) -> Result<String, PlatformError> {
         if repo_url.is_empty() {
             return Err(PlatformError::new("GIT_NO_REMOTE", "No remote configured. Connect a remote in the Git panel first."));
         }
-        refuse_remote_in_data_root(repo_url, &self.platform.config.data_root)?;
+        let repo_url = checked_remote_url(repo_url, &self.platform.config.data_root)?;
         let current = run(repo, &[], &["remote", "get-url", "origin"]).ok();
         match current {
-            Some(url) if url.trim() == repo_url => Ok(()),
-            Some(_) => run(repo, &[], &["remote", "set-url", "--end-of-options", "origin", repo_url]).map(|_| ()),
-            None => run(repo, &[], &["remote", "add", "--end-of-options", "origin", repo_url]).map(|_| ()),
+            Some(url) if url.trim() == repo_url => Ok(repo_url),
+            Some(_) => run(repo, &[], &["remote", "set-url", "--end-of-options", "origin", &repo_url]).map(|_| repo_url),
+            None => run(repo, &[], &["remote", "add", "--end-of-options", "origin", &repo_url]).map(|_| repo_url),
         }
     }
 
@@ -195,7 +196,7 @@ impl GitSyncService {
     pub fn fetch(&self, owner: &str, project: &str) -> Result<SyncState, PlatformError> {
         let repo = self.repo_dir(owner, project)?;
         let (repo_url, cred, remote_branch) = self.remote(owner, project)?;
-        self.ensure_origin(&repo, &repo_url)?;
+        let repo_url = self.ensure_origin(&repo, &repo_url)?;
         let auth = self.auth_env(owner, project, &cred, &repo_url);
         let auth_refs: Vec<(&str, &str)> = auth.iter().map(|(k, v)| (*k, v.as_str())).collect();
         match run_env(&repo, &[], &["fetch", "--end-of-options", "origin", &remote_branch], &auth_refs) {
@@ -244,7 +245,7 @@ impl GitSyncService {
     pub fn push(&self, owner: &str, project: &str) -> Result<SyncState, PlatformError> {
         let repo = self.repo_dir(owner, project)?;
         let (repo_url, cred, remote_branch) = self.remote(owner, project)?;
-        self.ensure_origin(&repo, &repo_url)?;
+        let repo_url = self.ensure_origin(&repo, &repo_url)?;
         let state = self.state(owner, project)?;
         if state.rebase_in_progress {
             return Err(PlatformError::new("GIT_CONFLICT", "a rebase is in progress — resolve the conflicts and continue, or abort"));
@@ -334,12 +335,15 @@ impl GitSyncService {
 /// `ext::` transport to run. `core.symlinks=false` makes a clone, a sync or
 /// a checkout write a committed symlink as a plain file holding its target:
 /// a project's files are served without a login, and a link would serve
-/// whatever it points at.
+/// whatever it points at. `http.followRedirects=false` keeps git on the host
+/// [`checked_remote_url`] checked: a redirect is never followed, so a remote
+/// cannot bounce a fetch, a push or its credential to another address.
 const HARDENED_CONFIG: &[&str] = &[
     "core.hooksPath=/dev/null",
     "core.fsmonitor=false",
     "core.symlinks=false",
     "protocol.ext.allow=never",
+    "http.followRedirects=false",
 ];
 
 /// A `git` process with [`HARDENED_CONFIG`] applied and no terminal prompt.
@@ -436,27 +440,41 @@ fn resolve_existing_ancestor(path: &Path) -> PathBuf {
     lex
 }
 
-/// Validates a Git remote URL:
-/// - Refuses bare filesystem paths, SCP-style `user@host:path`, `ssh://`, `git://`, or leading `-`.
-/// - For `http://` and `https://`, refuses localhost, internal domains, private/loopback/link-local IP literals, and any DNS resolution to a blocked IP.
-/// - For `file://`, requires an absolute path outside `data_root`.
-pub fn refuse_remote_in_data_root(repo_url: &str, data_root: &Path) -> Result<(), PlatformError> {
+/// Resolves a host name to the addresses a connection could reach.
+type HostLookup<'a> = &'a dyn Fn(&str, u16) -> std::io::Result<Vec<std::net::IpAddr>>;
+
+fn system_lookup(host: &str, port: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
+    std::net::ToSocketAddrs::to_socket_addrs(&(host, port)).map(|addrs| addrs.map(|a| a.ip()).collect())
+}
+
+/// Checks a git remote URL and answers it normalized — the exact string git
+/// must be handed, so git connects to what was checked:
+/// - refuses bare filesystem paths, SCP-style `user@host:path`, `ssh://`,
+///   `git://`, a leading `-`, and `\`, whitespace or control characters
+///   (a URL parser and git disagree on where the host of `https://a\@b` is);
+/// - for `http://` and `https://`, refuses local and internal names, a blocked
+///   address literal, and a name that resolves to a blocked address or does
+///   not resolve at all;
+/// - for `file://`, requires an absolute path outside `data_root`, and answers
+///   it with `.` and `..` already resolved.
+pub fn checked_remote_url(repo_url: &str, data_root: &Path) -> Result<String, PlatformError> {
+    checked_remote_url_with(repo_url, data_root, &system_lookup)
+}
+
+fn checked_remote_url_with(repo_url: &str, data_root: &Path, lookup: HostLookup<'_>) -> Result<String, PlatformError> {
+    let refused = |message: String| PlatformError::new("GIT_REMOTE_REFUSED", message);
     let repo_url = repo_url.trim();
     if repo_url.is_empty() || repo_url.starts_with('-') {
-        return Err(PlatformError::new(
-            "GIT_REMOTE_REFUSED",
-            "remote URL is empty or invalid",
-        ));
+        return Err(refused("remote URL is empty or invalid".to_string()));
     }
-    if repo_url.starts_with("http://") || repo_url.starts_with("https://") {
-        let parsed = reqwest::Url::parse(repo_url).map_err(|e| {
-            PlatformError::new("GIT_REMOTE_REFUSED", format!("invalid remote URL: {e}"))
-        })?;
+    if repo_url.contains('\\') || repo_url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(refused("remote URL must not contain a backslash, whitespace or control characters".to_string()));
+    }
+    let scheme = repo_url.find("://").map(|i| repo_url[..i].to_ascii_lowercase());
+    if matches!(scheme.as_deref(), Some("http" | "https")) {
+        let parsed = reqwest::Url::parse(repo_url).map_err(|e| refused(format!("invalid remote URL: {e}")))?;
         let Some(host) = parsed.host_str() else {
-            return Err(PlatformError::new(
-                "GIT_REMOTE_REFUSED",
-                "remote URL must include a host",
-            ));
+            return Err(refused("remote URL must include a host".to_string()));
         };
         let lower = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
         if lower == "localhost"
@@ -465,40 +483,31 @@ pub fn refuse_remote_in_data_root(repo_url: &str, data_root: &Path) -> Result<()
             || lower.ends_with(".internal")
             || lower.ends_with(".cluster.local")
         {
-            return Err(PlatformError::new(
-                "GIT_REMOTE_REFUSED",
-                format!("remote URL host '{host}' targets a local or internal domain"),
-            ));
+            return Err(refused(format!("remote URL host '{host}' targets a local or internal domain")));
         }
-        if let Ok(ip) = lower.parse::<std::net::IpAddr>() {
-            crate::pipeline::security::validate_outbound_http_url(repo_url, "git.remote")
-                .map_err(|e| PlatformError::new("GIT_REMOTE_REFUSED", e.message))?;
-            let _ = ip;
-            return Ok(());
-        }
-        if let Some(port) = parsed.port_or_known_default() {
-            if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) {
-                for addr in addrs {
-                    let probe = format!("{}://{}:{}/", parsed.scheme(), addr.ip(), port);
-                    crate::pipeline::security::validate_outbound_http_url(&probe, "git.remote")
-                        .map_err(|e| PlatformError::new("GIT_REMOTE_REFUSED", e.message))?;
-                }
+        let addrs = match lower.parse::<std::net::IpAddr>() {
+            Ok(ip) => vec![ip],
+            Err(_) => {
+                let port = parsed.port_or_known_default().ok_or_else(|| refused("remote URL must include a valid port".to_string()))?;
+                lookup(&lower, port).map_err(|e| refused(format!("remote host '{host}' could not be resolved: {e}")))?
             }
+        };
+        if addrs.is_empty() {
+            return Err(refused(format!("remote host '{host}' could not be resolved")));
         }
-        return Ok(());
+        if let Some(ip) = addrs.into_iter().find(|ip| crate::pipeline::security::is_blocked_egress_ip(*ip)) {
+            return Err(refused(format!("remote URL host '{host}' resolves to blocked network address {ip}")));
+        }
+        return Ok(parsed.to_string());
     }
-    let Some(rest) = repo_url.strip_prefix("file://") else {
-        return Err(PlatformError::new(
-            "GIT_REMOTE_REFUSED",
-            "remote URL must use https://, http://, or an absolute file:// path outside the data root",
+    let Some(rest) = repo_url.get("file://".len()..).filter(|_| scheme.as_deref() == Some("file")) else {
+        return Err(refused(
+            "remote URL must use https://, http://, or an absolute file:// path outside the data root".to_string(),
         ));
     };
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
     if !rest.starts_with('/') {
-        return Err(PlatformError::new(
-            "GIT_REMOTE_REFUSED",
-            "a file:// remote must be an absolute path",
-        ));
+        return Err(refused("a file:// remote must be an absolute path".to_string()));
     }
     let target_lex = normalize_lexical_path(Path::new(rest));
     let root_lex = normalize_lexical_path(data_root);
@@ -509,12 +518,9 @@ pub fn refuse_remote_in_data_root(repo_url: &str, data_root: &Path) -> Result<()
         || target_lex.starts_with(&root_lex)
         || root_lex.starts_with(&target_lex)
     {
-        return Err(PlatformError::new(
-            "GIT_REMOTE_REFUSED",
-            "a file:// remote cannot point inside the platform's data root",
-        ));
+        return Err(refused("a file:// remote cannot point inside the platform's data root".to_string()));
     }
-    Ok(())
+    Ok(format!("file://{}", target_lex.display()))
 }
 
 fn run(repo: &Path, pre: &[String], args: &[&str]) -> Result<String, PlatformError> {
@@ -651,6 +657,47 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Every name resolves to one public documentation address.
+    fn public_lookup(_host: &str, _port: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
+        Ok(vec!["203.0.113.10".parse().unwrap()])
+    }
+
+    #[test]
+    fn git_is_handed_the_checked_remote_and_never_follows_a_redirect() {
+        let root = std::env::temp_dir().join(format!("zf-git-checked-{}", std::process::id()));
+
+        // The normal cases: answered normalized, which is what git is handed.
+        assert_eq!(
+            checked_remote_url_with("HTTPS://Git.Example.COM/org/site-a.git", &root, &public_lookup).unwrap(),
+            "https://git.example.com/org/site-a.git"
+        );
+        assert_eq!(
+            checked_remote_url_with("file:///srv/remotes/x/../site-a.git", &root, &public_lookup).unwrap(),
+            "file:///srv/remotes/site-a.git"
+        );
+        let v6 = |_: &str, _: u16| -> std::io::Result<Vec<std::net::IpAddr>> { Ok(vec!["2001:db8::10".parse().unwrap()]) };
+        assert!(checked_remote_url_with("https://git.example.com/a.git", &root, &v6).is_ok(), "a public IPv6 answer passes");
+
+        // A backslash: a URL parser reads it as `/`, git does not.
+        for bad in ["https://git.example.com\\@203.0.113.10/a.git", "https://git.example.com/a b.git", "file:///srv/a\\b.git"] {
+            assert!(checked_remote_url_with(bad, &root, &public_lookup).is_err(), "{bad} must be refused");
+        }
+        // A lookup that fails, or answers nothing, refuses.
+        let failing = |_: &str, _: u16| -> std::io::Result<Vec<std::net::IpAddr>> {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such host"))
+        };
+        let empty = |_: &str, _: u16| -> std::io::Result<Vec<std::net::IpAddr>> { Ok(Vec::new()) };
+        let private = |_: &str, _: u16| -> std::io::Result<Vec<std::net::IpAddr>> { Ok(vec!["127.0.0.1".parse().unwrap()]) };
+        let err = checked_remote_url_with("https://git.example.com/a.git", &root, &failing).unwrap_err();
+        assert_eq!(err.code, "GIT_REMOTE_REFUSED");
+        assert!(checked_remote_url_with("https://git.example.com/a.git", &root, &empty).is_err());
+        assert!(checked_remote_url_with("https://git.example.com/a.git", &root, &private).is_err());
+
+        // Every git the platform starts refuses to follow a redirect.
+        let out = git_command().args(["config", "--get", "http.followRedirects"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "false");
+    }
+
     #[test]
     fn the_state_word_reads_the_counts() {
         let mut s = SyncState { remote_configured: true, ahead: Some(0), behind: Some(0), ..Default::default() };
@@ -675,10 +722,10 @@ mod tests {
         std::fs::create_dir_all(root.join("tenants/a/b/repo")).unwrap();
         let inside = format!("file://{}", root.join("tenants/a/b/repo").display());
         let dotted = format!("file://{}/tenants/../tenants/a/b/repo", root.display());
-        assert!(refuse_remote_in_data_root(&inside, &root).is_err());
-        assert!(refuse_remote_in_data_root(&dotted, &root).is_err());
-        assert!(refuse_remote_in_data_root("file:///srv/remotes/site-a.git", &root).is_ok());
-        assert!(refuse_remote_in_data_root("https://git.example.com/a.git", &root).is_ok());
+        assert!(checked_remote_url_with(&inside, &root, &public_lookup).is_err());
+        assert!(checked_remote_url_with(&dotted, &root, &public_lookup).is_err());
+        assert!(checked_remote_url_with("file:///srv/remotes/site-a.git", &root, &public_lookup).is_ok());
+        assert!(checked_remote_url_with("https://git.example.com/a.git", &root, &public_lookup).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -699,7 +746,7 @@ mod tests {
             "https://api.svc.cluster.local/repo.git",
         ] {
             assert!(
-                refuse_remote_in_data_root(bad_remote, &root).is_err(),
+                checked_remote_url_with(bad_remote, &root, &public_lookup).is_err(),
                 "expected remote '{bad_remote}' to be refused"
             );
         }
