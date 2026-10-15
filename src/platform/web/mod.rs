@@ -1364,11 +1364,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         ws_client_manager,
         preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         sessions,
-        oauth_state_secret: {
-            let mut bytes = [0u8; 32];
-            rand::rng().fill(&mut bytes);
-            bytes
-        },
+        oauth_state_secret: crate::infra::secrets::signed::process_key(),
         mcp_failures: Arc::new(published_mcp::FailureLimiter::default()),
     };
 
@@ -17346,27 +17342,14 @@ fn sign_oauth_state(
     credential_id: &str,
     nonce: &str,
 ) -> String {
-    use base64::Engine as _;
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
-    let now = crate::platform::model::now_ts();
     let payload = serde_json::json!({
         "o": owner,
         "p": project,
         "c": credential_id,
         "n": nonce,
-        "t": now
+        "t": crate::platform::model::now_ts()
     });
-    let payload_b64 =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key size");
-    mac.update(payload_b64.as_bytes());
-    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-
-    format!("{payload_b64}.{sig}")
+    crate::infra::secrets::signed::sign(secret, &payload)
 }
 
 fn verify_oauth_state(
@@ -17374,37 +17357,12 @@ fn verify_oauth_state(
     state: &str,
     cookie_nonce: Option<&str>,
 ) -> Result<(String, String, String), String> {
-    use base64::Engine as _;
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
     let expected_nonce = cookie_nonce
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "missing oauth nonce cookie".to_string())?;
 
-    let parts: Vec<&str> = state.splitn(2, '.').collect();
-    if parts.len() != 2 {
-        return Err("invalid state format".to_string());
-    }
-    let (payload_b64, sig_b64) = (parts[0], parts[1]);
-
-    // Verify HMAC
-    type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key size");
-    mac.update(payload_b64.as_bytes());
-    let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(sig_b64)
-        .map_err(|e| format!("bad sig encoding: {e}"))?;
-    mac.verify_slice(&sig_bytes)
-        .map_err(|_| "invalid signature".to_string())?;
-
-    // Decode payload
-    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload_b64)
-        .map_err(|e| format!("bad payload encoding: {e}"))?;
-    let payload: serde_json::Value =
-        serde_json::from_slice(&payload_bytes).map_err(|e| format!("bad payload json: {e}"))?;
+    let payload = crate::infra::secrets::signed::verify(secret, state)?;
 
     let owner = payload
         .get("o")

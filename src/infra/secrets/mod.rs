@@ -9,6 +9,7 @@
 //! | --- | --- |
 //! | [`envelope`] | the AEAD and the three self-describing formats — `zfk1`, `zfw1`, `zfc1` |
 //! | [`keyring`] | the instance key file, the versioned data keys, and every refusal |
+//! | [`signed`] | tokens a process signs with its own random key: OAuth state, room tickets |
 //!
 //! What this protects is stated in the contract and worth repeating where the
 //! code is: **a copied database** — a backup, a support bundle, a snapshot, a
@@ -18,6 +19,7 @@
 
 pub mod envelope;
 pub mod keyring;
+pub mod signed;
 
 pub use envelope::{
     SECRET_TAG, SecretCryptoError, SecretKey, is_secret_envelope, parse_secret_envelope,
