@@ -159,7 +159,9 @@ function scanDashboardRoots() {
   document.querySelectorAll("[data-dashboard-root]").forEach(function(root) {
     if (_dashSet.has(root)) return;
     _dashSet.add(root);
-    const apiUrl = root.getAttribute("data-api-system-info") || "/api/system/info";
+    // The route names the URL for a superadmin only; no URL, no polling.
+    const apiUrl = root.getAttribute("data-api-system-info");
+    if (!apiUrl) return;
     fetchAndRender(root, apiUrl);
     setInterval(function() {
       fetchAndRender(root, apiUrl);

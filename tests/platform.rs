@@ -26,3 +26,5 @@ mod home_hidden;
 mod migration_startup;
 #[path = "platform/sections.rs"]
 mod sections;
+#[path = "platform/system_panel.rs"]
+mod system_panel;

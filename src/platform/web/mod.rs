@@ -5912,6 +5912,11 @@ async fn project_dashboard_page(
         Ok(Some(info)) => {
             let nav = nav_classes(&owner, &project, "dashboard", None);
             let route = format!("/projects/{owner}/{project}/dashboard");
+            // The system panel polls `/api/system/info`, which answers a
+            // superadmin only; anyone else gets no URL and no panel.
+            let system_info_api = session_owner(&state, &headers)
+                .is_some_and(|viewer| is_superadmin_owner(&state, &viewer))
+                .then_some("/api/system/info");
             let input = json!({
                 "seo": {
                     "title": format!("{} - Dashboard", info.title),
@@ -5923,7 +5928,7 @@ async fn project_dashboard_page(
                 "project_href": format!("/projects/{owner}/{project}"),
                 "nav": nav,
                 "api": {
-                    "system_info": "/api/system/info"
+                    "system_info": system_info_api
                 },
                 // Planned again here, so an owner who finished the migration
                 // by hand sees the notice go.
