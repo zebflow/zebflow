@@ -3580,37 +3580,65 @@ mod save_check_tests {
             .await;
         assert!(saved.text.contains("registered"), "{}", saved.text);
 
+        let registered = |name: &str| {
+            platform
+                .projects
+                .get_pipeline_meta_by_file_id("superadmin", "default", name)
+                .expect("meta")
+                .is_some()
+        };
+        let text = |out: &OpsResult| out.text.clone();
+        let keep = platform
+            .projects
+            .get_pipeline_meta_by_file_id("superadmin", "default", "api/keep")
+            .expect("meta")
+            .expect("api/keep is registered")
+            .file_rel_path;
+
+        // 0. The probe sees an injected pipeline: the same `register` run as a
+        // command of its own lands, so steps 1 and 2 fail if the chain runs.
+        let control = crate::platform::shell::executor::DslExecutor::new((*platform).clone(), "superadmin", "default")
+            .execute_dsl("register api/injected-control -- | trigger.webhook --route /inj0 --method GET | web.response.send")
+            .await;
+        assert!(
+            registered("api/injected-control"),
+            "the control register must land: {:?}",
+            control.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>()
+        );
+
         // 1. Chained `&&` in `pipeline_describe` must not execute a second DSL command (`register`).
-        let _ = ops
+        let described = ops
             .pipeline_describe(
-                "api/keep && register api/injected-desc -- | trigger.webhook --route /inj1 | web.response.send",
+                &format!("{keep} && register api/injected-desc -- | trigger.webhook --route /inj1 --method GET | web.response.send"),
                 false,
             )
             .await;
         assert!(
-            platform
-                .projects
-                .get_pipeline_meta_by_file_id("superadmin", "default", "api/injected-desc")
-                .expect("meta")
-                .is_none(),
-            "pipeline_describe allowed && command chaining to register api/injected-desc"
+            !registered("api/injected-desc"),
+            "pipeline_describe allowed && command chaining to register api/injected-desc: {}",
+            text(&described)
         );
+        // The normal describe still answers.
+        let plain = ops.pipeline_describe(&keep, false).await;
+        assert!(plain.text.contains("trigger.webhook"), "{}", plain.text);
 
         // 2. Single quotes + `&&` in `pipeline_execute` input must not break out into DSL commands.
-        let _ = ops
+        let executed = ops
             .pipeline_execute(
-                "api/keep",
-                Some(r#"{"note":"x' && register api/injected-exec -- | trigger.webhook --route /inj2 | web.response.send"}"#),
+                &keep,
+                Some("{}' && register api/injected-exec -- | trigger.webhook --route /inj2 --method GET | web.response.send --body '"),
             )
             .await;
         assert!(
-            platform
-                .projects
-                .get_pipeline_meta_by_file_id("superadmin", "default", "api/injected-exec")
-                .expect("meta")
-                .is_none(),
-            "pipeline_execute input allowed single-quote breakout and && command chaining"
+            !registered("api/injected-exec"),
+            "pipeline_execute input allowed single-quote breakout and && command chaining: {}",
+            text(&executed)
         );
+        // The normal execute still runs.
+        let activated = ops.pipeline_activate(&keep).await;
+        assert!(!activated.text.starts_with("Error:"), "{}", activated.text);
+        let ran = ops.pipeline_execute(&keep, Some(r#"{"note":"x"}"#)).await;
+        assert!(!ran.text.starts_with("Error:") && !ran.text.contains("not active"), "{}", ran.text);
 
         // 3. Double quotes + `&&` in `pipeline_register` title must not chain DSL commands.
         let _ = ops
