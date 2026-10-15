@@ -286,7 +286,12 @@ impl NodeHandler for Node {
             })?;
 
         let status = response.status().as_u16();
-        let raw = crate::pipeline::nodes::basic::http::request::read_body_capped(response, "FW_NODE_BROWSER_PAGE_RUN_READ").await?;
+        let raw = crate::pipeline::security::read_response_capped(
+            response,
+            crate::pipeline::nodes::shared::project_store::MAX_NODE_OBJECT_BYTES,
+            "FW_NODE_BROWSER_PAGE_RUN_READ",
+        )
+        .await?;
         let body_text = String::from_utf8_lossy(&raw).into_owned();
 
         let payload = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));

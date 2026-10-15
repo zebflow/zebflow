@@ -43,7 +43,7 @@ fn normalize_api_path(path: &str) -> String {
     }
 }
 
-const MAX_LLM_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_LLM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// No total timeout of its own: a model may think for minutes, and the
 /// engine's `--timeout` bounds the node, as in `http.response.fetch` and
@@ -55,36 +55,8 @@ fn build_http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-fn parse_bounded_llm_json(bytes: &[u8], max_bytes: usize) -> Result<Value, String> {
-    if bytes.len() > max_bytes {
-        return Err(format!(
-            "LLM response exceeded maximum size of {max_bytes} bytes"
-        ));
-    }
+fn parse_llm_json(bytes: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(bytes).map_err(|e| format!("invalid LLM JSON response: {e}"))
-}
-
-async fn read_bounded_llm_response(
-    mut resp: reqwest::Response,
-    max_bytes: usize,
-) -> Result<Vec<u8>, String> {
-    if let Some(len) = resp.content_length()
-        && len > max_bytes as u64
-    {
-        return Err(format!(
-            "LLM response exceeded maximum size of {max_bytes} bytes"
-        ));
-    }
-    let mut buf = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if buf.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(format!(
-                "LLM response exceeded maximum size of {max_bytes} bytes"
-            ));
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(buf)
 }
 
 fn format_llm_status_error(status: reqwest::StatusCode, val: &Value) -> String {
@@ -312,14 +284,16 @@ impl OpenAiHttpClient {
             .await
             .map_err(|e| e.to_string())?;
         let status = resp.status();
-        let bytes = read_bounded_llm_response(resp, MAX_LLM_RESPONSE_BYTES).await?;
+        let bytes = crate::pipeline::security::read_response_capped(resp, MAX_LLM_RESPONSE_BYTES, "FW_EGRESS")
+            .await
+            .map_err(|e| format!("LLM response: {}", e.message))?;
         // The status first: a 429 or a gateway's HTML 502 is an LLM error
         // with its status, never "invalid JSON".
         if !status.is_success() {
             let val = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             return Err(format_llm_status_error(status, &val));
         }
-        parse_bounded_llm_json(&bytes, MAX_LLM_RESPONSE_BYTES)
+        parse_llm_json(&bytes)
     }
 
     async fn call_chat_completions(&self, messages: Vec<Message>) -> Result<String, String> {
@@ -655,8 +629,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        LlmCall, Message, MessageRole, OpenAiHttpClient, format_llm_status_error,
-        parse_bounded_llm_json,
+        LlmCall, Message, MessageRole, OpenAiHttpClient, format_llm_status_error, parse_llm_json,
     };
 
     /// A local stand-in provider on loopback, opted in the way a self-hosted
@@ -814,11 +787,9 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 0, "loopback server should never be contacted");
         assert!(err.contains("FW_EGRESS_DENIED") || err.contains("blocked network address"), "err: {err}");
 
-        // Bounded JSON response reader rejects oversized payloads and accepts valid JSON within cap.
-        let oversized = vec![b' '; 128];
-        let cap_err = parse_bounded_llm_json(&oversized, 64).expect_err("oversized must fail");
-        assert!(cap_err.contains("exceeded maximum size"), "{cap_err}");
-        let valid = parse_bounded_llm_json(br#"{"output_text":"hello"}"#, 64).expect("within cap");
+        // The size cap is the shared reader's (`read_response_capped`, tested
+        // in `pipeline::security`); valid JSON still parses.
+        let valid = parse_llm_json(br#"{"output_text":"hello"}"#).expect("valid");
         assert_eq!(valid["output_text"], "hello");
         assert_eq!(
             format_llm_status_error(reqwest::StatusCode::BAD_GATEWAY, &json!({ "upstream_html": "do-not-echo" })),

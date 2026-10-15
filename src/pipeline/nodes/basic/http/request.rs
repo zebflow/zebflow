@@ -571,7 +571,12 @@ impl NodeHandler for Node {
         // ── The response, read as `--parse` says ─────────────────────────────────
         let response_type = choice(&self.config.parse, PARSE_WORDS, "json", "--parse", CONFIG_CODE)?;
         // The body is capped while it arrives, not after it is all in memory.
-        let raw = read_body_capped(resp, "FW_NODE_HTTP_RESPONSE_FETCH_READ_BODY").await?;
+        let raw = crate::pipeline::security::read_response_capped(
+            resp,
+            crate::pipeline::nodes::shared::project_store::MAX_NODE_OBJECT_BYTES,
+            "FW_NODE_HTTP_RESPONSE_FETCH_READ_BODY",
+        )
+        .await?;
         let body: Value = match response_type {
             "bytes" => {
                 let bytes = raw;
@@ -651,27 +656,6 @@ impl NodeHandler for Node {
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }
-}
-
-/// The response body, refused under the caller's `code` once it passes the
-/// node read cap (`node-conventions.md` §5) — counted as it streams, so a
-/// large or endless body never sits whole in memory.
-pub(crate) async fn read_body_capped(mut resp: reqwest::Response, code: &'static str) -> Result<Vec<u8>, PipelineError> {
-    let max = crate::pipeline::nodes::shared::project_store::MAX_NODE_OBJECT_BYTES;
-    if resp.content_length().is_some_and(|len| len > max) {
-        return Err(PipelineError::new(
-            code,
-            format!("the response declares {} bytes, over the {max} a node reads", resp.content_length().unwrap_or(0)),
-        ));
-    }
-    let mut out = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|err| PipelineError::new(code, err.to_string()))? {
-        if out.len() as u64 + chunk.len() as u64 > max {
-            return Err(PipelineError::new(code, format!("the response is over the {max} bytes a node reads")));
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out)
 }
 
 /// Build a multipart/form-data request from a JSON value.

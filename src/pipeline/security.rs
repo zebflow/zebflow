@@ -284,6 +284,31 @@ fn normalize_host(host: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// An outbound response body, refused under the caller's `code` once it
+/// passes `max_bytes` — counted as it streams, so a large or endless body never
+/// sits whole in memory. The one capped reader: `http.response.fetch`,
+/// `browser.page.run` and the LLM client all read through it.
+pub async fn read_response_capped(
+    mut resp: reqwest::Response,
+    max_bytes: u64,
+    code: &'static str,
+) -> Result<Vec<u8>, PipelineError> {
+    if let Some(declared) = resp.content_length().filter(|len| *len > max_bytes) {
+        return Err(PipelineError::new(
+            code,
+            format!("the response declares {declared} bytes, over the {max_bytes} allowed"),
+        ));
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|err| PipelineError::new(code, err.to_string()))? {
+        if out.len() as u64 + chunk.len() as u64 > max_bytes {
+            return Err(PipelineError::new(code, format!("the response is over the {max_bytes} bytes allowed")));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 pub fn is_blocked_egress_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
@@ -314,8 +339,8 @@ pub fn is_blocked_egress_ip(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BundleEgress, OutboundHttpPolicy, is_blocked_egress_ip, validate_outbound_http_url,
-        validate_outbound_http_url_with_policy,
+        BundleEgress, OutboundHttpPolicy, is_blocked_egress_ip, read_response_capped,
+        validate_outbound_http_url, validate_outbound_http_url_with_policy,
     };
 
     fn hosts(values: &[&str]) -> Vec<String> {
@@ -468,6 +493,49 @@ mod tests {
         let err = validate_outbound_http_url_with_policy("http://10.0.0.6/embed", "test", &policy)
             .expect_err("different private host stays blocked");
         assert_eq!(err.code, "FW_EGRESS_DENIED");
+    }
+
+    /// One capped reader: a body over the cap is refused whether it declares
+    /// its length or streams without one, a body at the cap is read whole,
+    /// and the two clients that kept their own copy read through this one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_capped_reader_refuses_a_body_over_the_cap() {
+        use axum::{Router, body::Body, routing::get};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let app = Router::new()
+            .route("/sized", get(|| async { "x".repeat(64) }))
+            .route(
+                "/streamed",
+                get(|| async {
+                    let chunks = (0..8).map(|_| Ok::<_, std::io::Error>("x".repeat(8)));
+                    Body::from_stream(futures::stream::iter(chunks))
+                }),
+            );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let fetch = |path: &str| reqwest::get(format!("http://{addr}{path}"));
+
+        for path in ["/sized", "/streamed"] {
+            let err = read_response_capped(fetch(path).await.expect("get"), 63, "FW_EGRESS")
+                .await
+                .expect_err("over the cap");
+            assert_eq!(err.code, "FW_EGRESS", "{path}");
+            assert!(err.message.contains("63"), "{path}: {}", err.message);
+            let whole = read_response_capped(fetch(path).await.expect("get"), 64, "FW_EGRESS")
+                .await
+                .expect("at the cap");
+            assert_eq!(whole.len(), 64, "{path}");
+        }
+        server.abort();
+
+        for (file, source) in [
+            ("http/request.rs", include_str!("nodes/basic/http/request.rs")),
+            ("automaton/infra/http_client.rs", include_str!("../automaton/infra/http_client.rs")),
+        ] {
+            assert!(!source.contains(".chunk()"), "{file} keeps its own capped reader");
+        }
     }
 
     #[test]
