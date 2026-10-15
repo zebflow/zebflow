@@ -367,7 +367,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_package_file_rejects_traversal_and_stubs_beyond_32_unknown_imports() {
+    fn resolve_package_file_rejects_traversal() {
         assert!(resolve_package_file("/pkg", "../escape.wasm").is_err());
         assert!(resolve_package_file("/pkg", "/abs.wasm").is_err());
         assert!(resolve_package_file("/pkg", "a\\b.wasm").is_err());
@@ -375,33 +375,61 @@ mod tests {
             resolve_package_file("/pkg", "mod/node.wasm").unwrap(),
             PathBuf::from("/pkg/mod/node.wasm")
         );
+    }
 
-        // Verify per-invocation Linker::define_unknown_imports_as_default_values works across >32 unknown imports without exhaustion.
-        let engine = Engine::default();
+    /// A JSON-ABI module importing `env.<name>`, which no host defines.
+    /// `run` calls the import (a stub answers 0) and returns the JSON stored
+    /// at offset `answer * 16`: `{"v":0}` at 0, `{"v":7}` at 16.
+    fn json_abi_module(name: [u8; 2]) -> Vec<u8> {
+        let mut wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        // types: ()->i32, (i32)->i32, (i32,i32)->i64
+        wasm.extend_from_slice(&[
+            0x01, 0x10, 0x03, 0x60, 0x00, 0x01, 0x7f, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x02, 0x7f,
+            0x7f, 0x01, 0x7e,
+        ]);
+        // import env.<name> : func 0, type 0
+        wasm.extend_from_slice(&[0x02, 0x0a, 0x01, 0x03, b'e', b'n', b'v', 0x02, name[0], name[1], 0x00, 0x00]);
+        // func 1 (zebflow_alloc) : type 1, func 2 (run) : type 2
+        wasm.extend_from_slice(&[0x03, 0x03, 0x02, 0x01, 0x02]);
+        // one page of memory
+        wasm.extend_from_slice(&[0x05, 0x03, 0x01, 0x00, 0x01]);
+        // exports: memory, zebflow_alloc, run
+        wasm.extend_from_slice(&[0x07, 0x20, 0x03, 0x06]);
+        wasm.extend_from_slice(b"memory");
+        wasm.extend_from_slice(&[0x02, 0x00, 0x0d]);
+        wasm.extend_from_slice(b"zebflow_alloc");
+        wasm.extend_from_slice(&[0x00, 0x01, 0x03]);
+        wasm.extend_from_slice(b"run");
+        wasm.extend_from_slice(&[0x00, 0x02]);
+        // code: alloc -> 256; run -> ((call 0) << 4) << 32 | 7
+        wasm.extend_from_slice(&[
+            0x0a, 0x16, 0x02, 0x05, 0x00, 0x41, 0x80, 0x02, 0x0b, 0x0e, 0x00, 0x10, 0x00, 0xad, 0x42,
+            0x04, 0x86, 0x42, 0x20, 0x86, 0x42, 0x07, 0x84, 0x0b,
+        ]);
+        // data: {"v":0} at 0, {"v":7} at 16
+        wasm.extend_from_slice(&[0x0b, 0x19, 0x02, 0x00, 0x41, 0x00, 0x0b, 0x07]);
+        wasm.extend_from_slice(br#"{"v":0}"#);
+        wasm.extend_from_slice(&[0x00, 0x41, 0x10, 0x0b, 0x07]);
+        wasm.extend_from_slice(br#"{"v":7}"#);
+        wasm
+    }
+
+    /// The host path itself, `run_wasm_export`, stubs each module's unknown
+    /// import per invocation: forty modules with forty different imports all
+    /// instantiate and run, well past the 32 a global stub table held.
+    #[test]
+    fn run_wasm_export_stubs_unknown_imports_on_every_invocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let package_dir = dir.path().to_str().expect("utf-8 temp path");
         for idx in 0..40u8 {
-            let n0 = b'a' + (idx / 26);
-            let n1 = b'a' + (idx % 26);
-            let wasm_bytes: &[u8] = &[
-                0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
-                0x01, 0x0a, 0x02, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f, // types: (i32)->i32, ()->i32
-                0x02, 0x0a, 0x01, 0x03, b'e', b'n', b'v', 0x02, n0, n1, 0x00, 0x00, // import env.<n0><n1> : func 0
-                0x03, 0x02, 0x01, 0x01, // func 1 : type 1
-                0x07, 0x08, 0x01, 0x04, b'c', b'a', b'l', b'l', 0x00, 0x01, // export "call" = func 1
-                0x0a, 0x08, 0x01, 0x06, 0x00, 0x41, 0x07, 0x10, 0x00, 0x0b, // code: i32.const 7; call 0; end
-            ];
-            let module = Module::new(&engine, wasm_bytes).expect("compile wasm");
-            let mut store = Store::new(&engine, ());
-            let mut linker = wasmtime::Linker::new(&engine);
-            linker
-                .define_unknown_imports_as_default_values(&mut store, &module)
-                .expect("stub unknown imports");
-            let instance = linker
-                .instantiate(&mut store, &module)
-                .expect("instantiate with stubbed import");
-            let f = instance
-                .get_typed_func::<(), i32>(&mut store, "call")
-                .expect("export");
-            assert_eq!(f.call(&mut store, ()).expect("call"), 0);
+            let name = [b'a' + idx / 26, b'a' + idx % 26];
+            let rel = format!("wasm/m{idx}.wasm");
+            std::fs::create_dir_all(dir.path().join("wasm")).expect("mkdir");
+            std::fs::write(dir.path().join(&rel), json_abi_module(name)).expect("write module");
+            let spec = WasmModuleSpec { path: rel, abi: WASM_JSON_ABI_V1.to_string() };
+            let out = run_wasm_export("test", package_dir, &spec, "run", &json!({}), &json!({}), &json!({}))
+                .unwrap_or_else(|err| panic!("module {idx}: {err:?}"));
+            assert_eq!(out, json!({ "v": 0 }), "module {idx}: the stub answers 0");
         }
     }
 }
