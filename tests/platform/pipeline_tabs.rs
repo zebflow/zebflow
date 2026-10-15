@@ -71,11 +71,11 @@ async fn studio() -> (TestDir, axum::Router, String) {
 async fn every_pipelines_tab_renders_with_the_shared_tab_bar() {
     let (_root, app, cookie) = studio().await;
     let base = format!("/projects/{OWNER}/{PROJECT}/pipelines");
-    for tab in ["webhooks", "schedules", "manual", "functions", "registry?path=/"] {
+    for tab in ["webhooks", "schedules", "manual", "functions", "rooms", "registry?path=/"] {
         let (status, body) = get(&app, &cookie, &format!("{base}/{tab}")).await;
         assert_eq!(status, StatusCode::OK, "{tab}");
         assert!(!body.contains("RWE component error"), "{tab}: {body}");
-        for link in ["webhooks", "schedules", "manual", "functions"] {
+        for link in ["webhooks", "schedules", "manual", "functions", "rooms"] {
             assert!(body.contains(&format!("href=\"{base}/{link}\"")), "{tab} has no {link} tab");
         }
     }
@@ -85,4 +85,23 @@ async fn every_pipelines_tab_renders_with_the_shared_tab_bar() {
     }
     let (status, _) = get(&app, &cookie, &format!("{base}/no-such-tab")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// The rooms tab lists live rooms from the rooms API, not pipeline files:
+/// the page is handed that API and draws no pipeline list.
+#[tokio::test]
+async fn the_rooms_tab_reads_live_rooms_from_the_rooms_api() {
+    let (_root, app, cookie) = studio().await;
+    let (status, body) = get(&app, &cookie, &format!("/projects/{OWNER}/{PROJECT}/pipelines/rooms")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body.contains("RWE component error"), "{body}");
+    assert!(body.contains("data-rooms-panel=\"true\""), "the rooms panel is drawn");
+    assert!(
+        body.contains(&format!("data-rooms-api=\"/api/projects/{OWNER}/{PROJECT}/ws/rooms\"")),
+        "the panel reads the project's rooms API"
+    );
+    assert!(!body.contains("Create one in the Registry tab."), "rooms are not a pipeline list");
+
+    let (_, schedules) = get(&app, &cookie, &format!("/projects/{OWNER}/{PROJECT}/pipelines/schedules")).await;
+    assert!(!schedules.contains("data-rooms-panel"), "only the rooms tab draws the rooms panel");
 }

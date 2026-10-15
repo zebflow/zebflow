@@ -5067,6 +5067,9 @@ async fn render_project_pipelines_with_tab(
     };
 
     let is_registry = tab == "registry";
+    // Rooms lists live rooms, not pipeline files: the page reads them from
+    // the rooms API in the browser.
+    let is_rooms = tab == "rooms";
 
     // Registry tab now delegates to the unified editor with nav_sub="registry"
     if is_registry {
@@ -5103,7 +5106,7 @@ async fn render_project_pipelines_with_tab(
             let route = format!("/projects/{owner}/{project}/pipelines/{tab_key}");
             let editor_base = format!("/projects/{owner}/{project}/pipelines/registry");
             let route_base = format!("/projects/{owner}/{project}/pipelines/registry");
-            let pipeline_items = if is_registry {
+            let pipeline_items = if is_registry || is_rooms {
                 items
             } else {
                 let trigger_filter = match tab_key {
@@ -5296,8 +5299,10 @@ async fn render_project_pipelines_with_tab(
                 "page_subtitle": tab_desc,
                 "pipeline_items": pipeline_items,
                 "is_registry": is_registry,
-                "is_trigger_list": !is_registry,
+                "is_trigger_list": !is_registry && !is_rooms,
                 "is_webhooks": tab_key == "webhooks",
+                "is_rooms": is_rooms,
+                "rooms_api": format!("/api/projects/{owner}/{project}/ws/rooms"),
                 "registry": registry,
                 "nav": nav,
             });
@@ -7455,6 +7460,12 @@ fn pipeline_tab_payload(
             "Callable in-house functions for reuse across workflows.",
             Vec::new(),
         )),
+        "rooms" => Some((
+            "rooms",
+            "Rooms",
+            "Websocket rooms open in this project right now.",
+            Vec::new(),
+        )),
         _ => None,
     }
 }
@@ -7468,6 +7479,7 @@ fn project_nav_map(owner: &str, project: &str) -> String {
            - Pipelines › Schedules: {pb}/schedules\n\
            - Pipelines › Manual: {pb}/manual\n\
            - Pipelines › Functions: {pb}/functions\n\
+           - Pipelines › Rooms (live websocket rooms): {pb}/rooms\n\
            - Dashboard: {b}/dashboard\n\
            - Credentials: {b}/credentials\n\
            - Databases / Tables (lists all connections): {b}/db/connections\n\
@@ -7494,6 +7506,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "pipelines_schedules": format!("{pipelines_base}/schedules"),
             "pipelines_manual": format!("{pipelines_base}/manual"),
             "pipelines_functions": format!("{pipelines_base}/functions"),
+            "pipelines_rooms": format!("{pipelines_base}/rooms"),
             "hub": format!("/projects/{owner}/{project}/hub"),
             "dashboard": format!("/projects/{owner}/{project}/dashboard"),
             "credentials": format!("/projects/{owner}/{project}/credentials"),
@@ -7518,6 +7531,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "pipeline_schedules": if pipeline_sub == Some("schedules") { "is-active" } else { "" },
             "pipeline_manual": if pipeline_sub == Some("manual") { "is-active" } else { "" },
             "pipeline_functions": if pipeline_sub == Some("functions") { "is-active" } else { "" },
+            "pipeline_rooms": if pipeline_sub == Some("rooms") { "is-active" } else { "" },
             "db_connections": if main == "databases" { "is-active" } else { "" },
             "table_connections": if main == "databases" { "is-active" } else { "" },
         }

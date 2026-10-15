@@ -7,6 +7,7 @@ import PipelineTabNav from "@/pages/project-studio/pipelines/components/pipeline
 import { PipelineIcon, StatusDot, TrashIcon } from "@/pages/project-studio/pipelines/registry/components/editor-icons";
 import TriggerPipelinesPanel from "@/pages/project-studio/pipelines/components/trigger-pipelines-panel";
 import InstallCatalogDialog from "@/pages/project-studio/pipelines/components/install-catalog-dialog";
+import RoomsPanel from "@/pages/project-studio/pipelines/components/rooms-panel";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -309,6 +310,10 @@ export default function Page(input) {
               items={input?.pipeline_items}
               webhooks={!!input?.is_webhooks}
             />
+          ) : null}
+
+          {input?.is_rooms ? (
+            <RoomsPanel api={input?.rooms_api} title={input?.page_title} subtitle={input?.page_subtitle} />
           ) : null}
         </section>
       </div>

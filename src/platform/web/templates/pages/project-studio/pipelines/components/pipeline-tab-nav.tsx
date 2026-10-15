@@ -1,7 +1,8 @@
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 /**
- * The pipelines area's tabs: the registry, then one tab per trigger kind.
+ * The pipelines area's tabs: the registry, one tab per trigger kind, and
+ * the live rooms.
  *
  * Both the pipelines page and the unified editor draw it, from the `nav`
  * the server builds, so a new tab is added here once.
@@ -16,6 +17,7 @@ export default function PipelineTabNav({ nav }) {
       <StudioTabLink href={links.pipelines_schedules ?? "#"} active={!!classes.pipeline_schedules}>Schedules</StudioTabLink>
       <StudioTabLink href={links.pipelines_manual ?? "#"} active={!!classes.pipeline_manual}>Manual</StudioTabLink>
       <StudioTabLink href={links.pipelines_functions ?? "#"} active={!!classes.pipeline_functions}>Functions</StudioTabLink>
+      <StudioTabLink href={links.pipelines_rooms ?? "#"} active={!!classes.pipeline_rooms}>Rooms</StudioTabLink>
     </StudioTabNav>
   );
 }
