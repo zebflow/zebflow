@@ -36,6 +36,10 @@ fn cache() -> &'static Mutex<CacheState> {
 
 /// Build cache key for a function layer scoped by request parameters so one
 /// caller's query parameters cannot poison the cached GeoJSON for another caller.
+/// `format` is part of the key because the function receives it and may answer
+/// differently for a PNG tile, an MVT tile and a GeoJSON download. The free-text
+/// filter stays last so no other part can be forged through it.
+#[allow(clippy::too_many_arguments)]
 pub fn cache_key(
     owner: &str,
     project: &str,
@@ -43,6 +47,7 @@ pub fn cache_key(
     layer_id: &str,
     bbox: Option<[f64; 4]>,
     zoom: Option<u8>,
+    format: &str,
     filter: Option<&str>,
     limit: usize,
 ) -> String {
@@ -57,7 +62,7 @@ pub fn cache_key(
         .unwrap_or_else(|| "none".to_string());
     let filter_part = filter.unwrap_or("");
     format!(
-        "{owner}:{project}:{slug}:layer={layer_id}:bbox={bbox_part}:zoom={zoom_part}:limit={limit}:filter={filter_part}"
+        "{owner}:{project}:{slug}:layer={layer_id}:bbox={bbox_part}:zoom={zoom_part}:format={format}:limit={limit}:filter={filter_part}"
     )
 }
 

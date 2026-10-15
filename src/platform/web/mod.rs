@@ -25214,6 +25214,13 @@ async fn public_mapserver_ingress(
     {
         return (axum::http::StatusCode::BAD_REQUEST, err).into_response();
     }
+    if let Err(err) = crate::mapserver::resolve::require_zoom_for_bounds(&manifest, zoom) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": err})),
+        )
+            .into_response();
+    }
     let effective_filter: Option<String> = match (manifest.filter.clone(), filter_param) {
         (Some(default), Some(caller)) => Some(format!("{default};{caller}")),
         (default, caller) => default.or(caller),
@@ -25276,6 +25283,7 @@ async fn public_mapserver_ingress(
             &manifest.layer_id,
             bbox,
             zoom,
+            render_format,
             effective_filter.as_deref(),
             effective_limit,
         );

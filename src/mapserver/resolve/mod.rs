@@ -62,21 +62,36 @@ pub struct ResolveResponse {
     pub features: Vec<Value>,
 }
 
+/// Whether the layer limits the zooms it answers at.
+pub fn has_zoom_bounds(manifest: &PublishedLayerManifest) -> bool {
+    manifest.min_zoom.is_some() || manifest.max_zoom.is_some()
+}
+
 /// Returns whether `zoom` satisfies the manifest's `min_zoom` and `max_zoom` bounds.
+/// A layer with bounds answers no request that names no zoom: leaving `?zoom=`
+/// out must not be a way around them.
 pub fn zoom_within_bounds(manifest: &PublishedLayerManifest, zoom: Option<u8>) -> bool {
-    if let Some(zoom) = zoom {
-        if let Some(min_zoom) = manifest.min_zoom {
-            if zoom < min_zoom {
-                return false;
-            }
-        }
-        if let Some(max_zoom) = manifest.max_zoom {
-            if zoom > max_zoom {
-                return false;
-            }
-        }
+    let Some(zoom) = zoom else {
+        return !has_zoom_bounds(manifest);
+    };
+    manifest.min_zoom.is_none_or(|min_zoom| zoom >= min_zoom)
+        && manifest.max_zoom.is_none_or(|max_zoom| zoom <= max_zoom)
+}
+
+/// The refusal for a request to a zoom-bounded layer that carries no usable
+/// zoom (missing, or not a number from 0 to 255). The handler answers it as
+/// a 400 before any source is read.
+pub fn require_zoom_for_bounds(
+    manifest: &PublishedLayerManifest,
+    zoom: Option<u8>,
+) -> Result<(), String> {
+    if zoom.is_none() && has_zoom_bounds(manifest) {
+        return Err(format!(
+            "layer '{}' has zoom bounds; send ?zoom= as a whole number",
+            manifest.layer_id
+        ));
     }
-    true
+    Ok(())
 }
 
 /// Validates a caller-supplied `?style=` DSL parameter against `manifest.allowed_properties`.
@@ -204,6 +219,18 @@ mod tests {
         assert!(zoom_within_bounds(&manifest, Some(10)));
         assert!(zoom_within_bounds(&manifest, Some(16)));
         assert!(!zoom_within_bounds(&manifest, Some(17)));
+        // A bounded layer refuses a request that names no zoom.
+        assert!(!zoom_within_bounds(&manifest, None));
+        let err = require_zoom_for_bounds(&manifest, None).expect_err("no zoom on a bounded layer");
+        assert!(err.contains("zoom bounds"), "{err}");
+        assert!(require_zoom_for_bounds(&manifest, Some(12)).is_ok());
+        let unbounded = PublishedLayerManifest {
+            min_zoom: None,
+            max_zoom: None,
+            ..manifest.clone()
+        };
+        assert!(zoom_within_bounds(&unbounded, None));
+        assert!(require_zoom_for_bounds(&unbounded, None).is_ok());
 
         // 3. Function cache keys vary by layer_id, bbox, zoom, filter, and limit.
         let k1 = function_cache::cache_key(
@@ -213,6 +240,7 @@ mod tests {
             "parcels",
             Some([0.0, 0.0, 1.0, 1.0]),
             Some(12),
+            "geojson",
             Some("name:A"),
             100,
         );
@@ -223,6 +251,7 @@ mod tests {
             "parcels",
             Some([1.0, 1.0, 2.0, 2.0]),
             Some(12),
+            "geojson",
             Some("name:A"),
             100,
         );
@@ -233,6 +262,7 @@ mod tests {
             "parcels",
             Some([0.0, 0.0, 1.0, 1.0]),
             Some(12),
+            "geojson",
             Some("name:B"),
             100,
         );
@@ -243,6 +273,7 @@ mod tests {
             "parcels",
             Some([0.0, 0.0, 1.0, 1.0]),
             Some(13),
+            "geojson",
             Some("name:A"),
             100,
         );
@@ -253,6 +284,7 @@ mod tests {
             "parcels",
             Some([0.0, 0.0, 1.0, 1.0]),
             Some(12),
+            "geojson",
             Some("name:A"),
             10,
         );
@@ -260,5 +292,31 @@ mod tests {
         assert_ne!(k1, k_diff_filter);
         assert_ne!(k1, k_diff_zoom);
         assert_ne!(k1, k_diff_limit);
+        let k_diff_format = function_cache::cache_key(
+            "org",
+            "demo",
+            "fn_parcels",
+            "parcels",
+            Some([0.0, 0.0, 1.0, 1.0]),
+            Some(12),
+            "mvt",
+            Some("name:A"),
+            100,
+        );
+        assert_ne!(k1, k_diff_format);
+        assert_eq!(
+            k1,
+            function_cache::cache_key(
+                "org",
+                "demo",
+                "fn_parcels",
+                "parcels",
+                Some([0.0, 0.0, 1.0, 1.0]),
+                Some(12),
+                "geojson",
+                Some("name:A"),
+                100,
+            )
+        );
     }
 }

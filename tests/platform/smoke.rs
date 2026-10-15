@@ -6734,6 +6734,51 @@ async fn a_web_published_layer_serves_and_shows_only_the_chosen_properties() {
         "the whole-source view is not public"
     );
 
+    // A layer with zoom bounds answers only a request that names a zoom
+    // inside them: leaving `?zoom=` out, or sending one that is not a
+    // number, is a 400 rather than a way around the bounds.
+    let bounded = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/mapserver/default-mapserver/layers")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "layer_id": "roads",
+                        "path": "/roads",
+                        "source_path": "mapserver/roads.geojson",
+                        "bbox_required": false,
+                        "allowed_properties": ["name"],
+                        "min_zoom": 10,
+                        "max_zoom": 16
+                    })
+                    .to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("bounded publish response");
+    assert_eq!(bounded.status(), StatusCode::OK);
+    let at_zoom = |query: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::builder().uri(format!("/ms/superadmin/default/roads?limit=10{query}")).body(Body::empty()).expect("request"))
+                .await
+                .expect("zoom response")
+        }
+    };
+    assert_eq!(at_zoom("").await.status(), StatusCode::BAD_REQUEST, "no zoom on a bounded layer");
+    assert_eq!(at_zoom("&zoom=abc").await.status(), StatusCode::BAD_REQUEST, "unparsable zoom");
+    let inside = at_zoom("&zoom=12").await;
+    assert_eq!(inside.status(), StatusCode::OK);
+    assert_eq!(response_json(inside).await["count"], json!(1));
+    let outside = at_zoom("&zoom=4").await;
+    assert_eq!(outside.status(), StatusCode::OK);
+    assert_eq!(response_json(outside).await["count"], json!(0));
+
     let _ = fs::remove_dir_all(&data_root);
 }
 
