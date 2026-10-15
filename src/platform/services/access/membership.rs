@@ -250,12 +250,31 @@ impl ProjectMembershipService {
             ));
         }
 
+        // An empty ceiling means "unrestricted", so a member who can edit
+        // members (their own row included) could otherwise lift the ceiling
+        // the owner set. Below the Owner rung, a ceiling only narrows.
+        let existing_row = self.data.get_project_member(&owner, &project, &user_id)?;
+        if actor_role != ProjectAccessRolePreset::Owner
+            && let Some(existing) = &existing_row
+            && !existing.mcp_capability_ceiling.is_empty()
+            && (req.mcp_capability_ceiling.is_empty()
+                || req
+                    .mcp_capability_ceiling
+                    .iter()
+                    .any(|cap| !existing.mcp_capability_ceiling.contains(cap)))
+        {
+            return Err(PlatformError::new(
+                "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                format!(
+                    "a {} cannot widen the MCP capability ceiling of '{}'; only an owner can",
+                    actor_role.title(),
+                    user_id
+                ),
+            ));
+        }
+
         let now = now_ts();
-        let created_at = self
-            .data
-            .get_project_member(&owner, &project, &user_id)?
-            .map(|row| row.created_at)
-            .unwrap_or(now);
+        let created_at = existing_row.map(|row| row.created_at).unwrap_or(now);
         let member = ProjectMember {
             project_id: project_row.project_id.clone(),
             owner: owner.clone(),
@@ -473,5 +492,43 @@ mod tests {
             )
             .expect("maintainer grants developer");
         assert_eq!(member.role_preset, ProjectAccessRolePreset::Developer);
+
+        // The owner caps `maint`'s MCP sessions; `maint` then edits their own row.
+        let maint_row = |ceiling: Vec<crate::platform::model::ProjectCapability>| UpsertProjectMemberRequest {
+            user_id: "maint".to_string(),
+            role_preset: ProjectAccessRolePreset::Maintainer,
+            custom_policy_ids: Vec::new(),
+            mcp_capability_ceiling: ceiling,
+        };
+        use crate::platform::model::ProjectCapability as C;
+        platform
+            .project_members
+            .upsert_member("superadmin", "superadmin", "default", &maint_row(vec![C::ProjectRead, C::PipelinesRead]))
+            .expect("owner sets a ceiling");
+        for (lifted, why) in [
+            (Vec::new(), "an empty ceiling is unrestricted"),
+            (vec![C::ProjectRead, C::PipelinesRead, C::PipelinesWrite], "a capability outside the ceiling"),
+        ] {
+            let err = platform
+                .project_members
+                .upsert_member("maint", "superadmin", "default", &maint_row(lifted))
+                .expect_err(why);
+            assert_eq!(err.code, "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR", "{why}: {}", err.message);
+        }
+        let own = platform
+            .data
+            .get_project_member("superadmin", "default", "maint")
+            .unwrap()
+            .expect("maint row");
+        assert_eq!(own.mcp_capability_ceiling, vec![C::ProjectRead, C::PipelinesRead], "the refused self-edits changed nothing");
+        // Narrowing their own ceiling is fine; the owner may lift it.
+        platform
+            .project_members
+            .upsert_member("maint", "superadmin", "default", &maint_row(vec![C::PipelinesRead]))
+            .expect("a maintainer narrows their own ceiling");
+        platform
+            .project_members
+            .upsert_member("superadmin", "superadmin", "default", &maint_row(Vec::new()))
+            .expect("the owner lifts the ceiling");
     }
 }
