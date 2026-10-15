@@ -45,10 +45,12 @@ fn normalize_api_path(path: &str) -> String {
 
 const MAX_LLM_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
+/// No total timeout of its own: a model may think for minutes, and the
+/// engine's `--timeout` bounds the node, as in `http.response.fetch` and
+/// `browser.page.run`.
 fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(60))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -65,7 +67,7 @@ fn parse_bounded_llm_json(bytes: &[u8], max_bytes: usize) -> Result<Value, Strin
 async fn read_bounded_llm_response(
     mut resp: reqwest::Response,
     max_bytes: usize,
-) -> Result<Value, String> {
+) -> Result<Vec<u8>, String> {
     if let Some(len) = resp.content_length()
         && len > max_bytes as u64
     {
@@ -82,7 +84,7 @@ async fn read_bounded_llm_response(
         }
         buf.extend_from_slice(&chunk);
     }
-    parse_bounded_llm_json(&buf, max_bytes)
+    Ok(buf)
 }
 
 fn format_llm_status_error(status: reqwest::StatusCode, val: &Value) -> String {
@@ -281,11 +283,14 @@ impl OpenAiHttpClient {
             .await
             .map_err(|e| e.to_string())?;
         let status = resp.status();
-        let val = read_bounded_llm_response(resp, MAX_LLM_RESPONSE_BYTES).await?;
+        let bytes = read_bounded_llm_response(resp, MAX_LLM_RESPONSE_BYTES).await?;
+        // The status first: a 429 or a gateway's HTML 502 is an LLM error
+        // with its status, never "invalid JSON".
         if !status.is_success() {
+            let val = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             return Err(format_llm_status_error(status, &val));
         }
-        Ok(val)
+        parse_bounded_llm_json(&bytes, MAX_LLM_RESPONSE_BYTES)
     }
 
     async fn call_chat_completions(&self, messages: Vec<Message>) -> Result<String, String> {
@@ -624,6 +629,69 @@ mod tests {
         LlmCall, Message, MessageRole, OpenAiHttpClient, format_llm_status_error,
         parse_bounded_llm_json,
     };
+
+    /// A local stand-in provider on loopback, opted in the way a self-hosted
+    /// model is, answering every call with `answer`.
+    async fn local_provider(
+        answer: axum::response::Response,
+    ) -> (OpenAiHttpClient, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let answer = Arc::new(std::sync::Mutex::new(Some(answer)));
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let answer = answer.clone();
+                async move { answer.lock().expect("lock").take().expect("one call") }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let secret = json!({
+            "api_key": uuid::Uuid::new_v4().to_string(),
+            "base_url": format!("http://{addr}"),
+            "allow_private": true,
+        });
+        let client = OpenAiHttpClient::from_provider_secret("openrouter", &secret, None).expect("client");
+        (client, server)
+    }
+
+    fn ask() -> Vec<Message> {
+        vec![Message { role: MessageRole::User, content: "hi".to_string() }]
+    }
+
+    /// A 429 or a gateway's HTML 502 reads as "LLM error <status>", not as
+    /// invalid JSON; a 200 still parses.
+    #[tokio::test(flavor = "current_thread")]
+    async fn llm_status_is_read_before_the_body_is_parsed_as_json() {
+        use axum::response::IntoResponse;
+        for (status, body) in [
+            (axum::http::StatusCode::TOO_MANY_REQUESTS, "slow down"),
+            (axum::http::StatusCode::BAD_GATEWAY, "<html><body>bad gateway</body></html>"),
+        ] {
+            let (client, server) = local_provider((status, body).into_response()).await;
+            let err = client.call(ask()).await.expect_err("an error status is an error");
+            server.abort();
+            assert_eq!(err, format!("LLM error {status}"), "{err}");
+        }
+        let ok = Json(json!({ "choices": [{ "message": { "content": "hello" } }] })).into_response();
+        let (client, server) = local_provider(ok).await;
+        assert_eq!(client.call(ask()).await.expect("answers"), "hello");
+        server.abort();
+    }
+
+    /// No total timeout of the client's own: a model may think for minutes and
+    /// the engine's `--timeout` bounds the node. reqwest exposes no getter for
+    /// a client's timeout and a real wait would cost a minute, so the source
+    /// outside the tests is read instead.
+    #[test]
+    fn the_client_sets_no_total_timeout_of_its_own() {
+        let source = include_str!("http_client.rs");
+        let code = &source[..source.find("#[cfg(test)]").expect("tests marker")];
+        assert!(code.contains("fn build_http_client"), "the builder is still here");
+        assert!(!code.contains(".timeout("), "the LLM client must not set a total timeout");
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn openai_http_client_blocks_private_egress_and_caps_response_size() {
