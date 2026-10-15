@@ -213,29 +213,52 @@ impl StoreScratch {
     }
 
     /// Streams one object into the scratch folder at its own relative path.
+    /// Its size is charged to the scratch budget before a byte is written,
+    /// and no more than that size is ever copied: an object that grew after
+    /// it was measured is refused rather than written past the budget.
     fn fetch(&self, store: &ZebFs, rel: &str) -> Result<(), PipelineError> {
+        use std::io::Read;
         let rel = self.validate_rel_allow_empty(rel, false)?;
         let path = self.checked_local(&rel, false)?;
-        if let Ok(stat) = store.head(&rel) {
-            if stat.size > self.max_bytes {
-                return Err(self.err(format!(
-                    "object '{rel}' ({} bytes) exceeds scratch limit of {} bytes",
-                    stat.size, self.max_bytes
-                )));
-            }
+        let stat = store
+            .head(&rel)
+            .map_err(|err| self.err(format!("read '{rel}': {err}")))?;
+        if stat.kind != ZebFsEntryKind::Object {
+            return Err(self.err(format!("read '{rel}': not an object")));
         }
+        self.account_file(stat.size)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|err| self.err(format!("create '{}': {err}", parent.display())))?;
         }
-        let stat = store
-            .get_to_file(&rel, &path)
-            .map_err(|err| self.err(format!("read '{rel}': {err}")))?;
-        if let Err(err) = self.account_file(stat.size) {
-            let _ = std::fs::remove_file(&path);
-            return Err(err);
+        let mut file = std::fs::File::create(&path)
+            .map_err(|err| self.err(format!("write '{}': {err}", path.display())))?;
+        if stat.size == 0 {
+            return Ok(());
         }
-        Ok(())
+        // One byte past the measured size tells a grown object from an
+        // exact one without reading the rest of it.
+        let copied = store
+            .open_range(&rel, 0, stat.size.saturating_add(1))
+            .map_err(|err| self.err(format!("read '{rel}': {err}")))
+            .and_then(|reader| {
+                std::io::copy(&mut reader.take(stat.size.saturating_add(1)), &mut file)
+                    .map_err(|err| self.err(format!("read '{rel}': {err}")))
+            });
+        match copied {
+            Ok(copied) if copied == stat.size => Ok(()),
+            Ok(copied) => {
+                let _ = std::fs::remove_file(&path);
+                Err(self.err(format!(
+                    "read '{rel}': object changed while it was copied ({} bytes measured, {copied} read)",
+                    stat.size
+                )))
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(&path);
+                Err(err)
+            }
+        }
     }
 
     /// Streams one file the engine wrote into the project's store at `rel`.
@@ -385,5 +408,27 @@ mod tests {
             .pull(&store, "docs")
             .expect_err("should exceed file count cap");
         assert!(err.message.contains("file count exceeds limit"), "{err:?}");
+    }
+
+    /// The budget is charged before an object is written. The destination of
+    /// the over-budget object is made unwritable: had a write been attempted
+    /// first, the error would be that write's I/O error, not the budget.
+    #[test]
+    fn the_byte_budget_is_checked_before_an_object_is_written() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = ZebFs::Local(LocalZebFs::new(temp.path().to_path_buf()));
+        store.put("a.txt", b"hello").expect("put a");
+        store.put("b.txt", b"world!").expect("put b");
+        store.put("empty.txt", b"").expect("put empty");
+
+        let scratch = StoreScratch::with_limits("TEST", 8, 10).expect("scratch");
+        let local = scratch.pull(&store, "a.txt").expect("within budget");
+        assert_eq!(std::fs::read(local).unwrap(), b"hello");
+        let empty = scratch.pull(&store, "empty.txt").expect("an empty object");
+        assert_eq!(std::fs::read(empty).unwrap(), b"");
+
+        std::fs::create_dir_all(scratch.local("b.txt").join("occupied")).expect("block destination");
+        let err = scratch.pull(&store, "b.txt").expect_err("5 + 6 bytes exceeds 8");
+        assert!(err.message.contains("exceeds limit"), "{err:?}");
     }
 }
