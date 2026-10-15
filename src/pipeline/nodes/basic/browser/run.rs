@@ -186,6 +186,50 @@ fn mask_browser_token(message: &str, token: &str) -> String {
     masked
 }
 
+/// The HTTP leg of a run: POST the code, read the answer under the node read
+/// cap, refuse a status outside 2xx. Async, with no timeout of its own: the
+/// engine's `--timeout` bounds this future. Redirects are never followed, so
+/// a validated endpoint cannot bounce the code and `?token=` to another host.
+async fn call_browserless(endpoint: reqwest::Url, req_body: &Value, token: &str) -> Result<(u16, Value), PipelineError> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", e.to_string()))?;
+    let response = client
+        .post(endpoint)
+        .json(req_body)
+        .send()
+        .await
+        .map_err(|e| {
+            // The token rides in the query string; an error that quotes the URL must not repeat it.
+            let message = mask_browser_token(&e.to_string(), token);
+            PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", message)
+        })?;
+
+    let status = response.status().as_u16();
+    let raw = crate::pipeline::security::read_response_capped(
+        response,
+        crate::pipeline::nodes::shared::project_store::MAX_NODE_OBJECT_BYTES,
+        "FW_NODE_BROWSER_PAGE_RUN_READ",
+    )
+    .await?;
+    let body_text = String::from_utf8_lossy(&raw).into_owned();
+
+    let payload = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));
+
+    if !(200..300).contains(&status) {
+        return Err(PipelineError::new(
+            "FW_NODE_BROWSER_PAGE_RUN_STATUS",
+            format!(
+                "browser endpoint returned status {}: {}",
+                status,
+                serde_json::to_string(&payload).unwrap_or_default()
+            ),
+        ));
+    }
+    Ok((status, payload))
+}
+
 #[async_trait]
 impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
@@ -266,46 +310,8 @@ impl NodeHandler for Node {
 
         let endpoint = build_browserless_endpoint(base_url, token)?;
 
-        // Async, with no timeout of its own: the engine's `--timeout` bounds
-        // this future, and HTTP redirects are disabled so a validated endpoint
-        // cannot redirect to an internal address or leak `?token=` to a third party.
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", e.to_string()))?;
         let req_body = build_browserless_request_body(&self.config.code, &input);
-        let response = client
-            .post(endpoint)
-            .json(&req_body)
-            .send()
-            .await
-            .map_err(|e| {
-                // The token rides in the query string; an error that quotes the URL must not repeat it.
-                let message = mask_browser_token(&e.to_string(), token);
-                PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_HTTP", message)
-            })?;
-
-        let status = response.status().as_u16();
-        let raw = crate::pipeline::security::read_response_capped(
-            response,
-            crate::pipeline::nodes::shared::project_store::MAX_NODE_OBJECT_BYTES,
-            "FW_NODE_BROWSER_PAGE_RUN_READ",
-        )
-        .await?;
-        let body_text = String::from_utf8_lossy(&raw).into_owned();
-
-        let payload = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));
-
-        if !(200..300).contains(&status) {
-            return Err(PipelineError::new(
-                "FW_NODE_BROWSER_PAGE_RUN_STATUS",
-                format!(
-                    "browser endpoint returned status {}: {}",
-                    status,
-                    serde_json::to_string(&payload).unwrap_or_default()
-                ),
-            ));
-        }
+        let (status, payload) = call_browserless(endpoint, &req_body, token).await?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -331,6 +337,55 @@ mod tests {
         assert_eq!(flags, ["--credential"]);
         assert!(def.output_schema["properties"].get("page").is_some());
         assert!(!def.fields.iter().any(|f| f.name == "timeout_ms"));
+    }
+
+    /// The node's own HTTP leg against a live endpoint that redirects: the
+    /// redirect is answered as a status refusal, the target is never reached,
+    /// and the token is not repeated. A 2xx endpoint still answers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn browser_page_run_never_follows_a_redirect() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use axum::{Router, http::StatusCode, response::IntoResponse, routing::post};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let hits_route = hits.clone();
+        let app = Router::new()
+            .route(
+                "/bounce/function",
+                post(move || async move {
+                    (StatusCode::TEMPORARY_REDIRECT, [("location", format!("http://{addr}/elsewhere"))]).into_response()
+                }),
+            )
+            .route(
+                "/elsewhere",
+                post(move || {
+                    let hits_route = hits_route.clone();
+                    async move {
+                        hits_route.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(json!({ "followed": true }))
+                    }
+                }),
+            )
+            .route("/ok/function", post(|| async { axum::Json(json!({ "title": "Example" })) }));
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let token = uuid::Uuid::new_v4().to_string();
+        let body = json!({ "code": "export default async () => 1", "context": {} });
+        let bounce = build_browserless_endpoint(&format!("http://{addr}/bounce"), &token).expect("endpoint");
+        let err = call_browserless(bounce, &body, &token).await.expect_err("a redirect is refused");
+        assert_eq!(err.code, "FW_NODE_BROWSER_PAGE_RUN_STATUS");
+        assert!(err.message.contains("307"), "{}", err.message);
+        assert!(!err.message.contains(&token), "the token is not repeated");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "the redirect target was reached");
+
+        let ok = build_browserless_endpoint(&format!("http://{addr}/ok"), &token).expect("endpoint");
+        let (status, page) = call_browserless(ok, &body, &token).await.expect("2xx answers");
+        assert_eq!((status, page), (200, json!({ "title": "Example" })));
+        server.abort();
     }
 
     #[test]
