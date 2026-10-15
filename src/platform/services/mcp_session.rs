@@ -474,7 +474,8 @@ impl McpSessionService {
         Ok(())
     }
 
-    /// Look up a session by token. Returns None if disabled or expired.
+    /// Look up a session by token. Returns None if disabled, expired, or its
+    /// creator no longer holds what it carries.
     pub fn lookup(&self, token: &str) -> Option<McpSession> {
         let session = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -488,7 +489,33 @@ impl McpSessionService {
             let _ = self.revoke_by_token(token);
             return None;
         }
+        if !self.creator_still_grants(&session) {
+            return None;
+        }
         Some(session)
+    }
+
+    /// A session lends its creator's rights, so it lasts only while the
+    /// creator could still grant it: removed from the project, demoted,
+    /// given a narrower MCP ceiling or a policy taken away, and the session
+    /// is revoked at its next use. Sessions are stored with `granted_by` and
+    /// their capabilities, so the check is made on lookup rather than by
+    /// every service that can change a person's rights. A store that cannot
+    /// answer denies without revoking.
+    fn creator_still_grants(&self, session: &McpSession) -> bool {
+        match self.validate_grant(
+            &session.owner,
+            &session.project,
+            &session.granted_by,
+            &session.capabilities,
+        ) {
+            Ok(()) => true,
+            Err(err) if err.code == "PLATFORM_AUTHZ_FORBIDDEN" => {
+                let _ = self.revoke_by_token(&session.token);
+                false
+            }
+            Err(_) => false,
+        }
     }
 
     /// Get current session for a project (if any).
@@ -507,6 +534,9 @@ impl McpSessionService {
         };
         if self.is_rotated_or_expired(&session) {
             let _ = self.revoke_by_token(&token);
+            return None;
+        }
+        if !self.creator_still_grants(&session) {
             return None;
         }
         Some(session)
@@ -534,5 +564,86 @@ impl McpSessionService {
     fn generate_token() -> String {
         let bytes: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
         hex::encode(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::platform::model::{
+        CreateUserRequest, PlatformConfig, ProjectAccessRolePreset, ProjectCapability as C,
+        UpsertProjectMemberRequest,
+    };
+    use crate::platform::services::PlatformService;
+
+    #[test]
+    fn a_session_ends_when_its_creator_loses_the_rights_it_carries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = PlatformService::from_config(PlatformConfig {
+            data_root: dir.path().to_path_buf(),
+            ..PlatformConfig::default()
+        })
+        .expect("platform");
+        platform
+            .users
+            .create_user(&CreateUserRequest {
+                owner: "maint".to_string(),
+                password: uuid::Uuid::new_v4().to_string(),
+                role: "member".to_string(),
+                git_name: String::new(),
+                git_email: String::new(),
+            })
+            .expect("create maint");
+        let set_maint = |role, ceiling: Vec<C>| {
+            platform
+                .project_members
+                .upsert_member(
+                    "superadmin",
+                    "superadmin",
+                    "default",
+                    &UpsertProjectMemberRequest {
+                        user_id: "maint".to_string(),
+                        role_preset: role,
+                        custom_policy_ids: Vec::new(),
+                        mcp_capability_ceiling: ceiling,
+                    },
+                )
+                .expect("owner edits maint");
+        };
+        let sessions = &platform.mcp_sessions;
+        let mint = |by: &str| {
+            sessions
+                .create("superadmin", "default", vec![C::ProjectRead, C::PipelinesRead], "http://example.com", None, by)
+                .expect("session")
+                .token
+        };
+
+        // Removed from the project.
+        set_maint(ProjectAccessRolePreset::Maintainer, Vec::new());
+        let token = mint("maint");
+        assert!(sessions.lookup(&token).is_some(), "a maintainer's session works");
+        platform
+            .project_members
+            .remove_member("superadmin", "superadmin", "default", "maint")
+            .expect("remove maint");
+        assert!(sessions.lookup(&token).is_none(), "removal ends the session");
+        assert!(sessions.get_for_project("superadmin", "default").is_none(), "and it is revoked");
+
+        // Demoted below MCP session creation.
+        set_maint(ProjectAccessRolePreset::Maintainer, Vec::new());
+        let token = mint("maint");
+        assert!(sessions.lookup(&token).is_some());
+        set_maint(ProjectAccessRolePreset::Guest, Vec::new());
+        assert!(sessions.lookup(&token).is_none(), "demotion ends the session");
+
+        // A narrower ceiling than the session carries.
+        set_maint(ProjectAccessRolePreset::Maintainer, Vec::new());
+        let token = mint("maint");
+        set_maint(ProjectAccessRolePreset::Maintainer, vec![C::ProjectRead]);
+        assert!(sessions.lookup(&token).is_none(), "a narrowed ceiling ends the session");
+
+        // The owner's own session is unaffected by any of it.
+        let token = mint("superadmin");
+        assert!(sessions.lookup(&token).is_some());
+        assert!(sessions.lookup(&token).is_some(), "the re-check does not consume a valid session");
     }
 }

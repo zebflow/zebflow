@@ -19,7 +19,9 @@ platform session   opaque random token · cookie zebflow_session · HttpOnly · 
                    (Lax only on the office vouch landing) · Secure unless bound to loopback
                    (ZEBFLOW_COOKIE_SECURE overrides) · 24 h · in memory: a restart signs everyone out
 MCP session        Bearer token per project · capabilities allow-listed per session (project.read,
-                   templates.write, pipelines.execute …) · rotation epoch · auto-reset · revocable
+                   templates.write, pipelines.execute …), never more than its creator holds or
+                   their member MCP ceiling allows · re-checked at every use: a creator removed,
+                   demoted or narrowed revokes it · rotation epoch · auto-reset · revocable
 project JWT        auth.token.create / auth.token.verify · algorithm pinned by the credential,
                    never by the token header (RS256 verifier refuses an HS256 token) · exp always
                    checked · auth.token.verify --audience requires that aud, and without it refuses
