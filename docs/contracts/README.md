@@ -12,6 +12,7 @@ rely on them.
 - [Confinement contract](./confinement.md)
 - [Policy contract](./policy.md)
 - [Addressing contract](./addressing.md)
+- [Rooms contract](./rooms.md)
 - [Discoverability contract](./discoverability.md)
 - [UX contract](./ux.md)
 - [Interface contract](./interface.md)

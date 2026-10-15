@@ -81,7 +81,7 @@ logic.<verb>          control node   logic.if              logic.foreach
 | Write | `put` `create` `update` `delete` `copy` `move` |
 | Make | `generate` (a model's or engine's output) · `render` (deterministic drawing) · `convert` `extract` `encode` `decode` `thumbnail` |
 | Talk | `send` `publish` |
-| Act | `run` `call` `scan` `sign` `verify` `hash` `wait` `cancel` |
+| Act | `run` `call` `scan` `sign` `verify` `hash` `wait` `cancel` `close` |
 
 A verb two kinds share is in this list; a verb only one kind uses stays local
 (`chromakey`, `increment`, `expire`, `publish` on `mapserver.layer`).
@@ -126,7 +126,7 @@ add a singular, unit-free noun.
 
 | Area | Words |
 | --- | --- |
-| Who | `--credential` (a secret's id, never a value) `--provider` `--model` `--name` `--description` `--label` (what a person reads) `--auth` `--role` `--function` (a function pipeline, by name) |
+| Who | `--credential` (a secret's id, never a value) `--provider` `--model` `--name` `--description` `--label` (what a person reads) `--auth` `--role` `--function` (a function pipeline, by name) `--user` (an identity, by its `sub`) |
 | Subject | `--from` (the subject, §2) `--id` (an existing object of this kind's noun: a message, record, layer) |
 | Typed inputs | `--image` `--video` `--audio` `--file` (repeat) · `--text` (text content) `--html` · `--body` (what goes over a wire) · `--value` (what a store write holds) · `--argument` (k=v: what a callable receives) `--parameter` (repeat, `name:type[!] "doc"`: what a callable declares) · `--default` |
 | Generation | `--prompt` `--system-prompt` `--seed` `--duration` `--aspect` `--first-frame` `--last-frame` `--mask` `--reference` (repeat) `--schema` (a JSON schema) `--tool` (repeat) `--budget` `--option` (k=v) |
