@@ -319,7 +319,7 @@ pub async fn read_response_capped(
 pub fn is_blocked_egress_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
-            let [a, b, _, _] = ip.octets();
+            let [a, b, c, _] = ip.octets();
             ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_private()
@@ -328,6 +328,9 @@ pub fn is_blocked_egress_ip(ip: IpAddr) -> bool {
                 || ip.is_multicast()
                 || a == 0
                 || (a == 100 && (64..=127).contains(&b))
+                // Benchmarking (RFC 2544) and IETF protocol assignments (RFC 6890).
+                || (a == 198 && (b & 0xfe) == 18)
+                || (a == 192 && b == 0 && c == 0)
         }
         IpAddr::V6(ip) => {
             if let Some(v4) = ip.to_ipv4_mapped() {
@@ -339,6 +342,11 @@ pub fn is_blocked_egress_ip(ip: IpAddr) -> bool {
                 || ip.is_multicast()
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
+                // IPv4-compatible (RFC 4291), NAT64 (RFC 6052) and 6to4 (RFC 3056).
+                // Each carries an IPv4 address a gateway may route to.
+                || segments[..6] == [0; 6]
+                || segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+                || segments[0] == 0x2002
         }
     }
 }
@@ -560,6 +568,33 @@ mod tests {
         let request = include_str!("nodes/basic/http/request.rs");
         assert!(request.contains("host_is_allowed("), "secure_request matches through host_is_allowed");
         assert!(!request.contains("eq_ignore_ascii_case(host)"), "secure_request keeps its own host match");
+    }
+
+    /// The special ranges that reach an internal or embedded IPv4 address are
+    /// refused; the public addresses beside them are not.
+    #[test]
+    fn egress_refuses_benchmark_protocol_and_ipv4_carrying_v6_ranges() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
+        let v6 = |s: [u16; 8]| IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]));
+        let nat64 = [0x64, 0xff9b, 0, 0, 0, 0, 0x0a00, 1];
+        for blocked in [
+            v4(198, 18, 0, 1), v4(198, 19, 255, 254), v4(192, 0, 0, 8), v4(192, 0, 0, 170),
+            v6([0, 0, 0, 0, 0, 0, 0x7f00, 1]), v6([0, 0, 0, 0, 0, 0, 0x0a00, 1]),
+            v6(nat64), v6([0x64, 0xff9b, 0, 0, 0, 0, 0x7f00, 1]),
+            v6([0x2002, 0x0a00, 1, 0, 0, 0, 0, 1]), v6([0x2002, 0, 0, 0, 0, 0, 0, 1]),
+        ] {
+            assert!(is_blocked_egress_ip(blocked), "{blocked} must be blocked");
+        }
+        for open in [
+            v4(198, 17, 255, 1), v4(198, 20, 0, 1), v4(192, 0, 1, 1), v4(192, 0, 2, 1),
+            v6([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]), v6([0x2003, 0, 0, 0, 0, 0, 0, 1]),
+            v6([0x64, 0xff9c, 0, 0, 0, 0, 0, 1]),
+        ] {
+            assert!(!is_blocked_egress_ip(open), "{open} must stay open");
+        }
+        let err = validate_outbound_http_url(&format!("http://[{}]/", v6(nat64)), "test").expect_err("NAT64 literal");
+        assert_eq!(err.code, "FW_EGRESS_DENIED");
     }
 
     #[test]
