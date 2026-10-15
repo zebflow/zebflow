@@ -30,7 +30,12 @@ host with a one-time probe: it mints a token for the project and requests
 `/_verify/{token}` through the host, which answers `204` only when the host
 resolved to that project (`404` with `x-zebflow-verify: other` otherwise).
 `/_verify` alone answers `204` on any project host — the check a generated
-proxy config ends with (`web/host_verify.rs`).
+proxy config ends with (`web/host_verify.rs`). The Studio's check probes only
+the addresses it resolved, and refuses a host whose DNS answers any private,
+loopback, link-local or reserved address (`ADDRESSING_HOST_PRIVATE_IP`): a
+custom domain pointed at such an address — a LAN-only or split-horizon name, a
+host aimed at `127.0.0.1` — cannot be verified from the Studio. It can still
+be saved, and `/_verify` through the proxy shows whether it answers.
 
 ## 1a. What a page publishes
 
@@ -310,7 +315,8 @@ CDN caching is a later step and changes nothing above.)
 - `zebflow.yaml` has no address field. Hosts, routes and switches live in
   `users/{owner}/{project}/data/store/addressing.json` (store tier,
   `instance-directory.md`); `GET|PUT /settings/addressing` reads and writes
-  it, `POST /settings/addressing/check {host}` resolves DNS and verifies.
+  it, `POST /settings/addressing/check {host}` (settings write) resolves DNS
+  and verifies, refusing a private address (§1).
 
 ## 5. Not covered
 
