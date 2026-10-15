@@ -2,9 +2,11 @@ import FileKindIcon from "@/components/ui/file-kind-icon";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { initPipelineRegistryBehavior } from "@/pages/project-studio/pipelines/pipelines-behavior";
 import { initInstallCatalogBehavior } from "@/pages/project-studio/pipelines/install-catalog-behavior";
-import WebhookRouteTree from "@/components/ui/webhook-route-tree";
 import { cx, Link, usePageState, useRouter } from "zeb/react";
-import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
+import PipelineTabNav from "@/pages/project-studio/pipelines/components/pipeline-tab-nav";
+import { PipelineIcon, StatusDot, TrashIcon } from "@/pages/project-studio/pipelines/registry/components/editor-icons";
+import TriggerPipelinesPanel from "@/pages/project-studio/pipelines/components/trigger-pipelines-panel";
+import InstallCatalogDialog from "@/pages/project-studio/pipelines/components/install-catalog-dialog";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -35,42 +37,10 @@ export function getPage(input) {
 }
 
 
-function PipelineIcon({ className = "w-4 h-4" }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <circle cx="7" cy="7" r="2.2" stroke="currentColor" strokeWidth="1.6"/>
-      <circle cx="17" cy="7" r="2.2" stroke="currentColor" strokeWidth="1.6"/>
-      <circle cx="12" cy="17" r="2.2" stroke="currentColor" strokeWidth="1.6"/>
-      <path d="M9.2 8.4l1.9 5.2M14.8 8.4l-1.9 5.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5" aria-hidden="true">
-      <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
-}
-
-
-function StatusDot({ isActive, hasDraft }) {
-  const cls = isActive && !hasDraft
-    ? "pipeline-status-dot dot-active"
-    : hasDraft
-      ? "pipeline-status-dot dot-draft"
-      : "pipeline-status-dot dot-inactive";
-  const title = isActive && !hasDraft ? "Active" : hasDraft ? "Draft" : "Inactive";
-  return <span className={cls} title={title} />;
-}
-
 export default function Page(input) {
   initPipelineRegistryBehavior();
   initInstallCatalogBehavior();
   const spaNav = useRouter().push;
-  const navLinks = input?.nav?.links ?? {};
-  const navClasses = input?.nav?.classes ?? {};
   const registry = input?.registry ?? {};
   const registryApi = registry?.api ?? {};
   const registryBreadcrumbs = Array.isArray(registry?.breadcrumbs) ? registry.breadcrumbs : [];
@@ -83,7 +53,6 @@ export default function Page(input) {
   const specialFolders = [...registryFolders.filter((f) => f?.is_special)].sort(
     (a, b) => SPECIAL_ORDER.indexOf(a?.name) - SPECIAL_ORDER.indexOf(b?.name)
   );
-  const pipelineItems = Array.isArray(input?.pipeline_items) ? input.pipeline_items : [];
   return (
     <ProjectStudioShell
       projectHref={input?.project_href}
@@ -94,13 +63,7 @@ export default function Page(input) {
       nav={input?.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <StudioTabNav>
-          <StudioTabLink href={navLinks.pipelines_registry ?? "#"} active={!!navClasses.pipeline_registry}>Registry</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_webhooks ?? "#"} active={!!navClasses.pipeline_webhooks}>Webhooks</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_schedules ?? "#"} active={!!navClasses.pipeline_schedules}>Schedules</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_manual ?? "#"} active={!!navClasses.pipeline_manual}>Manual</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_functions ?? "#"} active={!!navClasses.pipeline_functions}>Functions</StudioTabLink>
-        </StudioTabNav>
+        <PipelineTabNav nav={input?.nav} />
 
         <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-background">
           {input?.is_registry ? (
@@ -335,118 +298,17 @@ export default function Page(input) {
                 </div>
               </div>
 
-              {/* ── Install Catalog modal ────────────────────────────────── */}
-              <div hidden data-install-catalog-dialog="true" className="git-commit-overlay">
-                <div className="git-commit-backdrop" data-install-catalog-close="true" />
-                <div className="git-commit-box git-commit-box--install-catalog">
-                  <div className="git-commit-header shrink-0">
-                    <h3 className="git-commit-title">Install UI Components</h3>
-                    <Button variant="ghost" size="icon" className="git-commit-close" data-install-catalog-close="true" aria-label="Close">✕</Button>
-                  </div>
-
-                  <div className="git-install-catalog-stack">
-                    {/* Tab bar */}
-                    <div className="git-install-catalog-tabs">
-                      <button type="button" data-install-tab-btn="ui" data-install-tab-active="true" className="pipeline-registry-filter-tab is-active">UI Kit</button>
-                      <button type="button" data-install-tab-btn="pipelines" className="pipeline-registry-filter-tab">Pipelines</button>
-                      <button type="button" data-install-tab-btn="scripts" className="pipeline-registry-filter-tab">Scripts</button>
-                    </div>
-
-                    {/* UI Kit tab content */}
-                    <div data-install-tab-content="ui" className="install-catalog-tab-panel">
-                      <p style={{ fontSize: "12px", color: "var(--muted-foreground)", margin: 0 }}>
-                        Select components to install into <code>shared/ui/</code>. Installs as Zeb React TSX files.
-                      </p>
-                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                        <button type="button" data-install-select-all="true" className="pipeline-registry-filter-tab">Select All</button>
-                        <button type="button" data-install-select-none="true" className="pipeline-registry-filter-tab">None</button>
-                        <button type="button" data-install-select-essentials="true" className="pipeline-registry-filter-tab">Essentials</button>
-                      </div>
-                      <div
-                        data-install-component-list="true"
-                        className="git-install-component-list-host"
-                      >
-                        {/* Populated by project-install.ts behavior */}
-                      </div>
-                      <p data-install-result="true" hidden style={{ fontSize: "12px", color: "var(--muted-foreground)", margin: 0 }} />
-                    </div>
-
-                    {/* Pipelines tab content (future) */}
-                    <div data-install-tab-content="pipelines" hidden className="install-catalog-tab-panel">
-                      <p style={{ fontSize: "12px", color: "var(--muted-foreground)", margin: 0 }}>Pipeline templates coming soon.</p>
-                    </div>
-
-                    {/* Scripts tab content (future) */}
-                    <div data-install-tab-content="scripts" hidden className="install-catalog-tab-panel">
-                      <p style={{ fontSize: "12px", color: "var(--muted-foreground)", margin: 0 }}>Script templates coming soon.</p>
-                    </div>
-                  </div>
-
-                  <div className="git-commit-actions shrink-0">
-                    <Button size="xs" data-install-submit="true">Install Selected</Button>
-                    <Button variant="outline" size="xs" data-install-catalog-close="true">Cancel</Button>
-                  </div>
-                </div>
-              </div>
+              <InstallCatalogDialog />
             </div>
           ) : null}
 
-          {input?.is_non_registry && !input?.is_webhooks ? (
-            <div className="flex-1 min-h-0 overflow-auto flex flex-col">
-              <div className="shrink-0 flex items-start justify-between gap-3 px-[0.875rem] py-[0.625rem] border-b border-border bg-card">
-                <div>
-                  <p className="text-[0.68rem] uppercase tracking-[0.08em] text-muted-foreground">{input?.page_title}</p>
-                  {input?.page_subtitle ? (
-                    <p className="text-[0.72rem] text-muted-foreground mt-[0.2rem] leading-snug">{input?.page_subtitle}</p>
-                  ) : null}
-                </div>
-                <Badge variant="secondary">{pipelineItems.length}</Badge>
-              </div>
-              <div className="flex flex-col py-2 px-3 gap-1">
-                {pipelineItems.map((item, index) => (
-                  <Link
-                    key={`${item?.name ?? "pipeline"}-${index}`}
-                    href={item?.editor_href ?? "#"}
-                    className="pipeline-registry-row"
-                  >
-                    <span className="shrink-0 flex items-center text-muted-foreground"><PipelineIcon className="w-4 h-4" /></span>
-                    <span className="flex-1 min-w-0 flex flex-col gap-[0.15rem]">
-                      <span className="flex items-center gap-2 flex-wrap">
-                        <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
-                        {item?.virtual_path && item?.virtual_path !== "/" ? (
-                          <span className="text-[0.65rem] text-muted-foreground font-mono">{item?.virtual_path}</span>
-                        ) : null}
-                      </span>
-                      {item?.description ? (
-                        <span className="text-[0.72rem] text-muted-foreground leading-snug">{item?.description}</span>
-                      ) : null}
-                    </span>
-                  </Link>
-                ))}
-                {pipelineItems.length === 0 ? (
-                  <p className="p-6 text-center text-[0.78rem] text-muted-foreground">
-                    No {(input?.page_title as string)?.toLowerCase() ?? "pipelines"} yet. Create one in the Registry tab.
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
-          {input?.is_webhooks ? (
-            <div className="flex-1 min-h-0 overflow-auto flex flex-col">
-              <div className="shrink-0 flex items-start justify-between gap-3 px-[0.875rem] py-[0.625rem] border-b border-border bg-card">
-                <div>
-                  <p className="text-[0.68rem] uppercase tracking-[0.08em] text-muted-foreground">{input?.page_title}</p>
-                  {input?.page_subtitle ? (
-                    <p className="text-[0.72rem] text-muted-foreground mt-[0.2rem] leading-snug">{input?.page_subtitle}</p>
-                  ) : null}
-                </div>
-                <Badge variant="secondary">{pipelineItems.length}</Badge>
-              </div>
-              <div className="flex-1 min-h-0 overflow-auto px-[0.875rem] py-3">
-                <WebhookRouteTree items={pipelineItems} />
-              </div>
-            </div>
+          {input?.is_trigger_list ? (
+            <TriggerPipelinesPanel
+              title={input?.page_title}
+              subtitle={input?.page_subtitle}
+              items={input?.pipeline_items}
+              webhooks={!!input?.is_webhooks}
+            />
           ) : null}
         </section>
       </div>

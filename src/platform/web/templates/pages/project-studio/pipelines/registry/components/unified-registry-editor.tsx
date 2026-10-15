@@ -1,7 +1,7 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { loadEditorRuntime } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/template-editor-runtime";
 import { cx, Link, useEffect, useState, useRef, useRouter } from "zeb/react";
-import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
+import PipelineTabNav from "@/pages/project-studio/pipelines/components/pipeline-tab-nav";
 import { useSplitPane } from "zeb/use";
 import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
@@ -39,8 +39,6 @@ export default function UnifiedRegistryEditor(input) {
   const isFile = editorType === "file";
   const isFolder = editorType === "folder";
   const assetsApi = String(input?.assets?.api ?? "");
-  const navLinks = input?.nav?.links ?? {};
-  const navClasses = input?.nav?.classes ?? {};
 
   // ── Sidebar data ─────────────────────────────────────────────────────────
   const sidebar = input?.sidebar ?? {};
@@ -984,13 +982,7 @@ export default function UnifiedRegistryEditor(input) {
       nav={input?.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <StudioTabNav>
-          <StudioTabLink href={navLinks.pipelines_registry ?? "#"} active={!!navClasses.pipeline_registry}>Registry</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_webhooks ?? "#"} active={!!navClasses.pipeline_webhooks}>Webhooks</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_schedules ?? "#"} active={!!navClasses.pipeline_schedules}>Schedules</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_manual ?? "#"} active={!!navClasses.pipeline_manual}>Manual</StudioTabLink>
-          <StudioTabLink href={navLinks.pipelines_functions ?? "#"} active={!!navClasses.pipeline_functions}>Functions</StudioTabLink>
-        </StudioTabNav>
+        <PipelineTabNav nav={input?.nav} />
         <div
           ref={pipelineEditorRef}
           className="pipeline-editor-shell"

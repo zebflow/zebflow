@@ -34,3 +34,5 @@ mod studio_oauth;
 mod git_remote;
 #[path = "platform/ws_rooms.rs"]
 mod ws_rooms;
+#[path = "platform/pipeline_tabs.rs"]
+mod pipeline_tabs;

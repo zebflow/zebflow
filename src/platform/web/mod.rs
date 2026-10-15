@@ -5296,7 +5296,7 @@ async fn render_project_pipelines_with_tab(
                 "page_subtitle": tab_desc,
                 "pipeline_items": pipeline_items,
                 "is_registry": is_registry,
-                "is_non_registry": !is_registry,
+                "is_trigger_list": !is_registry,
                 "is_webhooks": tab_key == "webhooks",
                 "registry": registry,
                 "nav": nav,

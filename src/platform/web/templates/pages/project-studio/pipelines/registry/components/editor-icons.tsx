@@ -25,7 +25,10 @@ export function StatusDot({ isActive, hasDraft }) {
     : hasDraft
       ? "pipeline-status-dot dot-draft"
       : "pipeline-status-dot dot-inactive";
-  return <span className={cls} title={isActive ? "Active" : hasDraft ? "Draft" : "Inactive"} />;
+  // The title names what the colour shows: an active pipeline with unsaved
+  // changes is drawn as a draft, so it is titled one.
+  const title = isActive && !hasDraft ? "Active" : hasDraft ? "Draft" : "Inactive";
+  return <span className={cls} title={title} />;
 }
 
 export function TrashIcon() {
