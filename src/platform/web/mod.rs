@@ -27162,12 +27162,20 @@ async fn api_remove_project_member(
     ) {
         return response;
     }
+    let Some(actor) = session_owner(&state, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     match state
         .platform
         .project_members
-        .remove_member(&owner, &project, &user_id)
+        .remove_member(&actor, &owner, &project, &user_id)
     {
         Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) if err.code == "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR" => (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
         Err(err) => internal_error(err),
     }
 }

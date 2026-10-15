@@ -81,12 +81,13 @@ not: the invitation is spent and the person can neither join nor try again.
 
 ### Nobody grants above themselves
 
-`can_grant(actor, granted)` refuses a role above the actor's own rung, on both
-`upsert_member` and `create_invite`. Without it, anyone holding `members.write`
-— which is `maintainer` — could mint an owner and then be made one.
-Below the owner rung, an existing MCP capability ceiling only narrows: an
-empty one means unrestricted, so a maintainer editing their own row cannot
-clear or widen it.
+`can_grant(actor, granted)` refuses a role above the actor's own rung, on
+`upsert_member`, `create_invite` and `remove_member` (removing needs the rung
+of the member removed). Without it, anyone holding `members.write` — which is
+`maintainer` — could mint an owner and then be made one. A superadmin acts
+from the owner rung on every project. Below the owner rung, an existing MCP
+capability ceiling only narrows: an empty one means unrestricted, so a
+maintainer editing their own row cannot clear or widen it.
 
 ## Seeing what you joined
 

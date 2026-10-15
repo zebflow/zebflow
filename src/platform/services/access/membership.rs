@@ -99,6 +99,28 @@ impl ProjectMembershipService {
             .unwrap_or(ProjectAccessRolePreset::Guest))
     }
 
+    /// The rung `actor_user` acts from in one project: a superadmin acts as
+    /// an Owner on every project, as `resolve_project_capabilities` and
+    /// `McpSessionService::validate_grant` already treat them.
+    fn actor_role_of(
+        &self,
+        owner: &str,
+        project: &str,
+        actor_user: &str,
+    ) -> Result<ProjectAccessRolePreset, PlatformError> {
+        if self.is_superadmin(actor_user)? {
+            return Ok(ProjectAccessRolePreset::Owner);
+        }
+        self.role_of(owner, project, actor_user)
+    }
+
+    fn is_superadmin(&self, user: &str) -> Result<bool, PlatformError> {
+        Ok(self
+            .data
+            .get_user_auth(user)?
+            .is_some_and(|row| row.profile.role == "superadmin"))
+    }
+
     /// Verify that `actor_user` holds at least the requested `role_preset`,
     /// every policy in `custom_policy_ids`, and every capability in
     /// `mcp_capability_ceiling`. Shared by `upsert_member` and `create_invite`.
@@ -117,7 +139,7 @@ impl ProjectMembershipService {
         self.authz.ensure_project_defaults(&owner, &project)?;
         ensure_managed_role_policies(&self.data, &owner, &project)?;
 
-        let actor_role = self.role_of(&owner, &project, &actor_user)?;
+        let actor_role = self.actor_role_of(&owner, &project, &actor_user)?;
         if !crate::platform::services::access::roles::can_grant(actor_role, role_preset) {
             return Err(PlatformError::new(
                 "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
@@ -313,12 +335,17 @@ impl ProjectMembershipService {
     }
 
     /// Remove one explicit project member and clear their user bindings.
+    /// `actor_user` must be able to grant the role the member holds — the
+    /// same ladder `upsert_member` applies, so a Maintainer cannot remove an
+    /// Owner.
     pub fn remove_member(
         &self,
+        actor_user: &str,
         owner: &str,
         project: &str,
         user_id: &str,
     ) -> Result<(), PlatformError> {
+        let actor_user = slug_segment(actor_user);
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let user_id = slug_segment(user_id);
@@ -326,6 +353,18 @@ impl ProjectMembershipService {
             return Err(PlatformError::new(
                 "PLATFORM_MEMBER_OWNER_REMOVE_FORBIDDEN",
                 "project owner cannot be removed from membership",
+            ));
+        }
+        let actor_role = self.actor_role_of(&owner, &project, &actor_user)?;
+        let existing_role = self.role_of(&owner, &project, &user_id)?;
+        if !crate::platform::services::access::roles::can_grant(actor_role, existing_role) {
+            return Err(PlatformError::new(
+                "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR",
+                format!(
+                    "a {} cannot remove a {}",
+                    actor_role.title(),
+                    existing_role.title()
+                ),
             ));
         }
         self.data
@@ -530,5 +569,84 @@ mod tests {
             .project_members
             .upsert_member("superadmin", "superadmin", "default", &maint_row(Vec::new()))
             .expect("the owner lifts the ceiling");
+    }
+
+    #[test]
+    fn removing_a_member_follows_the_role_ladder_and_a_superadmin_grants_anywhere() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: dir.path().to_path_buf(),
+                ..crate::platform::model::PlatformConfig::default()
+            },
+        )
+        .expect("platform");
+        for user in ["maint", "dev", "co-owner", "owner-b"] {
+            platform
+                .users
+                .create_user(&crate::platform::model::CreateUserRequest {
+                    owner: user.to_string(),
+                    password: uuid::Uuid::new_v4().to_string(),
+                    role: "member".to_string(),
+                    git_name: String::new(),
+                    git_email: String::new(),
+                })
+                .expect("create user");
+        }
+        let grant = |actor: &str, owner: &str, project: &str, user: &str, role| {
+            platform.project_members.upsert_member(
+                actor,
+                owner,
+                project,
+                &UpsertProjectMemberRequest {
+                    user_id: user.to_string(),
+                    role_preset: role,
+                    custom_policy_ids: Vec::new(),
+                    mcp_capability_ceiling: Vec::new(),
+                },
+            )
+        };
+        grant("superadmin", "superadmin", "default", "maint", ProjectAccessRolePreset::Maintainer).expect("maint");
+        grant("superadmin", "superadmin", "default", "dev", ProjectAccessRolePreset::Developer).expect("dev");
+        grant("superadmin", "superadmin", "default", "co-owner", ProjectAccessRolePreset::Owner).expect("co-owner");
+
+        let err = platform
+            .project_members
+            .remove_member("maint", "superadmin", "default", "co-owner")
+            .expect_err("a maintainer cannot remove an owner");
+        assert_eq!(err.code, "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR");
+        assert!(platform.data.get_project_member("superadmin", "default", "co-owner").unwrap().is_some());
+        platform
+            .project_members
+            .remove_member("maint", "superadmin", "default", "dev")
+            .expect("a maintainer removes a developer");
+        assert!(platform.data.get_project_member("superadmin", "default", "dev").unwrap().is_none());
+
+        // A superadmin manages members on a project they do not own.
+        platform
+            .projects
+            .create_or_update_project(
+                "owner-b",
+                &crate::platform::model::CreateProjectRequest {
+                    project: "site-a".to_string(),
+                    title: None,
+                    local_branch: None,
+                    runtime: Default::default(),
+                },
+            )
+            .expect("owner-b's project");
+        grant("superadmin", "owner-b", "site-a", "dev", ProjectAccessRolePreset::Maintainer)
+            .expect("a superadmin grants on any project");
+        platform
+            .project_members
+            .remove_member("superadmin", "owner-b", "site-a", "dev")
+            .expect("a superadmin removes on any project");
+        // Someone with no role there still cannot.
+        grant("superadmin", "owner-b", "site-a", "dev", ProjectAccessRolePreset::Developer).expect("dev again");
+        let err = platform
+            .project_members
+            .remove_member("maint", "owner-b", "site-a", "dev")
+            .expect_err("a stranger cannot remove");
+        assert_eq!(err.code, "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR");
     }
 }
