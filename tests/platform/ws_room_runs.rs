@@ -137,6 +137,28 @@ async fn a_tick_gets_every_input_of_its_interval_in_arrival_order_up_to_max_inpu
     assert!(room["counters"]["ticks"].as_u64() >= Some(2), "{room}");
 }
 
+/// The last player leaves right after a move: the room's loop must not end
+/// before the tick takes that move and the `$disconnect` runs after it, or
+/// the player stays in the room's state for good.
+#[tokio::test]
+async fn the_last_session_s_move_gets_its_tick_and_its_disconnect_runs_after() {
+    let root = temp_dir("ws-room-last-tick");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    let append = |entry: &str| format!(r#"kv.entry.get --key den:log | javascript.script.run -- "const list = (input.entry && input.entry.value) || []; {entry}" | kv.entry.put --key den:log --value "{{{{ input.script }}}}""#);
+    publish(&app, &cookie, "den-tick", &format!("| trigger.room --room den --event $tick --every 200ms | {}", append("return input.room.inputs.length ? list.concat(['tick:' + input.room.inputs.length]) : list;"))).await;
+    publish(&app, &cookie, "den-gone", &format!("| trigger.room --room den --event $disconnect | {}", append("return list.concat(['gone']);"))).await;
+    publish(&app, &cookie, "den-log", r#"| trigger.webhook --route /den-log --method POST | kv.entry.get --key den:log | web.response.send --body "{{ input.entry.value }}""#).await;
+    let address = serve(app.clone(), &cookie).await;
+    let mut socket = connect(address, "den", &[]).await;
+    next_of(&mut socket, "joined").await;
+    say(&mut socket, "move", json!({ "x": 1 })).await;
+    socket.close(None).await.expect("close");
+
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    assert_eq!(hook(&app, "/den-log", json!({})).await, json!(["tick:1", "gone"]), "the move had its tick, then the $disconnect ran");
+}
+
 #[tokio::test]
 async fn a_tick_that_outlasts_every_delays_the_next_and_counts_an_overrun() {
     let root = temp_dir("ws-room-overrun");

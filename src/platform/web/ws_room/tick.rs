@@ -47,6 +47,11 @@ impl Ticker {
         self.spec.is_some()
     }
 
+    /// Whether inputs wait for the next tick.
+    pub(super) fn has_waiting(&self) -> bool {
+        !self.inputs.is_empty()
+    }
+
     /// When the next tick is due; `None` in an event room.
     pub(super) fn due_at(&self) -> Option<Instant> {
         self.next_at
