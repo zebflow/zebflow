@@ -318,7 +318,7 @@ struct PipelineDeactivateParams {
 struct WsRoomsListParams {
     /// Which rooms: a pattern ("match-*") or an exact name. Default "*", every open room.
     room: Option<String>,
-    /// Also list each room's members (their sub). Default false.
+    /// Also list each room's sessions: sub, tags and whether away. Default false.
     members: Option<bool>,
 }
 
@@ -918,7 +918,7 @@ impl ZebflowMcpHandler {
         description = "List this project's open WebSocket rooms, as `ws.room.list` answers them: \
                        { rooms: [ { room, kind, private, mode, meta, sessions, max_sessions, opened_at, opened_by, \
                        last_activity_at, state_bytes, counters } ], total: { rooms, sessions } }. \
-                       `room` narrows by pattern; `members` adds each room's identities."
+                       `room` narrows by pattern; `members` adds each room's sessions with their sub, tags and whether away."
     )]
     async fn ws_rooms_list(
         &self,

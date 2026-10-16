@@ -134,14 +134,15 @@ fn the_family_has_its_kinds_with_their_signatures() {
         signatures,
         [
             "ws.message.send [--room TEXT] [--connection TEXT] --body JSON [--event TEXT] [--recipient TEXT] → message",
-            "ws.state.put --key TEXT --value JSON [--room TEXT] [--batch] → state",
-            "ws.state.update --key TEXT --value JSON [--room TEXT] [--batch] → state",
+            "ws.state.put --key TEXT --value JSON [--room TEXT] [--batch] [--visible-to TEXT…] → state",
+            "ws.state.update --key TEXT --value JSON [--room TEXT] [--batch] [--visible-to TEXT…] → state",
             "ws.state.delete --key TEXT [--room TEXT] [--batch] → state",
             "ws.room.open --room TEXT [--private] [--max-sessions N] [--meta JSON] [--idle DURATION] [--hold DURATION] [--max-state SIZE] → room",
             "ws.room.close [--room TEXT] → room",
             "ws.room.list [--room TEXT] [--members] → room",
             "ws.ticket.create --room TEXT --user TEXT [--ttl DURATION] → ticket",
             "ws.session.close [--room TEXT] [--session TEXT] [--user TEXT] → session",
+            "ws.session.tag [--room TEXT] [--session TEXT] [--tag TEXT…] [--untag TEXT…] → session",
         ]
     );
 }
@@ -205,7 +206,7 @@ async fn a_user_recipient_reaches_every_session_of_that_identity() {
     node.execute_async(input(json!({}))).await.expect("no triggering session needed");
     let reached: Vec<bool> = socks.iter_mut().map(|sock| got(sock).is_some()).collect();
     assert_eq!(reached, [true, true, false, false], "every session of u-17 and no other");
-    for bad in ["user:", "user", "team:red"] {
+    for bad in ["user:", "user", "team:red", "tag:"] {
         assert_eq!(code(send_node(json!({ "room": "notifications", "body": "x", "recipient": bad }), Some(hub.clone()), None)), message_send::CONFIG_CODE, "{bad}");
     }
 }

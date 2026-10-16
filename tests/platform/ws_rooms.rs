@@ -233,7 +233,7 @@ async fn an_opened_private_room_admits_ticket_holders_up_to_its_cap_and_closes()
 
     let first = ticket(&app, "match-1", "u-17").await;
     let mut a = connect(address, &format!("match-1?ticket={first}"), &[]).await;
-    next_of(&mut a, "joined").await;
+    let a_id = next_of(&mut a, "joined").await["session_id"].clone();
     a.send(Message::Text(json!({ "event": "chat", "payload": {} }).to_string().into())).await.unwrap();
     assert_eq!(next_of(&mut a, "event").await["payload"], json!({ "sub": "u-17" }), "under --auth none the ticket's user is the identity");
     assert_eq!(refused(address, &format!("match-1?ticket={first}"), &[]).await, 4401, "a ticket is used once");
@@ -257,7 +257,7 @@ async fn an_opened_private_room_admits_ticket_holders_up_to_its_cap_and_closes()
     assert_eq!(status.as_u16(), 200, "{list}");
     assert_eq!(list["total"], json!({ "rooms": 1, "sessions": 1 }));
     let room = &list["rooms"][0];
-    assert_eq!(room["members"], json!(["u-17"]));
+    assert_eq!(room["members"], json!([ { "session": a_id, "sub": "u-17", "tags": [], "away": false } ]));
     assert!(room["counters"]["messages_in"].as_u64() >= Some(1) && room["counters"]["pipeline_runs"].as_u64() >= Some(1), "{room}");
     let (_, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"), json!({ "capabilities": ["pipelines.read", "pipelines.execute"] })).await;
     let bearer = format!("Bearer {}", session["session"]["token"].as_str().expect("token"));

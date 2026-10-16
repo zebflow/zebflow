@@ -2,8 +2,8 @@
 //! state of a WebSocket room.
 //!
 //! ```text
-//! ws.state.put     --key POINTER --value VALUE  [--room ROOM] [--batch]
-//! ws.state.update  --key POINTER --value OBJECT [--room ROOM] [--batch]
+//! ws.state.put     --key POINTER --value VALUE  [--room ROOM] [--batch] [--visible-to TAG]…
+//! ws.state.update  --key POINTER --value OBJECT [--room ROOM] [--batch] [--visible-to TAG]…
 //! ws.state.delete  --key POINTER                [--room ROOM] [--batch]
 //! ```
 //!
@@ -22,6 +22,11 @@
 //!   `--batch` instead lets the room's 33 ms tick send it, at most once a
 //!   tick — for streams of ten or more changes a second. In a tick room it
 //!   goes out once, after the tick.
+//! - `--visible-to team:red` (repeatable) limits the path and everything
+//!   under it to the sessions holding one of the tags (`ws.session.tag`);
+//!   the others' views do not have it, and its bytes never reach them. A
+//!   `put` without it makes the path visible to all; an `update` without it
+//!   keeps what limits the path.
 //!
 //! The answer is `state: { key, room }`; the payload is kept.
 
@@ -31,7 +36,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, ROOM_NOT_OPEN_CODE, answer, field, flag, project_of, room_of, text_of};
+use super::{INPUT_PIN_IN, OUTPUT_PIN_OUT, ROOM_NOT_OPEN_CODE, answer, field, flag, project_of, room_of, tags_of, text_of};
 use crate::infra::transport::ws::{RoomPattern, StateOp, WsHub};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeExample, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
@@ -147,6 +152,20 @@ pub fn definition(verb: Verb) -> NodeDefinition {
         kind: DslFlagKind::Bool,
         ..flag("--batch", "batch", "Let the room's 33 ms tick send the change, at most once a tick — for 10+ changes a second.", "", false)
     });
+    if verb != Verb::Delete {
+        let keeps = if verb == Verb::Put { "none: visible to all" } else { "none: as limited before" };
+        dsl_flags.push(DslFlag {
+            kind: DslFlagKind::RepeatedList,
+            ..flag(
+                "--visible-to",
+                "visible_to",
+                &format!("Only sessions holding one of these tags see this path (repeat for several; {keeps}). Tags come from ws.session.tag."),
+                "text",
+                false,
+            )
+        });
+        fields.push(field("visible_to", "Visible to", &format!("A tag (team:red), or {{{{ [list] }}}}; only sessions holding one see this path. Empty: {keeps}.")));
+    }
     fields.push(field("room", "Room", "The exact room; empty: the room of the trigger.room that started the run."));
     fields.push(NodeFieldDef {
         field_type: NodeFieldType::Checkbox,
@@ -156,11 +175,20 @@ pub fn definition(verb: Verb) -> NodeDefinition {
     if verb != Verb::Delete {
         layout.push(LayoutItem::Field("value".to_string()));
     }
+    if verb != Verb::Delete {
+        layout.push(LayoutItem::Field("visible_to".to_string()));
+    }
     layout.push(LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("batch".to_string())] });
     let examples = match verb {
         Verb::Put => vec![
             NodeExample::dsl("Keep the last move", r#"ws.state.put --key /last_move --value "{{ input.room.payload }}""#)
                 .output(json!({ "state": { "key": "/last_move", "room": "lobby" } })),
+            NodeExample::dsl(
+                "Deal a hand only its seat sees",
+                r#"ws.state.put --key "/hands/{{ input.room.session_id }}" --value "{{ input.room.payload.cards }}" --visible-to "seat:{{ input.room.payload.seat }}""#,
+            )
+            .output(json!({ "state": { "key": "/hands/ws-1f0c", "room": "table-7" } }))
+            .note("After `ws.session.tag --tag seat:2` on that session; every other session's view has no `/hands/ws-1f0c`."),
         ],
         Verb::Update => vec![
             NodeExample::dsl(
@@ -183,7 +211,10 @@ pub fn definition(verb: Verb) -> NodeDefinition {
              the payload is written with {{{{ }}}}, and a segment that resolves empty is refused. `--room` is an exact room \
              (a room that is not open is `FW_NODE_WS_ROOM_NOT_OPEN`); without it the room is the one of the `trigger.room` \
              that started the run. A change past the room's `--max-state` is refused. Clients get a `patch` of only what \
-             changed at once, or with `--batch` on the room's 33 ms tick (in a tick room, after the tick). Adds `state: {{ key, room }}` and keeps the rest of the payload. Sending an event \
+             changed at once, or with `--batch` on the room's 33 ms tick (in a tick room, after the tick). `--visible-to <tag>` \
+             (repeatable; put and update) limits the path and all under it to the sessions holding one of the tags \
+             (`ws.session.tag`) — fog of war, a private hand: the others are never sent it. A put without it makes the path \
+             visible to all; an update without it keeps its limit. Adds `state: {{ key, room }}` and keeps the rest of the payload. Sending an event \
              without changing state is `ws.message.send`."
         ),
         input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `state` is added." }),
@@ -215,6 +246,9 @@ pub struct Config {
     /// Send on the room's tick instead of at once.
     #[serde(default)]
     pub batch: bool,
+    /// The tags that may see the path (`put`, `update`).
+    #[serde(default)]
+    pub visible_to: Value,
 }
 
 pub struct Node {
@@ -223,6 +257,7 @@ pub struct Node {
     value: Option<Value>,
     room: String,
     batch: bool,
+    visible_to: Vec<String>,
     hub: Arc<WsHub>,
 }
 
@@ -241,8 +276,12 @@ impl Node {
             }
             _ => Some(config.value),
         };
+        let visible_to = tags_of(&config.visible_to, "--visible-to", codes.config, false)?;
+        if verb == Verb::Delete && !visible_to.is_empty() {
+            return Err(PipelineError::new(codes.config, "--visible-to limits a value; a delete writes none"));
+        }
         let hub = hub.ok_or_else(|| PipelineError::new(codes.unavailable, "ws hub is not configured on this framework engine"))?;
-        Ok(Self { verb, key, value, room, batch: config.batch, hub })
+        Ok(Self { verb, key, value, room, batch: config.batch, visible_to, hub })
     }
 }
 
@@ -296,7 +335,7 @@ impl NodeHandler for Node {
             .hub
             .room(owner, project, &room)
             .ok_or_else(|| PipelineError::new(ROOM_NOT_OPEN_CODE, format!("room '{room}' is not open")))?;
-        handle.apply(self.verb.op(), &self.key, self.value.clone(), self.batch).map_err(|full| {
+        handle.apply(self.verb.op(), &self.key, self.value.clone(), self.batch, &self.visible_to).map_err(|full| {
             PipelineError::new(
                 codes.full,
                 format!("room '{room}': the state would be {} bytes, past its --max-state of {}", full.would_be, full.limit),

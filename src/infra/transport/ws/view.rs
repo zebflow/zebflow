@@ -1,5 +1,12 @@
 //! What a session is sent of a room's state (`docs/contracts/rooms.md`
-//! § Clients and upgrades): after `joined`, only what changed.
+//! § Views, § Clients and upgrades): only its part, and after `joined`,
+//! only what changed.
+//!
+//! [`Visibility`] holds the room's `--visible-to` rules: a path written
+//! with `--visible-to team:red` (and everything under it) is part only of
+//! the views of sessions holding one of its tags. A path under no rule is
+//! in every view. Hidden values are cut out of a view before it is
+//! encoded, so their bytes never leave the server.
 //!
 //! [`diff`] compares the view a session was last sent with the new one and
 //! answers the smallest list of operations that turns one into the other:
@@ -7,7 +14,103 @@
 //! that is gone sends one `del`. A list is a leaf: a changed list is sent
 //! whole.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::{Map, Value, json};
+
+/// The room's `--visible-to` rules: a path, as its keys, and the tags that
+/// may see it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Visibility {
+    rules: BTreeMap<Vec<String>, BTreeSet<String>>,
+}
+
+/// A session's tags that some rule names: two sessions with the same ones
+/// see the same view.
+pub type ViewKey = Vec<String>;
+
+impl Visibility {
+    /// `ws.state.put` at `path`: what was under it is replaced, so its rules
+    /// go; `tags` (if any) limit the path, none makes it visible to all.
+    pub fn put(&mut self, path: &[&str], tags: &[String]) {
+        self.forget(path);
+        self.limit(path, tags);
+    }
+
+    /// `ws.state.update` at `path` merging `keys`: each merged key's value is
+    /// replaced, so its rules go; `tags` (if any) limit the path, none keeps
+    /// what limits it now.
+    pub fn update<'a>(&mut self, path: &[&str], keys: impl Iterator<Item = &'a str>, tags: &[String]) {
+        for key in keys {
+            let mut child = path.to_vec();
+            child.push(key);
+            self.forget(&child);
+        }
+        self.limit(path, tags);
+    }
+
+    /// `ws.state.delete` at `path`: the rules at and under it go.
+    pub fn delete(&mut self, path: &[&str]) {
+        self.forget(path);
+    }
+
+    fn limit(&mut self, path: &[&str], tags: &[String]) {
+        if !tags.is_empty() && !path.is_empty() {
+            self.rules.insert(owned(path), tags.iter().cloned().collect());
+        }
+    }
+
+    /// Drop every rule at or under `path`.
+    fn forget(&mut self, path: &[&str]) {
+        let start = owned(path);
+        let under: Vec<Vec<String>> = self.rules.range(start.clone()..).take_while(|(key, _)| key.starts_with(&start)).map(|(key, _)| key.clone()).collect();
+        for key in under {
+            self.rules.remove(&key);
+        }
+    }
+
+    /// Whether any rule lies at or under `path`.
+    fn any_under(&self, path: &[String]) -> bool {
+        self.rules.range(path.to_vec()..).next().is_some_and(|(key, _)| key.starts_with(path))
+    }
+
+    /// The tags among `tags` that some rule names.
+    pub fn key(&self, tags: &BTreeSet<String>) -> ViewKey {
+        if self.rules.is_empty() {
+            return Vec::new();
+        }
+        let named: BTreeSet<&String> = self.rules.values().flatten().collect();
+        tags.iter().filter(|tag| named.contains(tag)).cloned().collect()
+    }
+
+    /// `state` as a session whose [`Visibility::key`] is `key` sees it.
+    pub fn view(&self, state: &Value, key: &ViewKey) -> Value {
+        if self.rules.is_empty() {
+            return state.clone();
+        }
+        let mut path = Vec::new();
+        self.view_at(state, key, &mut path)
+    }
+
+    fn view_at(&self, value: &Value, key: &ViewKey, path: &mut Vec<String>) -> Value {
+        let Value::Object(map) = value else { return value.clone() };
+        let mut out = Map::new();
+        for (name, child) in map {
+            path.push(name.clone());
+            if !self.any_under(path) {
+                out.insert(name.clone(), child.clone());
+            } else if self.rules.get(path.as_slice()).is_none_or(|tags| key.iter().any(|tag| tags.contains(tag))) {
+                out.insert(name.clone(), self.view_at(child, key, path));
+            }
+            path.pop();
+        }
+        Value::Object(out)
+    }
+}
+
+fn owned(path: &[&str]) -> Vec<String> {
+    path.iter().map(|part| part.to_string()).collect()
+}
 
 /// One change of a view: `{ "op": "set", "path": [...], "value": … }` or
 /// `{ "op": "del", "path": [...] }`. `path` is the keys from the root.
@@ -106,6 +209,40 @@ mod tests {
         let mut client = old.clone();
         apply(&mut client, &ops);
         assert_eq!(client, new, "a client applying the ops holds the new view");
+    }
+
+    fn tags(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn a_limited_path_and_all_under_it_is_only_in_the_views_of_its_tags() {
+        let state = json!({ "board": { "turn": 2 }, "hands": { "s1": { "cards": [1, 2] }, "s2": { "cards": [3] } } });
+        let mut vis = Visibility::default();
+        vis.put(&["hands", "s1"], &["seat:1".to_string()]);
+        vis.put(&["hands", "s2"], &["seat:2".to_string(), "dealer".to_string()]);
+        let view = |held: &[&str]| vis.view(&state, &vis.key(&tags(held)));
+        assert_eq!(view(&[]), json!({ "board": { "turn": 2 }, "hands": {} }), "untagged: neither hand");
+        assert_eq!(view(&["seat:1", "team:red"]), json!({ "board": { "turn": 2 }, "hands": { "s1": { "cards": [1, 2] } } }));
+        assert_eq!(view(&["dealer"])["hands"], json!({ "s2": { "cards": [3] } }), "one of its tags is enough");
+        assert_eq!(vis.key(&tags(&["seat:1", "team:red"])), vec!["seat:1".to_string()], "a tag no rule names makes no other view");
+    }
+
+    #[test]
+    fn a_put_replaces_the_rules_under_it_an_update_keeps_its_own_and_a_delete_drops_them() {
+        let mut vis = Visibility::default();
+        let red = vec!["team:red".to_string()];
+        vis.put(&["units", "u1"], &red);
+        vis.update(&["units", "u1"], ["x"].into_iter(), &[]);
+        assert_eq!(vis.view(&json!({ "units": { "u1": { "x": 1 } } }), &Vec::new()), json!({ "units": {} }), "an update without --visible-to keeps the limit");
+        vis.put(&["units", "u1"], &[]);
+        assert_eq!(vis, Visibility::default(), "a put without --visible-to makes it visible to all");
+        vis.put(&["units", "u1", "hp"], &red);
+        vis.put(&["units"], &[]);
+        assert_eq!(vis, Visibility::default(), "a put over a parent replaces what was under it");
+        vis.put(&["units", "u2"], &red);
+        vis.delete(&["units"]);
+        assert_eq!(vis, Visibility::default());
     }
 
     #[test]

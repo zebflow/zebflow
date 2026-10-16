@@ -86,7 +86,7 @@ fn close_kicks_drops_state_and_answers_each_room() {
     // A fixed room closes and is back at once, empty.
     let lobby = hub.room(O, P, "lobby").unwrap();
     let (_r, _g, _k) = hub.join(O, P, "lobby", "s2", None, None).unwrap();
-    lobby.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+    lobby.apply(StateOp::Set, "/a", Some(json!(1)), false, &[]).unwrap();
     assert_eq!(hub.close(O, P, "lobby").unwrap(), vec![("lobby".to_string(), 1)]);
     let fresh = hub.room(O, P, "lobby").expect("still declared");
     assert!(!Arc::ptr_eq(&lobby, &fresh));
@@ -123,7 +123,7 @@ fn the_last_leave_keeps_an_opened_room_and_its_state() {
     let hub = hub_declaring(&["match-:id"]);
     let room = hub.open(O, P, "match-1", opened(None)).unwrap();
     let seat = hub.join(O, P, "match-1", "s1", None, None).unwrap();
-    room.apply(StateOp::Set, "/score", Some(json!(3)), false).unwrap();
+    room.apply(StateOp::Set, "/score", Some(json!(3)), false, &[]).unwrap();
     drop(seat);
     assert_eq!(hub.room(O, P, "match-1").unwrap().get_state(), json!({ "score": 3 }), "an opened room keeps state until it closes");
 }
@@ -146,7 +146,7 @@ fn list_answers_the_contracts_shape_with_members_on_request() {
     }
     let some = hub.list(O, P, "match-*", true).unwrap();
     assert_eq!(some["total"]["rooms"], 1);
-    assert_eq!(some["rooms"][0]["members"], json!(["u-17"]));
+    assert_eq!(some["rooms"][0]["members"], json!([ { "session": "s1", "sub": "u-17", "tags": [], "away": true } ]), "joined, no socket attached");
     assert_eq!(hub.list(O, P, "match-9", false).unwrap()["total"]["rooms"], 0, "an exact room not open lists nothing");
 }
 

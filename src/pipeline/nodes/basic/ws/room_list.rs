@@ -8,7 +8,9 @@
 //! `--room` is a pattern or an exact name (default `*`, every room). Answers
 //! `room: { rooms: [ … ], total: { rooms, sessions } }`, each room with its
 //! settings, sessions and counters that only rise; `--members` adds
-//! `members: [sub, …]` — without it no identity is listed.
+//! `members: [ { session, sub, tags, away } ]`, each session with its
+//! identity, its tags and whether its seat is held with no socket — without
+//! it no identity is listed.
 
 use std::sync::Arc;
 
@@ -38,8 +40,9 @@ pub fn definition() -> NodeDefinition {
             room). Adds `room: { rooms: [ { room, kind, private, mode, meta, sessions, max_sessions, opened_at, opened_by, \
             last_activity_at, state_bytes, counters } ], total: { rooms, sessions } }` and keeps the rest of the payload. \
             Counters only rise from the moment the room opened (`messages_in`, `messages_out`, `pipeline_runs`, \
-            `pipeline_errors`, `resyncs`, `flood_closes`; `ticks`, `tick_overruns` and `inputs_dropped` stay 0 until tick rooms \
-            come); a rate is the difference between two readings. `--members` adds each room's `members: [sub, …]`; without it \
+            `pipeline_errors`, `resyncs`, `flood_closes`; `ticks`, `tick_overruns` and `inputs_dropped` count in tick rooms \
+            only); a rate is the difference between two readings. `--members` adds each room's `members: [ { session, sub, tags, away } ]` — every session with its \
+            identity, its tags (`ws.session.tag`) and whether its seat is held for a dropped connection; without it \
             no identity is listed. Matchmaking reads `meta` and the free seats here, then `ws.ticket.create` or `ws.room.open`."
             .to_string(),
         input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `room` is added." }),
@@ -51,11 +54,11 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         dsl_flags: vec![
             flag("--room", "room", "Which rooms: a pattern or an exact name (default *, every room).", "text", false),
-            switch("--members", "members", "Also list each room's members (their sub)."),
+            switch("--members", "members", "Also list each room's sessions: their sub, their tags, and whether they are away."),
         ],
         fields: vec![
             field("room", "Room", "A pattern or an exact name; empty: every room."),
-            checkbox("members", "Members", "List each room's members."),
+            checkbox("members", "Members", "List each room's sessions with their sub and tags."),
         ],
         layout: vec![LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("members".to_string())] }],
         examples: vec![

@@ -59,7 +59,14 @@ Text frames, JSON, each with a `type`.
 ```
 
 `state` is the session's whole view of the room's state. Keep it: every
-later `patch` changes it. In a room opened with `--hold`, `joined` also
+later `patch` changes it.
+
+A view is the session's own part of the state. A path the server writes
+`--visible-to team:red` is only in the views of sessions it tagged
+`team:red` (`ws.session.tag`): other sessions are never sent it, not even
+encrypted or hidden. When a session gains a tag, a `patch` `set`s what it
+may now see; when it loses one, a `del` takes it away. Two sessions with the
+same tags receive the same frames, byte for byte. In a room opened with `--hold`, `joined` also
 carries `resume`, a token for reconnecting (§ Reconnecting):
 
 ```json

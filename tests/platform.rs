@@ -38,5 +38,7 @@ mod ws_rooms;
 mod ws_room_runs;
 #[path = "platform/ws_room_hold.rs"]
 mod ws_room_hold;
+#[path = "platform/ws_room_views.rs"]
+mod ws_room_views;
 #[path = "platform/pipeline_tabs.rs"]
 mod pipeline_tabs;

@@ -37,6 +37,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
 
 use super::delivery::{self, Attached, Delivery, Member};
+use super::view::Visibility;
 use super::queue::{RoomEvent, RoomQueue, SessionQueue};
 
 /// How long a `--batch` change waits before it is sent (≈ 30 fps).
@@ -70,6 +71,8 @@ pub enum EmitTarget {
     Others(String),
     /// Every session of this identity (`user:<sub>`).
     User(String),
+    /// Every session holding this tag (`tag:<tag>`).
+    Tag(String),
 }
 
 /// Whether a room was declared by an exact `trigger.room --room` or opened
@@ -187,6 +190,8 @@ pub struct RoomHandle {
     instance: String,
     opened_at: String,
     state: RwLock<Value>,
+    /// The `--visible-to` rules; changed only under the `state` write lock.
+    visibility: Mutex<Visibility>,
     state_bytes: AtomicU64,
     dirty: AtomicBool,
     /// Lock order: `delivery`, then `state`, then `members`.
@@ -230,6 +235,7 @@ impl RoomHandle {
             instance: uuid::Uuid::new_v4().simple().to_string(),
             opened_at: rfc3339(now),
             state: RwLock::new(json!({})),
+            visibility: Mutex::new(Visibility::default()),
             state_bytes: AtomicU64::new(2),
             dirty: AtomicBool::new(false),
             delivery: Mutex::new(Delivery::new()),
@@ -368,8 +374,25 @@ impl RoomHandle {
     /// state; with `batch`, it is sent on the next 33 ms tick; in a tick room,
     /// when the tick ends ([`Self::flush`]). A change that would take the
     /// state past `--max-state` is undone and refused.
-    pub fn apply(self: &Arc<Self>, op: StateOp, path: &str, value: Option<Value>, batch: bool) -> Result<(), StateFull> {
+    ///
+    /// `visible_to` limits the path to the sessions holding one of those
+    /// tags (`--visible-to`); a put without it makes the path visible to
+    /// all, an update without it keeps what limits it.
+    pub fn apply(self: &Arc<Self>, op: StateOp, path: &str, value: Option<Value>, batch: bool, visible_to: &[String]) -> Result<(), StateFull> {
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+        let merged: Vec<String> = match (&op, &value) {
+            (StateOp::Merge, Some(Value::Object(patch))) => patch.keys().cloned().collect(),
+            _ => Vec::new(),
+        };
+        let limit_path = || {
+            let parts = segments(path);
+            let mut vis = self.visibility.lock().unwrap_or_else(|e| e.into_inner());
+            match op {
+                StateOp::Set => vis.put(&parts, visible_to),
+                StateOp::Merge => vis.update(&parts, merged.iter().map(String::as_str), visible_to),
+                StateOp::Delete => vis.delete(&parts),
+            }
+        };
         let saved = json_ptr_get(&state, path).cloned();
         let before = saved.as_ref().map(json_len).unwrap_or(0);
         apply_state_op(&mut state, op, path, value);
@@ -387,6 +410,7 @@ impl RoomHandle {
                 return Err(StateFull { limit, would_be: estimate });
             }
             self.state_bytes.store(estimate, Ordering::Relaxed);
+            limit_path();
             drop(state);
             self.touch();
             // A tick room's loop sends it when the tick ends.
@@ -401,6 +425,7 @@ impl RoomHandle {
             return Err(StateFull { limit, would_be: text.len() as u64 });
         }
         self.state_bytes.store(text.len() as u64, Ordering::Relaxed);
+        limit_path();
         drop(state);
         // A batch change still waiting goes out with this one.
         self.dirty.store(true, Ordering::Release);
@@ -442,11 +467,15 @@ impl RoomHandle {
         if !dirty && (tick.is_none() || !delivery.has_tick_events()) {
             return;
         }
-        let state = self.state.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let (state, vis) = {
+            let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+            let vis = self.visibility.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            (state.clone(), vis)
+        };
         if dirty {
             self.state_bytes.store(json_len(&state), Ordering::Relaxed);
         }
-        delivery.send_changes(state, &mut self.members(), tick);
+        delivery.send_changes(state, vis, &mut self.members(), tick);
     }
 
     /// Forget the state (a fixed room whose last session left).
@@ -454,6 +483,7 @@ impl RoomHandle {
         let mut delivery = self.delivery();
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         *state = json!({});
+        *self.visibility.lock().unwrap_or_else(|e| e.into_inner()) = Visibility::default();
         delivery.reset();
         self.state_bytes.store(2, Ordering::Relaxed);
         self.dirty.store(false, Ordering::Release);
@@ -529,13 +559,43 @@ impl RoomHandle {
         closed
     }
 
-    /// The identities joined, each once, sorted.
-    pub fn member_users(&self) -> Vec<String> {
-        let members = self.members.lock().unwrap_or_else(|e| e.into_inner());
-        let mut users: Vec<String> = members.values().filter_map(|m| m.user.clone()).collect();
-        users.sort();
-        users.dedup();
-        users
+    /// Change a session's tags: every `untag` first (`cell:*` removes each
+    /// tag starting `cell:`, `*` all of them), then every `tag`. Its view
+    /// follows at the next send — at once, or after the tick. Answers its
+    /// tags, sorted; `None` when the session holds no seat here.
+    pub fn retag(&self, session_id: &str, untag: &[String], tag: &[String]) -> Option<Vec<String>> {
+        let tags = {
+            let mut members = self.members();
+            let member = members.get_mut(session_id)?;
+            for gone in untag {
+                match gone.strip_suffix('*') {
+                    Some(prefix) => member.tags.retain(|t| !t.starts_with(prefix)),
+                    None => {
+                        member.tags.remove(gone);
+                    }
+                }
+            }
+            member.tags.extend(tag.iter().cloned());
+            member.tags.iter().cloned().collect()
+        };
+        self.dirty.store(true, Ordering::Release);
+        if self.tick().is_none() {
+            self.send_changes(None);
+        }
+        self.touch();
+        Some(tags)
+    }
+
+    /// Every session, by id: its identity, its tags, and whether its seat is
+    /// held with no socket (`away`).
+    fn members_listed(&self) -> Vec<Value> {
+        let members = self.members();
+        let mut listed: Vec<Value> = members
+            .iter()
+            .map(|(id, m)| json!({ "session": id, "sub": m.user, "tags": m.tags, "away": !delivery::is_attached(m) }))
+            .collect();
+        listed.sort_by(|a, b| a["session"].as_str().cmp(&b["session"].as_str()));
+        listed
     }
 
     /// This room as `ws.room.list` shows it.
@@ -566,7 +626,7 @@ impl RoomHandle {
             },
         });
         if members {
-            entry["members"] = json!(self.member_users());
+            entry["members"] = json!(self.members_listed());
         }
         entry
     }
@@ -651,6 +711,7 @@ fn json_ptr_delete(root: &mut Value, path: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::transport::ws::Frame;
 
     fn room(max_state: u64) -> Arc<RoomHandle> {
         RoomHandle::new("lobby", RoomKind::Opened, RoomSettings { max_state, ..RoomSettings::fixed("t") })
@@ -685,23 +746,23 @@ mod tests {
     #[tokio::test]
     async fn a_change_sends_one_small_patch_at_once_and_a_batch_on_the_tick() {
         let room = room(DEFAULT_MAX_STATE);
-        room.apply(StateOp::Set, "/players", Some(json!({ "s1": { "x": 0, "y": 0 }, "s2": { "x": 9, "y": 9 } })), false).unwrap();
+        room.apply(StateOp::Set, "/players", Some(json!({ "s1": { "x": 0, "y": 0 }, "s2": { "x": 9, "y": 9 } })), false, &[]).unwrap();
         let (mut s1, _k) = seat(&room, "s1", None);
         assert_eq!(s1.view, json!({ "players": { "s1": { "x": 0, "y": 0 }, "s2": { "x": 9, "y": 9 } } }), "attach gives the whole view");
-        room.apply(StateOp::Merge, "/players/s1", Some(json!({ "x": 1 })), false).unwrap();
+        room.apply(StateOp::Merge, "/players/s1", Some(json!({ "x": 1 })), false, &[]).unwrap();
         assert_eq!(
             frame(&mut s1),
             Some(json!({ "type": "patch", "ops": [ { "op": "set", "path": ["players", "s1", "x"], "value": 1 } ] })),
             "only the changed leaf, not the state"
         );
-        room.apply(StateOp::Set, "/b", Some(json!(2)), true).unwrap();
-        room.apply(StateOp::Delete, "/players/s2", None, true).unwrap();
+        room.apply(StateOp::Set, "/b", Some(json!(2)), true, &[]).unwrap();
+        room.apply(StateOp::Delete, "/players/s2", None, true, &[]).unwrap();
         assert_eq!(frame(&mut s1), None, "a batch waits for the tick");
         tokio::time::sleep(BATCH_TICK * 3).await;
         let tick = frame(&mut s1).expect("one send");
         assert_eq!(tick["ops"], json!([ { "op": "del", "path": ["players", "s2"] }, { "op": "set", "path": ["b"], "value": 2 } ]), "two batch changes, one patch");
         assert_eq!(frame(&mut s1), None);
-        room.apply(StateOp::Set, "/b", Some(json!(2)), false).unwrap();
+        room.apply(StateOp::Set, "/b", Some(json!(2)), false, &[]).unwrap();
         assert_eq!(frame(&mut s1), None, "a write that changes nothing sends nothing");
     }
 
@@ -710,13 +771,13 @@ mod tests {
         let room = room(DEFAULT_MAX_STATE);
         let (mut slow, _k) = seat(&room, "slow", None);
         for i in 0..delivery::SESSION_BACKLOG + 5 {
-            room.apply(StateOp::Set, "/n", Some(json!(i)), false).unwrap();
+            room.apply(StateOp::Set, "/n", Some(json!(i)), false, &[]).unwrap();
         }
         assert!(room.is_behind("slow"));
         while slow.frames.try_recv().is_ok() {}
         assert_eq!(room.resync("slow"), Some(json!({ "n": delivery::SESSION_BACKLOG + 4 })), "the whole view as last sent");
         assert!(!room.is_behind("slow"));
-        room.apply(StateOp::Set, "/n", Some(json!(0)), false).unwrap();
+        room.apply(StateOp::Set, "/n", Some(json!(0)), false, &[]).unwrap();
         assert_eq!(frame(&mut slow).unwrap()["ops"], json!([ { "op": "set", "path": ["n"], "value": 0 } ]), "patches follow the resync");
         assert_eq!(room.counter(Counter::Resyncs), 1);
     }
@@ -726,7 +787,7 @@ mod tests {
         let room = room(DEFAULT_MAX_STATE);
         let (mut first, _k) = seat(&room, "s1", None);
         room.detach("s1");
-        room.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        room.apply(StateOp::Set, "/a", Some(json!(1)), false, &[]).unwrap();
         room.emit("hi", json!({}), EmitTarget::All);
         assert_eq!(frame(&mut first), None);
         assert_eq!(room.session_count(), 1, "the seat stays");
@@ -738,27 +799,27 @@ mod tests {
     #[test]
     fn a_write_past_max_state_is_refused_and_undone() {
         let room = room(40);
-        room.apply(StateOp::Set, "/name", Some(json!("ok")), false).expect("fits");
+        room.apply(StateOp::Set, "/name", Some(json!("ok")), false, &[]).expect("fits");
         let big = json!("x".repeat(64));
         for batch in [false, true] {
-            let err = room.apply(StateOp::Set, "/name", Some(big.clone()), batch).expect_err("past the cap");
+            let err = room.apply(StateOp::Set, "/name", Some(big.clone()), batch, &[]).expect_err("past the cap");
             assert_eq!(err.limit, 40);
             assert_eq!(room.get_state(), json!({ "name": "ok" }), "batch={batch}: the old value stays");
-            let err = room.apply(StateOp::Set, "/other", Some(big.clone()), batch).expect_err("a new key too");
+            let err = room.apply(StateOp::Set, "/other", Some(big.clone()), batch, &[]).expect_err("a new key too");
             assert!(err.would_be > 40);
             assert_eq!(room.get_state(), json!({ "name": "ok" }), "batch={batch}: the new key is removed");
         }
-        room.apply(StateOp::Delete, "/name", None, false).expect("a delete fits");
+        room.apply(StateOp::Delete, "/name", None, false, &[]).expect("a delete fits");
         assert_eq!(room.state_bytes(), 2);
     }
 
     #[test]
     fn put_merge_and_delete_change_the_tree() {
         let room = room(DEFAULT_MAX_STATE);
-        room.apply(StateOp::Set, "/players/s1", Some(json!({ "x": 0, "y": 0 })), false).unwrap();
-        room.apply(StateOp::Merge, "/players/s1", Some(json!({ "x": 5 })), false).unwrap();
+        room.apply(StateOp::Set, "/players/s1", Some(json!({ "x": 0, "y": 0 })), false, &[]).unwrap();
+        room.apply(StateOp::Merge, "/players/s1", Some(json!({ "x": 5 })), false, &[]).unwrap();
         assert_eq!(room.get_state(), json!({ "players": { "s1": { "x": 5, "y": 0 } } }));
-        room.apply(StateOp::Delete, "/players/s1", None, false).unwrap();
+        room.apply(StateOp::Delete, "/players/s1", None, false, &[]).unwrap();
         assert_eq!(room.get_state(), json!({ "players": {} }));
     }
 
@@ -768,9 +829,9 @@ mod tests {
         room.redeclared(Some(TickSpec { every_ms: 50, max_inputs: 30 }));
         let (mut s1, _k1) = seat(&room, "s1", None);
         let (mut s2, _k2) = seat(&room, "s2", None);
-        room.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        room.apply(StateOp::Set, "/a", Some(json!(1)), false, &[]).unwrap();
         room.begin_tick();
-        room.apply(StateOp::Set, "/b", Some(json!(2)), true).unwrap();
+        room.apply(StateOp::Set, "/b", Some(json!(2)), true, &[]).unwrap();
         room.emit("hit", json!({ "by": "s1" }), EmitTarget::All);
         room.emit("you", json!({}), EmitTarget::Session("s2".into()));
         tokio::time::sleep(BATCH_TICK * 2).await;
@@ -792,8 +853,56 @@ mod tests {
         assert_eq!(room.describe(false)["mode"], "tick");
         room.redeclared(None);
         assert_eq!(room.describe(false)["mode"], "event");
-        room.apply(StateOp::Set, "/a", Some(json!(3)), false).unwrap();
+        room.apply(StateOp::Set, "/a", Some(json!(3)), false, &[]).unwrap();
         assert!(frame(&mut s1).is_some(), "an event room sends at once again");
+    }
+
+    #[test]
+    fn a_limited_path_never_reaches_an_untagged_session_and_one_view_is_one_encoding() {
+        let room = room(DEFAULT_MAX_STATE);
+        let (mut red1, _k1) = seat(&room, "red1", None);
+        let (mut red2, _k2) = seat(&room, "red2", None);
+        let (mut blue, _k3) = seat(&room, "blue", None);
+        for (id, team) in [("red1", "team:red"), ("red2", "team:red"), ("blue", "team:blue")] {
+            room.retag(id, &[], &[team.to_string(), format!("me:{id}")]).expect("seated");
+        }
+        room.apply(StateOp::Set, "/fog/red", Some(json!({ "base": "secret-red" })), false, &["team:red".to_string()]).unwrap();
+        room.apply(StateOp::Set, "/score", Some(json!(1)), false, &[]).unwrap();
+        let (r1, r2): (Vec<Frame>, Vec<Frame>) = (std::iter::from_fn(|| red1.frames.try_recv().ok()).collect(), std::iter::from_fn(|| red2.frames.try_recv().ok()).collect());
+        let b: Vec<Frame> = std::iter::from_fn(|| blue.frames.try_recv().ok()).collect();
+        assert!(b.iter().all(|f| !f.contains("secret-red")), "the hidden bytes never reach blue: {b:?}");
+        assert_eq!(b.len(), 2, "blue is sent the fog, empty, and the score: {b:?}");
+        assert!(r1.iter().any(|f| f.contains("secret-red")));
+        assert_eq!(r1.len(), r2.len());
+        assert!(r1.iter().zip(&r2).all(|(x, y)| Arc::ptr_eq(x, y)), "the same view is the same bytes, encoded once");
+        assert_eq!(room.get_state()["fog"]["red"]["base"], "secret-red", "the room's state holds it all");
+    }
+
+    #[test]
+    fn a_tag_change_sends_the_view_it_gains_and_deletes_the_one_it_loses() {
+        let room = room(DEFAULT_MAX_STATE);
+        room.apply(StateOp::Set, "/cells/c1", Some(json!({ "orc": 3 })), false, &["cell:1".to_string()]).unwrap();
+        let (mut s1, _k) = seat(&room, "s1", None);
+        assert_eq!(s1.view, json!({ "cells": {} }), "joined carries only its view");
+        assert_eq!(room.retag("s1", &[], &["team:red".to_string(), "cell:1".to_string()]), Some(vec!["cell:1".to_string(), "team:red".to_string()]));
+        assert_eq!(frame(&mut s1).unwrap()["ops"], json!([ { "op": "set", "path": ["cells", "c1"], "value": { "orc": 3 } } ]));
+        assert_eq!(room.retag("s1", &["cell:*".to_string()], &["cell:2".to_string()]), Some(vec!["cell:2".to_string(), "team:red".to_string()]), "untag before tag; team:red stays");
+        assert_eq!(frame(&mut s1).unwrap()["ops"], json!([ { "op": "del", "path": ["cells", "c1"] } ]));
+        assert_eq!(room.retag("s1", &["*".to_string()], &[]), Some(Vec::new()), "* removes every tag");
+        assert_eq!(room.retag("nobody", &[], &["x".to_string()]), None);
+        let tagged = room.describe(true)["members"].clone();
+        assert_eq!(tagged, json!([ { "session": "s1", "sub": null, "tags": [], "away": false } ]));
+    }
+
+    #[test]
+    fn a_tag_recipient_reaches_only_the_sessions_holding_it() {
+        let room = room(DEFAULT_MAX_STATE);
+        let (mut red, _k1) = seat(&room, "red", None);
+        let (mut blue, _k2) = seat(&room, "blue", None);
+        room.retag("red", &[], &["team:red".to_string()]).unwrap();
+        room.emit("plan", json!({}), EmitTarget::Tag("team:red".into()));
+        assert_eq!(frame(&mut red).unwrap()["event"], "plan");
+        assert_eq!(frame(&mut blue), None);
     }
 
     #[test]
@@ -801,7 +910,7 @@ mod tests {
         let fixed = RoomHandle::new("lobby", RoomKind::Fixed, RoomSettings::fixed("t"));
         let (tx, _rx) = mpsc::unbounded_channel();
         fixed.add_member("s1", None, tx);
-        fixed.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        fixed.apply(StateOp::Set, "/a", Some(json!(1)), false, &[]).unwrap();
         assert!(fixed.remove_member("s1"));
         assert_eq!(fixed.get_state(), json!({}));
     }

@@ -138,7 +138,7 @@ async fn list_answers_the_contracts_json_under_room() {
     assert_eq!(out.payload["room"]["total"], json!({ "rooms": 2, "sessions": 1 }), "lobby and match-1");
     assert_eq!(out.payload["kept"], 1);
     let out = run(room_list::NODE_KIND, json!({ "room": "match-*", "members": true }), &hub).await.expect("list");
-    assert_eq!(out.payload["room"]["rooms"][0]["members"], json!(["u-17"]));
+    assert_eq!(out.payload["room"]["rooms"][0]["members"], json!([ { "session": "s1", "sub": "u-17", "tags": [], "away": true } ]), "joined, no socket attached");
     assert_eq!(out.payload["room"], hub.list("demo", "site-a", "match-*", true).unwrap(), "the same JSON the API answers");
     assert_eq!(code(build(room_list::NODE_KIND, &json!({ "room": "a b" }), Some(hub.clone()))), room_list::CONFIG_CODE);
 }

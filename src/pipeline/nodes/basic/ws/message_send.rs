@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! ws.message.send (--room ROOM | --connection CONN) --body VALUE [--event NAME]
-//!                 [--recipient all|session|others|user:<sub>]
+//!                 [--recipient all|session|others|user:<sub>|tag:<tag>]
 //! ```
 //!
 //! - **`--room`** reaches the sockets joined to a room of this project as
@@ -15,7 +15,8 @@
 //!   `--recipient` (`all` default, `session`, `others`, `user:<sub>`) is
 //!   enforced by the server; `session` and `others` need the triggering
 //!   session, so they work only under `trigger.room`; `user:<sub>` reaches
-//!   every session of that identity.
+//!   every session of that identity; `tag:<tag>` every session holding that
+//!   tag (`ws.session.tag`).
 //! - **`--connection`** sends on the socket a `trigger.socket` node holds open:
 //!   its node id (`n0`), or `pipeline/path:node_id` for another pipeline's. A
 //!   text body goes as is, anything else as JSON text. A client socket has no
@@ -55,7 +56,7 @@ pub const CONNECTION_CODE: &str = "FW_NODE_WS_MESSAGE_SEND_CONNECTION";
 /// This engine has no room hub or no client socket manager.
 pub const UNAVAILABLE_CODE: &str = "FW_NODE_WS_MESSAGE_SEND_UNAVAILABLE";
 
-const RECIPIENTS: &str = "all, session, others or user:<sub>";
+const RECIPIENTS: &str = "all, session, others, user:<sub> or tag:<tag>";
 const DEFAULT_EVENT: &str = "event";
 
 pub fn definition() -> NodeDefinition {
@@ -68,7 +69,8 @@ pub fn definition() -> NodeDefinition {
             `event` message named `--event` (default `event`); without `--room` the room is the one of the `trigger.room` \
             that started the run. An exact room that is not open is `FW_NODE_WS_ROOM_NOT_OPEN`; a pattern (`zone-*`) \
             reaches every open room it matches and answers how many. `--recipient` all (default), session (the triggering \
-            socket only), others (every socket but that one) or user:<sub> (every session of that identity). \
+            socket only), others (every socket but that one), user:<sub> (every session of that identity) or tag:<tag> \
+            (every session holding that tag, from `ws.session.tag` — a team's chat). \
             `--connection` instead sends on the socket a `trigger.socket` node holds open (its node id, or \
             `pipeline/path:node_id`); it takes no `--event` or `--recipient`. Give one of `--room` and `--connection`, not \
             both. Adds `message: { sent, room, event }` (a pattern: `{ sent, rooms, event }`; a socket: `{ sent, connection }`) \
@@ -92,7 +94,7 @@ pub fn definition() -> NodeDefinition {
             flag(
                 "--recipient",
                 "recipient",
-                "Rooms only: all (default), session (the triggering socket), others (every socket but that one) or user:<sub> (every session of that identity).",
+                "Rooms only: all (default), session (the triggering socket), others (every socket but that one), user:<sub> (every session of that identity) or tag:<tag> (every session holding that tag).",
                 "text",
                 false,
             ),
@@ -104,7 +106,7 @@ pub fn definition() -> NodeDefinition {
             field("event", "Event", "The event name clients receive (rooms only). Default: event."),
             // No default: the form must not write a recipient a
             // `--connection` send would refuse; empty means all.
-            field("recipient", "Recipient", "Rooms only: all (empty), session (the triggering socket), others, or user:<sub>."),
+            field("recipient", "Recipient", "Rooms only: all (empty), session (the triggering socket), others, user:<sub> or tag:<tag>."),
         ],
         layout: vec![
             LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("connection".to_string())] },
@@ -132,6 +134,11 @@ pub fn definition() -> NodeDefinition {
                 r#"ws.message.send --room notifications --recipient "user:{{ input.order.owner }}" --event order.shipped --body "{{ input.order }}""#,
             )
             .note("`notifications` is a fixed room (`trigger.room --room notifications`); every signed-in session of that identity receives it."),
+            NodeExample::dsl(
+                "Tell one team",
+                r#"ws.message.send --recipient tag:team:red --event team.chat --body "{{ { from: input.room.session_id, text: input.room.payload.text } }}""#,
+            )
+            .note("Only the sessions `ws.session.tag --tag team:red` tagged receive it."),
             NodeExample::dsl(
                 "Subscribe after connecting",
                 r#"ws.message.send --connection n0 --body "{{ { op: 'subscribe', symbols: ['AUDUSD'] } }}""#,
@@ -183,6 +190,7 @@ enum Recipient {
     Session,
     Others,
     User(String),
+    Tag(String),
 }
 
 impl Recipient {
@@ -191,8 +199,9 @@ impl Recipient {
             "" | "all" => Ok(Self::All),
             "session" => Ok(Self::Session),
             "others" => Ok(Self::Others),
-            other => match other.strip_prefix("user:").map(str::trim) {
-                Some(sub) if !sub.is_empty() => Ok(Self::User(sub.to_string())),
+            other => match (other.strip_prefix("user:").map(str::trim), other.strip_prefix("tag:").map(str::trim)) {
+                (Some(sub), _) if !sub.is_empty() => Ok(Self::User(sub.to_string())),
+                (_, Some(tag)) if !tag.is_empty() => Ok(Self::Tag(tag.to_string())),
                 _ => Err(PipelineError::new(CONFIG_CODE, format!("--recipient '{other}' must be {RECIPIENTS}"))),
             },
         }
@@ -204,6 +213,7 @@ impl Recipient {
             Self::Session => "session".to_string(),
             Self::Others => "others".to_string(),
             Self::User(sub) => format!("user:{sub}"),
+            Self::Tag(tag) => format!("tag:{tag}"),
         }
     }
 }
@@ -275,6 +285,7 @@ impl NodeHandler for Node {
                 let to = match recipient {
                     Recipient::All => EmitTarget::All,
                     Recipient::User(sub) => EmitTarget::User(sub.clone()),
+                    Recipient::Tag(tag) => EmitTarget::Tag(tag.clone()),
                     other if session.is_empty() => {
                         return Err(PipelineError::new(
                             SESSION_CODE,

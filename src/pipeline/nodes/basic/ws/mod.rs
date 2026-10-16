@@ -11,6 +11,7 @@
 //! | `ws.room.list` | `room_list.rs` | `room: { rooms: [ … ], total }` |
 //! | `ws.ticket.create` | `ticket_create.rs` | `ticket: { room, ticket, expires_at }` |
 //! | `ws.session.close` | `session_close.rs` | `session: { room, closed }` |
+//! | `ws.session.tag` | `session_tag.rs` | `session: { session_id, tags }` |
 //!
 //! The trigger that starts a pipeline from a room event (`trigger.room`,
 //! `trigger.rs`) lives with the family it serves.
@@ -24,6 +25,7 @@ pub mod room_close;
 pub mod room_list;
 pub mod room_open;
 pub mod session_close;
+pub mod session_tag;
 pub mod state;
 pub mod ticket_create;
 pub mod trigger;
@@ -32,6 +34,8 @@ pub mod trigger;
 mod tests;
 #[cfg(test)]
 mod manage_tests;
+#[cfg(test)]
+mod view_tests;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,6 +65,7 @@ pub fn definitions() -> Vec<NodeDefinition> {
         room_list::definition(),
         ticket_create::definition(),
         session_close::definition(),
+        session_tag::definition(),
     ]
 }
 
@@ -77,6 +82,9 @@ pub fn build(kind: &str, config: &Value, hub: Option<Arc<WsHub>>) -> Result<Opti
         }
         session_close::NODE_KIND => {
             Box::new(session_close::Node::new(parse(config, session_close::CONFIG_CODE)?, hub(session_close::UNAVAILABLE_CODE)?)?)
+        }
+        session_tag::NODE_KIND => {
+            Box::new(session_tag::Node::new(parse(config, session_tag::CONFIG_CODE)?, hub(session_tag::UNAVAILABLE_CODE)?)?)
         }
         _ => return Ok(None),
     };
@@ -134,6 +142,39 @@ fn text_of(value: &Value, flag: &str, code: &'static str) -> Result<String, Pipe
             code,
             format!("{flag} must be text, not a JSON {}", if value.is_array() { "list" } else { "object" }),
         )),
+    }
+}
+
+/// The longest tag.
+pub const MAX_TAG_LEN: usize = 128;
+
+/// A repeated tag flag (`--tag`, `--untag`, `--visible-to`): each
+/// occurrence one tag, a `{{ [list] }}` flattened, empty ones dropped. A tag
+/// is 1–128 characters without spaces or `*`; with `prefix`, a trailing `*`
+/// makes it a prefix (`cell:*`, or `*` for every tag).
+fn tags_of(value: &Value, flag: &str, code: &'static str, prefix: bool) -> Result<Vec<String>, PipelineError> {
+    let mut tags = Vec::new();
+    collect_tags(value, flag, code, &mut tags)?;
+    for tag in &tags {
+        let body = if prefix { tag.strip_suffix('*').unwrap_or(tag) } else { tag.as_str() };
+        if tag.chars().count() > MAX_TAG_LEN || body.chars().any(|c| c.is_whitespace() || c == '*') {
+            let star = if prefix { ", and * only at its end" } else { " or *" };
+            return Err(PipelineError::new(code, format!("{flag} '{tag}': a tag is 1–{MAX_TAG_LEN} characters, no spaces{star}")));
+        }
+    }
+    Ok(tags)
+}
+
+fn collect_tags(value: &Value, flag: &str, code: &'static str, out: &mut Vec<String>) -> Result<(), PipelineError> {
+    match value {
+        Value::Array(items) => items.iter().try_for_each(|item| collect_tags(item, flag, code, out)),
+        other => {
+            let text = text_of(other, flag, code)?;
+            if !text.is_empty() {
+                out.push(text);
+            }
+            Ok(())
+        }
     }
 }
 
