@@ -50,6 +50,23 @@ pub struct OptimizeReport {
     pub column_stats: Vec<ColumnStats>,
 }
 
+/// A map layer is served in longitude/latitude: a box from a map is compared
+/// with these coordinates as they are. A source whose extent leaves ±180° /
+/// ±90° is in another unit (metres of a projected CRS such as EPSG:3857) and
+/// would answer every box with nothing, so it is refused with the fix.
+pub fn require_lon_lat(extent: [f64; 4], source: &str) -> Result<(), String> {
+    let [xmin, ymin, xmax, ymax] = extent;
+    let finite = extent.iter().all(|v| v.is_finite());
+    if !finite || (xmin >= -180.0 && xmax <= 180.0 && ymin >= -90.0 && ymax <= 90.0) {
+        return Ok(());
+    }
+    Err(format!(
+        "'{source}' is not in longitude/latitude (its extent is x {xmin:.0}..{xmax:.0}, y {ymin:.0}..{ymax:.0}): \
+         a map layer is served in degrees. Reproject it first: \
+         geo.dataset.convert --from {source} --crs EPSG:4326, then publish what that writes"
+    ))
+}
+
 /// Optimize a GeoParquet file for spatial tile queries.
 ///
 /// Delegates spatial optimization (bbox columns, Hilbert sort, ZSTD compression,
@@ -473,6 +490,19 @@ pub fn convert_geojson_to_geoparquet(source: &Path, dest: &Path) -> Result<Conve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Longitude/latitude check ──────────────────────────────────────
+
+    #[test]
+    fn a_source_in_metres_is_refused_with_the_fix_and_degrees_pass() {
+        // An extent in EPSG:3857 metres, then the same kind of box in degrees.
+        let metres = require_lon_lat([1_000_000.0, 2_000_000.0, 1_100_000.0, 2_100_000.0], "geo/site-a.parquet");
+        let message = metres.expect_err("metres are refused");
+        assert!(message.contains("geo.dataset.convert --from geo/site-a.parquet --crs EPSG:4326"), "{message}");
+        assert!(require_lon_lat([10.0, 20.0, 11.0, 21.0], "geo/site-a.parquet").is_ok());
+        assert!(require_lon_lat([-180.0, -90.0, 180.0, 90.0], "geo/world.parquet").is_ok());
+        assert!(require_lon_lat([f64::NAN; 4], "geo/empty.parquet").is_ok(), "an empty source has no extent to judge");
+    }
 
     // ── GeoJSON → WKB round-trip tests (via geonative) ────────────────
 

@@ -787,6 +787,8 @@ impl Node {
                                 format!("optimize failed: {e}"),
                             )
                         })?;
+                    crate::mapserver::resolve::geoparquet_optimize::require_lon_lat(report.extent, &source_path)
+                        .map_err(|e| PipelineError::new(PUBLISH_CODE, e))?;
 
                     // Write column stats sidecar JSON
                     let stats_filename = format!("{name}.spatial.stats.json");
@@ -861,6 +863,8 @@ impl Node {
 
                 // Clean up intermediate raw parquet
                 let _ = std::fs::remove_file(&temp_raw);
+                crate::mapserver::resolve::geoparquet_optimize::require_lon_lat(opt_report.extent, &source_path)
+                    .map_err(|e| PipelineError::new(PUBLISH_CODE, e))?;
 
                 // Write column stats sidecar JSON
                 let stats_filename = format!("{name}.spatial.stats.json");

@@ -33,7 +33,9 @@ while the project's `ms` surface is on (Settings → Addressing).
   geojson|geoparquet` says which when the name does not. It is served from an
   optimized GeoParquet copy under `mapserver/.optimized/` unless
   `--skip-optimize`; `--skip-optimize --build-artifact` serves a GeoJSON as
-  chunks instead.
+  chunks instead. A layer is served in longitude/latitude: a source in
+  metres (EPSG:3857, a national grid) is refused at publish — reproject it
+  with `geo.dataset.convert --crs EPSG:4326` and publish what that writes.
 - `--function <pipeline>` publishes what a function pipeline returns (a
   GeoJSON FeatureCollection) instead of a file, cached for `--ttl` (`30s`,
   `5m`; default 60s).
