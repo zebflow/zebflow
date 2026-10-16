@@ -1,0 +1,11 @@
+[
+  "rooms",
+  "websocket",
+  "realtime",
+  "multiplayer",
+  "game",
+  "chat",
+  "presence",
+  "useRoom",
+  "joinRoom"
+]

@@ -1,0 +1,9 @@
+{
+  "package": "zeb/rooms",
+  "version": "0.1",
+  "raw": {
+    "useRoom": { "kind": "hook", "description": "Join a room from a component. Returns { state, status, send, room }; leaves on unmount or when the room name changes." },
+    "joinRoom": { "kind": "function", "description": "Join a room without React. Returns a room with state, status, sessionId, on, onState, onStatus, send and leave." }
+  },
+  "wrappers": {}
+}

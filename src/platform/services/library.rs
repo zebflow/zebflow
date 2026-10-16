@@ -300,8 +300,9 @@ mod tests {
     #[test]
     fn every_embedded_library_uses_the_canonical_contract() {
         let service = LibraryService::from_embedded().expect("embedded library contracts");
-        assert_eq!(service.list().count(), 12);
+        assert_eq!(service.list().count(), 13);
         assert!(service.get("zeb/potoru").is_some());
+        assert!(service.get("zeb/rooms").is_some());
         assert!(service.get("zeb/deckgl").is_some());
     }
 

@@ -1,0 +1,35 @@
+{
+  "name": "zeb/rooms",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "Client for Zebflow rooms: useRoom and joinRoom join a room over zebflow.rooms.v1, keep its state, send events and reconnect.",
+  "source": {
+    "provider": "zebflow",
+    "package": "rooms",
+    "package_version": "0.1",
+    "packed_version": "full-0.1",
+    "packed_kind": "full",
+    "entry": "runtime/rooms.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-rooms-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "useRoom",
+      "joinRoom"
+    ],
+    "wrappers": []
+  },
+  "runtime": {
+    "entry": "runtime/rooms.bundle.mjs",
+    "format": "esm"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

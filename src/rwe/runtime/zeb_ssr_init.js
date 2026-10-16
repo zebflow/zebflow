@@ -257,6 +257,22 @@
   };
 
   // ---------------------------------------------------------------------------
+  // zeb/rooms SSR stubs — a room is joined in the browser, from an effect; on
+  // the server it is always still connecting, and nothing is sent.
+  // ---------------------------------------------------------------------------
+  globalThis.useRoom = function() {
+    return { state: undefined, status: "connecting", send: function() { return false; }, room: null };
+  };
+  globalThis.joinRoom = function(name) {
+    var off = function() {};
+    return {
+      name: String(name), state: undefined, status: "connecting", sessionId: null, closed: null,
+      on: function() { return off; }, onState: function() { return off; }, onStatus: function() { return off; },
+      send: function() { return false; }, leave: function() {}
+    };
+  };
+
+  // ---------------------------------------------------------------------------
   // zeb/prosemirror — engine only, browser only. `zeb/ui/editor` renders a
   // document on the server itself and mounts the engine in an effect, so
   // nothing here needs a server-side stand-in.

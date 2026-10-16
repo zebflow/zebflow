@@ -1,0 +1,34 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "RweLibraryManifest",
+  "metadata": {
+    "name": "zeb/rooms"
+  },
+  "spec": {
+    "name": "zeb/rooms",
+    "description": "Client for Zebflow rooms: useRoom and joinRoom join a room over zebflow.rooms.v1, keep its state, send events and reconnect.",
+    "exports": [
+      "useRoom",
+      "joinRoom"
+    ],
+    "versions": {
+      "full-0.1": {
+        "entry": "0.1/runtime/rooms.bundle.mjs",
+        "source": "offline",
+        "package_version": "0.1",
+        "size_bytes": 17113,
+        "integrity": "sha256:de5965835ec06683f4aef2ecf78864395a6997c6943575683d4a4b5cdc561f02"
+      }
+    },
+    "license": {
+      "spdx": "MIT",
+      "holders": [
+        "Zebflow"
+      ],
+      "notices": [
+        "LICENSE"
+      ],
+      "modified": false
+    }
+  }
+}

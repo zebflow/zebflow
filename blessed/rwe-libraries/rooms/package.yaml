@@ -1,0 +1,6 @@
+# Publish metadata for the blessed local-hub seed.
+# The seeder publishes this package as the reserved `zebflow` publisher.
+id: zebflow.rooms
+version: 0.1.0
+title: zeb/rooms
+description: "Join Zebflow rooms from a page: useRoom and joinRoom keep the room's state in step, send events, and reconnect on their own. Speaks zebflow.rooms.v1."

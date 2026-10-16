@@ -365,6 +365,7 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
             Some("/assets/libraries/zeb/prosemirror/0.1/runtime/prosemirror.bundle.mjs")
         }
         "zeb/use" => Some("/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
+        "zeb/rooms" => Some("/assets/libraries/zeb/rooms/0.1/runtime/rooms.bundle.mjs"),
         "zeb/livegeo" => Some("/assets/libraries/zeb/livegeo/0.1/runtime/livegeo.bundle.mjs"),
         "zeb/pdf" => Some("/assets/libraries/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
         "zeb/potoru" => Some("/assets/libraries/zeb/potoru/0.1/runtime/potoru.bundle.mjs"),

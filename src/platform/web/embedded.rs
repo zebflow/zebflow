@@ -719,6 +719,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/use/manifest.json"),
     },
     EmbeddedAsset {
+        path: "zeb/rooms/manifest.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/manifest.json"),
+    },
+    EmbeddedAsset {
         path: "zeb/livegeo/manifest.json",
         bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/manifest.json"),
     },
@@ -809,6 +813,26 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/use/0.1/runtime/use.bundle.mjs",
         bytes: include_bytes!("../../../blessed/rwe-libraries/use/0.1/runtime/use.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/rooms/0.1/library.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/rooms/0.1/exports.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/rooms/0.1/keywords.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/rooms/0.1/runtime/rooms.bundle.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/0.1/runtime/rooms.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/rooms/README.md",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/README.md"),
     },
     EmbeddedAsset {
         path: "zeb/livegeo/0.1/library.json",
@@ -1241,6 +1265,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         path: "zeb/use/package.yaml",
         bytes: include_bytes!("../../../blessed/rwe-libraries/use/package.yaml"),
     },
+    EmbeddedAsset {
+        path: "zeb/rooms/package.yaml",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/package.yaml"),
+    },
     // Notices are package content: seeding enumerates this table, not the
     // filesystem. A declared notice must travel with the installed package.
     EmbeddedAsset {
@@ -1294,6 +1322,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/use/LICENSE",
         bytes: include_bytes!("../../../blessed/rwe-libraries/use/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/rooms/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/LICENSE"),
     },
 ];
 

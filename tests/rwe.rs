@@ -10,6 +10,8 @@ mod smoke;
 mod template_render;
 #[path = "rwe/zeb_react.rs"]
 mod zeb_react;
+#[path = "rwe/zeb_rooms.rs"]
+mod zeb_rooms;
 #[path = "rwe/worker_wedge.rs"]
 mod worker_wedge;
 #[path = "rwe/theme_tokens.rs"]
