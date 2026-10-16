@@ -1,13 +1,14 @@
 //! How a room runs its pipelines (`docs/contracts/rooms.md` § Events and
-//! ticks, § The fast lane): one thing at a time per room, and the pipelines
-//! resolved again when the active set changes.
+//! ticks, § The fast lane): one thing at a time per room, the pipelines
+//! resolved again when the active set changes, tick rooms, and room work on
+//! threads of its own that write no run record.
 
 use futures::SinkExt;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::published_mcp::{OWNER, PROJECT, app_at, dsl, login, publish, send, temp_dir};
-use super::ws_rooms::{Socket, connect, next_of, serve};
+use super::ws_rooms::{Socket, connect, hook, next_of, serve};
 
 async fn say(socket: &mut Socket, event: &str, payload: Value) {
     socket.send(Message::Text(json!({ "event": event, "payload": payload }).to_string().into())).await.expect("send");
@@ -207,4 +208,72 @@ async fn activation_refuses_two_ticks_for_one_room_and_every_without_a_tick() {
         let text = format!("{registered} {activated}");
         assert!(text.contains(why), "{name}: {text}");
     }
+}
+
+/// The room's `ticks` counter now.
+async fn ticks(app: &axum::Router, cookie: &str, room: &str) -> u64 {
+    listed(app, cookie, room).await["counters"]["ticks"].as_u64().expect("ticks")
+}
+
+/// One thread serves HTTP here, so a webhook that keeps it busy stops
+/// everything on it: the room must not be on it.
+#[tokio::test]
+async fn a_slow_webhook_does_not_delay_a_tick() {
+    let root = temp_dir("ws-room-lane");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "clock-tick", r#"| trigger.room --room clock --event $tick --every 20ms | ws.state.put --key /tick --value "{{ input.room.tick }}""#).await;
+    publish(
+        &app,
+        &cookie,
+        "slow",
+        r#"| trigger.webhook --route /slow --method POST | javascript.script.run -- "const s = Date.now(); let w = 0; while (Date.now() < s + 600) { w += new Array(200000).fill(7).join('').length; } return Date.now() - s;" | web.response.send --body "{{ input.script }}""#,
+    )
+    .await;
+    let address = serve(app.clone(), &cookie).await;
+    let mut socket = connect(address, "clock", &[]).await;
+    next_of(&mut socket, "joined").await;
+    next_of(&mut socket, "state_patch").await;
+
+    let before = ticks(&app, &cookie, "clock").await;
+    let started = std::time::Instant::now();
+    let held = hook(&app, "/slow", json!({})).await;
+    let elapsed = started.elapsed().as_millis() as u64;
+    let after = ticks(&app, &cookie, "clock").await;
+    assert!(held.as_u64() >= Some(500), "the webhook held its thread: {held}");
+    // About 30 at 20 ms; none at all when the room shares the HTTP thread.
+    assert!(after - before >= 5, "{} ticks in {elapsed} ms of a busy HTTP thread", after - before);
+}
+
+/// `GET …/pipelines/invocations` for one pipeline.
+async fn records(app: &axum::Router, cookie: &str, name: &str) -> Value {
+    let uri = format!("/api/projects/{OWNER}/{PROJECT}/pipelines/invocations?pipeline=pipelines/tests/{name}.zf.json");
+    let (status, answer) = send(app, cookie, "GET", &uri, Value::Null).await;
+    assert_eq!(status.as_u16(), 200, "{answer}");
+    answer
+}
+
+#[tokio::test]
+async fn room_runs_write_no_run_record_and_a_failure_is_recorded_once_a_minute() {
+    let root = temp_dir("ws-room-records");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "room-ok", r#"| trigger.room --room lobby --event ok | ws.message.send --event fine --recipient session --body 1"#).await;
+    publish(&app, &cookie, "room-fail", r#"| trigger.room --room lobby --event boom | javascript.script.run -- "throw new Error('no luck');""#).await;
+    let address = serve(app.clone(), &cookie).await;
+    let mut socket = connect(address, "lobby", &[]).await;
+    next_of(&mut socket, "joined").await;
+    for event in ["ok", "boom", "boom", "boom", "ok"] {
+        say(&mut socket, event, json!({})).await;
+    }
+    // One at a time, in order: the second answer comes after every boom ran.
+    next_named(&mut socket, "fine").await;
+    next_named(&mut socket, "fine").await;
+
+    assert_eq!(records(&app, &cookie, "room-ok").await["count"], 0, "a room run writes no run record");
+    let failed = records(&app, &cookie, "room-fail").await;
+    assert_eq!(failed["count"], 1, "three failures within a minute, one record: {failed}");
+    assert_eq!((failed["entries"][0]["status"].as_str(), failed["entries"][0]["trigger"].as_str()), (Some("error"), Some("room")));
+    let counters = listed(&app, &cookie, "lobby").await["counters"].clone();
+    assert_eq!((counters["pipeline_runs"].as_u64(), counters["pipeline_errors"].as_u64()), (Some(5), Some(3)), "{counters}");
 }

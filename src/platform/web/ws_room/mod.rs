@@ -18,7 +18,12 @@
 //!    `--event` does not receive them.
 //! 5. **Delivery** — each broadcast carries its target and is forwarded only
 //!    to the sessions it is for; a session that fell behind receives `resync`.
-//! 6. **Closing** — the server closes a socket with `4410` (`ws.room.close`),
+//! 6. **The fast lane** — the socket's loop, the room loop and every run a
+//!    room starts are spawned on the rooms' own runtime
+//!    ([`crate::infra::transport::ws::lane`]), never on the threads serving
+//!    HTTP. Room runs write no run record; a failure is recorded at most
+//!    once a minute per pipeline ([`events`]).
+//! 7. **Closing** — the server closes a socket with `4410` (`ws.room.close`),
 //!    `4409` (`ws.session.close`), `4408` (the login's `exp` passed) or
 //!    `1008` (flooding); the `$disconnect` reason says which.
 
@@ -28,7 +33,7 @@ mod room_loop;
 mod tick;
 
 use super::*;
-use crate::infra::transport::ws::{Counter, Kick};
+use crate::infra::transport::ws::{Counter, Kick, lane};
 use events::RoomCtx;
 
 /// Raised after `joined`.
@@ -89,8 +94,9 @@ pub(super) async fn ws_room_handler(
     let project = crate::platform::model::slug_segment(&project);
     // Random, not a clock reading: two upgrades in the same nanosecond shared a slot.
     let session_id = format!("ws-{}", uuid::Uuid::new_v4().simple());
-    ws.on_upgrade(move |socket| {
-        handle_ws_room(SessionCtx { owner, project, room_id, session_id, headers, state }, ticket, socket)
+    ws.on_upgrade(move |socket| async move {
+        // The socket lives on the fast lane from here on.
+        lane().spawn(handle_ws_room(SessionCtx { owner, project, room_id, session_id, headers, state }, ticket, socket));
     })
     .into_response()
 }
@@ -129,7 +135,7 @@ async fn handle_ws_room(ctx: SessionCtx, ticket: Option<String>, mut socket: Web
     let (queue, idle) = room.session_queue(&session_id, admitted.auth);
     if let Some(taken) = idle {
         let room_ctx = RoomCtx { owner: ctx.owner.clone(), project: ctx.project.clone(), room_id: ctx.room_id.clone(), state: ctx.state.clone() };
-        tokio::spawn(room_loop::run_room(room_ctx, room.clone(), taken));
+        lane().spawn(room_loop::run_room(room_ctx, room.clone(), taken));
     }
 
     // A login that never expires waits on a timer that never fires.

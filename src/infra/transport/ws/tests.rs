@@ -199,3 +199,14 @@ fn a_tick_trigger_makes_every_room_it_matches_a_tick_room() {
     assert_eq!(hub.room(O, P, "match-1").unwrap().tick(), None, "the $tick trigger was deactivated");
     assert_eq!(hub.list(O, P, "*", false).unwrap()["rooms"][0]["mode"], "event");
 }
+
+#[test]
+fn a_failed_room_run_is_recorded_at_most_once_a_minute_per_pipeline() {
+    let hub = WsHub::new();
+    let start = Instant::now();
+    assert!(hub.failure_due(O, P, "pipelines/a.zf.json", start), "the first failure");
+    assert!(!hub.failure_due(O, P, "pipelines/a.zf.json", start + Duration::from_secs(59)));
+    assert!(hub.failure_due(O, P, "pipelines/b.zf.json", start + Duration::from_secs(1)), "per pipeline");
+    assert!(hub.failure_due(O, "site-b", "pipelines/a.zf.json", start), "per project");
+    assert!(hub.failure_due(O, P, "pipelines/a.zf.json", start + FAILURE_RECORD_EVERY), "a minute later");
+}

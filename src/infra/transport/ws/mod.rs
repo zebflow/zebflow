@@ -3,6 +3,7 @@
 //!
 //! | Module | Responsibility |
 //! |---|---|
+//! | [`lane`] | the fast lane: the runtime room work runs on |
 //! | [`pattern`] | room names and the patterns `trigger.room --room` declares |
 //! | [`queue`] | a room's one queue: every session's events, in arrival order |
 //! | [`room`] | one room: settings, sessions, state, broadcast, counters |
@@ -17,11 +18,13 @@
 //!
 //! Rooms are keyed `"{owner}/{project}/{room}"`.
 
+pub mod lane;
 pub mod pattern;
 pub mod queue;
 pub mod room;
 pub mod ticket;
 
+pub use lane::lane;
 pub use pattern::RoomPattern;
 pub use queue::{MAX_PENDING_PER_SESSION, RoomEvent, RoomQueue, SessionQueue};
 pub use room::{
@@ -40,6 +43,9 @@ use tokio::sync::mpsc;
 
 /// How often empty opened rooms are checked against their `--idle`.
 pub const IDLE_SWEEP: Duration = Duration::from_secs(1);
+
+/// A pipeline's failed room runs are recorded at most this often.
+pub const FAILURE_RECORD_EVERY: Duration = Duration::from_secs(60);
 
 /// Why the hub refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +116,8 @@ struct Inner {
     rooms: Mutex<HashMap<String, Arc<RoomHandle>>>,
     tickets: ticket::TicketBook,
     sweeping: AtomicBool,
+    /// When each pipeline's failed room run was last recorded.
+    failures: Mutex<HashMap<String, Instant>>,
 }
 
 /// Every project's rooms. Cheap to clone; held as `PlatformService::ws_hub`.
@@ -160,6 +168,7 @@ impl WsHub {
                 rooms: Mutex::new(HashMap::new()),
                 tickets: ticket::TicketBook::default(),
                 sweeping: AtomicBool::new(false),
+                failures: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -413,6 +422,19 @@ impl WsHub {
                 WsHub { inner }.sweep_idle(Instant::now());
             }
         });
+    }
+
+    /// Whether a failed room run of `pipeline` is recorded at `now`: room
+    /// runs write no run record, and a failure is recorded at most once per
+    /// [`FAILURE_RECORD_EVERY`] per pipeline.
+    pub fn failure_due(&self, owner: &str, project: &str, pipeline: &str, now: Instant) -> bool {
+        let mut failures = self.inner.failures.lock().unwrap_or_else(|e| e.into_inner());
+        let key = room_key(owner, project, pipeline);
+        if failures.get(&key).is_some_and(|last| now.saturating_duration_since(*last) < FAILURE_RECORD_EVERY) {
+            return false;
+        }
+        failures.insert(key, now);
+        true
     }
 
     /// Every room key the hub holds.

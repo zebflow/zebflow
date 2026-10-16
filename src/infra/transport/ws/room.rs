@@ -395,17 +395,13 @@ impl RoomHandle {
         Ok(())
     }
 
+    /// Send a batch on the fast lane, [`BATCH_TICK`] from now.
     fn schedule_flush(self: &Arc<Self>) {
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                let room = self.clone();
-                runtime.spawn(async move {
-                    tokio::time::sleep(BATCH_TICK).await;
-                    room.flush();
-                });
-            }
-            Err(_) => self.flush(),
-        }
+        let room = self.clone();
+        super::lane().spawn(async move {
+            tokio::time::sleep(BATCH_TICK).await;
+            room.flush();
+        });
     }
 
     /// Send the state if a change is waiting: a batch's 33 ms, or a tick's end.

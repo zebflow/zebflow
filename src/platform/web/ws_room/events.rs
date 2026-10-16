@@ -3,6 +3,8 @@
 //! The pipelines whose `trigger.room` matches a room are resolved when its
 //! loop starts and again when the project's active set changes
 //! ([`RoomHandle::epoch`]) — never per message (`rooms.md` § The fast lane).
+//! A run counts into the room's counters and writes no run record; a failed
+//! one is recorded at most once a minute per pipeline.
 
 use std::sync::Arc;
 
@@ -105,11 +107,47 @@ pub(super) async fn run_pipeline(
         placeholder: None,
     };
     room.count(Counter::PipelineRuns);
+    let started = std::time::Instant::now();
+    let at = crate::platform::model::now_ts();
     if let Err(err) = resolved.engine.execute_async(&compiled.graph, &pctx).await {
         room.count(Counter::PipelineErrors);
-        eprintln!(
-            "warning: ws pipeline {} ({}) failed: {} {}",
-            compiled.graph.id, ctx.room_id, err.code, err.message
-        );
+        if ctx.state.platform.ws_hub.failure_due(&ctx.owner, &ctx.project, &compiled.file_rel_path, started) {
+            record_failure(ctx, compiled, &pctx.request_id, at, started.elapsed(), &err);
+        }
     }
+}
+
+/// A room run writes no run record; a failed one is recorded — run record,
+/// error group, hit counter — at most once a minute per pipeline.
+fn record_failure(
+    ctx: &RoomCtx,
+    compiled: &CompiledPipeline,
+    run_id: &str,
+    at: i64,
+    took: std::time::Duration,
+    err: &crate::pipeline::PipelineError,
+) {
+    let platform = &ctx.state.platform;
+    let (owner, project, file) = (ctx.owner.as_str(), ctx.project.as_str(), compiled.file_rel_path.as_str());
+    eprintln!("warning: room {} pipeline {file} failed: {} {}", ctx.room_id, err.code, err.message);
+    platform.pipeline_hits.record_failure(owner, project, file, "room", &err.code, &err.message);
+    let config = match platform.zebflow_cfg.read_or_default(owner, project) {
+        Ok(config) => config,
+        Err(e) => return eprintln!("warning: room failure not recorded for {owner}/{project}: {}", e.message),
+    };
+    let retention = crate::platform::model::resolve_invocation_retention(&config, Some(&compiled.graph));
+    let entry = crate::platform::model::PipelineInvocationEntry {
+        run_id: run_id.to_string(),
+        at,
+        duration_ms: took.as_millis() as u64,
+        status: "error".to_string(),
+        trigger: "room".to_string(),
+        error: Some(err.message.clone()),
+        trace: err.node_trace.clone(),
+    };
+    let bounds = config.configs.pipelines.logging.error_group_bounds();
+    if let Err(e) = platform.data.record_pipeline_error(owner, project, file, &entry, bounds) {
+        eprintln!("warning: error group not recorded for {owner}/{project}: {}", e.message);
+    }
+    let _ = platform.data.log_pipeline_invocation(owner, project, file, &entry, retention.max_invocations, retention.max_age_secs);
 }
