@@ -20,14 +20,18 @@
  *  Still:        <PotoSnapshot src="/assets/intro.poto" time={1.5} aspect="16 / 9" />
  *  Imperative:   window.__zebPotoru.get("intro").play()
  *  Events:       el.addEventListener("zeb:potoru:ready", (e) => e.detail.duration)
+ *  Host data:    <PotoPlayer src="/town.poto" collections={{ people }} inputs={{ $root: { camX } }} onReport={(r) => …} />
+ *  Handle:       const town = usePotoPlayer("town"); town.apply({ collections: { people } });
  *  Compile:      const result = await compile({ yaml: filesMap });   // { ok, poto, diagnostics, sizes }
  *  Editor:       <PotoEditor id="lab" yaml={filesMap} />  →  window.__zebPotoEditor.get("lab")
  *
  * ── BUILD ───────────────────────────────────────────────────────────────────
- *  POTORU_SRC=<potoru checkout>/designer/e3 node build/build.mjs   (see NOTES.md and manifest note)
+ *  POTORU_SRC=<potoru checkout>/designer/e3 node blessed/rwe-libraries/potoru/build/build.mjs
  */
 
-export const VERSION = "0.1.1";
+import { mergePatch } from "./src/patch.mjs";
+
+export const VERSION = "0.1.3";
 
 const PLAYER_LIB = "potoru";
 const PLAYER_WRAPPER = "PotoPlayer";
@@ -37,6 +41,8 @@ const SELECTOR = `[data-zeb-lib="${PLAYER_LIB}"]`;
 
 const players = new Map();
 const editors = new Map();
+/** `usePotoPlayer(id).apply()` calls made before that player mounted, merged per id. */
+const pendingApply = new Map();
 let counter = 0;
 
 /* ── Lazy parts ──────────────────────────────────────────────────────────── */
@@ -87,7 +93,7 @@ function playerConfig(props = {}) {
   const config = { src: props.src || "" };
   if (libraries.length) config.libraries = libraries;
   for (const key of ["controls", "autoplay", "muted", "loop", "captions", "still"]) if (props[key]) config[key] = true;
-  for (const key of ["time", "mode", "renderer", "height", "aspect", "fit", "camera"]) if (props[key] !== undefined && props[key] !== null && props[key] !== "") config[key] = props[key];
+  for (const key of ["time", "mode", "renderer", "height", "aspect", "fit", "camera", "voices", "voiceFallback"]) if (props[key] !== undefined && props[key] !== null && props[key] !== "") config[key] = props[key];
   return config;
 }
 
@@ -112,7 +118,8 @@ function editorConfig(props = {}) {
 /**
  * Mounts a Potoru player into `host` (any element). Options: src, libraries (string[] or a
  * space-separated string), controls, autoplay, muted, loop, captions, mode (play | slide |
- * interactive), renderer (canvas | canvas-exact | svg), height, aspect ("16/9"), fit, camera, id,
+ * interactive), renderer (canvas | canvas-exact | svg), height, aspect ("16/9"), fit, camera,
+ * voices (the site's voice catalog URL), voiceFallback ("browser" | "none"), id,
  * still + time (show the frame at `time` seconds and do not play; PotoSnapshot is lighter).
  * Resolves to the instance once the player code is loaded (before the story has loaded; wait for
  * `zeb:potoru:ready` on the host for duration, scenes and capabilities).
@@ -129,7 +136,37 @@ export async function mountPotoPlayer(host, options = {}) {
   const instance = module.createPlayer(host, config, { id, emit: (type, detail) => emit(host, `zeb:potoru:${type}`, detail) });
   instance.destroy = ((destroy) => () => { destroy(); if (players.get(id) === instance) players.delete(id); })(instance.destroy);
   players.set(id, instance);
+  const pending = pendingApply.get(id);
+  if (pending) { pendingApply.delete(id); instance.apply(pending); }
   return instance;
+}
+
+/**
+ * A handle on the player with container id `id`, for page code (a hook: call it in a component).
+ * Its methods reach the player once it is mounted; `apply` made before that waits for it.
+ * `handle.instance` is the registry entry (undefined until mounted).
+ */
+export function usePotoPlayer(id) {
+  const useRef = globalThis.useRef;
+  const box = typeof useRef === "function" ? useRef(null) : { current: null };
+  if (!box.current || box.current.id !== id) box.current = playerHandle(id);
+  return box.current;
+}
+
+function playerHandle(id) {
+  const get = () => players.get(id);
+  const call = (name) => (...args) => { const player = get(); return player ? player[name](...args) : undefined; };
+  return {
+    id,
+    get instance() { return get(); },
+    apply(patch) {
+      const player = get();
+      if (player?.apply) player.apply(patch);
+      else pendingApply.set(id, mergePatch(pendingApply.get(id), patch));
+    },
+    set: call("set"), fire: call("fire"), play: call("play"), pause: call("pause"), seek: call("seek"),
+    restart: call("restart"), setCamera: call("setCamera"), load: call("load")
+  };
 }
 
 /* ── Snapshot ────────────────────────────────────────────────────────────── */
@@ -247,16 +284,52 @@ if (typeof document !== "undefined" && typeof MutationObserver !== "undefined") 
 
 /* ── Client components (the SSR placeholders render the same markup) ────── */
 
+/** Player events and the PotoPlayer props that receive their detail. */
+const EVENT_PROPS = {
+  ready: "onReady", play: "onPlay", pause: "onPause", ended: "onEnded", slide: "onSlide", scene: "onScene", report: "onReport",
+  caption: "onCaption", error: "onError", camera: "onCamera", "voice-needed": "onVoiceNeeded", voices: "onVoices"
+};
+
 /**
  * PotoPlayer — props: src, libraries, controls, autoplay, muted, loop, captions, mode, renderer,
- * height, aspect, fit, camera, still + time (show that frame, do not play), id, className. Renders the placeholder; the runtime mounts the
- * player inside it (in a shadow root, so re-renders never touch it).
+ * height, aspect, fit, camera, still + time (show that frame, do not play), voices,
+ * voiceFallback, id, className. Renders the placeholder; the runtime mounts the player inside it
+ * (in a shadow root, so re-renders never touch it).
+ * Host data (capability `host-data`): `inputs` ({ target: { field: value } }) and `collections`
+ * ({ name: [{ id, ... }] }, each the whole list) are applied whenever they change; `onReady`,
+ * `onReport`, `onError`, `onEnded`, … receive each event's detail. These stay in the browser:
+ * they are not part of the server-rendered markup.
  */
 export function PotoPlayer(props = {}) {
   const h = globalThis.h;
   if (!h) return null;
   const config = playerConfig(props);
-  return h("div", { "data-zeb-lib": PLAYER_LIB, "data-zeb-wrapper": PLAYER_WRAPPER, "data-config": JSON.stringify(config), id: props.id, className: props.className, style: placeholderStyle(config) });
+  const attributes = { "data-zeb-lib": PLAYER_LIB, "data-zeb-wrapper": PLAYER_WRAPPER, "data-config": JSON.stringify(config), id: props.id, className: props.className, style: placeholderStyle(config) };
+  const useRef = globalThis.useRef;
+  const useEffect = globalThis.useEffect;
+  if (typeof useRef === "function" && typeof useEffect === "function") {
+    const hostRef = useRef(null);
+    const latest = useRef(props);
+    latest.current = props;
+    useEffect(() => {
+      const host = hostRef.current;
+      if (!host) return undefined;
+      const listeners = Object.entries(EVENT_PROPS).map(([name, prop]) => {
+        const listener = (event) => { if (event.target === host) latest.current[prop]?.(event.detail); };
+        host.addEventListener(`zeb:potoru:${name}`, listener);
+        return [`zeb:potoru:${name}`, listener];
+      });
+      return () => { for (const [type, listener] of listeners) host.removeEventListener(type, listener); };
+    }, []);
+    useEffect(() => {
+      const host = hostRef.current;
+      if (!host) return;
+      host.__zebPotoruLive = { inputs: props.inputs, collections: props.collections };
+      host.__zebPotoruSync?.();
+    }, [props.inputs, props.collections]);
+    attributes.ref = (node) => { hostRef.current = node; };
+  }
+  return h("div", attributes);
 }
 
 /**
@@ -290,7 +363,8 @@ export const potoru = {
   mountPotoSnapshot,
   mountPotoEditor,
   compile,
-  loadPlayer
+  loadPlayer,
+  usePotoPlayer
 };
 
 if (typeof window !== "undefined") {

@@ -5,7 +5,7 @@
     {
       "name": "PotoPlayer",
       "kind": "wrapper",
-      "doc": "Play a .poto story: <PotoPlayer src=\"/assets/x.poto\" controls autoplay muted />; still + time shows one frame. Events zeb:potoru:ready / report / ended / error; window.__zebPotoru.get(id)."
+      "doc": "Play a .poto story: <PotoPlayer src=\"/assets/x.poto\" controls autoplay muted />; still + time shows one frame. Host data: inputs={\u2026} collections={{ people }} onReport={fn} onReady / onError; events zeb:potoru:ready / report / ended / error; window.__zebPotoru.get(id)."
     },
     {
       "name": "PotoSnapshot",
@@ -20,7 +20,7 @@
     {
       "name": "potoru",
       "kind": "raw",
-      "doc": "zeb/potoru namespace: version, get(id), getEditor(id), mountPotoPlayer, mountPotoEditor, compile."
+      "doc": "zeb/potoru namespace: version, get(id), getEditor(id), mountPotoPlayer, mountPotoEditor, compile, usePotoPlayer."
     },
     {
       "name": "mountPotoPlayer",
@@ -41,6 +41,11 @@
       "name": "compile",
       "kind": "raw",
       "doc": "compile({ yaml } | { script, yaml? }) \u2192 Promise<{ ok, poto, diagnostics, files, sizes }>. Also potoru.compile."
+    },
+    {
+      "name": "usePotoPlayer",
+      "kind": "hook",
+      "doc": "const town = usePotoPlayer(\"town\"); town.apply({ inputs, collections }) drives a host-data story (waits until mounted); also set, fire, play, pause, seek, setCamera, load."
     }
   ]
 }

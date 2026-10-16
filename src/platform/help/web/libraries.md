@@ -36,7 +36,7 @@ with no list, any of them loads on demand.
 | `zeb/threejs`, `zeb/threejs-vrm` | `threejs`, `<ThreeScene>`, `mountThreeScene`; `vrm`, `<VrmViewer>` | 3D scenes and VRM avatars |
 | `zeb/graphui` | `createGraphUI`, `GraphStore`, … | node-graph editors |
 | `zeb/pdf` | `createDocument`, `createTable`, `render`, `PAGE_SIZES`, … | PDF generation in the browser |
-| `zeb/potoru` | `<PotoPlayer>`, `<PotoSnapshot>`, `<PotoEditor>`, `potoru`, `mountPotoPlayer`, `mountPotoSnapshot`, `mountPotoEditor`, `compile` | 2D animation: play `.poto` stories, still frames for thumbnails, compile Potoru source (YAML or Script) in the browser |
+| `zeb/potoru` | `<PotoPlayer>`, `<PotoSnapshot>`, `<PotoEditor>`, `potoru`, `usePotoPlayer`, `mountPotoPlayer`, `mountPotoSnapshot`, `mountPotoEditor`, `compile` | 2D animation: play `.poto` stories, still frames for thumbnails, compile Potoru source (YAML or Script) in the browser |
 
 There is no icons library; use inline SVG (the `zeb/ui` components do).
 
@@ -263,7 +263,7 @@ README under `blessed/rwe-libraries/threejs/` for the scene runtime options.
 ## zeb/potoru
 
 ```tsx
-import { PotoPlayer, PotoSnapshot, PotoEditor, compile, potoru } from "zeb/potoru";
+import { PotoPlayer, PotoSnapshot, PotoEditor, compile, potoru, usePotoPlayer } from "zeb/potoru";
 
 <PotoPlayer id="intro" src="/_files/stories/intro.poto" controls autoplay muted />
 <PotoPlayer src="/_files/stories/intro.poto" still time={1.5} />
@@ -283,6 +283,37 @@ bubble from the container: `zeb:potoru:ready` (`{ id, mode, duration, scenes }`)
 (`next`, `prev`, `goto`), and drives the story's host inputs:
 `set(target, data, value)`, `fire(target, event)`. With `still`, the player
 shows the frame at `time` (seconds) and does not play.
+
+Host data: a story that declares the `host-data` capability is driven by the
+page's own state, e.g. a shared room from a WebSocket. `collections` hands it
+whole lists (`{ people: [{ id, x, y, name }] }`: new ids appear, missing ids
+go, the rest glide to their new values) and `inputs` sets declared data
+(`{ $root: { camX } }`); both are applied whenever they change. `onReport`,
+`onReady`, `onError`, `onEnded` (and the other event names as `on…`) receive
+each event's detail. The player checks every value (declared inputs only,
+types, sizes, cleaned text) and reports refusals as `onError` with code
+`host-input`. Outside a component tree, `usePotoPlayer(id).apply({ inputs,
+collections })` or `potoru.get(id).apply(…)` does the same.
+
+```tsx
+const [people, setPeople] = useState([]);
+<PotoPlayer id="town" src="/_files/stories/town.poto" camera="play"
+  collections={{ people }} inputs={{ $root: { camX: me.x, camY: me.y } }}
+  onReport={(r) => r.event === "tap" && socket.send(JSON.stringify(r.payload))} />
+```
+
+Voices: a story names voices by alias (`voice:narrator`); lines without baked
+audio speak through the voice each viewer chooses in the player's Voices sheet
+(the browser's voice by default, a Piper voice downloaded from the catalog in
+`voices`, or ElevenLabs / an OpenAI-compatible endpoint with the viewer's own
+key). Choices, voices and keys stay in the viewer's browser; nothing reaches
+Zebflow. `voiceFallback="none"` leaves unset voices to captions;
+`zeb:potoru:voice-needed` names the aliases still unset and
+`potoru.get(id).openVoices()` opens the sheet.
+
+```tsx
+<PotoPlayer src="/_files/stories/cerita.poto" voices="/_files/voices/voices.json" controls captions />
+```
 
 `PotoSnapshot` draws one moment of a story (`src`, `time`, `camera`, `fit`,
 `height`, `aspect`) for thumbnails, galleries and storyboards: no controls, no

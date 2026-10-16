@@ -461,7 +461,7 @@
       var config = { src: p.src || '' };
       if (libraries.length) config.libraries = libraries;
       ['controls', 'autoplay', 'muted', 'loop', 'captions', 'still'].forEach(function (k) { if (p[k]) config[k] = true; });
-      ['time', 'mode', 'renderer', 'height', 'aspect', 'fit', 'camera'].forEach(function (k) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') config[k] = p[k]; });
+      ['time', 'mode', 'renderer', 'height', 'aspect', 'fit', 'camera', 'voices', 'voiceFallback'].forEach(function (k) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') config[k] = p[k]; });
       return h('div', {
         'data-zeb-lib': 'potoru',
         'data-zeb-wrapper': 'PotoPlayer',
@@ -501,12 +501,17 @@
         style: boxStyle(config.height || '560px'),
       });
     };
+    // usePotoPlayer: on the server there is no player yet; every call does nothing.
+    globalThis.usePotoPlayer = function (id) {
+      var nothing = function () { return undefined; };
+      return { id: id, instance: undefined, apply: nothing, set: nothing, fire: nothing, play: nothing, pause: nothing, seek: nothing, restart: nothing, setCamera: nothing, load: nothing };
+    };
     var browserOnly = function () { return Promise.reject(new Error('zeb/potoru runs in the browser')); };
     globalThis.mountPotoPlayer = browserOnly;
     globalThis.mountPotoSnapshot = browserOnly;
     globalThis.mountPotoEditor = browserOnly;
     globalThis.compile = globalThis.compile || browserOnly;
-    globalThis.potoru = { version: '0.1.1', get: function () { return undefined; }, getEditor: function () { return undefined; }, mountPotoPlayer: browserOnly, mountPotoSnapshot: browserOnly, mountPotoEditor: browserOnly, compile: browserOnly, loadPlayer: browserOnly };
+    globalThis.potoru = { version: '0.1.3', get: function () { return undefined; }, getEditor: function () { return undefined; }, mountPotoPlayer: browserOnly, mountPotoSnapshot: browserOnly, mountPotoEditor: browserOnly, compile: browserOnly, loadPlayer: browserOnly, usePotoPlayer: globalThis.usePotoPlayer };
   })();
 
   // ---------------------------------------------------------------------------

@@ -21,6 +21,11 @@
  *   aspect     string             CSS aspect ratio of the box, e.g. "16 / 9"
  *   still      boolean            show the frame at `time` and do not play
  *   time       number             seconds, with `still` (for many thumbnails, PotoSnapshot is lighter)
+ *   voices     string             URL of the site's voice catalog (Piper voices a viewer can download)
+ *   voiceFallback "browser" | "none"  who speaks a voice the viewer has not chosen (default: the browser's voice)
+ *   inputs     object             host data { target: { field: value } } (story capability host-data)
+ *   collections object            host lists { name: [{ id, ...fields }] }, each the whole list
+ *   onReady, onReport, onError, onEnded, onPlay, onPause, onScene, …   event handlers (detail)
  *   id         string             container id for window.__zebPotoru.get(id)
  *   className  string             classes on the container
  *
@@ -29,14 +34,33 @@
  *   zeb:potoru:report  { id, from, event, payload, tick, scene }   (host bridge reports)
  *   zeb:potoru:ended   { id }
  *   zeb:potoru:error   { id, code, message }   code includes "needs-newer-player"
- *   also play, pause, slide, scene, caption, camera
+ *   zeb:potoru:voice-needed  { id, aliases, missing, fallback }   aliases with no chosen voice
+ *   also play, pause, slide, scene, caption, camera, voices
+ *
+ * ─── Host data: the page drives the story ─────────────────────────────────
+ *   const [people, setPeople] = useState([]);   // e.g. from a WebSocket
+ *   <PotoPlayer id="town" src="/_files/town.poto" camera="play"
+ *     collections={{ people }} inputs={{ $root: { camX: me.x, camY: me.y } }}
+ *     onReport={(r) => r.event === "tap" && socket.send(JSON.stringify(r.payload))} />
+ *   A collection is the whole list: new ids appear, missing ids go, the rest glide to new values.
+ *   Every value is checked by the player (declared inputs only, types, sizes, clean text);
+ *   refusals arrive as onError / zeb:potoru:error with code "host-input". Or imperatively:
+ *   const town = usePotoPlayer("town"); town.apply({ collections: { people } });
  *
  * ─── Imperative registry ──────────────────────────────────────────────────
  *   const player = window.__zebPotoru.get("intro");
  *   player.play(); player.seek(2); player.set("hero", "speed", 2); player.fire("hero", "jump");
+ *   player.openVoices();   // the Voices sheet: who speaks each voice, downloads, own keys
+ *
+ * ─── Voices ───────────────────────────────────────────────────────────────
+ *   Lines without baked audio speak through the voice each viewer chooses (browser voice, a
+ *   downloaded Piper voice in WebAssembly, ElevenLabs or an OpenAI-compatible endpoint with their
+ *   own key). Choices, voices and keys stay in the viewer's browser; nothing reaches Zebflow.
  *
  * The server renders this placeholder; the zeb/potoru runtime mounts the player inside it in the
- * browser (in a shadow root, so re-renders never touch it).
+ * browser (in a shadow root, so re-renders never touch it). This file documents the markup only:
+ * the browser runs `PotoPlayer` from runtime/entry.mjs (event props, inputs, collections), and the
+ * server renders src/rwe/runtime/zeb_ssr_init.js's stub; neither reads this file.
  */
 export const app = {};
 
@@ -59,6 +83,8 @@ function playerConfig(props) {
   if (props.aspect) config.aspect = props.aspect;
   if (props.fit) config.fit = props.fit;
   if (props.camera) config.camera = props.camera;
+  if (props.voices) config.voices = props.voices;
+  if (props.voiceFallback) config.voiceFallback = props.voiceFallback;
   return config;
 }
 

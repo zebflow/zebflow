@@ -4,7 +4,7 @@
   "raw": {
     "potoru": {
       "entry": "runtime/potoru.bundle.mjs",
-      "description": "Namespace: version, get(id) (players and snapshots), getEditor(id), mountPotoPlayer, mountPotoSnapshot, mountPotoEditor, compile, loadPlayer."
+      "description": "Namespace: version, get(id) (players and snapshots), getEditor(id), mountPotoPlayer, mountPotoSnapshot, mountPotoEditor, compile, loadPlayer, usePotoPlayer."
     },
     "mountPotoPlayer": {
       "entry": "runtime/potoru.bundle.mjs",
@@ -20,13 +20,18 @@
     },
     "compile": {
       "entry": "runtime/potoru.bundle.mjs",
-      "description": "Compile YAML ({ yaml }: a source folder as path → text) or a Script ({ script }: authoring-API JavaScript, experimental) to .poto bytes with diagnostics."
+      "description": "Compile YAML ({ yaml }: a source folder as path \u2192 text) or a Script ({ script }: authoring-API JavaScript, experimental) to .poto bytes with diagnostics."
+    },
+    "usePotoPlayer": {
+      "kind": "hook",
+      "entry": "runtime/potoru.bundle.mjs",
+      "description": "Handle on a PotoPlayer by id: apply({inputs, collections}) (waits until the player is mounted), set, fire, play, pause, seek, setCamera, load; .instance is the registry entry."
     }
   },
   "wrappers": {
     "PotoPlayer": {
       "entry": "wrappers/PotoPlayer.tsx",
-      "description": "TSX wrapper: server-rendered placeholder the runtime mounts a <potoru-player> into (still + time shows one frame)."
+      "description": "TSX wrapper: server-rendered placeholder the runtime mounts a <potoru-player> into (still + time shows one frame; inputs / collections drive a host-data story; onReady / onReport / onError \u2026 get events)."
     },
     "PotoSnapshot": {
       "entry": "wrappers/PotoSnapshot.tsx",

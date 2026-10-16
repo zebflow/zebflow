@@ -44,6 +44,8 @@ import { PotoPlayer, PotoSnapshot, PotoEditor, compile } from "zeb/potoru";
 | `camera` | `string` | package default | A story camera id, or `"stage"` |
 | `still` | `boolean` | `false` | Show the frame at `time` and do not play (for many thumbnails, `PotoSnapshot` is lighter) |
 | `time` | `number` | `0` | Seconds, with `still` |
+| `voices` | `string` | — | URL of the site's voice catalog: Piper voices a viewer can download (see Voices) |
+| `voiceFallback` | `"browser"` \| `"none"` | `"browser"` | Who speaks a voice the viewer has not chosen: the browser's own voice, or nobody (captions only) |
 | `id` | `string` | auto | Container id for `window.__zebPotoru.get(id)` |
 | `className` | `string` | — | Classes on the container |
 
@@ -55,7 +57,8 @@ import { PotoPlayer, PotoSnapshot, PotoEditor, compile } from "zeb/potoru";
 | `zeb:potoru:report` | `{ id, from, event, payload, tick, scene }` — an event the story reports to the host |
 | `zeb:potoru:ended` | `{ id }` |
 | `zeb:potoru:error` | `{ id, code, message, capabilities?, diagnostic? }` — `code`: `fetch`, `integrity`, `needs-library`, `decode`, `engine`, `host-input`, `library-file`, `needs-newer-player`, `mount` |
-| `zeb:potoru:play`, `:pause`, `:slide`, `:scene`, `:caption`, `:camera` | as the Potoru player reports them, plus `id` |
+| `zeb:potoru:voice-needed` | `{ id, aliases, missing, fallback }` — voice aliases the story speaks that the viewer has not chosen a voice for (`missing`: nothing speaks them) |
+| `zeb:potoru:play`, `:pause`, `:slide`, `:scene`, `:caption`, `:camera`, `:voices` | as the Potoru player reports them, plus `id` |
 
 ### Imperative API — `window.__zebPotoru`
 
@@ -67,6 +70,9 @@ player.set("hero", "speed", 2);                    // host bridge: data the stor
 player.fire("hero", "jump");                       // host bridge: events the story declares input: true
 player.setCamera("square");
 await player.load(bytesOrUrl, { libraries });      // another story (Uint8Array works)
+player.openVoices();                               // the Voices sheet over the stage
+await player.setVoice("narrator", { provider: "browser" });   // or null to clear
+player.voicesRequired; player.voicesUnset;
 player.currentTime(); player.duration(); player.mode; player.paused;
 player.element;                                    // the underlying <potoru-player>
 ```
@@ -76,6 +82,37 @@ Theme it with the Potoru custom properties (`--potoru-accent`, `--potoru-bar-sha
 container.
 
 ---
+
+### Voices
+
+A story names its voices by alias (`voice:narrator`). Lines with baked audio inside the `.poto`
+play it. Every other line speaks through the voice **each viewer** chooses in the player's Voices
+sheet (a button on the control bar; a "Choose a voice" chip while one is unset):
+
+- the browser's own voice (nothing to download; the default until the viewer chooses);
+- a Piper voice from the site's catalog (`voices` prop), downloaded once with progress and checked
+  against its SHA-256, then run in the browser in WebAssembly (sherpa-onnx), offline;
+- ElevenLabs, or any OpenAI-compatible endpoint, with the viewer's own key;
+- Piper files on the viewer's device.
+
+Choices, downloaded voices and keys stay in the viewer's browser (IndexedDB) and serve every story
+of the site. Nothing reaches Zebflow, and a key is only sent to its own provider. Lines a cloud
+voice spoke are kept, so they are not paid for twice. The voice code is part of the player chunk
+set and loads only for stories that speak live.
+
+The catalog is one JSON file the project serves (a stored file, or any host with CORS):
+
+```json
+{ "engine": { "url": "engine/" },
+  "voices": [ { "id": "narrator-id", "name": "Narator (Indonesia)", "lang": "id", "size": 63500000,
+                "model": "voices/narrator-id.onnx", "config": "voices/narrator-id.onnx.json", "sha256": "…" } ] }
+```
+
+`engine/` holds the sherpa-onnx TTS WebAssembly files (`manifest.json`, `sherpa-onnx-tts.js`,
+`sherpa-onnx-wasm-main-tts.{js,wasm,data}`, about 12.5 MB). They are not in this package: the
+`.data` file carries espeak-ng data under GPL-3.0-or-later, so whoever serves it offers the
+espeak-ng source with it. Serve large files (models are tens of MB) from the store with
+`web.response.send --path` (streamed, with Range and ETag), not from repo files.
 
 ## `PotoSnapshot` (a still frame)
 
@@ -188,13 +225,14 @@ const player = await mountPotoPlayer(document.getElementById("slot"), { src: "/a
 
 | Property | Value |
 |----------|-------|
-| Sources | Potoru web player 0.1.0, format v4 compiler and authoring API (Apache-2.0) |
+| Sources | Potoru web player 0.1.3, format v4 compiler and authoring API (Apache-2.0) |
 | Entry | `0.1/runtime/potoru.bundle.mjs` (bridge only) |
-| On demand | `player-*.mjs` + shared `chunk-*.mjs`; `snapshot-*.mjs`; `compiler-*.mjs`; `potoru-authoring-sandbox.js` (Script mode); `*.wasm` (action: interactive stories; score + `score-worker.js`: music; render: path guides); `fonts/` |
-| CDN fetches | **None** |
-| Build tool | esbuild (code splitting); see the hand-off NOTES.md and `0.1/runtime/package.json` |
+| On demand | `player-*.mjs` + shared `chunk-*.mjs`; `snapshot-*.mjs`; `compiler-*.mjs`; `potoru-authoring-sandbox.js` (Script mode); `*.wasm` (action: interactive stories; score + `score-worker.js`: music; render: path guides; g2p: Indonesian pronunciation for Piper voices); `voices-*.mjs` + `voices-panel-*.mjs` (stories that speak live); `fonts/` |
+| CDN fetches | **None** (voices come only from the catalog a page names, and the viewer's own providers) |
+| Build tool | esbuild (code splitting): `POTORU_SRC=<potoru>/designer/e3 node blessed/rwe-libraries/potoru/build/build.mjs` (also rewrites `FILES-SHA256.txt`, the manifest's size and integrity, and the embedded file list) |
 | Checksums | `FILES-SHA256.txt` |
 
 Licences: Apache-2.0 (Potoru, `LICENSE`, `NOTICE.txt`); the Rust crates compiled into the wasm
-engines and the OFL-1.1 fonts are listed with their licence texts in `THIRD-PARTY-NOTICES.txt` and
+engines, the CMU Pronouncing Dictionary in the g2p engine (BSD-2-Clause style) and the OFL-1.1 fonts
+are listed with their licence texts in `THIRD-PARTY-NOTICES.txt` and
 `0.1/runtime/fonts/*-OFL.txt`.

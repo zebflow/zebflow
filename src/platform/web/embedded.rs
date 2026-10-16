@@ -843,112 +843,124 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/library.json"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/action-core-PSBF5FHM.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/action-core-PSBF5FHM.mjs"),
+        path: "zeb/potoru/0.1/runtime/action-core-TOJAEIPU.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/action-core-TOJAEIPU.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/canvas-effects-QU2QXLGL.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/canvas-effects-QU2QXLGL.mjs"),
+        path: "zeb/potoru/0.1/runtime/canvas-effects-UNL5IA6Q.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/canvas-effects-UNL5IA6Q.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/canvas-effects-registry-5BLZHRIB.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/canvas-effects-registry-5BLZHRIB.mjs"),
+        path: "zeb/potoru/0.1/runtime/canvas-effects-registry-CIRAQN3P.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/canvas-effects-registry-CIRAQN3P.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-3XRFRD2S.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-3XRFRD2S.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-5MJDBQ6D.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-5MJDBQ6D.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-62HDGWYP.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-62HDGWYP.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-6BUSNEOM.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-6BUSNEOM.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-763UAEKU.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-763UAEKU.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-ACMIY2U6.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-ACMIY2U6.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-7VRW3VBZ.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-7VRW3VBZ.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-AUFJMJOH.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-AUFJMJOH.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-AASFW5YA.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-AASFW5YA.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-AWXDNTLF.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-AWXDNTLF.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-FLFAZFBZ.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-FLFAZFBZ.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-BNXQLZB7.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-BNXQLZB7.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-FN6XUIZY.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-FN6XUIZY.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-CCJSFTNP.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-CCJSFTNP.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-GS24HIPM.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-GS24HIPM.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-EQBLUIJT.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-EQBLUIJT.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-GVO2JRMP.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-GVO2JRMP.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-GAWYRDBH.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-GAWYRDBH.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-HBYAQLQW.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-HBYAQLQW.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-GDLLO7MM.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-GDLLO7MM.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-K5UZGGEG.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-K5UZGGEG.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-H5EAQMXY.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-H5EAQMXY.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-KKBCYFXM.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-KKBCYFXM.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-KPAZEOOS.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-KPAZEOOS.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-MJX6QWZO.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-MJX6QWZO.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-LYSIUW53.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-LYSIUW53.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-U4UY5HLF.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-U4UY5HLF.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-MULTMAJ7.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-MULTMAJ7.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-WEJYLQFK.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-WEJYLQFK.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-NNRPRQL6.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-NNRPRQL6.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-WZTF33VO.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-WZTF33VO.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-O26L46OV.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-O26L46OV.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-X4OAAF7Y.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-X4OAAF7Y.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-P63CGZHL.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-P63CGZHL.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/chunk-ZRKHPQZR.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-ZRKHPQZR.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-RVLRL5NF.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-RVLRL5NF.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/compact-container-DBEHQEIO.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/compact-container-DBEHQEIO.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-XMLOGUJ5.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-XMLOGUJ5.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/compiler-XLHCJYXJ.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/compiler-XLHCJYXJ.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-XP3QTEDN.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-XP3QTEDN.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/container-7234GEZO.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/container-7234GEZO.mjs"),
+        path: "zeb/potoru/0.1/runtime/chunk-Y4OXOE4X.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/chunk-Y4OXOE4X.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/compact-container-JTYLI2SI.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/compact-container-JTYLI2SI.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/compiler-SX65UBAB.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/compiler-SX65UBAB.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/container-GH5VOGFO.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/container-GH5VOGFO.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/entry.mjs",
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/entry.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/folder-fs-4HVV6LLT.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/folder-fs-4HVV6LLT.mjs"),
+        path: "zeb/potoru/0.1/runtime/folder-fs-3BBTANXU.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/folder-fs-3BBTANXU.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/font-aliases-GQ2K6SRO.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/font-aliases-GQ2K6SRO.mjs"),
+        path: "zeb/potoru/0.1/runtime/font-aliases-QNVLCUAQ.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/font-aliases-QNVLCUAQ.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/fonts/SOURCES.md",
@@ -979,40 +991,44 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/fonts/basic-serif.woff2"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/generator-registry-FRZATNS6.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/generator-registry-FRZATNS6.mjs"),
+        path: "zeb/potoru/0.1/runtime/g2p-wasm-DI6V376L.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/g2p-wasm-DI6V376L.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/generators-LO2CBUNT.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/generators-LO2CBUNT.mjs"),
+        path: "zeb/potoru/0.1/runtime/generator-registry-UOO4S5G4.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/generator-registry-UOO4S5G4.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/library-CGEADYHJ.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/library-CGEADYHJ.mjs"),
+        path: "zeb/potoru/0.1/runtime/generators-NZXCU6XN.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/generators-NZXCU6XN.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/node_fs-CUTGKJVC.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/node_fs-CUTGKJVC.mjs"),
+        path: "zeb/potoru/0.1/runtime/library-2S7I3L5U.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/library-2S7I3L5U.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/node_path-LR7RP7N6.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/node_path-LR7RP7N6.mjs"),
+        path: "zeb/potoru/0.1/runtime/node_fs-ZYXC4DSI.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/node_fs-ZYXC4DSI.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/package-container-YJFAFQHA.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/package-container-YJFAFQHA.mjs"),
+        path: "zeb/potoru/0.1/runtime/node_path-BW23E7JS.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/node_path-BW23E7JS.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/package-container-PAD3WPI4.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/package-container-PAD3WPI4.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/package.json",
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/package.json"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/path-core-loader-O3XFOI3T.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/path-core-loader-O3XFOI3T.mjs"),
+        path: "zeb/potoru/0.1/runtime/path-core-loader-SLKY4XXY.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/path-core-loader-SLKY4XXY.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/player-GVPI3GPU.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/player-GVPI3GPU.mjs"),
+        path: "zeb/potoru/0.1/runtime/player-5SBRV3VA.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/player-5SBRV3VA.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/potoru-authoring-sandbox.js",
@@ -1027,6 +1043,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/potoru_action_wasm_bg.wasm"),
     },
     EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/potoru_g2p_wasm_bg.wasm",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/potoru_g2p_wasm_bg.wasm"),
+    },
+    EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/potoru_render_wasm_bg.wasm",
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/potoru_render_wasm_bg.wasm"),
     },
@@ -1035,28 +1055,32 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/potoru_score_wasm_bg.wasm"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/resolver-MHYVNHYP.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/resolver-MHYVNHYP.mjs"),
+        path: "zeb/potoru/0.1/runtime/resolver-PX5GWGRR.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/resolver-PX5GWGRR.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/runtime-tick-F3EMLDRI.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/runtime-tick-F3EMLDRI.mjs"),
+        path: "zeb/potoru/0.1/runtime/runtime-tick-YXO36JNL.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/runtime-tick-YXO36JNL.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/score-wasm-Y6RNAQHP.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/score-wasm-Y6RNAQHP.mjs"),
+        path: "zeb/potoru/0.1/runtime/score-wasm-HMOAUMLF.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/score-wasm-HMOAUMLF.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/score-worker.js",
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/score-worker.js"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/snapshot-RHSILFDI.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/snapshot-RHSILFDI.mjs"),
+        path: "zeb/potoru/0.1/runtime/snapshot-QBKH6MPC.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/snapshot-QBKH6MPC.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/src/compiler.mjs",
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/src/compiler.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/src/patch.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/src/patch.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/runtime/src/player.mjs",
@@ -1075,8 +1099,16 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/src/widget.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/potoru/0.1/runtime/svg-surface-UMZQSCDA.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/svg-surface-UMZQSCDA.mjs"),
+        path: "zeb/potoru/0.1/runtime/svg-surface-U3RQ262G.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/svg-surface-U3RQ262G.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/voices-M6MJNPUQ.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/voices-M6MJNPUQ.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/potoru/0.1/runtime/voices-panel-3RBSS4U3.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/0.1/runtime/voices-panel-3RBSS4U3.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/potoru/0.1/wrappers/PotoEditor.tsx",
