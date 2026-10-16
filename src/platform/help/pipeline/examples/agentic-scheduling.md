@@ -80,11 +80,16 @@ URL from.
 ### queue-classifier — AI classify and route
 
 ```
-| trigger.schedule --cron "*/15 * * * *"
-| sekejap.query.run -- "SELECT * FROM incoming_queue WHERE processed = false LIMIT 10"
-| ai.text.generate --provider openai --credential my-llm --answer-only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.query.rows }}
-| logic.foreach --from "input.text.data"
-| sekejap.query.run --write --param "1={{ $item.urgency }}" --param "2={{ $item.category }}" --param "3={{ $item.key }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
+[trig] trigger.schedule --cron "*/15 * * * *"
+[queue] sekejap.query.run -- "SELECT * FROM incoming_queue WHERE processed = false LIMIT 10"
+[classify] ai.text.generate --provider openai --credential my-llm --answer-only --schema '{"type":"array","items":{"type":"object","required":["key","urgency","category"],"properties":{"urgency":{"enum":["high","medium","low"]}}}}' -- Classify each item by urgency (high, medium, low) and category. Reply with a JSON array of { key, urgency, category }, where key is the _key of that item. Items: {{ input.query.rows }}
+[each] logic.foreach --from "input.text.data"
+[save] sekejap.query.run --write --param "1={{ $item.urgency }}" --param "2={{ $item.category }}" --param "3={{ $item.key }}" -- "UPDATE incoming_queue SET urgency = $1, category = $2, processed = true WHERE _key = $3"
+
+[trig] -> [queue]
+[queue] -> [classify]
+[classify] -> [each]
+[each]:item -> [save]
 ```
 
 `logic.foreach` fans out one run per array element; `$item` stays in scope

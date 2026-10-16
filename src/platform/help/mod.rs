@@ -547,7 +547,12 @@ mod help_lint {
             for (line, block) in code_blocks(page.content) {
                 for body in pipeline_bodies(&block) {
                     checked += 1;
-                    if let Err(e) = build_pipeline_graph_with_definitions("help-lint", &body, &defs) {
+                    // Built and then validated, as registration does: building
+                    // alone never checks that an edge leaves a pin its node has.
+                    let checked_graph = build_pipeline_graph_with_definitions("help-lint", &body, &defs)
+                        .map_err(|e| e.to_string())
+                        .and_then(|graph| crate::contracts::kinds::validate_pipeline_graph(&graph).map_err(|e| e.to_string()));
+                    if let Err(e) = checked_graph {
                         failures.push(format!("{}:{line}: {e}\n    {body}", page.path));
                     }
                 }

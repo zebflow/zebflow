@@ -102,10 +102,14 @@ in one interval has the rest dropped and counted (`inputs_dropped` in
 
 ```
 register game/ws-tick --
-| trigger.room --room "room-*" --event $tick --every 50ms --max-inputs 10
-| javascript.script.run -- "const moved = {}; let count = 0; for (const i of input.room.inputs) { if (i.event === 'player.move' && i.payload) { moved[i.session] = { x: i.payload.x, y: i.payload.y, tick: input.room.tick }; count += 1; } } return { moved, count };"
-| logic.if --when "input.script.count > 0"
-| ws.state.update --key /players --value "{{ input.script.moved }}"
+[tick] trigger.room --room "room-*" --event $tick --every 50ms --max-inputs 10
+[moves] javascript.script.run -- "const moved = {}; let count = 0; for (const i of input.room.inputs) { if (i.event === 'player.move' && i.payload) { moved[i.session] = { x: i.payload.x, y: i.payload.y, tick: input.room.tick }; count += 1; } } return { moved, count };"
+[any] logic.if --when "input.script.count > 0"
+[save] ws.state.update --key /players --value "{{ input.script.moved }}"
+
+[tick] -> [moves]
+[moves] -> [any]
+[any]:true -> [save]
 ```
 
 - **One thing at a time per room.** A room runs its tick, its `$connect` and
