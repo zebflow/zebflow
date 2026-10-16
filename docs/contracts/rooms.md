@@ -1,9 +1,9 @@
 # Rooms
 
-Status: **decided** — 2026-10-16, by the owner. Not yet served; today's rooms
-are created by any join that matches a `trigger.room` pattern, run one
-pipeline per client message and send the full state
-(ledger: `zebflow › ws-room-lifecycle`).
+Status: **decided** — 2026-10-16, by the owner. Served: room kinds, tickets,
+the join rule, the management nodes, events and ticks, and the fast lane. Not
+yet: views, `--hold`, and the `zebflow.rooms.v1` protocol; until then a state
+change sends the full state (ledger: `zebflow › ws-room-lifecycle`).
 
 A room is a live channel between a project's server and the clients joined to
 it: chat, a classroom, a dashboard, a match, an MMORPG zone. **Every room
@@ -81,7 +81,7 @@ A room runs in one of two modes, chosen by its triggers.
 | --- | --- | --- |
 | When | no `trigger.room --event $tick` matches it | one does: `trigger.room --room "match-:id" --event $tick --every 50ms` |
 | A client event | runs its `--event` trigger | waits for the next tick — every client event, chat included |
-| The tick pipeline gets | — | `input.room: { tick, dt_ms, inputs: [ { session, event, payload, auth } … ] }` — every waiting input, in arrival order |
+| The tick pipeline gets | — | `input.room: { room_id, event: "$tick", tick, dt_ms, inputs: [ { session, event, payload, auth } … ] }` — every waiting input, in arrival order |
 | State goes out | on each change, or each 33 ms with `--batch` | once per tick, after the tick pipeline ends |
 
 - **A room handles one thing at a time, in arrival order across all its
@@ -91,6 +91,18 @@ A room runs in one of two modes, chosen by its triggers.
   it belongs in a webhook that answers later with `ws.message.send`.
 - `--every` is 16 ms to 1 s. A room never runs two ticks at once: a tick that
   outlasts `--every` delays the next and counts a `tick_overrun`.
+- `--every` is required with `$tick`; it and `--max-inputs` are refused on any
+  other event. Every `$tick` trigger that can match one room declares the same
+  `--every` and `--max-inputs`, or activation refuses; matching ones each run
+  once per tick, in path order.
+- A room ticks while it has sessions. `tick` counts the room's ticks; `dt_ms`
+  is the time since the last tick started, `--every` on the first.
+- In a tick room, `$connect` and `$disconnect` still run their own triggers,
+  and every state change goes out after the tick, whatever made it.
+- A `$disconnect` runs after every event its socket sent: in a tick room,
+  right after the tick that takes that session's last inputs, the last
+  session's included.
+- A room that stops being a tick room runs its waiting inputs as events.
 - A tick is how fast fights work: ten players' attacks in one interval are
   resolved in one run, in one order, and every client gets one result.
 - Per session, at most `--max-inputs` (default 30) inputs wait per tick; more
