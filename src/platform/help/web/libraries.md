@@ -28,6 +28,7 @@ with no list, any of them loads on demand.
 |---|---|---|
 | `zeb/use` | hooks | debounce, clipboard, localStorage, intervals, trees… |
 | `zeb/livegeo` | hooks | playback and smoothing for moving things on a map |
+| `zeb/rooms` | `useRoom`, `joinRoom` | live rooms: chat, presence, dashboards, multiplayer games |
 | `zeb/markdown` | `renderMarkdown`, `marked`, `DOMPurify`, `<Markdown>` | Markdown → sanitised HTML |
 | `zeb/codemirror` | `codemirror`, `presets`, `createZebflowEditorExtensions`, `<CodeEditor>` | a code editor (CodeMirror 6) |
 | `zeb/prosemirror` | `createEditor`, `createSchema`, `htmlToDocument`, `EMPTY_DOC`, `pm` | the engine under `zeb/ui/editor` |
@@ -91,6 +92,66 @@ Browser-only hooks for playback, smoothing and following a moving target.
 Use `Tool.geo` (`routeProgress`, `interpolateRoute`, `bearing`) for the maths
 that must also run on the server. Guard these hooks behind `useEffect` or a
 component rendered only in the browser — they have no server stubs.
+
+---
+
+## zeb/rooms — live rooms
+
+Joins a room the project's pipelines run (`trigger.room`, `ws.room.open`) and
+keeps it live: the room's state, the events it sends, what you send back. It
+reconnects by itself, and in a room opened with `--hold` it takes the same
+seat back. Rooms are the project's `ws` surface, off until it is switched on
+(Settings → Addressing); the page is told where its rooms are by the server
+that served it.
+
+```tsx
+import { useRoom } from "zeb/rooms";
+
+export default function Match() {
+  const { state, status, send, room } = useRoom("match-7", {
+    ticket: "/api/matches/7/ticket",            // or a function, or leave it out for an open room
+    select: (s) => s.players,                    // optional; re-render only when this part changes
+    onEvent: (event, payload) => { /* … */ },    // optional; the latest callback is always called
+  });
+  if (status !== "joined") return <p>{status}</p>;
+  return <Board players={state} onMove={(x, y) => send("move", { x, y })} />;
+}
+```
+
+- `status` is `connecting`, `joined`, `away` (the connection dropped and is
+  coming back) or `closed`.
+- `ticket`: a URL is POSTed with the page's cookies and its answer's `ticket`
+  is used — a webhook that checks the visitor and runs `ws.ticket.create`. A
+  function returns a ticket or a promise of one. A new ticket is fetched for
+  every fresh join, never for a reconnect into a held seat.
+- `send(event, payload)` is `true` when sent and `false` unless joined —
+  nothing is queued. Names starting with `$` belong to the server.
+- On the server the hook returns `{ state: undefined, status: "connecting" }`;
+  it joins in the browser and leaves on unmount or when the room name
+  changes. Two components may join the same room: each gets its own socket.
+
+Without React — a canvas game, a plain script:
+
+```js
+import { joinRoom } from "zeb/rooms";
+
+const room = joinRoom("match-7", { ticket: "/api/matches/7/ticket" });
+const off = room.on("hit", (payload) => {});   // returns an unsubscribe function
+room.onState((state, ops) => {});             // after every change; returns off
+room.onStatus((status, detail) => {});        // returns off
+room.send("move", { x: 3, y: 7 });             // true if sent, false unless joined
+room.state; room.status; room.sessionId; room.leave();
+
+// a page outside Zebflow names where rooms live:
+joinRoom("match-7", { url: "wss://play.example.com/_ws/rooms", ticket: () => getTicket() });
+```
+
+A room that ends says why in `room.closed` (`{ code, reason }`): the close
+codes of `help("pipeline/rooms-protocol")` (`4401` refused, `4404` not open,
+`4408` login expired — sign in again, `4409` / `4410` closed by the server,
+`4429` full, `1008` flooding), `rooms-off` when the project's `ws` surface is
+off, `ticket` (with the HTTP `status`) when the ticket could not be fetched,
+and `left` after `leave()`. None of those is retried.
 
 ---
 

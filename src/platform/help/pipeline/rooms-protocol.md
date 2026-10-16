@@ -5,6 +5,9 @@ talks to a Zebflow room. This page is the whole protocol: a client that does
 what it says needs nothing else. The server side of a room is `trigger.room`
 and the `ws.*` nodes (`help("pipeline/nodes/trigger.room")`).
 
+A page does not write this itself: `zeb/rooms` implements it for pages
+(`useRoom`, `joinRoom` — `help("web/libraries")`).
+
 ## Connecting
 
 Open a WebSocket to the room, naming the protocol:

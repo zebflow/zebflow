@@ -129,17 +129,23 @@ to it, and returning `null` from a script would not have stopped anything
 ## WebSocket Client Setup (in TSX template)
 
 ```tsx
-const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-const ws = new WebSocket(`${scheme}://${location.host}/ws/${owner}/${project}/rooms/forum-${roomId}`, 'zebflow.rooms.v1');
-ws.onmessage = (e) => {
-  const msg = JSON.parse(e.data);
-  if (msg.type === 'event' && msg.event === 'chat.message') {
-    setMessages(prev => [...prev, msg.payload]);
-  }
-};
-// Send a message:
-ws.send(JSON.stringify({ event: 'chat.message', payload: { user, text } }));
+import { useState } from "zeb/react";
+import { useRoom } from "zeb/rooms";
+
+export default function ForumChat({ roomId, user }) {
+  const [messages, setMessages] = useState([]);
+  const { status, send } = useRoom(`forum-${roomId}`, {
+    onEvent: (event, payload) => {
+      if (event === "chat.message") setMessages((prev) => [...prev, payload]);
+    },
+  });
+  const post = (text) => send("chat.message", { user, text }); // false unless joined
+  // render `messages`, and a form that calls post(text)
+}
 ```
+
+`zeb/rooms` finds the room's address for the page it is on, reconnects on
+its own and speaks the protocol (`help("pipeline/rooms-protocol")`).
 
 ---
 

@@ -145,13 +145,22 @@ whenever the player moves, and draws `state.players`, applying each tick's
 
 ## State Sync Protocol
 
-Clients speak `zebflow.rooms.v1` (the whole protocol:
-`help("pipeline/rooms-protocol")`):
+A page joins with `zeb/rooms`, which keeps the state, reconnects and takes
+a held seat back on its own (`help("web/libraries")`):
 
-```js
-const ws = new WebSocket(`wss://${location.host}/_ws/rooms/${room}`, "zebflow.rooms.v1");
+```tsx
+import { useRoom } from "zeb/rooms";
+
+export default function GameRoom({ room }) {
+  const { state, status, send } = useRoom(room._key, { select: (s) => s.players });
+  if (status !== "joined") return <p>{status}</p>;
+  return <Board players={state} onMove={(x, y) => send("player.move", { x, y })} />;
+}
 ```
 
+`select` re-renders the board only when `players` changed. Under it the
+client speaks `zebflow.rooms.v1` (the whole protocol:
+`help("pipeline/rooms-protocol")`), which any other client can speak too.
 Server-side room state is a JSON object. Clients receive:
 
 ```json
@@ -222,7 +231,7 @@ session closes with `4408` when the login expires.
 ## Templates Needed
 
 - `pages/game-lobby.tsx` — room list + create room
-- `pages/game-room.tsx` — game board + player list + WebSocket connection
+- `pages/game-room.tsx` — game board + player list, joined with `useRoom` from `zeb/rooms`
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —

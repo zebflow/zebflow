@@ -57,6 +57,7 @@ Library surfaces:
   with `fallbackRender`/`resetKeys` and `useSyncExternalStore`; external stores must
   provide a matching `getServerSnapshot` for SSR and hydration)
 - `zeb/prosemirror`
+- `zeb/rooms`
 - `zeb/threejs`
 - `zeb/threejs-vrm`
 - `zeb/use`
