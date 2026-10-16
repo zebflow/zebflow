@@ -4,7 +4,9 @@
 
 A multiplayer game where all clients share synchronized state through
 WebSocket rooms. State is managed server-side and synced to all participants.
-Players join rooms, send moves, state updates are broadcast.
+Each game room is a **tick room**: players send moves whenever they like, and
+twenty times a second one run resolves every move of that interval, in the
+order they arrived, and every client gets one result.
 
 ---
 
@@ -13,9 +15,8 @@ Players join rooms, send moves, state updates are broadcast.
 1. `GET /game` → render game lobby page
 2. `GET /game/:room` → render game room with initial state
 3. `POST /api/game/rooms` → record the room and open it (`ws.room.open`)
-4. `WS event: player.join` → add player to room state → broadcast
-5. `WS event: player.move` → validate move → update game state → broadcast
-6. `WS event: player.leave` → remove player → broadcast
+4. `$connect` / `$disconnect` → seat or remove the player in room state
+5. `$tick` every 50 ms → apply every move of the interval → state goes out once
 
 ---
 
@@ -88,60 +89,51 @@ A private room (`--private`) admits only players holding a ticket from
 `ws.ticket.create --room <room> --user <sub>`, issued by a webhook that checks
 the player belongs there; the client connects with `?ticket=…`.
 
-### ws-player-join — player joins room
+### ws-tick — every move of the interval, once per tick
 
-A part of `--key` that comes from the payload is written with `{{ }}`; the
-`ws.*` nodes keep the payload, so `input.room.payload` right after the
-trigger (`$trigger.payload` deeper in the chain) is still there for the next
-node:
-
-```zf
-register game/ws-player-join --
-[a] trigger.room --room "room-*" --event player.join
-[merge] ws.state.update --key "/players/{{ input.room.payload.player_id }}" --value "{{ { id: input.room.payload.player_id, name: input.room.payload.name, score: 0, joined_at: Date.now() } }}"
-[emit] ws.message.send --event state.updated --body "{{ { player_id: $trigger.payload.player_id } }}"
-
-[a] -> [merge]
-[merge] -> [emit]
-```
-
-### ws-player-move — player makes a move
-
-```zf
-register game/ws-player-move --
-[a] trigger.room --room "room-*" --event player.move
-[guard] logic.if --when "!!(input.room.payload && input.room.payload.player_id && input.room.payload.move)"
-[set] ws.state.put --key /last_move --value "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move, ts: Date.now() } }}"
-[emit] ws.message.send --event player.moved --body "{{ { player_id: $trigger.payload.player_id, move: $trigger.payload.move } }}"
-
-[a] -> [guard]
-[guard]:true -> [set]
-[set] -> [emit]
-```
-
-An invalid move just stops at `[guard]` — there is no `false` edge, and a
-`script` returning `null` would not have stopped the pipeline anyway; only a
-`logic.if` branch does.
-
-### ws-player-leave — player disconnects
+`--event $tick --every 50ms` makes every room `room-*` matches a tick room.
+A client event there no longer runs a trigger of its own — `player.move`,
+chat, anything — it waits for the next tick. The tick pipeline gets them all,
+in arrival order, as `input.room.inputs` (`{ session, event, payload, auth }`
+each), with `input.room.tick` (its number) and `input.room.dt_ms` (the time
+since the last one). A session sending more than `--max-inputs` (default 30)
+in one interval has the rest dropped and counted (`inputs_dropped` in
+`ws.room.list`).
 
 ```
-| trigger.room --room "room-*" --event player.leave
-| ws.message.send --event player.left --body "{{ { player_id: input.room.payload.player_id } }}"
+register game/ws-tick --
+| trigger.room --room "room-*" --event $tick --every 50ms --max-inputs 10
+| javascript.script.run -- "const moved = {}; let count = 0; for (const i of input.room.inputs) { if (i.event === 'player.move' && i.payload) { moved[i.session] = { x: i.payload.x, y: i.payload.y, tick: input.room.tick }; count += 1; } } return { moved, count };"
+| logic.if --when "input.script.count > 0"
+| ws.state.update --key /players --value "{{ input.script.moved }}"
 ```
+
+- **One thing at a time per room.** A room runs its tick, its `$connect` and
+  its `$disconnect` one after another, never two at once, so a pipeline that
+  reads a value and writes it back needs no lock.
+- **Ticks never overlap.** A tick that takes longer than `--every` delays the
+  next one and counts a `tick_overrun`. An empty tick (no input) still runs:
+  timers and respawns live in state.
+- **State goes out once per tick**, after the tick pipeline ends, however many
+  writes the tick made.
+- Every `$tick` trigger that can match a room declares the same `--every` and
+  `--max-inputs`, or activation refuses.
+
+The client sends `{ "event": "player.move", "payload": { "x": 3, "y": 7 } }`
+whenever the player moves, and draws `state.players` from each `state_patch`.
 
 ---
 
 ## Nodes Used
 
 - `trigger.webhook` — HTTP lobby and room pages
-- `trigger.room --room "room-*" --event <name>` — WebSocket event handlers (join, move, leave); `--room` is required: an exact name is a fixed room, a pattern (`room-*`, `room-:id`) declares opened rooms
+- `trigger.room --room "room-*" --event $tick --every 50ms` — the game's tick: every move of the interval in one run; `--event $connect` / `$disconnect` seat and remove players. `--room` is required: an exact name is a fixed room, a pattern (`room-*`, `room-:id`) declares opened rooms
 - `ws.room.open` — opens a game room under that pattern; `ws.room.close` ends it (every player gets `4410`)
 - `sekejap.query.run` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `javascript.script.run` — shape the lobby rows and new room ids; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept
-- `logic.if` — move validation
+- `logic.if` — skip the state write on a tick nobody moved in
 - `ws.state.update` / `ws.state.put` / `ws.state.delete --key "/players/{{ expr }}"` — change the server-side room state
-- `ws.message.send --body "{{ expr }}"` — broadcast events to all players in the room
+- `ws.message.send --body "{{ expr }}"` — send an event to the players in the room (from any pipeline, for example a webhook)
 
 ---
 
@@ -150,10 +142,10 @@ An invalid move just stops at `[guard]` — there is no `false` edge, and a
 Server-side room state is a JSON object. Clients receive:
 
 ```json
-{ "type": "joined", "session_id": "...", "room": "room-abc123", "state": { "players": {}, "last_move": null } }
-{ "type": "state_patch", "state": { "players": { "p1": { "id": "p1", "name": "...", "score": 0 } }, "last_move": null } }
-{ "type": "event", "event": "player.moved", "payload": { "player_id": "p1", "move": "...", "ts": 1234 } }
-{ "type": "resync", "state": { "players": {}, "last_move": null } }
+{ "type": "joined", "session_id": "ws-1f0c", "room": "room-abc123", "state": { "players": {} } }
+{ "type": "state_patch", "state": { "players": { "ws-1f0c": { "x": 3, "y": 7, "tick": 412 } } } }
+{ "type": "event", "event": "match.over", "payload": { "winner": "ws-1f0c" } }
+{ "type": "resync", "state": { "players": { "ws-1f0c": { "x": 3, "y": 7, "tick": 412 } } } }
 ```
 
 `state_patch` and `resync` always carry the **full** current state, not a diff —
@@ -165,7 +157,8 @@ event reaches that one socket and no other.
 
 ## Joining, leaving and who is online
 
-The server raises two reserved events on every connection's own ordered queue:
+The server raises two reserved events on the room's one queue, in order with
+everything else the room handles:
 
 - `$connect` — after `joined`.
 - `$disconnect` — when the socket ends, payload `{ "reason": … }`: `left`
@@ -173,7 +166,8 @@ The server raises two reserved events on every connection's own ordered queue:
   (`ws.session.close`), `room_closed` (`ws.room.close`), `expired` (the
   login's `exp` passed) or `flood` (too many events waiting).
   It runs even if the client never said goodbye, and after every event that
-  socket sent, so a late `move` can never resurrect a player who left.
+  socket sent — in a tick room, right after the tick that takes that socket's
+  last inputs — so a late `move` can never resurrect a player who left.
 
 Only a trigger that names them receives them (`trigger.room --room "room-*" --event $disconnect`);
 a catch-all event trigger does not, and clients cannot send `$` events. Presence
