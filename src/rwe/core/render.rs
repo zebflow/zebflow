@@ -1263,6 +1263,30 @@ pub fn insert_engine_styles(html: &str, css: &str) -> String {
     html
 }
 
+/// The attribute on the page-data element (`<script id="__rwe_payload">`)
+/// that says where the page's rooms live; `zeb/rooms` reads it.
+pub const ROOMS_ATTRIBUTE: &str = "data-rooms";
+
+/// `html` with the page's room base on the element that already carries the
+/// page's state to the browser. The page server decides the base per request
+/// (the address the page was served on), after the render; a page without a
+/// page-data element is returned unchanged.
+pub fn with_room_base(html: &str, base: &str) -> String {
+    let element = format!("<script type=\"application/json\" id=\"{PAYLOAD_ID}\">");
+    let Some(at) = html.find(&element) else {
+        return html.to_string();
+    };
+    let tagged = format!(
+        "<script type=\"application/json\" {ROOMS_ATTRIBUTE}=\"{}\" id=\"{PAYLOAD_ID}\">",
+        escape_attr(base)
+    );
+    let mut out = String::with_capacity(html.len() + tagged.len());
+    out.push_str(&html[..at]);
+    out.push_str(&tagged);
+    out.push_str(&html[at + element.len()..]);
+    out
+}
+
 fn escape_json_script(input: &str) -> String {
     input
         .replace("<", "\\u003c")
@@ -1326,6 +1350,21 @@ mod tests {
     use super::*;
     use crate::rwe::core::model::HydrateMode;
     use serde_json::json;
+
+    /// The room base rides on the page-data element, escaped, before its id so
+    /// a reader looking for `id="__rwe_payload">` still finds it; a page
+    /// without the element is left alone.
+    #[test]
+    fn the_room_base_rides_on_the_page_data_element() {
+        let page = "<main></main><script type=\"application/json\" id=\"__rwe_payload\">{\"a\":1}</script>";
+        let out = with_room_base(page, "/_ws/rooms/");
+        assert_eq!(
+            out,
+            "<main></main><script type=\"application/json\" data-rooms=\"/_ws/rooms/\" id=\"__rwe_payload\">{\"a\":1}</script>"
+        );
+        assert!(with_room_base(page, "/x\"><b>/").contains("data-rooms=\"/x&quot;&gt;&lt;b&gt;/\""));
+        assert_eq!(with_room_base("<main></main>", "/_ws/rooms/"), "<main></main>");
+    }
 
     fn site() -> SiteContext {
         SiteContext::from_state(&json!({

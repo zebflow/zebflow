@@ -244,6 +244,33 @@ impl ProjectAddressing {
     pub fn is_sectioned(&self) -> bool {
         self.routes.iter().any(|r| r.root.is_some())
     }
+
+    /// Where a page's `zeb/rooms` opens room sockets: the path a room name is
+    /// appended to, for the address the page was served on (`addressing.md`
+    /// §2, `ws`). `page_host` is the project host the page arrived on; `None`
+    /// is the platform form `/wh/{o}/{p}/…`.
+    ///
+    /// `None` when `ws` is switched off, or when the page's host carries
+    /// routes and none of them is `ws` — `/_ws/` misses there, and the
+    /// platform form would name the owner and project on the project's own
+    /// address. A section host keeps the default mount (§2c).
+    pub fn room_base(&self, owner: &str, project: &str, page_host: Option<&str>) -> Option<String> {
+        if !self.is_enabled(Surface::Ws) {
+            return None;
+        }
+        let Some(host) = page_host else {
+            return Surface::Ws.platform_prefix(owner, project).map(|prefix| format!("{prefix}/rooms/"));
+        };
+        let host = normalize_host(host);
+        if let Some(route) = self.routes.iter().find(|r| r.host == host && r.surface == Surface::Ws) {
+            return Some(format!("{}/rooms/", route.path.trim_end_matches('/')));
+        }
+        let carries_routes = self.routes.iter().any(|r| r.host == host);
+        if !carries_routes || self.section_hosts().contains(&host.as_str()) {
+            return Some(format!("{}rooms/", Surface::Ws.default_path()));
+        }
+        None
+    }
 }
 
 /// Where one request goes.
@@ -921,6 +948,44 @@ fn strip_prefix(path: &str, prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page learns where its rooms live from the address it was served on:
+    /// the default mount or the host's own `ws` route on a project host, the
+    /// platform form on the platform form, and nothing with `ws` off.
+    #[test]
+    fn a_page_room_base_follows_the_address_it_was_served_on() {
+        let route = |host: &str, path: &str, surface: Surface, root: Option<&str>| AddressRoute {
+            host: host.to_string(),
+            path: path.to_string(),
+            surface,
+            root: root.map(str::to_string),
+        };
+        let mut on = ProjectAddressing { disabled: vec![Surface::Files, Surface::Ms, Surface::Mcp], ..Default::default() };
+        assert_eq!(on.room_base("site-a", "demo", Some("demo.site-a.localhost:10610")).as_deref(), Some("/_ws/rooms/"));
+        assert_eq!(on.room_base("site-a", "demo", None).as_deref(), Some("/ws/site-a/demo/rooms/"));
+
+        on.hosts = vec!["play.example.com".into(), "www.example.com".into(), "a.example.net".into()];
+        on.routes = vec![
+            route("play.example.com", "/", Surface::Pages, None),
+            route("play.example.com", "/live/", Surface::Ws, None),
+            route("www.example.com", "/", Surface::Pages, None),
+            route("www.example.com", "/api/", Surface::Pages, None),
+            route("a.example.net", "/", Surface::Pages, Some("/site-a")),
+        ];
+        assert_eq!(on.room_base("site-a", "demo", Some("Play.Example.com")).as_deref(), Some("/live/rooms/"), "the host's own ws route");
+        assert_eq!(
+            on.room_base("site-a", "demo", Some("www.example.com")),
+            None,
+            "a host whose routes leave ws out has no rooms, and never names the owner"
+        );
+        assert_eq!(on.room_base("site-a", "demo", Some("a.example.net")).as_deref(), Some("/_ws/rooms/"), "a section host keeps the default mount");
+        assert_eq!(on.room_base("site-a", "demo", Some("demo.site-a.localhost")).as_deref(), Some("/_ws/rooms/"));
+
+        let off = ProjectAddressing::default();
+        assert!(!off.is_enabled(Surface::Ws), "ws starts off");
+        assert_eq!(off.room_base("site-a", "demo", Some("demo.site-a.localhost")), None);
+        assert_eq!(off.room_base("site-a", "demo", None), None);
+    }
 
     #[test]
     fn a_dev_host_is_project_dot_owner_dot_localhost_and_parses_back() {

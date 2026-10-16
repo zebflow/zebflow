@@ -1439,6 +1439,23 @@ pub struct ProjectHost {
 #[derive(Debug, Clone)]
 pub struct VisitorPath(pub String);
 
+/// Where a page answer goes out, as far as the page needs to know: the
+/// project host it was asked for on, or `None` for the platform form
+/// `/wh/{o}/{p}/…`. It decides the page's room base (`zeb/rooms`).
+#[derive(Debug, Clone, Copy)]
+struct PageArrival<'a> {
+    page_host: Option<&'a str>,
+}
+
+impl<'a> PageArrival<'a> {
+    /// A page answering a webhook: on a project host when the gate rewrote
+    /// the visitor's path (`VisitorPath`), on the platform form otherwise.
+    fn of_webhook(visitor_path: Option<&str>, headers: &'a HeaderMap) -> Self {
+        let host = headers.get(axum::http::header::HOST).and_then(|value| value.to_str().ok());
+        Self { page_host: visitor_path.and(host) }
+    }
+}
+
 /// The same path on a controller's call to the worker office that runs the
 /// project; read only on that controller-signed route.
 const VISITOR_PATH_HEADER: &str = "x-zebflow-visitor-path";
@@ -2012,7 +2029,7 @@ fn render_page(
         html = ensure_stylesheet_link(html, "/assets/platform/devicons.css");
     }
 
-    let final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None)?;
+    let final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None, None)?;
 
     // In debug builds: inject a tiny SSE listener that auto-reloads the page
     // whenever platform template sources change on disk.
@@ -2088,6 +2105,7 @@ fn externalize_rwe_scripts(
     html: &str,
     compiled_scripts: &[CompiledScript],
     project_scope: Option<(&str, &str)>,
+    arrival: Option<PageArrival<'_>>,
 ) -> Result<String, PlatformError> {
     // Read deployment_asset_base up front — needed on all return paths, not
     // just when scripts are present.  When set, every `/static/{owner}/{project}/`
@@ -2117,6 +2135,27 @@ fn externalize_rwe_scripts(
             .filter(|lock| !lock.rwe.libraries.is_empty())
             .map(|_| format!("/static/{owner}/{project}/_rwe/lib/")),
         _ => None,
+    };
+
+    // Where this page's rooms live (`zeb/rooms`), for the address it was
+    // served on; absent when the project's `ws` surface is off. The page
+    // carries it on the element that already carries its state.
+    let room_base = match (project_scope, arrival) {
+        (Some((owner, project)), Some(arrival)) => state
+            .platform
+            .addressing
+            .read(owner, project)
+            .ok()
+            .and_then(|addressing| addressing.room_base(owner, project, arrival.page_host)),
+        _ => None,
+    };
+    let with_rooms;
+    let html = match room_base.as_deref() {
+        Some(base) => {
+            with_rooms = crate::rwe::core::render::with_room_base(html, base);
+            with_rooms.as_str()
+        }
+        None => html,
     };
 
     // Rewrite remaining `/static/{owner}/{project}/` occurrences that were not
@@ -24105,7 +24144,7 @@ async fn dispatch_weberror(
 
     // Answered as the webhook ingress answers an envelope — a page, bytes,
     // text, JSON or nothing, with its headers — under the error's status.
-    let mut response = zf_envelope_response(state, owner, project, &value, None).await;
+    let mut response = zf_envelope_response(state, owner, project, &value, None, None).await;
     *response.status_mut() = status;
     Some(response)
 }
@@ -24645,6 +24684,7 @@ async fn public_webhook_ingress_run(
     let (responder, early_response) = crate::pipeline::model::Responder::channel();
     let options = ExecuteOptions { responder: Some(responder), ..Default::default() };
     let asked = stored_answer::Asked { method: &method, headers: &headers };
+    let arrival = PageArrival::of_webhook(visitor_path.as_deref(), &headers);
     let record_platform = state.platform.clone();
     let record_scope = (owner.clone(), project.clone(), file_rel_path.clone(), request_id.clone());
     let error_bounds = project_cfg.configs.pipelines.logging.error_group_bounds();
@@ -24721,7 +24761,7 @@ async fn public_webhook_ingress_run(
     let run = tokio::select! {
         biased;
         Ok(envelope) = early_response => {
-            return zf_envelope_response(&state, &owner, &project, &envelope, Some(asked)).await;
+            return zf_envelope_response(&state, &owner, &project, &envelope, Some(asked), Some(arrival)).await;
         }
         joined = &mut run_task => joined.unwrap_or_else(|join_error| {
             Err(PipelineError::new("FW_ENGINE_RUNTIME", format!("the run's task ended early: {join_error}")))
@@ -24778,7 +24818,7 @@ async fn public_webhook_ingress_run(
     // the request body, credentials read into it, generated secrets — is
     // never sent implicitly (`node-conventions.md` §4).
     match output.response {
-        Some(resp_cfg) => zf_envelope_response(&state, &owner, &project, &resp_cfg, Some(asked)).await,
+        Some(resp_cfg) => zf_envelope_response(&state, &owner, &project, &resp_cfg, Some(asked), Some(arrival)).await,
         None => StatusCode::NO_CONTENT.into_response(),
     }
 }
@@ -27616,6 +27656,7 @@ async fn zf_envelope_response(
     project: &str,
     resp_cfg: &Value,
     asked: Option<stored_answer::Asked<'_>>,
+    arrival: Option<PageArrival<'_>>,
 ) -> axum::response::Response {
     let declared_status = resp_cfg
         .get("status")
@@ -27652,7 +27693,7 @@ async fn zf_envelope_response(
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
             .unwrap_or_default();
-        let externalized = match externalize_rwe_scripts(state, &html, &scripts, Some((owner, project))) {
+        let externalized = match externalize_rwe_scripts(state, &html, &scripts, Some((owner, project)), arrival) {
             Ok(html) => html,
             Err(err) => return internal_error(err),
         };
@@ -29444,7 +29485,7 @@ async fn preview_page(
     html = ensure_stylesheet_link(html, "/assets/platform/main.css");
 
     // Handle compiled JS scripts.
-    html = match externalize_rwe_scripts(&state, &html, &out.compiled_scripts, None) {
+    html = match externalize_rwe_scripts(&state, &html, &out.compiled_scripts, None, None) {
         Ok(html) => html,
         Err(err) => return internal_error(err),
     };
