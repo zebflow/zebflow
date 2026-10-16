@@ -119,9 +119,14 @@ A room runs in one of two modes, chosen by its triggers.
   `$connect`) gives a session tags. `ws.state.put --visible-to team:red`
   limits that path to sessions with the tag: fog of war, private hands, a
   team's chat.
-- **Nearby only** is the same rule: the tick tags each session with the grid
-  cells around it (`cell:12:7`) and puts each entity `--visible-to` its cell, so
-  an MMORPG zone sends each player what is near them, not the zone.
+- `--untag <tag>` (repeatable) removes a tag; a value ending in `*` removes
+  every tag with that prefix, and `*` alone removes all. In one call every
+  `--untag` applies before every `--tag`, and the node answers
+  `session: { session_id, tags }`.
+- **Nearby only** is the same rule: each tick moves every session to the grid
+  cells around it (`--untag "cell:*" --tag cell:12:7 …`, its other tags
+  untouched) and puts each entity `--visible-to` its cell, so an MMORPG zone
+  sends each player what is near them, not the zone.
 - Each distinct view is encoded once per flush and the same bytes go to every
   session holding it.
 
@@ -176,7 +181,8 @@ under `room`:
 
 - Counters only rise, from the moment the room opened; a rate is the
   difference between two readings.
-- `--members` adds `members: [sub, …]`; without it no identities are listed.
+- `--members` adds `members: [ { session, sub, tags, away } ]`; without it no
+  identities are listed.
 - Studio shows the same list per project and closes a room;
   `GET /api/projects/{o}/{p}/ws/rooms`, `POST …/ws/rooms/{room}/close` and the
   project MCP's `ws_rooms_list` / `ws_room_close` are the same operations.
@@ -233,14 +239,17 @@ hidden from the one above:
   same module works in a page outside Zebflow (a game built with any engine) by
   URL.
 - **`zebflow.rooms.v1`:** a client sends `{ event, payload }`. The server sends
-  `joined { session_id, state, resume? }` and `resync { state }` with the
+  `joined { session_id, room, state, resume? }` and `resync { state }` with the
   session's whole view, and after that only changes —
   `patch { tick?, ops: [ { op: "set" | "del", path: [...], value? } ] }` — plus
-  `event { event, payload }`; in a tick room, one frame per tick carries both.
+  `event { event, payload }`; in a tick room, one frame per tick carries both:
+  `patch { tick, ops, events }`. A session that nothing changed for is sent
+  nothing.
 - **Each protocol version is published** as a help page beside the nodes', so a
   client in another language (a native game, a backend service) can speak it.
   A connection that names no protocol, or one this server does not speak, is
-  refused with the supported list; a version is replaced, not kept beside its
+  refused before the upgrade with HTTP `426` and the supported list in
+  `Sec-WebSocket-Protocol`; a version is replaced, not kept beside its
   successor.
 - Pipelines never see frames, ticks' timing or encodings; a node's flags and
   answers change only through the node conventions.
