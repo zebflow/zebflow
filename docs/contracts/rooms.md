@@ -1,9 +1,9 @@
 # Rooms
 
 Status: **decided** — 2026-10-16, by the owner. Served: room kinds, tickets,
-the join rule, the management nodes, events and ticks, and the fast lane. Not
-yet: views, `--hold`, and the `zebflow.rooms.v1` protocol; until then a state
-change sends the full state (ledger: `zebflow › ws-room-lifecycle`).
+the join rule, the management nodes, events and ticks, the fast lane, views,
+`--hold`, the `zebflow.rooms.v1` protocol and the `zeb/rooms` library
+(ledger: `zebflow › ws-room-lifecycle`).
 
 A room is a live channel between a project's server and the clients joined to
 it: chat, a classroom, a dashboard, a match, an MMORPG zone. **Every room
@@ -17,7 +17,7 @@ dedicated game room server on one machine, down to a small board on a LAN.
 | Handled by | `trigger.room` pipelines — per event, or once per tick; one at a time per room |
 | Answered with | `ws.message.send`, `ws.state.put` / `update` / `delete`, `ws.session.tag` |
 | Managed with | `ws.room.open`, `ws.ticket.create`, `ws.room.close`, `ws.room.list`, `ws.session.close` |
-| Client | any WebSocket speaking `zebflow.rooms.v1`; the `zeb/rooms` library comes later (§ Clients and upgrades) |
+| Client | any WebSocket speaking `zebflow.rooms.v1`; pages use the blessed `zeb/rooms` library (§ Clients and upgrades) |
 
 ## Two kinds of room
 
@@ -233,11 +233,24 @@ hidden from the one above:
 | Client library | `zeb/rooms` — join, send, `on(event)`, `state`, reconnect | the frames on the wire |
 | Wire protocol | `zebflow.rooms.v1`, named in `Sec-WebSocket-Protocol` | the next version (binary, compression) |
 
-- **`zeb/rooms`** (later, after the nodes) is a blessed RWE library ([RweLibraryManifest](./kinds/rwe-library-manifest/README.md)),
+- **`zeb/rooms`** is a blessed RWE library ([RweLibraryManifest](./kinds/rwe-library-manifest/README.md)),
   served by the same binary as the room server, so a page's client and the
   server always speak the same version. It resumes a held seat on its own. The
   same module works in a page outside Zebflow (a game built with any engine) by
   URL.
+  - **Where rooms live:** the server that renders a page writes that request's
+    room base into it — the `ws` route of the host it was served on, or the
+    platform form for a page under `/wh/{o}/{p}/`. With `ws` off there is none,
+    and a join closes at once as `rooms-off`. A client outside a page passes
+    `url`.
+  - **Tickets:** `ticket` is a URL (POSTed with the page's cookies; the answer's
+    `ticket` is used), a function returning one, or absent for a room that is
+    not `--private`. It is fetched for every fresh join, never for a resume.
+  - **Never retried:** the server's close codes (`4401`, `4404`, `4408`,
+    `4409`, `4410`, `4429`, `1008`), `leave()`, `rooms-off` and a failed
+    ticket — except a `4401` refusing a resume: the seat is gone, and one fresh
+    join follows. Any other close is a drop: `away`, then a resume with
+    backoff. `send` is refused unless joined and is never queued.
 - **`zebflow.rooms.v1`:** a client sends `{ event, payload }`. The server sends
   `joined { session_id, room, state, resume? }` and `resync { state }` with the
   session's whole view, and after that only changes —
