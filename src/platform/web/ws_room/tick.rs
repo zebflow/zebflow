@@ -8,6 +8,11 @@
 //! respawns live in state. Ticks never overlap: one that outlasts `--every`
 //! delays the next and counts a `tick_overrun`. The state changes the tick
 //! made go out once, when it ends.
+//!
+//! `$connect` and `$disconnect` run their own triggers as they arrive — but a
+//! `$disconnect` whose session still has inputs waiting runs right after the
+//! tick that takes them, so it always comes after every event its socket
+//! sent and a late move cannot bring back a player who left.
 
 use std::collections::HashMap;
 
@@ -26,6 +31,8 @@ pub(super) struct Ticker {
     last_start: Option<Instant>,
     inputs: Vec<RoomEvent>,
     per_session: HashMap<String, u32>,
+    /// `$` events held until the inputs before them have had their tick.
+    after_tick: Vec<RoomEvent>,
 }
 
 impl Ticker {
@@ -61,7 +68,9 @@ impl Ticker {
                 self.next_at = None;
                 self.last_start = None;
                 self.per_session.clear();
-                std::mem::take(&mut self.inputs)
+                let mut back = std::mem::take(&mut self.inputs);
+                back.append(&mut self.after_tick);
+                back
             }
         }
     }
@@ -79,9 +88,20 @@ impl Ticker {
         self.inputs.push(event);
     }
 
-    /// Run one tick, then send the state it changed.
-    pub(super) async fn run(&mut self, ctx: &RoomCtx, room: &RoomHandle, resolved: &Resolved) {
-        let Some(spec) = self.spec else { return };
+    /// Hold a `$` event of a session that has inputs waiting until after
+    /// the tick that takes them; `Err` gives it back to run now.
+    pub(super) fn hold(&mut self, event: RoomEvent) -> Result<(), RoomEvent> {
+        if self.per_session.get(&event.session).is_some_and(|n| *n > 0) {
+            self.after_tick.push(event);
+            return Ok(());
+        }
+        Err(event)
+    }
+
+    /// Run one tick, then send the state it changed. Answers the `$` events
+    /// held for it, to run now.
+    pub(super) async fn run(&mut self, ctx: &RoomCtx, room: &RoomHandle, resolved: &Resolved) -> Vec<RoomEvent> {
+        let Some(spec) = self.spec else { return Vec::new() };
         let start = Instant::now();
         let dt_ms = self.last_start.map_or(spec.every_ms, |last| start.duration_since(last).as_millis() as u64);
         self.last_start = Some(start);
@@ -111,6 +131,7 @@ impl Ticker {
         } else {
             self.next_at = Some(start + spec.every());
         }
+        std::mem::take(&mut self.after_tick)
     }
 }
 

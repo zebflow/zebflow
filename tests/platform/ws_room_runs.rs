@@ -100,12 +100,13 @@ async fn activation_and_deactivation_change_what_an_open_room_runs() {
 }
 
 #[tokio::test]
-async fn a_tick_gets_every_input_of_its_interval_in_arrival_order_up_to_max_inputs() {
+async fn a_tick_gets_every_input_of_its_interval_in_arrival_order_up_to_max_inputs_before_a_disconnect() {
     let root = temp_dir("ws-room-tick");
     let app = app_at(&root).await;
     let cookie = login(&app).await;
     publish(&app, &cookie, "arena-tick", r#"| trigger.room --room arena --event $tick --every 1s --max-inputs 2 | ws.message.send --event tick --body "{{ input.room }}""#).await;
     publish(&app, &cookie, "arena-move", r#"| trigger.room --room arena --event move | ws.message.send --event moved --body 1"#).await;
+    publish(&app, &cookie, "arena-gone", r#"| trigger.room --room arena --event $disconnect | ws.message.send --event gone --body "{{ input.room.session_id }}""#).await;
     let address = serve(app.clone(), &cookie).await;
     let mut a = connect(address, "arena", &[]).await;
     let mut b = connect(address, "arena", &[]).await;
@@ -120,6 +121,7 @@ async fn a_tick_gets_every_input_of_its_interval_in_arrival_order_up_to_max_inpu
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     say(&mut b, "move", json!({ "i": 9 })).await;
+    b.close(None).await.expect("close");
 
     let second = next_named(&mut a, "tick").await;
     let inputs = |who: &Value, i: u64| json!({ "session": who, "event": "move", "payload": { "i": i }, "auth": null });
@@ -127,6 +129,7 @@ async fn a_tick_gets_every_input_of_its_interval_in_arrival_order_up_to_max_inpu
     assert_eq!(second["tick"].as_u64(), first["tick"].as_u64().map(|t| t + 1));
     let dt = second["dt_ms"].as_u64().expect("dt_ms");
     assert!((900..1500).contains(&dt), "dt_ms {dt}");
+    assert_eq!(next_named(&mut a, "gone").await, b_id, "b's $disconnect waited for the tick that took b's last move");
 
     let room = listed(&app, &cookie, "arena").await;
     assert_eq!(room["mode"], "tick", "{room}");
