@@ -7,12 +7,14 @@
 //!    refused join rule or ticket, `4429` for a full room.
 //! 2. **Join** — through [`crate::infra::transport::ws::WsHub::join`]; the
 //!    session receives `joined` with the current state.
-//! 3. **Events** — inbound `{event, payload}` messages run the matching
-//!    pipelines **one at a time, in arrival order** ([`events`]).
+//! 3. **Events** — inbound `{event, payload}` messages go on the room's one
+//!    queue; the room loop ([`room_loop`]) runs the matching pipelines
+//!    ([`events`]) **one at a time, in arrival order across every session**.
+//!    A session with 256 events waiting is closed with `1008`.
 //! 4. **Lifecycle** — the server raises `$connect` after `joined` and
-//!    `$disconnect { reason }` when the socket ends, on the same ordered
-//!    queue. Clients cannot send `$`-prefixed events, and a trigger with an
-//!    empty `--event` does not receive them.
+//!    `$disconnect { reason }` when the socket ends, on the same queue.
+//!    Clients cannot send `$`-prefixed events, and a trigger with an empty
+//!    `--event` does not receive them.
 //! 5. **Delivery** — each broadcast carries its target and is forwarded only
 //!    to the sessions it is for; a session that fell behind receives `resync`.
 //! 6. **Closing** — the server closes a socket with `4410` (`ws.room.close`),
@@ -21,10 +23,11 @@
 
 mod admission;
 mod events;
+mod room_loop;
 
 use super::*;
 use crate::infra::transport::ws::{Counter, Kick};
-use events::{enqueue_event, run_session_events, session_event_channel};
+use events::RoomCtx;
 
 /// Raised after `joined`.
 pub(super) const CONNECT_EVENT: &str = "$connect";
@@ -36,7 +39,7 @@ const KICK_EXPIRED: Kick = Kick { code: 4408, reason: "expired" };
 /// Close code for a client that broke the room's rules (RFC 6455 §7.4.1).
 const KICK_FLOOD: Kick = Kick { code: 1008, reason: "flood" };
 
-/// What one session's event worker needs.
+/// What one socket needs.
 struct SessionCtx {
     owner: String,
     project: String,
@@ -121,8 +124,11 @@ async fn handle_ws_room(ctx: SessionCtx, ticket: Option<String>, mut socket: Web
     let mut broadcast_rx = room.subscribe();
     let hello = json!({ "type": "joined", "session_id": session_id, "room": ctx.room_id, "state": room.get_state() });
 
-    let (events_tx, events_rx) = session_event_channel();
-    tokio::spawn(run_session_events(ctx, room.clone(), admitted.auth, events_rx));
+    let (queue, idle) = room.session_queue(&session_id, admitted.auth);
+    if let Some(taken) = idle {
+        let room_ctx = RoomCtx { owner: ctx.owner.clone(), project: ctx.project.clone(), room_id: ctx.room_id.clone(), state: ctx.state.clone() };
+        tokio::spawn(room_loop::run_room(room_ctx, room.clone(), taken));
+    }
 
     // A login that never expires waits on a timer that never fires.
     let expiry = tokio::time::sleep(admitted.expires_at.map(until).unwrap_or(std::time::Duration::from_secs(u32::MAX as u64)));
@@ -132,7 +138,7 @@ async fn handle_ws_room(ctx: SessionCtx, ticket: Option<String>, mut socket: Web
         reason = "dropped";
     } else {
         room.count(Counter::MessagesOut);
-        let _ = enqueue_event(&events_tx, CONNECT_EVENT.to_string(), json!({}));
+        queue.raise(CONNECT_EVENT, json!({}));
         loop {
             tokio::select! {
                 broadcast = broadcast_rx.recv() => match broadcast {
@@ -178,8 +184,8 @@ async fn handle_ws_room(ctx: SessionCtx, ticket: Option<String>, mut socket: Web
                         room.count(Counter::MessagesIn);
                         room.touch();
                         let payload = val.get("payload").cloned().unwrap_or_else(|| json!({}));
-                        if !enqueue_event(&events_tx, event, payload) {
-                            // A client sending faster than its pipelines run is
+                        if !queue.push(event, payload) {
+                            // A client sending faster than the room runs is
                             // closed, not given an unbounded queue of runs.
                             room.count(Counter::FloodCloses);
                             close_with(&mut socket, KICK_FLOOD.code, "too many pending events").await;
@@ -198,9 +204,8 @@ async fn handle_ws_room(ctx: SessionCtx, ticket: Option<String>, mut socket: Web
         }
     }
 
-    // Queued behind every event this socket sent; the worker drains, then ends.
-    // Awaited, so a full queue delays `$disconnect` rather than losing it.
-    let _ = events_tx.send((DISCONNECT_EVENT.to_string(), json!({ "reason": reason }))).await;
-    drop(events_tx);
+    // Queued behind every event this socket sent, and never refused.
+    queue.raise(DISCONNECT_EVENT, json!({ "reason": reason }));
+    drop(queue);
     drop(guard);
 }

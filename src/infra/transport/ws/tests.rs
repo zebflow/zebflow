@@ -149,3 +149,35 @@ fn list_answers_the_contracts_shape_with_members_on_request() {
     assert_eq!(some["rooms"][0]["members"], json!(["u-17"]));
     assert_eq!(hub.list(O, P, "match-9", false).unwrap()["total"]["rooms"], 0, "an exact room not open lists nothing");
 }
+
+#[test]
+fn a_room_has_one_queue_in_arrival_order_while_any_session_holds_it() {
+    let hub = hub_declaring(&["lobby"]);
+    let room = hub.room(O, P, "lobby").expect("fixed");
+    let (first, taken) = room.session_queue("s1", Value::Null);
+    let mut queue = taken.expect("the first session starts the room loop");
+    let (second, again) = room.session_queue("s2", Value::Null);
+    assert!(again.is_none(), "one queue per room, not one per session");
+    assert!(first.push("a".into(), json!(1)) && second.push("b".into(), json!(2)) && first.push("c".into(), json!(3)));
+    let order: Vec<(String, String)> = (0..3).map(|_| queue.try_recv().expect("queued")).map(|e| (e.session.clone(), e.event.clone())).collect();
+    let expected: Vec<(String, String)> = [("s1", "a"), ("s2", "b"), ("s1", "c")].iter().map(|(s, e)| (s.to_string(), e.to_string())).collect();
+    assert_eq!(order, expected, "across sessions, in arrival order");
+    drop((first, second));
+    assert!(matches!(queue.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)), "the loop ends with its last session");
+    let (_third, fresh) = room.session_queue("s3", Value::Null);
+    assert!(fresh.is_some(), "the next join starts a new loop");
+}
+
+#[test]
+fn a_declaration_tells_every_room_of_the_project_to_resolve_again() {
+    let declared = [("lobby".to_string(), "pipelines/rooms".to_string()), ("match-:id".to_string(), "pipelines/rooms".to_string())];
+    let hub = WsHub::new();
+    hub.declare(O, P, &declared);
+    hub.declare(O, "site-b", &declared);
+    hub.open(O, P, "match-1", opened(None)).unwrap();
+    let rooms = [hub.room(O, P, "lobby").unwrap(), hub.room(O, P, "match-1").unwrap(), hub.room(O, "site-b", "lobby").unwrap()];
+    let before: Vec<u64> = rooms.iter().map(|r| r.epoch()).collect();
+    hub.declare(O, P, &declared);
+    assert!(rooms[0].epoch() > before[0] && rooms[1].epoch() > before[1], "both rooms of the project");
+    assert_eq!(rooms[2].epoch(), before[2], "another project's room is untouched");
+}

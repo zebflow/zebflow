@@ -1,11 +1,16 @@
 //! One room: its settings, its sessions, its shared state and its broadcast
 //! channel (`docs/contracts/rooms.md`).
 //!
-//! A room is a plain value the hub ([`super::WsHub`]) registers; nothing runs
-//! for it while nothing happens. A state change is applied by the caller,
-//! under the state lock, and broadcast from there, so two writes are sent in
-//! the order they were made; a `--batch` write marks the state dirty and one
+//! A room is a value the hub ([`super::WsHub`]) registers. While it has
+//! sessions, one room loop takes its queue ([`super::queue`]) in order; with
+//! none, nothing runs for it. A state change is applied by the caller, under
+//! the state lock, and broadcast from there, so two writes are sent in the
+//! order they were made; a `--batch` write marks the state dirty and one
 //! short-lived task sends it 33 ms later, at most once a tick.
+//!
+//! The room also carries what its loop must notice: [`RoomHandle::epoch`]
+//! rises whenever the project's active `trigger.room` set changes, so the
+//! loop resolves the room's pipelines again then — and only then.
 //!
 //! # Wire protocol (server → client JSON)
 //!
@@ -26,7 +31,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{Notify, broadcast, mpsc};
+
+use super::queue::{RoomEvent, RoomQueue, SessionQueue};
 
 /// Capacity of the per-room broadcast channel. A session that falls further
 /// behind is sent `resync` with the whole state.
@@ -193,6 +200,14 @@ pub struct RoomHandle {
     counters: Counters,
     last_activity_ms: AtomicI64,
     empty_since: Mutex<Option<Instant>>,
+    /// The room's queue, held weakly: its sessions hold it alive.
+    queue: Mutex<Option<mpsc::WeakUnboundedSender<RoomEvent>>>,
+    /// Held by the room loop that is running; the next one waits for it.
+    turn: tokio::sync::Mutex<()>,
+    /// Rises when the project's active `trigger.room` set changes.
+    epoch: AtomicU64,
+    /// Wakes the room loop when [`Self::epoch`] rose.
+    changed: Notify,
 }
 
 fn now_ms() -> i64 {
@@ -224,7 +239,47 @@ impl RoomHandle {
             counters: Counters::default(),
             last_activity_ms: AtomicI64::new(now),
             empty_since: Mutex::new(Some(Instant::now())),
+            queue: Mutex::new(None),
+            turn: tokio::sync::Mutex::new(()),
+            epoch: AtomicU64::new(0),
+            changed: Notify::new(),
         })
+    }
+
+    /// One session's way into the room's queue. The second value is the
+    /// queue's receiving end when no loop is taking it — the caller starts
+    /// one with it.
+    pub fn session_queue(&self, session_id: &str, auth: Value) -> (SessionQueue, Option<RoomQueue>) {
+        let mut slot = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tx) = slot.as_ref().and_then(|weak| weak.upgrade()) {
+            return (SessionQueue::new(tx, session_id, auth), None);
+        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        *slot = Some(tx.downgrade());
+        (SessionQueue::new(tx, session_id, auth), Some(rx))
+    }
+
+    /// The room loop's turn: a loop holds it while it runs, so a loop started
+    /// while the last one still drains waits, and the room never handles two
+    /// things at once.
+    pub async fn turn(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.turn.lock().await
+    }
+
+    /// Rises each time the project's active `trigger.room` set changes.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Resolves once [`Self::epoch`] has risen since the last call.
+    pub async fn changed(&self) {
+        self.changed.notified().await
+    }
+
+    /// The project's active `trigger.room` set changed.
+    pub(super) fn redeclared(&self) {
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+        self.changed.notify_one();
     }
 
     pub fn name(&self) -> &str {

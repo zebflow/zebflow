@@ -63,8 +63,9 @@ pub fn definition() -> NodeDefinition {
             room must declare the same rule, or activation refuses. Answers one key, `room`: `{ room_id, session_id, event, payload, \
             auth }` — `auth` is what the rule proved at connect (or `{ sub }` from a ticket). Answer with `ws.message.send` or \
             `ws.state.put` / `ws.state.update` / `ws.state.delete`; a `web.response.send` here answers nobody. The server raises \
-            `$connect` and `$disconnect` (payload `{ reason }`: left, dropped, closed, room_closed, expired, flood) on each \
-            connection's ordered queue — only `--event $connect` / `--event $disconnect` receive them, and clients cannot send `$` \
+            `$connect` and `$disconnect` (payload `{ reason }`: left, dropped, closed, room_closed, expired, flood) on the \
+            room's one queue: a room handles one thing at a time, in arrival order across all its sessions, so a pipeline that \
+            reads and writes back needs no lock — only `--event $connect` / `--event $disconnect` receive them, and clients cannot send `$` \
             events. The client is a plain `WebSocket` to `/ws/{owner}/{project}/rooms/{room}` (`?ticket=` for a private room) \
             receiving `joined`, `state_patch`, `event` and `resync` (help topic `pipeline/examples/realtime-game`)."
             .to_string(),

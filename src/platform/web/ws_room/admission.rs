@@ -38,12 +38,16 @@ pub(super) struct Admitted {
     pub expires_at: Option<i64>,
 }
 
+/// Whether a `trigger.room --room t_room` declares `room`.
+pub(super) fn declares(t_room: &str, room: &str) -> bool {
+    RoomPattern::parse(t_room).is_ok_and(|p| p.matches(room))
+}
+
 /// Whether a `trigger.room` with `t_room` / `t_event` handles `event` in `room`.
 /// Reserved `$` events reach only triggers that name them.
 pub(super) fn trigger_matches(t_room: &str, t_event: &str, room: &str, event: &str) -> bool {
-    let room_match = RoomPattern::parse(t_room).is_ok_and(|p| p.matches(room));
     let event_match = t_event == event || (t_event.is_empty() && !event.starts_with('$'));
-    room_match && event_match
+    event_match && declares(t_room, room)
 }
 
 /// Decide whether this connection joins its room.
@@ -51,8 +55,7 @@ pub(super) fn admit(ctx: &SessionCtx, ticket: Option<&str>) -> Result<Admitted, 
     let pipelines = ctx.state.platform.pipeline_runtime.list_project(&ctx.owner, &ctx.project);
     let mut rules: Vec<&WsTriggerSpec> = Vec::new();
     for spec in pipelines.iter().flat_map(|p| p.ws_triggers.iter()) {
-        let declares = RoomPattern::parse(&spec.room).is_ok_and(|p| p.matches(&ctx.room_id));
-        if declares && !rules.iter().any(|r| r.join_rule() == spec.join_rule()) {
+        if declares(&spec.room, &ctx.room_id) && !rules.iter().any(|r| r.join_rule() == spec.join_rule()) {
             rules.push(spec);
         }
     }

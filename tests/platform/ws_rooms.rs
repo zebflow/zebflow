@@ -9,11 +9,11 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::published_mcp::{OWNER, PROJECT, addressing, app_at, call, dsl, login, publish, rpc, send, temp_dir, text_of};
 
-type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+pub(super) type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Switch the `ws` surface on (it is off by default) and serve `app` on a
 /// free port, as the binary does; the address.
-async fn serve(app: axum::Router, cookie: &str) -> std::net::SocketAddr {
+pub(super) async fn serve(app: axum::Router, cookie: &str) -> std::net::SocketAddr {
     addressing(&app, cookie, json!({ "hosts": [], "routes": [], "disabled": ["files", "ms"] })).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
@@ -24,7 +24,7 @@ async fn serve(app: axum::Router, cookie: &str) -> std::net::SocketAddr {
 }
 
 /// Connect to a room with these headers; `path_and_query` follows `/rooms/`.
-async fn connect(address: std::net::SocketAddr, path_and_query: &str, headers: &[(&str, &str)]) -> Socket {
+pub(super) async fn connect(address: std::net::SocketAddr, path_and_query: &str, headers: &[(&str, &str)]) -> Socket {
     let url = format!("ws://{address}/ws/{OWNER}/{PROJECT}/rooms/{path_and_query}");
     let mut request = url.into_client_request().expect("request");
     for (name, value) in headers {
@@ -37,7 +37,7 @@ async fn connect(address: std::net::SocketAddr, path_and_query: &str, headers: &
 }
 
 /// The next JSON frame, or the close code when the server closes instead.
-async fn next(socket: &mut Socket) -> Result<Value, u16> {
+pub(super) async fn next(socket: &mut Socket) -> Result<Value, u16> {
     let wait = std::time::Duration::from_secs(10);
     loop {
         match tokio::time::timeout(wait, socket.next()).await.expect("a frame within 10 s") {
@@ -50,7 +50,7 @@ async fn next(socket: &mut Socket) -> Result<Value, u16> {
 }
 
 /// The next frame of `type`, skipping others.
-async fn next_of(socket: &mut Socket, kind: &str) -> Value {
+pub(super) async fn next_of(socket: &mut Socket, kind: &str) -> Value {
     loop {
         let frame = next(socket).await.unwrap_or_else(|code| panic!("closed {code} while waiting for {kind}"));
         if frame["type"] == kind {
@@ -130,7 +130,7 @@ async fn a_socket_joins_only_an_open_room_its_rule_admits() {
 }
 
 /// A webhook of the test project, called with a JSON body; its answer.
-async fn hook(app: &axum::Router, route: &str, body: Value) -> Value {
+pub(super) async fn hook(app: &axum::Router, route: &str, body: Value) -> Value {
     use tower::ServiceExt;
     let request = axum::http::Request::builder()
         .uri(format!("/wh/{OWNER}/{PROJECT}{route}"))

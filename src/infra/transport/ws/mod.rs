@@ -4,6 +4,7 @@
 //! | Module | Responsibility |
 //! |---|---|
 //! | [`pattern`] | room names and the patterns `trigger.room --room` declares |
+//! | [`queue`] | a room's one queue: every session's events, in arrival order |
 //! | [`room`] | one room: settings, sessions, state, broadcast, counters |
 //! | [`ticket`] | signed, single-use passes into one room |
 //! | [`WsHub`] | which rooms exist, and every way one opens, is joined or closes |
@@ -17,10 +18,12 @@
 //! Rooms are keyed `"{owner}/{project}/{room}"`.
 
 pub mod pattern;
+pub mod queue;
 pub mod room;
 pub mod ticket;
 
 pub use pattern::RoomPattern;
+pub use queue::{MAX_PENDING_PER_SESSION, RoomEvent, RoomQueue, SessionQueue};
 pub use room::{
     Counter, EmitTarget, KICK_CLOSED, KICK_ROOM_CLOSED, Kick, RoomBroadcast, RoomHandle, RoomKind, RoomSettings,
     StateFull, StateOp,
@@ -166,6 +169,10 @@ impl WsHub {
             registry
                 .entry(room_key(owner, project, name))
                 .or_insert_with(|| RoomHandle::new(name, RoomKind::Fixed, RoomSettings::fixed(pipeline)));
+        }
+        // Every room of the project resolves its pipelines again.
+        for (_, room) in registry.iter().filter(|(key, _)| key.starts_with(&prefix)) {
+            room.redeclared();
         }
         drop(registry);
         if parsed.is_empty() {
