@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::events::RoomCtx;
 use super::*;
-use crate::infra::transport::ws::{Attached, Counter, Kick, RoomHandle, SessionQueue};
+use crate::infra::transport::ws::{Attached, Counter, RoomHandle, Seat};
 
 pub(super) async fn close_with(socket: &mut WebSocket, code: u16, reason: &str) {
     let frame = axum::extract::ws::CloseFrame { code, reason: reason.to_string().into() };
@@ -22,60 +22,104 @@ fn until(exp: i64) -> std::time::Duration {
     std::time::Duration::from_secs(left.max(0) as u64)
 }
 
-pub(super) async fn handle_ws_room(ctx: SessionCtx, ticket: Option<String>, mut socket: WebSocket) {
-    let admitted = match admission::admit(&ctx, ticket.as_deref()) {
-        Ok(admitted) => admitted,
+/// What the socket came with: a ticket (or nothing) to join, or a resume
+/// token to take back a held seat.
+pub(super) enum Pass {
+    Ticket(Option<String>),
+    Resume(String),
+}
+
+/// A seat a socket now holds.
+struct Holding {
+    room: Arc<RoomHandle>,
+    seat: Seat,
+    user: Option<String>,
+    expires_at: Option<i64>,
+    /// Raised after `joined`: `$connect`, or `$back` on a resumed seat.
+    first: &'static str,
+}
+
+pub(super) async fn handle_ws_room(mut ctx: SessionCtx, pass: Pass, mut socket: WebSocket) {
+    let holding = match pass {
+        Pass::Ticket(ticket) => join(&ctx, ticket.as_deref()),
+        Pass::Resume(token) => resume(&mut ctx, &token).await,
+    };
+    let Holding { room, mut seat, user, expires_at, first } = match holding {
+        Ok(holding) => holding,
         Err((code, reason)) => return close_with(&mut socket, code, reason).await,
     };
+    let Some(attached) = room.attach(&ctx.session_id) else { return };
     let hub = ctx.state.platform.ws_hub.clone();
-    let joined = hub.join(&ctx.owner, &ctx.project, &ctx.room_id, &ctx.session_id, admitted.user.clone(), admitted.pass.as_ref());
-    let (room, guard, mut kicks) = match joined {
-        Ok(joined) => joined,
-        Err(refusal) => {
-            let (code, reason) = admission::join_refusal(&refusal);
-            return close_with(&mut socket, code, reason).await;
-        }
-    };
+    let hold = room.settings().hold;
+    let token = hold.map(|_| hub.resume_token(&ctx.owner, &ctx.project, &room, &ctx.session_id));
+    let resume = token.as_ref().map(|(token, _)| token.as_str());
+    let reason = pump(&ctx, &room, attached, &mut seat, expires_at, &mut socket, first, resume).await;
+    if let (Some(hold), Some((_, nonce)), "dropped") = (hold, token, reason) {
+        return hold::keep(&ctx, &room, seat, nonce, user, hold);
+    }
+    // Queued behind every event this socket sent, and never refused.
+    seat.queue.raise(DISCONNECT_EVENT, json!({ "reason": reason }));
+}
+
+/// Take a new seat: admission, the join, and the room loop if none runs.
+fn join(ctx: &SessionCtx, ticket: Option<&str>) -> Result<Holding, admission::Refusal> {
+    let admitted = admission::admit(ctx, ticket)?;
+    let hub = &ctx.state.platform.ws_hub;
+    let (room, guard, kicks) = hub
+        .join(&ctx.owner, &ctx.project, &ctx.room_id, &ctx.session_id, admitted.user.clone(), admitted.pass.as_ref())
+        .map_err(|refusal| admission::join_refusal(&refusal))?;
     let (queue, idle) = room.session_queue(&ctx.session_id, admitted.auth);
     if let Some(taken) = idle {
         let room_ctx = RoomCtx { owner: ctx.owner.clone(), project: ctx.project.clone(), room_id: ctx.room_id.clone(), state: ctx.state.clone() };
         lane().spawn(super::room_loop::run_room(room_ctx, room.clone(), taken));
     }
-    let Some(attached) = room.attach(&ctx.session_id) else { return };
-    let reason = pump(&ctx, &room, attached, &queue, &mut kicks, admitted.expires_at, &mut socket, true).await;
-    // Queued behind every event this socket sent, and never refused.
-    queue.raise(DISCONNECT_EVENT, json!({ "reason": reason }));
-    drop(queue);
-    drop(guard);
+    let seat = Seat { guard, queue, kicks };
+    Ok(Holding { room, seat, user: admitted.user, expires_at: admitted.expires_at, first: CONNECT_EVENT })
 }
 
-/// `joined { session_id, room, state }`.
-fn joined_frame(ctx: &SessionCtx, view: &Value) -> String {
-    json!({ "type": "joined", "session_id": ctx.session_id, "room": ctx.room_id, "state": view }).to_string()
+/// Take back a held seat with its resume token; the socket becomes that
+/// session.
+async fn resume(ctx: &mut SessionCtx, token: &str) -> Result<Holding, admission::Refusal> {
+    let resumed = admission::admit_resume(ctx, token)?;
+    let room = ctx.state.platform.ws_hub.room(&ctx.owner, &ctx.project, &ctx.room_id).ok_or(admission::CLOSE_NOT_OPEN)?;
+    let (reply, seat) = tokio::sync::oneshot::channel();
+    resumed.resume.reclaim.send(reply).map_err(|_| admission::CLOSE_UNAUTHORIZED)?;
+    // The hold ended between the token's check and here: nothing to take.
+    let seat = seat.await.map_err(|_| admission::CLOSE_UNAUTHORIZED)?;
+    ctx.session_id = resumed.resume.session_id;
+    Ok(Holding { room, seat, user: resumed.resume.user, expires_at: resumed.expires_at, first: BACK_EVENT })
 }
 
-/// Send `joined`, raise `$connect`, then carry frames out and events in
-/// until the socket ends; the `$disconnect` reason.
+/// `joined { session_id, room, state, resume? }`.
+fn joined_frame(ctx: &SessionCtx, view: &Value, resume: Option<&str>) -> String {
+    let mut frame = json!({ "type": "joined", "session_id": ctx.session_id, "room": ctx.room_id, "state": view });
+    if let Some(token) = resume {
+        frame["resume"] = json!(token);
+    }
+    frame.to_string()
+}
+
+/// Send `joined`, raise `first` (`$connect` or `$back`), then carry frames
+/// out and events in until the socket ends; the `$disconnect` reason.
 #[allow(clippy::too_many_arguments)]
 async fn pump(
     ctx: &SessionCtx,
     room: &Arc<RoomHandle>,
     attached: Attached,
-    queue: &SessionQueue,
-    kicks: &mut tokio::sync::mpsc::UnboundedReceiver<Kick>,
+    seat: &mut Seat,
     expires_at: Option<i64>,
     socket: &mut WebSocket,
-    connect: bool,
+    first: &'static str,
+    resume: Option<&str>,
 ) -> &'static str {
     let Attached { mut frames, wake, view } = attached;
     let session_id = ctx.session_id.as_str();
-    if socket.send(Message::Text(joined_frame(ctx, &view).into())).await.is_err() {
+    let Seat { queue, kicks, .. } = seat;
+    if socket.send(Message::Text(joined_frame(ctx, &view, resume).into())).await.is_err() {
         return "dropped";
     }
     room.count(Counter::MessagesOut);
-    if connect {
-        queue.raise(CONNECT_EVENT, json!({}));
-    }
+    queue.raise(first, json!({}));
     // A login that never expires waits on a timer that never fires.
     let expiry = tokio::time::sleep(expires_at.map(until).unwrap_or(std::time::Duration::from_secs(u32::MAX as u64)));
     tokio::pin!(expiry);

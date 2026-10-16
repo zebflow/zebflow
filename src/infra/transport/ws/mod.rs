@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// How often empty opened rooms are checked against their `--idle`.
 pub const IDLE_SWEEP: Duration = Duration::from_secs(1);
@@ -73,6 +73,9 @@ pub enum HubRefusal {
     BadName(String),
     /// The ticket was spent between reading and joining.
     TicketSpent,
+    /// A resume token that holds no seat now: not one, used, timed out, or
+    /// for another identity.
+    NotHeld(String),
 }
 
 impl std::fmt::Display for HubRefusal {
@@ -87,6 +90,7 @@ impl std::fmt::Display for HubRefusal {
             Self::Taken(room) => write!(f, "room '{room}' is already open"),
             Self::BadName(why) => f.write_str(why),
             Self::TicketSpent => f.write_str("the ticket was already used"),
+            Self::NotHeld(why) => f.write_str(why),
         }
     }
 }
@@ -127,6 +131,36 @@ struct Inner {
     sweeping: AtomicBool,
     /// When each pipeline's failed room run was last recorded.
     failures: Mutex<HashMap<String, Instant>>,
+    /// Seats kept for dropped sessions (`--hold`), by room key and session.
+    held: Mutex<HashMap<(String, String), HeldSeat>>,
+}
+
+/// Everything a session holds in its room: its seat, its way into the
+/// room's queue, and where a server close arrives. A socket holds it; while
+/// the session is held, the hold does.
+pub struct Seat {
+    pub guard: SessionGuard,
+    pub queue: SessionQueue,
+    pub kicks: mpsc::UnboundedReceiver<Kick>,
+}
+
+/// How a resumed socket asks the hold for its seat.
+pub type Reclaim = oneshot::Sender<oneshot::Sender<Seat>>;
+
+/// A seat kept for a dropped session: the nonce of the one resume token
+/// that takes it back, and the identity that must.
+struct HeldSeat {
+    nonce: String,
+    user: Option<String>,
+    reclaim: Reclaim,
+}
+
+/// A held seat a resume token took: the session, its identity, and the way
+/// to ask its hold for the seat.
+pub struct Resume {
+    pub session_id: String,
+    pub user: Option<String>,
+    pub reclaim: Reclaim,
 }
 
 /// Every project's rooms. Cheap to clone; held as `PlatformService::ws_hub`.
@@ -178,6 +212,7 @@ impl WsHub {
                 tickets: ticket::TicketBook::default(),
                 sweeping: AtomicBool::new(false),
                 failures: Mutex::new(HashMap::new()),
+                held: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -407,6 +442,55 @@ impl WsHub {
             instance: room.instance().to_string(),
         };
         Ok((room, guard, kick_rx))
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), HeldSeat>> {
+        self.inner.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A resume token for `session` of `room`, and its nonce: the one that
+    /// takes the seat back if it is held.
+    pub fn resume_token(&self, owner: &str, project: &str, room: &RoomHandle, session: &str) -> (String, String) {
+        self.inner.tickets.issue_resume(&room_key(owner, project, room.name()), room.instance(), session)
+    }
+
+    /// Keep the seat of the dropped session `session` for the resume token
+    /// whose nonce is `nonce`. The hold learns of a resume on the answer.
+    pub fn hold(&self, owner: &str, project: &str, room: &str, session: &str, nonce: &str, user: Option<String>) -> oneshot::Receiver<oneshot::Sender<Seat>> {
+        let (reclaim, asked) = oneshot::channel();
+        let held = HeldSeat { nonce: nonce.to_string(), user, reclaim };
+        self.held().insert((room_key(owner, project, room), session.to_string()), held);
+        asked
+    }
+
+    /// End a hold that `nonce` still holds; false when a resume took it first.
+    pub fn release(&self, owner: &str, project: &str, room: &str, session: &str, nonce: &str) -> bool {
+        let mut held = self.held();
+        let key = (room_key(owner, project, room), session.to_string());
+        if held.get(&key).is_some_and(|seat| seat.nonce == nonce) {
+            held.remove(&key);
+            return true;
+        }
+        false
+    }
+
+    /// Take back the seat a resume token holds, as the identity `proved`
+    /// (what the join rule proved, if anything). Usable once: the seat leaves
+    /// the hold. A token for another identity is refused and the seat stays.
+    pub fn resume(&self, owner: &str, project: &str, name: &str, token: &str, proved: Option<&str>) -> Result<Resume, HubRefusal> {
+        let room = self.room(owner, project, name).ok_or_else(|| HubRefusal::NotOpen(name.to_string()))?;
+        let key = room_key(owner, project, name);
+        let (session_id, nonce) = self.inner.tickets.read_resume(token, &key, room.instance()).map_err(HubRefusal::NotHeld)?;
+        let mut held = self.held();
+        let slot = (key, session_id.clone());
+        let Some(seat) = held.get(&slot).filter(|seat| seat.nonce == nonce) else {
+            return Err(HubRefusal::NotHeld("no seat is held for this resume token".to_string()));
+        };
+        if proved.is_some_and(|sub| seat.user.as_deref() != Some(sub)) {
+            return Err(HubRefusal::NotHeld("the resume token is another identity's".to_string()));
+        }
+        let seat = held.remove(&slot).expect("held");
+        Ok(Resume { session_id, user: seat.user, reclaim: seat.reclaim })
     }
 
     /// Close every opened room that has sat empty past its `--idle` at `now`.

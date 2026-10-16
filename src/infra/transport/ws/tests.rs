@@ -210,3 +210,25 @@ fn a_failed_room_run_is_recorded_at_most_once_a_minute_per_pipeline() {
     assert!(hub.failure_due(O, "site-b", "pipelines/a.zf.json", start), "per project");
     assert!(hub.failure_due(O, P, "pipelines/a.zf.json", start + FAILURE_RECORD_EVERY), "a minute later");
 }
+
+#[test]
+fn a_held_seat_still_counts_and_is_taken_back_once_by_its_own_identity() {
+    let hub = hub_declaring(&["match-:id"]);
+    let room = hub.open(O, P, "match-1", RoomSettings { hold: Some(Duration::from_secs(30)), ..opened(Some(1)) }).unwrap();
+    let _seat = hub.join(O, P, "match-1", "s1", Some("u-17".into()), None).expect("seat");
+    let (token, nonce) = hub.resume_token(O, P, &room, "s1");
+    assert!(matches!(hub.resume(O, P, "match-1", &token, Some("u-17")), Err(HubRefusal::NotHeld(_))), "a connected session holds no hold");
+
+    let _asked = hub.hold(O, P, "match-1", "s1", &nonce, Some("u-17".into()));
+    assert_eq!(hub.join(O, P, "match-1", "s2", None, None).err(), Some(HubRefusal::Full("match-1".into())), "the held seat counts");
+    assert!(matches!(hub.resume(O, P, "match-1", &token, Some("u-18")), Err(HubRefusal::NotHeld(_))), "another identity");
+    let resume = hub.resume(O, P, "match-1", &token, Some("u-17")).expect("its own identity");
+    assert_eq!((resume.session_id.as_str(), resume.user.as_deref()), ("s1", Some("u-17")));
+    assert!(matches!(hub.resume(O, P, "match-1", &token, None), Err(HubRefusal::NotHeld(_))), "once");
+    assert!(!hub.release(O, P, "match-1", "s1", &nonce), "the resume took it: the hold cannot end it");
+
+    let (other, other_nonce) = hub.resume_token(O, P, &room, "s1");
+    let _asked = hub.hold(O, P, "match-1", "s1", &other_nonce, None);
+    assert!(hub.release(O, P, "match-1", "s1", &other_nonce), "a hold nobody took ends");
+    assert!(matches!(hub.resume(O, P, "match-1", &other, None), Err(HubRefusal::NotHeld(_))), "and its token with it");
+}

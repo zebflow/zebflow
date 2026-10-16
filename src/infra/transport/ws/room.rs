@@ -117,7 +117,7 @@ pub struct RoomSettings {
     pub meta: Value,
     /// How long the room may sit empty before it closes (`--idle`).
     pub idle: Duration,
-    /// How long a dropped session's seat is kept (`--hold`); stored, not yet enforced.
+    /// How long a dropped session's seat is kept (`--hold`); a fixed room has none.
     pub hold: Option<Duration>,
     /// The most bytes of state (`--max-state`); a write past it is refused.
     pub max_state: u64,

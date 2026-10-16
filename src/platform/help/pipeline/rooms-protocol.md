@@ -21,6 +21,7 @@ const ws = new WebSocket(`wss://${location.host}/_ws/rooms/lobby`, "zebflow.room
 
 - `?ticket=<ticket>` joins a `--private` room with a ticket from
   `ws.ticket.create`.
+- `?resume=<token>` takes back a held seat (§ Reconnecting).
 - The room's join rule (`--auth` on its `trigger.room`) reads the upgrade
   request's headers, as a webhook's does.
 - **A request that names no protocol, or none this server speaks, is refused
@@ -58,7 +59,12 @@ Text frames, JSON, each with a `type`.
 ```
 
 `state` is the session's whole view of the room's state. Keep it: every
-later `patch` changes it.
+later `patch` changes it. In a room opened with `--hold`, `joined` also
+carries `resume`, a token for reconnecting (§ Reconnecting):
+
+```json
+{ "type": "joined", "session_id": "ws-1f0c", "room": "match-7", "state": {}, "resume": "eyJrIjoicm9vbV9yZXN1bWUi….Qx3f" }
+```
 
 ### `patch` — what changed
 
@@ -122,12 +128,32 @@ The session fell more than 256 frames behind. Replace the state with
 `state`; the next `patch` follows from it. Events it missed are lost: an
 app that must not lose a message keeps it in state or in its database.
 
+## Reconnecting
+
+In a room opened with `ws.room.open --hold 30s`, a connection that ends
+without a close frame keeps its seat for 30 s: the session keeps its id, its
+place under `--max-sessions` and its tags, and is sent nothing meanwhile.
+To take it back, connect again with the token of the last `joined`:
+
+```
+GET /_ws/rooms/match-7?resume=<token>
+Sec-WebSocket-Protocol: zebflow.rooms.v1
+```
+
+- The room's join rule runs again on the new connection, and the identity
+  it proves must be the held session's.
+- The answer is `joined` with the **same** `session_id`, the session's whole
+  view as it is now, and a **new** `resume` token. Replace the state with it.
+- A token works once, and only while its seat is held: a used token, a token
+  whose hold ended, or another identity's is refused with `4401`.
+- A client that closes on purpose (a close frame) gives its seat up at once.
+
 ## Close codes
 
 | Code | Why | Before `joined`? |
 | --- | --- | --- |
 | `4404` | the room is not open (or no `trigger.room` declares it) | yes |
-| `4401` | the join rule or the ticket refused | yes |
+| `4401` | the join rule, the ticket or the resume token refused | yes |
 | `4429` | the room is full (`--max-sessions`) | yes |
 | `4408` | the login the join rule proved expired | no |
 | `4409` | the server closed this session (`ws.session.close`) | no |
@@ -136,4 +162,5 @@ app that must not lose a message keeps it in state or in its database.
 
 A client that closes on purpose sends a close frame; the room then raises
 `$disconnect { reason: "left" }`. A connection that ends without one is a
-drop (`dropped`).
+drop: `$disconnect { reason: "dropped" }`, or in a room with a hold `$away`,
+then `$back` on resume or `$disconnect { reason: "timeout" }`.

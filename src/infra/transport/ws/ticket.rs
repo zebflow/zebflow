@@ -1,6 +1,8 @@
 //! Room tickets (`docs/contracts/rooms.md` § Opening a room and letting
 //! people in): a pass for one user into one room, signed by this process
 //! ([`crate::infra::secrets::signed`]), usable once, valid for its `--ttl`.
+//! Resume tokens (§ Leaving, dropping and closing) are signed the same way:
+//! a pass back into one held seat.
 //!
 //! A ticket names the room's key and the room's instance, so a ticket for a
 //! room that closed does not open a later room of the same name. Its nonce
@@ -84,6 +86,33 @@ impl TicketBook {
         Ok(TicketPass { user: text("u"), instance: instance.to_string(), nonce, expires_at })
     }
 
+    /// A resume token for the session `session` of the room `room_key`
+    /// (instance `instance`), and its nonce. It names no expiry: it works
+    /// only while the hub holds that session's seat under this nonce, so the
+    /// hub's record of the hold is what makes it single-use and timely.
+    pub fn issue_resume(&self, room_key: &str, instance: &str, session: &str) -> (String, String) {
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let token = crate::infra::secrets::signed::sign(
+            &self.key,
+            &json!({ "k": "room_resume", "r": room_key, "i": instance, "s": session, "n": nonce }),
+        );
+        (token, nonce)
+    }
+
+    /// The session and nonce a resume token names, if it is one this process
+    /// signed for `room_key` (instance `instance`).
+    pub fn read_resume(&self, token: &str, room_key: &str, instance: &str) -> Result<(String, String), String> {
+        let payload = crate::infra::secrets::signed::verify(&self.key, token)?;
+        let text = |k: &str| payload.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        if text("k") != "room_resume" {
+            return Err("not a resume token".to_string());
+        }
+        if text("r") != room_key || text("i") != instance {
+            return Err("the resume token is for another room".to_string());
+        }
+        Ok((text("s"), text("n")))
+    }
+
     /// Spend a pass; false when it was spent already.
     pub fn spend(&self, pass: &TicketPass) -> bool {
         let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
@@ -109,6 +138,17 @@ mod tests {
         assert!(book.spend(&pass));
         assert!(!book.spend(&pass), "usable once");
         assert_eq!(book.read(&ticket.token, "o/p/match-1", "i1").unwrap_err(), "the ticket was already used");
+    }
+
+    #[test]
+    fn a_resume_token_names_its_session_in_its_room_and_is_no_ticket() {
+        let book = TicketBook::default();
+        let (token, nonce) = book.issue_resume("o/p/match-1", "i1", "ws-1");
+        assert_eq!(book.read_resume(&token, "o/p/match-1", "i1"), Ok(("ws-1".to_string(), nonce)));
+        assert!(book.read_resume(&token, "o/p/match-1", "i2").is_err(), "a reopened room of the same name");
+        assert!(book.read(&token, "o/p/match-1", "i1").is_err(), "a resume token is not a ticket");
+        let ticket = book.issue("o/p/match-1", "i1", "u-17", DEFAULT_TTL);
+        assert!(book.read_resume(&ticket.token, "o/p/match-1", "i1").is_err(), "nor a ticket a resume token");
     }
 
     #[test]

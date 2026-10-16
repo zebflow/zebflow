@@ -9,7 +9,9 @@
 //! Refused unless an active `trigger.room` pattern matches the name, for a
 //! fixed room's name, and for a room already open. The room exists until
 //! `ws.room.close`, or until it has sat empty for `--idle` (default 10m).
-//! `--hold` is kept with the room for the seat-holding that comes later.
+//! `--hold` keeps a dropped session's seat that long: `$away`, then `$back`
+//! when its socket resumes with the token `joined` gave, or `$disconnect {
+//! reason: "timeout" }`.
 //! Answers `room` with the room as `ws.room.list` shows it.
 
 use std::sync::Arc;
@@ -61,7 +63,9 @@ pub fn definition() -> NodeDefinition {
             room's name and for a room already open. `--private` admits only holders of a `ws.ticket.create` ticket; \
             `--max-sessions` (default 1000, at most 10000) caps the room, a join past it closing with 4429; `--meta` is a small \
             JSON object `ws.room.list` shows (what matchmaking filters on); `--idle` (default 10m) closes the room after it has \
-            sat empty that long; `--hold` keeps a dropped session's seat (stored now, honoured later); `--max-state` (default \
+            sat empty that long; `--hold` keeps the seat of a session whose connection drops (`$away`; `joined` gave it a \
+            `resume` token, and reconnecting with `?resume=` within the hold gives back the same session and raises `$back`, \
+            else `$disconnect { reason: \"timeout\" }`); `--max-state` (default \
             1MB, at most 16MB) caps the room's state, a write past it refused. Adds `room` — the room as `ws.room.list` shows it \
             — and keeps the rest of the payload."
             .to_string(),
@@ -80,7 +84,7 @@ pub fn definition() -> NodeDefinition {
             flag("--max-sessions", "max_sessions", "The most sessions at once (default 1000, at most 10000); a join past it closes with 4429.", "number", false),
             flag("--meta", "meta", "A small JSON object ws.room.list shows: mode, map, level band.", "json", false),
             flag("--idle", "idle", "Close the room after it has sat empty this long (default 10m, 1s–24h).", "duration", false),
-            flag("--hold", "hold", "Keep a dropped session's seat this long (1s–1h); stored now, honoured in a later release.", "duration", false),
+            flag("--hold", "hold", "Keep the seat of a session whose connection drops this long (1s–1h), for its socket to resume with ?resume=.", "duration", false),
             flag("--max-state", "max_state", "The most bytes of room state (default 1MB, at most 16MB); a write past it is refused.", "size", false),
         ],
         fields: vec![
@@ -89,7 +93,7 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef { field_type: NodeFieldType::Number, ..field("max_sessions", "Max sessions", "Default 1000.") },
             field("meta", "Meta", "A small JSON object ws.room.list shows."),
             field("idle", "Idle", "Close after sitting empty this long; default 10m."),
-            field("hold", "Hold", "Keep a dropped seat this long."),
+            field("hold", "Hold", "Keep a dropped session's seat this long, for it to resume."),
             field("max_state", "Max state", "State cap; default 1MB."),
         ],
         layout: vec![

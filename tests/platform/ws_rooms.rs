@@ -81,12 +81,12 @@ pub(super) async fn next_of(socket: &mut Socket, kind: &str) -> Value {
 }
 
 /// A connection the server closes before anything of the room is sent.
-async fn refused(address: std::net::SocketAddr, path: &str, headers: &[(&str, &str)]) -> u16 {
+pub(super) async fn refused(address: std::net::SocketAddr, path: &str, headers: &[(&str, &str)]) -> u16 {
     let mut socket = connect(address, path, headers).await;
     next(&mut socket).await.expect_err("refused before joined")
 }
 
-async fn credential(app: &axum::Router, cookie: &str, body: Value) {
+pub(super) async fn credential(app: &axum::Router, cookie: &str, body: Value) {
     let (status, answer) = send(app, cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/credentials"), body).await;
     assert_eq!(status.as_u16(), 200, "{answer}");
 }

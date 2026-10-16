@@ -14,6 +14,10 @@
 //! The rule is checked once, here. Its claims — or, where the rule proves no
 //! identity, `{ sub }` from the ticket — ride on every event as
 //! `input.room.auth`.
+//!
+//! A socket resuming a held seat (`?resume=`) passes the same rule, needs no
+//! ticket and takes no new seat; the identity the rule proves, if any, must
+//! be the held session's ([`admit_resume`]).
 
 use super::*;
 use crate::infra::transport::ws::{HubRefusal, RoomPattern, TicketPass};
@@ -50,8 +54,15 @@ pub(super) fn trigger_matches(t_room: &str, t_event: &str, room: &str, event: &s
     event_match && declares(t_room, room)
 }
 
-/// Decide whether this connection joins its room.
-pub(super) fn admit(ctx: &SessionCtx, ticket: Option<&str>) -> Result<Admitted, Refusal> {
+/// What a socket resuming a held seat was admitted as.
+pub(super) struct Resumed {
+    pub resume: crate::infra::transport::ws::Resume,
+    pub expires_at: Option<i64>,
+}
+
+/// The claims the room's join rule proves for this connection; a refusal
+/// when it refuses or no active `trigger.room` declares the room.
+fn rule(ctx: &SessionCtx) -> Result<Value, Refusal> {
     let pipelines = ctx.state.platform.pipeline_runtime.list_project(&ctx.owner, &ctx.project);
     let mut rules: Vec<&WsTriggerSpec> = Vec::new();
     for spec in pipelines.iter().flat_map(|p| p.ws_triggers.iter()) {
@@ -71,6 +82,24 @@ pub(super) fn admit(ctx: &SessionCtx, ticket: Option<&str>) -> Result<Admitted, 
             Err(()) => return Err(CLOSE_UNAUTHORIZED),
         }
     }
+    Ok(claims)
+}
+
+/// Decide whether this connection takes back the seat `token` holds.
+pub(super) fn admit_resume(ctx: &SessionCtx, token: &str) -> Result<Resumed, Refusal> {
+    let claims = rule(ctx)?;
+    let proved = claims.get("sub").and_then(Value::as_str);
+    let hub = &ctx.state.platform.ws_hub;
+    let resume = hub.resume(&ctx.owner, &ctx.project, &ctx.room_id, token, proved).map_err(|refusal| match refusal {
+        HubRefusal::NotOpen(_) => CLOSE_NOT_OPEN,
+        _ => CLOSE_UNAUTHORIZED,
+    })?;
+    Ok(Resumed { resume, expires_at: claims.get("exp").and_then(Value::as_i64) })
+}
+
+/// Decide whether this connection joins its room.
+pub(super) fn admit(ctx: &SessionCtx, ticket: Option<&str>) -> Result<Admitted, Refusal> {
+    let claims = rule(ctx)?;
     let hub = &ctx.state.platform.ws_hub;
     let room = hub.room(&ctx.owner, &ctx.project, &ctx.room_id).ok_or(CLOSE_NOT_OPEN)?;
     let pass = match ticket.filter(|t| !t.is_empty()) {

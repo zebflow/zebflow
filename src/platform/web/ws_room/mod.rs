@@ -1,6 +1,6 @@
 //! WebSocket rooms: one socket's life in a room (`docs/contracts/rooms.md`).
 //!
-//! URL: `GET /ws/{owner}/{project}/rooms/{room}[?ticket=…]`, naming the wire
+//! URL: `GET /ws/{owner}/{project}/rooms/{room}[?ticket=…|?resume=…]`, naming the wire
 //! protocol `zebflow.rooms.v1` in `Sec-WebSocket-Protocol`.
 //!
 //! 0. **Protocol** — a request naming no protocol this server speaks is
@@ -31,9 +31,13 @@
 //! 7. **Closing** — the server closes a socket with `4410` (`ws.room.close`),
 //!    `4409` (`ws.session.close`), `4408` (the login's `exp` passed) or
 //!    `1008` (flooding); the `$disconnect` reason says which.
+//! 8. **Holding** — in a room opened with `--hold`, a socket that drops
+//!    keeps its seat ([`hold`]): `$away`, then `$back` when a socket resumes
+//!    it with the token `joined` gave, or `$disconnect { reason: "timeout" }`.
 
 mod admission;
 mod events;
+mod hold;
 mod room_loop;
 mod socket;
 mod tick;
@@ -45,6 +49,10 @@ use crate::infra::transport::ws::{Kick, PROTOCOL, lane};
 pub(super) const CONNECT_EVENT: &str = "$connect";
 /// Raised when the socket ends; payload `{ reason }`.
 pub(super) const DISCONNECT_EVENT: &str = "$disconnect";
+/// Raised when a held room's socket drops and its seat is kept.
+pub(super) const AWAY_EVENT: &str = "$away";
+/// Raised when a socket resumes a held seat, after its `joined`.
+pub(super) const BACK_EVENT: &str = "$back";
 
 /// Close code and reason for a login whose `exp` passed.
 const KICK_EXPIRED: Kick = Kick { code: 4408, reason: "expired" };
@@ -123,14 +131,18 @@ pub(super) async fn ws_room_handler(
     }
 
     let pairs = uri.query().and_then(|query| serde_urlencoded::from_str::<Vec<(String, String)>>(query).ok()).unwrap_or_default();
-    let ticket = pairs.into_iter().find(|(k, _)| k == "ticket").map(|(_, v)| v);
+    let param = |name: &str| pairs.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+    let pass = match param("resume") {
+        Some(token) => socket::Pass::Resume(token),
+        None => socket::Pass::Ticket(param("ticket")),
+    };
     let owner = crate::platform::model::slug_segment(&owner);
     let project = crate::platform::model::slug_segment(&project);
     // Random, not a clock reading: two upgrades in the same nanosecond shared a slot.
     let session_id = format!("ws-{}", uuid::Uuid::new_v4().simple());
     ws.on_upgrade(move |socket| async move {
         // The socket lives on the fast lane from here on.
-        lane().spawn(socket::handle_ws_room(SessionCtx { owner, project, room_id, session_id, headers, state }, ticket, socket));
+        lane().spawn(socket::handle_ws_room(SessionCtx { owner, project, room_id, session_id, headers, state }, pass, socket));
     })
     .into_response()
 }

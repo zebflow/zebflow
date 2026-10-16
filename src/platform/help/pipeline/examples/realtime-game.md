@@ -67,14 +67,15 @@ register game/room --
 
 `ws.room.open` opens the room under the `room-*` pattern the WebSocket
 handlers below declare; `--max-sessions` caps it (a join past it closes with
-`4429`) and the room closes by itself after sitting empty for `--idle`.
+`4429`), the room closes by itself after sitting empty for `--idle`, and
+`--hold 30s` keeps a player's seat for 30 s when their connection drops.
 
 ```zf
 register game/api-room-create --
 [trig] trigger.webhook --route /api/game/rooms --method POST
 [draft] javascript.script.run -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: (input.webhook.body && input.webhook.body.name) || id };"
 [ins] sekejap.query.run --write --param "1={{ $nodes.draft.script.id }}" --param "2={{ $nodes.draft.script.name }}" --param "3={{ Date.now() }}" -- "INSERT INTO game_rooms (_key, name, status, created_at) VALUES ($1, $2, 'waiting', $3)"
-[open] ws.room.open --room "{{ $nodes.draft.script.id }}" --max-sessions 8 --idle 30m
+[open] ws.room.open --room "{{ $nodes.draft.script.id }}" --max-sessions 8 --idle 30m --hold 30s
 [ok] javascript.script.run -- "return { ok: true, room_id: $nodes.draft.script.id };"
 [resp] web.response.send --body "{{ $nodes.ok.script }}"
 
@@ -170,14 +171,20 @@ event reaches that one socket and no other.
 
 ## Joining, leaving and who is online
 
-The server raises two reserved events on the room's one queue, in order with
+The server raises reserved events on the room's one queue, in order with
 everything else the room handles:
 
 - `$connect` — after `joined`.
+- `$away` and `$back` — only in a room opened with `ws.room.open --hold 30s`:
+  a connection that drops keeps its seat (`$away`), and a client that
+  reconnects within the hold with `?resume=<the token joined gave>` is the
+  same session again (`$back`). A game keeps the player in state on `$away`
+  and greys them out; it removes them on `$disconnect`.
 - `$disconnect` — when the socket ends, payload `{ "reason": … }`: `left`
   (the client closed), `dropped` (the connection broke), `closed`
   (`ws.session.close`), `room_closed` (`ws.room.close`), `expired` (the
-  login's `exp` passed) or `flood` (too many events waiting).
+  login's `exp` passed), `flood` (too many events waiting) or `timeout` (a
+  held seat nobody resumed).
   It runs even if the client never said goodbye, and after every event that
   socket sent — in a tick room, right after the tick that takes that socket's
   last inputs — so a late `move` can never resurrect a player who left.

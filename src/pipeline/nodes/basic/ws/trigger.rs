@@ -34,7 +34,7 @@
 //! |---|---|---|
 //! | `room_id` | string | The room from the WS URL (`/ws/{owner}/{project}/rooms/{room}`) |
 //! | `session_id` | string | The connected client session |
-//! | `event` | string | The event name sent by the client, or `$connect` / `$disconnect` |
+//! | `event` | string | The event name sent by the client, or one the server raises (`$connect`, `$disconnect`, `$away`, `$back`) |
 //! | `payload` | object | The event body sent by the client |
 //! | `auth` | object or null | What the join rule proved at connect (or `{ sub }` from a ticket) |
 //!
@@ -113,9 +113,10 @@ pub fn definition() -> NodeDefinition {
             room must declare the same rule, or activation refuses. Answers one key, `room`: `{ room_id, session_id, event, payload, \
             auth }` — `auth` is what the rule proved at connect (or `{ sub }` from a ticket). Answer with `ws.message.send` or \
             `ws.state.put` / `ws.state.update` / `ws.state.delete`; a `web.response.send` here answers nobody. The server raises \
-            `$connect` and `$disconnect` (payload `{ reason }`: left, dropped, closed, room_closed, expired, flood) on the \
+            `$connect` and `$disconnect` (payload `{ reason }`: left, dropped, closed, room_closed, expired, flood, timeout) — \
+            and in a room opened with `--hold`, `$away` when a connection drops and `$back` when it resumes — on the \
             room's one queue: a room handles one thing at a time, in arrival order across all its sessions, so a pipeline that \
-            reads and writes back needs no lock — only `--event $connect` / `--event $disconnect` receive them, and clients cannot send `$` \
+            reads and writes back needs no lock — only a trigger naming one (`--event $connect`) receives it, and clients cannot send `$` \
             events. `--event $tick --every 50ms` (16ms–1s) makes a tick room: every client event waits for the next tick, and \
             this trigger runs once per tick with `room: { tick, dt_ms, inputs: [ { session, event, payload, auth } ] }` in arrival \
             order — at most `--max-inputs` (default 30) per session, the rest dropped and counted; ticks never overlap (one that \
