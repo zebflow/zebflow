@@ -452,3 +452,121 @@ and the origin, not the proxy, sets `Cache-Control`. That split is the point:
 when its contents change and is `must-revalidate`. It had been served
 `immutable` too, so editing `logo.png` never reached a browser that had seen the
 old one.
+
+## 10. What a sparse checkout requires of the writers
+
+Status: **decided 2026-10-15, not implemented.** The rule is
+[project.md, "What an office checks out"](../../project.md#what-an-office-checks-out):
+the resolved layout decides which paths are on an office's disk at all. A writer
+that ignores the layout then writes outside the set, where git refuses to stage
+the file. Every path the platform touches in `repo/` today, beyond the layout
+directories:
+
+| Path | Relative to | Owner | In the set |
+| --- | --- | --- | --- |
+| `zebflow.yaml`, `zeb.lock`, `zebflow.init.json` | root | `project_config.rs`, `dependency_lock.rs` `lock_path`, Hub publish and install | yes, root files |
+| `README.md`, `globals.css`, `sample_web_page.tsx` | root | `write_starter_files` | yes, root files |
+| `sample_*_pipeline.zf.json`, `skills/`, `static/fonts/`, `shared/ui/` | `source` | starter, `skills/mod.rs`, `fonts.rs`, `ops.rs` | yes |
+| Hub installs | `source`, `static`, `docs` | `HubInstallPlacement` | yes |
+| `archive/0.10/…` | root | `migration/service.rs` (originals, `migration.json`, `MIGRATION.md`) | only because the set names `archive/` explicitly; it is outside `source` |
+| `schemas/sekejap/` | root, fixed | `sekejap.rs` `sync_schema_to_repo` | **no** when `schema` is declared elsewhere (§6, "Still decided by the platform") |
+
+Node bundles and RWE libraries install into `data/hub/`, and the identity
+migration's recovery copy is `data/recovery/pipeline-identity-{date}.json`, so
+neither touches `repo/` (§6's `repo/pipelines.pre-source-relative.json` no
+longer exists). No code writes `repo/libraries/` or `.gitkeep` any more.
+
+Three paths write a whole working tree and must apply the set first: the clone
+handler (`git clone` in `web/mod.rs`), project transfer import
+(`restore_history_bundle` resets the index to the full history while the archive
+carries only the exporter's checked-out files, so the rest would read as
+deleted), and a `project_bundle` install, which places paths verbatim.
+
+## 11. Changing the layout moves the files
+
+Status: **decided 2026-10-15, not implemented.** Today nothing changes a layout:
+no API, MCP tool, shell verb or Studio page writes `spec.layout`, and a
+configuration write only rewrites the declaration (`services/project_config.rs`),
+so a new `source` would point at an empty directory.
+
+```
+before                      spec.layout.source: project-automation      after
+zebflow.yaml                ───────────────────────────────────────►   zebflow.yaml
+home.tsx                                                               project-automation/home.tsx
+shared/llm.zf.json                                                     project-automation/shared/llm.zf.json
+static/logo.png                                                        project-automation/static/logo.png
+archive/0.10/…                                                         archive/0.10/…   (stays)
+```
+
+One core function changes a layout: `ProjectService::change_layout`. Studio,
+the settings API (a `layout` section), MCP and the shell all reach it through
+`PlatformOps`; none of them moves a file or writes `spec.layout` itself. It has
+a report-only form that returns the plan without changing anything.
+
+### What it does, in order
+
+1. **Refuses** an invalid target: an empty `static` (it would publish the whole
+   repository at `/static/…`), roots that overlap or nest, a `.git` segment, a
+   destination that already holds a file, or a project with an unapplied layout.
+2. **Canonicalizes** stored ids and globs still carrying an old prefix
+   (`pipeline_meta.file_rel_path`, `spec.bootstrap.activate`), because ids
+   tolerate only the *current* source prefix.
+3. **Moves** the files of every changed entry under one project-wide write lock,
+   journaled in `data/recovery/layout-move-{date}.json` and reversed on failure.
+   Root files (`zebflow.yaml`, `zeb.lock`, `zebflow.init.json`, README, licence,
+   dotfiles), other declared roots and `archive/` stay where they are.
+4. **Rewrites** what stores a repository path: `spec.locks.templates`, and the
+   migration archive keys that embed the old source.
+5. **Writes** `zebflow.yaml` last (`ProjectConfigurationService::update_fallible`)
+   and records it as the applied layout.
+6. **Rebuilds** what is keyed by absolute path: the RWE template cache, the font
+   index, node-interface sync; then refreshes the runtime and activates again
+   every pipeline that was active.
+7. **Commits** the whole change as one commit (renames detected by git) and,
+   once the office checks out only the layout (`project.md`), updates that set.
+8. **Reports** what it will not rewrite: content naming a path that ends up
+   outside the new source (`@/…` or `../` imports, `--file`/`--template`
+   arguments, CSS `url()`, markdown links), files the extension rule now hides,
+   and repository-relative Studio links.
+
+Unchanged by a move, because they are source-relative or URL-based: pipeline
+ids, snapshots, webhook and MCP routes, schedules, invocations, public
+`/static/…` URLs, `@/` imports inside the source, `zeb.lock`, policies, sessions.
+
+`archive/` never moves into the source: discovery then disagrees about whether
+it is the archive, and archived originals register as live pipelines.
+
+### A layout that was not applied
+
+The platform records the layout it last applied, in the catalog, outside
+`repo/`. When `zebflow.yaml` declares another one and the files are still in the
+old place (a hand edit, or a synced commit that moved nothing), the layout is
+unapplied:
+
+- every surface reports `PROJECT_LAYOUT_NOT_APPLIED` with the two ways out:
+  apply the move, or restore the declaration;
+- the project keeps running on the applied layout; activation and
+  layout-dependent writes are refused until it is resolved;
+- a declaration whose files already sit where it says (moved in the same
+  commit) is recorded as applied without a report.
+
+The check runs where the layout is read (`ProjectConfigurationService`), and
+after startup, `sync`, clone, transfer import and project-bundle install.
+
+### Must be fixed first
+
+These read a fixed place instead of the declared one, and are harmless only
+while `source` is `""`: the sekejap schema export (`schemas/sekejap`), project
+fonts and `repo://static` (read `{source}/static`, not `static`), the starter
+files (written at the root, registered source-relative), and template locks.
+
+Template locks (`spec.locks.templates`) are source-relative, the same form as
+pipeline ids: `pages/home.tsx`, never `project-automation/pages/home.tsx`. Every
+check strips the source root first, so the editor, the repo file API and MCP
+agree, and a layout move never rewrites a lock. Today the repo file API checks
+the repository-relative path, which a project with a non-empty `source` would
+let past a lock.
+
+Evidence (not yet written): `tests/platform/smoke.rs`
+`changing_the_layout_moves_the_project_and_keeps_its_ids` and
+`a_hand_edited_layout_is_reported_and_the_project_keeps_running`.

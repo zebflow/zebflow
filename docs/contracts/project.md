@@ -133,6 +133,70 @@ Evidence: `tests/platform/smoke.rs`
 against a bare repository: push, divergence, honest counts, refused push,
 conflict kept, mine, continue, push, then theirs and abort.
 
+### What an office checks out
+
+Status: **decided 2026-10-15, not implemented.** This is the target the
+implementation must meet; today an office checks out the whole repository.
+
+An office checks out only what the project's layout declares (git sparse
+checkout, cone mode). A repository may therefore also hold content that is not
+Zebflow's, and that content never reaches the office's disk. There is no setting
+for it: the set is derived from the resolved `spec.layout`
+([ProjectConfiguration](./kinds/project-configuration/README.md#speclayout)).
+
+```
+zebflow.yaml   spec.layout: { source: project-automation, docs: project-automation/docs }
+
+repository                        on the office
+  zebflow.yaml                    yes   a root file
+  README.md, LICENSE.md           yes   root files
+  project-automation/             yes   source; static/ follows it
+  project-automation/docs/        yes   docs
+  research/train.py               no
+  paper/main.tex                  no
+```
+
+The checked-out set is:
+
+- every file at the repository root, which git's cone mode always brings. This
+  is why `zebflow.yaml` stays at the root: the office reads it to learn the set;
+- each resolved layout directory: `source`, `static`, `docs`, `schema`,
+  `sqlite_schema`, `node_interfaces`, and every `initial_data` path (cone mode
+  also brings the files directly inside each parent, e.g. `schemas/`). An
+  undeclared entry still names its default (`docs`, `schemas/sekejap`, `nodes`,
+  `seeds/sqlite`, …), so other content must not use those names unless the
+  entry is declared elsewhere;
+- `archive/` (`MIGRATION_ARCHIVE_DIR`), where a version migration keeps the
+  originals it replaced.
+
+Rules:
+
+1. A project that declares nothing has `source` `""`, the repository itself, so
+   its set is the whole repository — what it checks out today. No project
+   moves; no migration is offered.
+2. A mixed repository keeps only `zebflow.yaml`, a README and a licence at the
+   root, because every root file reaches the office.
+3. The set is recomputed whenever the resolved layout changes: a configuration
+   write, or a `sync` that brings a different `zebflow.yaml`.
+4. Every way a repository arrives on an office — clone, project transfer
+   import, project bundle install — applies the set before writing files.
+5. Every file the platform itself writes into `repo/` lands inside the set.
+6. A commit (Studio, shell or MCP) only ever touches checked-out paths. Content
+   outside the set stays in history unchanged; a push only appends (*No
+   force* above).
+7. File types are still refused by `allowed_extensions`. The set decides what
+   reaches the office; the type rule decides what Zebflow accepts there.
+8. One Zebflow project per repository, as before.
+9. A write outside the set — Studio, repo file API, MCP, shell — is refused
+   with `PLATFORM_REPO_OUTSIDE_LAYOUT`, naming the project's folders. Git could
+   not commit such a file, so it would never leave the office.
+
+Evidence (not yet written): `tests/platform/smoke.rs`
+`an_office_checks_out_only_what_the_layout_declares` — a bare repository holding
+`project-automation/`, `research/` and `paper/`: clone, assert the last two are
+absent on disk, commit and push from the Studio, assert the remote still holds
+them unchanged; then a project declaring nothing checks out everything.
+
 ## Data Movement
 
 Small JSON values may move directly between nodes. Files and large values use a
