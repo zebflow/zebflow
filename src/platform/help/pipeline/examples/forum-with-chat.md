@@ -129,7 +129,8 @@ to it, and returning `null` from a script would not have stopped anything
 ## WebSocket Client Setup (in TSX template)
 
 ```tsx
-const ws = new WebSocket(`/ws/${owner}/${project}/rooms/forum-${roomId}`);
+const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+const ws = new WebSocket(`${scheme}://${location.host}/ws/${owner}/${project}/rooms/forum-${roomId}`, 'zebflow.rooms.v1');
 ws.onmessage = (e) => {
   const msg = JSON.parse(e.data);
   if (msg.type === 'event' && msg.event === 'chat.message') {

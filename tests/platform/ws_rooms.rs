@@ -23,8 +23,23 @@ pub(super) async fn serve(app: axum::Router, cookie: &str) -> std::net::SocketAd
     address
 }
 
-/// Connect to a room with these headers; `path_and_query` follows `/rooms/`.
+/// The wire protocol every room socket names.
+pub(super) const PROTOCOL: &str = "zebflow.rooms.v1";
+
+/// Connect to a room with these headers, naming [`PROTOCOL`];
+/// `path_and_query` follows `/rooms/`.
 pub(super) async fn connect(address: std::net::SocketAddr, path_and_query: &str, headers: &[(&str, &str)]) -> Socket {
+    let mut with_protocol = vec![("sec-websocket-protocol", PROTOCOL)];
+    with_protocol.extend_from_slice(headers);
+    connect_raw(address, path_and_query, &with_protocol).await.expect("upgrade")
+}
+
+/// Connect with exactly these headers: the socket, or the refused upgrade.
+pub(super) async fn connect_raw(
+    address: std::net::SocketAddr,
+    path_and_query: &str,
+    headers: &[(&str, &str)],
+) -> Result<Socket, tokio_tungstenite::tungstenite::Error> {
     let url = format!("ws://{address}/ws/{OWNER}/{PROJECT}/rooms/{path_and_query}");
     let mut request = url.into_client_request().expect("request");
     for (name, value) in headers {
@@ -33,7 +48,7 @@ pub(super) async fn connect(address: std::net::SocketAddr, path_and_query: &str,
             value.parse().unwrap(),
         );
     }
-    tokio_tungstenite::connect_async(request).await.expect("upgrade").0
+    tokio_tungstenite::connect_async(request).await.map(|(socket, _)| socket)
 }
 
 /// The next JSON frame, or the close code when the server closes instead.
@@ -49,12 +64,18 @@ pub(super) async fn next(socket: &mut Socket) -> Result<Value, u16> {
     }
 }
 
-/// The next frame of `type`, skipping others.
+/// The next frame of `type`, skipping others. An `event` is also the one
+/// event a tick room's `patch` carries.
 pub(super) async fn next_of(socket: &mut Socket, kind: &str) -> Value {
     loop {
         let frame = next(socket).await.unwrap_or_else(|code| panic!("closed {code} while waiting for {kind}"));
         if frame["type"] == kind {
             return frame;
+        }
+        if kind == "event" && frame["type"] == "patch" && frame["events"].as_array().is_some_and(|e| !e.is_empty()) {
+            let events = frame["events"].as_array().expect("events");
+            assert_eq!(events.len(), 1, "one event per tick here: {frame}");
+            return json!({ "type": "event", "event": events[0]["event"], "payload": events[0]["payload"] });
         }
     }
 }
@@ -68,6 +89,28 @@ async fn refused(address: std::net::SocketAddr, path: &str, headers: &[(&str, &s
 async fn credential(app: &axum::Router, cookie: &str, body: Value) {
     let (status, answer) = send(app, cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/credentials"), body).await;
     assert_eq!(status.as_u16(), 200, "{answer}");
+}
+
+#[tokio::test]
+async fn a_socket_naming_no_protocol_or_another_is_refused_before_the_upgrade() {
+    let root = temp_dir("ws-rooms-protocol");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "lobby-chat", r#"| trigger.room --room lobby --event chat | ws.message.send --body 1"#).await;
+    let address = serve(app, &cookie).await;
+    for headers in [vec![], vec![("sec-websocket-protocol", "zebflow.rooms.v0")], vec![("sec-websocket-protocol", "chat, graphql-ws")]] {
+        match connect_raw(address, "lobby", &headers).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status().as_u16(), 426, "{headers:?}");
+                assert_eq!(response.headers()["sec-websocket-protocol"], PROTOCOL, "the supported list: {headers:?}");
+                let body: Value = serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("json body");
+                assert_eq!(body["supported"], json!([PROTOCOL]));
+            }
+            other => panic!("{headers:?} upgraded: {:?}", other.map(|_| ())),
+        }
+    }
+    let mut socket = connect(address, "lobby", &[]).await;
+    assert_eq!(next(&mut socket).await.expect("joined")["type"], "joined");
 }
 
 #[tokio::test]
@@ -127,6 +170,30 @@ async fn a_socket_joins_only_an_open_room_its_rule_admits() {
     let gone = next_of(&mut b, "event").await;
     assert_eq!(gone["event"], "gone");
     assert_eq!(gone["payload"], json!({ "reason": "left" }));
+}
+
+#[tokio::test]
+async fn a_change_sends_each_session_one_small_patch_not_the_state() {
+    let root = temp_dir("ws-rooms-patch");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "lobby-set", r#"| trigger.room --room lobby --event set | ws.state.put --key "/players/{{ input.room.session_id }}" --value "{{ input.room.payload }}""#).await;
+    let address = serve(app, &cookie).await;
+    let mut a = connect(address, "lobby", &[]).await;
+    let a_id = next_of(&mut a, "joined").await["session_id"].as_str().expect("id").to_string();
+    a.send(Message::Text(json!({ "event": "set", "payload": { "x": 1, "y": 1 } }).to_string().into())).await.unwrap();
+    next_of(&mut a, "patch").await;
+    let mut b = connect(address, "lobby", &[]).await;
+    let joined = next_of(&mut b, "joined").await;
+    let b_id = joined["session_id"].as_str().expect("id").to_string();
+    assert_eq!(joined["state"], json!({ "players": { a_id.clone(): { "x": 1, "y": 1 } } }), "joined carries the whole state");
+
+    b.send(Message::Text(json!({ "event": "set", "payload": { "x": 9, "y": 9 } }).to_string().into())).await.unwrap();
+    next_of(&mut b, "patch").await; // its own change
+    let patch = next_of(&mut a, "patch").await;
+    assert_eq!(patch, json!({ "type": "patch", "ops": [ { "op": "set", "path": ["players", b_id], "value": { "x": 9, "y": 9 } } ] }), "only b's entry, not a's");
+    a.send(Message::Text(json!({ "event": "set", "payload": { "x": 2, "y": 1 } }).to_string().into())).await.unwrap();
+    assert_eq!(next_of(&mut b, "patch").await["ops"], json!([ { "op": "set", "path": ["players", a_id, "x"], "value": 2 } ]), "one changed leaf, one set");
 }
 
 /// A webhook of the test project, called with a JSON body; its answer.

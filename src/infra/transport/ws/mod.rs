@@ -3,11 +3,13 @@
 //!
 //! | Module | Responsibility |
 //! |---|---|
+//! | [`delivery`] | each session's queue of frames, and what a send puts in it |
 //! | [`lane`] | the fast lane: the runtime room work runs on |
 //! | [`pattern`] | room names and the patterns `trigger.room --room` declares |
 //! | [`queue`] | a room's one queue: every session's events, in arrival order |
 //! | [`room`] | one room: settings, sessions, state, broadcast, counters |
 //! | [`ticket`] | signed, single-use passes into one room |
+//! | [`view`] | what changed between two views of a room's state |
 //! | [`WsHub`] | which rooms exist, and every way one opens, is joined or closes |
 //!
 //! **Every room exists because the server made it.** A fixed room exists
@@ -18,19 +20,26 @@
 //!
 //! Rooms are keyed `"{owner}/{project}/{room}"`.
 
+pub mod delivery;
 pub mod lane;
 pub mod pattern;
 pub mod queue;
 pub mod room;
 pub mod ticket;
+pub mod view;
 
 pub use lane::lane;
 pub use pattern::RoomPattern;
 pub use queue::{MAX_PENDING_PER_SESSION, RoomEvent, RoomQueue, SessionQueue};
+pub use delivery::{Attached, Frame, SESSION_BACKLOG};
 pub use room::{
-    Counter, EmitTarget, KICK_CLOSED, KICK_ROOM_CLOSED, Kick, RoomBroadcast, RoomHandle, RoomKind, RoomSettings,
-    StateFull, StateOp, TickSpec,
+    Counter, EmitTarget, KICK_CLOSED, KICK_ROOM_CLOSED, Kick, RoomHandle, RoomKind, RoomSettings, StateFull, StateOp, TickSpec,
 };
+
+/// The wire protocol a room socket names in `Sec-WebSocket-Protocol`
+/// (`docs/contracts/rooms.md` § Clients and upgrades). A version is
+/// replaced, never kept beside its successor.
+pub const PROTOCOL: &str = "zebflow.rooms.v1";
 pub use ticket::{Ticket, TicketPass};
 
 use std::collections::HashMap;

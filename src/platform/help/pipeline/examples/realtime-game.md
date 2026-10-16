@@ -124,7 +124,8 @@ register game/ws-tick --
   `--max-inputs`, or activation refuses.
 
 The client sends `{ "event": "player.move", "payload": { "x": 3, "y": 7 } }`
-whenever the player moves, and draws `state.players` from each `state_patch`.
+whenever the player moves, and draws `state.players`, applying each tick's
+`patch` to the state `joined` gave it.
 
 ---
 
@@ -143,18 +144,26 @@ whenever the player moves, and draws `state.players` from each `state_patch`.
 
 ## State Sync Protocol
 
+Clients speak `zebflow.rooms.v1` (the whole protocol:
+`help("pipeline/rooms-protocol")`):
+
+```js
+const ws = new WebSocket(`wss://${location.host}/_ws/rooms/${room}`, "zebflow.rooms.v1");
+```
+
 Server-side room state is a JSON object. Clients receive:
 
 ```json
 { "type": "joined", "session_id": "ws-1f0c", "room": "room-abc123", "state": { "players": {} } }
-{ "type": "state_patch", "state": { "players": { "ws-1f0c": { "x": 3, "y": 7, "tick": 412 } } } }
+{ "type": "patch", "tick": 412, "ops": [ { "op": "set", "path": ["players", "ws-1f0c"], "value": { "x": 3, "y": 7, "tick": 412 } } ], "events": [] }
 { "type": "event", "event": "match.over", "payload": { "winner": "ws-1f0c" } }
 { "type": "resync", "state": { "players": { "ws-1f0c": { "x": 3, "y": 7, "tick": 412 } } } }
 ```
 
-`state_patch` and `resync` always carry the **full** current state, not a diff —
-the client replaces its local copy wholesale. `resync` arrives when the
-connection fell behind and messages were dropped.
+`joined` carries the whole state; after it each tick sends one `patch` with
+only what changed (`set` a value at a path of keys, `del` a key) and the
+events the tick sent. `resync` arrives when the connection fell behind and
+frames were dropped: it replaces the state.
 
 `ws.message.send --recipient session` / `--recipient others` is enforced by the server: a session-only
 event reaches that one socket and no other.

@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use super::message_send::{self, Config as SendConfig};
 use super::state::{self, Config as StateConfig, Verb};
-use crate::infra::transport::ws::{Kick, RoomDecl, RoomHandle, RoomSettings, SessionGuard, WsHub};
+use crate::infra::transport::ws::{Attached, Kick, RoomDecl, RoomHandle, RoomSettings, SessionGuard, WsHub};
 use crate::infra::ws_client::WsClientManager;
 use crate::pipeline::engines::BasicPipelineEngine;
 use crate::pipeline::interface::PipelineEngine;
@@ -97,14 +97,29 @@ fn code<T>(result: Result<T, PipelineError>) -> &'static str {
     }
 }
 
-/// The room's state once the actor has applied the command: an immediate
-/// change is broadcast after it is applied.
-async fn state_after(handle: &RoomHandle, run: impl std::future::Future<Output = ()>) -> Value {
-    let mut rx = handle.subscribe();
+/// A socket seated in `room` as `id`, signed in as `user`: its seat and its frames.
+struct Sock {
+    _seat: Seat,
+    attached: Attached,
+}
+
+fn sit(hub: &WsHub, room: &str, id: &str, user: Option<&str>) -> Sock {
+    let (handle, guard, kicks) = hub.join("demo", "site-a", room, id, user.map(str::to_string), None).expect("join");
+    Sock { _seat: (guard, kicks), attached: handle.attach(id).expect("seated") }
+}
+
+/// The next frame queued for a socket, read; `None` when there is none.
+fn got(sock: &mut Sock) -> Option<Value> {
+    sock.attached.frames.try_recv().ok().map(|text| serde_json::from_str(&text).expect("json"))
+}
+
+/// The room's state once the command ran: an immediate change is sent as
+/// a `patch` once it is applied.
+async fn state_after(hub: &WsHub, handle: &RoomHandle, run: impl std::future::Future<Output = ()>) -> Value {
+    let mut sock = sit(hub, handle.name(), "s-watch", None);
     run.await;
-    let got = rx.recv().await.expect("state broadcast");
-    let message: Value = serde_json::from_str(&got.text).expect("json");
-    assert_eq!(message["type"], "state_patch");
+    let message = got(&mut sock).expect("a patch");
+    assert_eq!(message["type"], "patch");
     handle.get_state()
 }
 
@@ -135,29 +150,27 @@ fn the_family_has_its_kinds_with_their_signatures() {
 
 #[tokio::test]
 async fn a_room_send_reaches_the_rooms_sockets_and_answers_message() {
-    let (hub, handle, _guard) = hub_with("lobby");
-    let mut rx = handle.subscribe();
-    let node = send_node(json!({ "body": { "text": "hi" }, "event": "chat" }), Some(hub), None).unwrap();
+    let (hub, _handle, _guard) = hub_with("lobby");
+    let (mut s1, mut s2) = (sit(&hub, "lobby", "s1", None), sit(&hub, "lobby", "s2", None));
+    let node = send_node(json!({ "body": { "text": "hi" }, "event": "chat" }), Some(hub.clone()), None).unwrap();
     let out = node.execute_async(from_room("lobby", "s1")).await.unwrap();
 
     assert_eq!(out.payload["message"], json!({ "sent": true, "room": "lobby", "event": "chat" }));
     assert_eq!(out.payload["kept"], 1, "the rest of the payload is kept");
     assert_eq!(out.payload["room"]["room_id"], "lobby");
-    let got = rx.recv().await.expect("event");
-    assert!(got.is_for("s1", None) && got.is_for("s2", None), "all is the default recipient");
-    let wire: Value = serde_json::from_str(&got.text).unwrap();
+    let wire = got(&mut s1).expect("event");
+    assert_eq!(got(&mut s2), Some(wire.clone()), "all is the default recipient");
     assert_eq!(wire, json!({ "type": "event", "event": "chat", "payload": { "text": "hi" } }));
 }
 
 #[tokio::test]
 async fn a_named_room_needs_no_trigger_and_the_event_defaults() {
-    let (hub, handle, _guard) = hub_with("dashboard");
-    let mut rx = handle.subscribe();
-    let node = send_node(json!({ "room": "dashboard", "body": 3 }), Some(hub), None).unwrap();
+    let (hub, _handle, _guard) = hub_with("dashboard");
+    let mut sock = sit(&hub, "dashboard", "s1", None);
+    let node = send_node(json!({ "room": "dashboard", "body": 3 }), Some(hub.clone()), None).unwrap();
     let out = node.execute_async(input(json!({}))).await.unwrap();
     assert_eq!(out.payload["message"], json!({ "sent": true, "room": "dashboard", "event": "event" }));
-    let wire: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
-    assert_eq!(wire["payload"], 3);
+    assert_eq!(got(&mut sock).expect("event")["payload"], 3);
 }
 
 #[tokio::test]
@@ -173,12 +186,11 @@ async fn an_exact_room_that_is_not_open_is_an_error() {
 #[tokio::test]
 async fn a_pattern_reaches_every_open_room_it_matches_and_counts_them() {
     let hub = hub_opening("zone-*", &["zone-1", "zone-2"]);
-    let mut one = hub.room("demo", "site-a", "zone-1").unwrap().subscribe();
-    let mut two = hub.room("demo", "site-a", "zone-2").unwrap().subscribe();
+    let (mut one, mut two) = (sit(&hub, "zone-1", "s1", None), sit(&hub, "zone-2", "s2", None));
     let node = send_node(json!({ "room": "zone-*", "body": "hi", "event": "notice" }), Some(hub.clone()), None).unwrap();
     let out = node.execute_async(input(json!({}))).await.unwrap();
     assert_eq!(out.payload["message"], json!({ "sent": true, "rooms": 2, "event": "notice" }));
-    assert!(one.recv().await.is_ok() && two.recv().await.is_ok());
+    assert!(got(&mut one).is_some() && got(&mut two).is_some());
     let none = send_node(json!({ "room": "arena-*", "body": "hi" }), Some(hub), None).unwrap();
     let out = none.execute_async(input(json!({}))).await.expect("no room is not an error");
     assert_eq!(out.payload["message"], json!({ "sent": false, "rooms": 0, "event": "event" }));
@@ -186,13 +198,13 @@ async fn a_pattern_reaches_every_open_room_it_matches_and_counts_them() {
 
 #[tokio::test]
 async fn a_user_recipient_reaches_every_session_of_that_identity() {
-    let (hub, handle, _seat) = hub_with("notifications");
-    let mut rx = handle.subscribe();
+    let (hub, _handle, _seat) = hub_with("notifications");
+    let mut socks: Vec<Sock> =
+        [("s1", Some("u-17")), ("s2", Some("u-17")), ("s3", Some("u-18")), ("s4", None)].iter().map(|(id, user)| sit(&hub, "notifications", id, *user)).collect();
     let node = send_node(json!({ "room": "notifications", "body": "x", "recipient": "user:u-17" }), Some(hub.clone()), None).unwrap();
     node.execute_async(input(json!({}))).await.expect("no triggering session needed");
-    let got = rx.recv().await.unwrap();
-    assert!(got.is_for("s1", Some("u-17")) && got.is_for("s2", Some("u-17")));
-    assert!(!got.is_for("s3", Some("u-18")) && !got.is_for("s4", None));
+    let reached: Vec<bool> = socks.iter_mut().map(|sock| got(sock).is_some()).collect();
+    assert_eq!(reached, [true, true, false, false], "every session of u-17 and no other");
     for bad in ["user:", "user", "team:red"] {
         assert_eq!(code(send_node(json!({ "room": "notifications", "body": "x", "recipient": bad }), Some(hub.clone()), None)), message_send::CONFIG_CODE, "{bad}");
     }
@@ -200,13 +212,12 @@ async fn a_user_recipient_reaches_every_session_of_that_identity() {
 
 #[tokio::test]
 async fn a_session_or_others_send_targets_the_triggering_socket() {
-    let (hub, handle, _guard) = hub_with("lobby");
-    let mut rx = handle.subscribe();
+    let (hub, _handle, _guard) = hub_with("lobby");
+    let (mut s1, mut s2) = (sit(&hub, "lobby", "s1", None), sit(&hub, "lobby", "s2", None));
     for (recipient, to_s1, to_s2) in [("session", true, false), ("others", false, true)] {
         let node = send_node(json!({ "body": "x", "recipient": recipient }), Some(hub.clone()), None).unwrap();
         node.execute_async(from_room("lobby", "s1")).await.unwrap();
-        let got = rx.recv().await.unwrap();
-        assert_eq!((got.is_for("s1", None), got.is_for("s2", None)), (to_s1, to_s2), "{recipient}");
+        assert_eq!((got(&mut s1).is_some(), got(&mut s2).is_some()), (to_s1, to_s2), "{recipient}");
     }
     // Without a triggering session there is nobody to single out.
     let node = send_node(json!({ "room": "lobby", "body": "x", "recipient": "session" }), Some(hub), None).unwrap();
@@ -273,16 +284,16 @@ async fn put_update_and_delete_change_the_rooms_state() {
         }
     };
 
-    let after = state_after(&handle, run(Verb::Put, json!({ "key": "/players/s1", "value": { "x": 0, "y": 0 } }))).await;
+    let after = state_after(&hub, &handle, run(Verb::Put, json!({ "key": "/players/s1", "value": { "x": 0, "y": 0 } }))).await;
     assert_eq!(after, json!({ "players": { "s1": { "x": 0, "y": 0 } } }));
 
-    let after = state_after(&handle, run(Verb::Update, json!({ "key": "/players/s1", "value": { "x": 5 } }))).await;
+    let after = state_after(&hub, &handle, run(Verb::Update, json!({ "key": "/players/s1", "value": { "x": 5 } }))).await;
     assert_eq!(after, json!({ "players": { "s1": { "x": 5, "y": 0 } } }), "update merges");
 
-    let after = state_after(&handle, run(Verb::Put, json!({ "key": "/players/s1", "value": { "x": 9 } }))).await;
+    let after = state_after(&hub, &handle, run(Verb::Put, json!({ "key": "/players/s1", "value": { "x": 9 } }))).await;
     assert_eq!(after, json!({ "players": { "s1": { "x": 9 } } }), "put replaces");
 
-    let after = state_after(&handle, run(Verb::Delete, json!({ "key": "/players/s1" }))).await;
+    let after = state_after(&hub, &handle, run(Verb::Delete, json!({ "key": "/players/s1" }))).await;
     assert_eq!(after, json!({ "players": {} }));
 }
 
@@ -318,11 +329,11 @@ async fn a_key_part_from_the_payload_is_written_with_braces_and_resolved_by_the_
         trigger: None,
         placeholder: None,
     };
+    let mut sock = sit(&hub, "lobby", "s1", None);
     let engine = BasicPipelineEngine::default().with_ws_hub(hub);
-    let mut rx = handle.subscribe();
     let out = engine.execute_async(&graph, &ctx).await.expect("run");
     assert_eq!(out.value["state"], json!({ "key": "/players/s1", "room": "lobby" }));
-    rx.recv().await.expect("state broadcast");
+    assert_eq!(got(&mut sock).expect("a patch")["type"], "patch");
     assert_eq!(handle.get_state(), json!({ "players": { "s1": { "x": 1 } } }));
 
     // A part that resolves empty leaves an empty segment, which is refused
@@ -337,7 +348,7 @@ async fn a_key_part_from_the_payload_is_written_with_braces_and_resolved_by_the_
 /// the trigger answers under `room`.
 #[tokio::test]
 async fn a_room_send_after_trigger_room_reaches_the_triggering_room() {
-    let (hub, handle, _guard) = hub_with("lobby");
+    let (hub, _handle, _guard) = hub_with("lobby");
     let graph = build_pipeline_graph(
         "ws-send",
         r#"| trigger.room --room lobby --event move | ws.message.send --event moved --recipient others --body "{{ input.room.payload }}""#,
@@ -354,15 +365,13 @@ async fn a_room_send_after_trigger_room_reaches_the_triggering_room() {
         trigger: Some(envelope),
         placeholder: None,
     };
+    let (mut s1, mut s2) = (sit(&hub, "lobby", "s1", None), sit(&hub, "lobby", "s2", None));
     let engine = BasicPipelineEngine::default().with_ws_hub(hub);
-    let mut rx = handle.subscribe();
     let out = engine.execute_async(&graph, &ctx).await.expect("run");
     assert_eq!(out.value["message"], json!({ "sent": true, "room": "lobby", "event": "moved" }));
     assert_eq!(out.value["room"]["session_id"], "s1", "the trigger's answer stays");
-    let got = rx.recv().await.expect("event");
-    assert_eq!((got.is_for("s1", None), got.is_for("s2", None)), (false, true), "others: everyone but the sender");
-    let wire: Value = serde_json::from_str(&got.text).unwrap();
-    assert_eq!(wire["payload"], json!({ "x": 1 }));
+    assert_eq!(got(&mut s1), None, "others: everyone but the sender");
+    assert_eq!(got(&mut s2).expect("event")["payload"], json!({ "x": 1 }));
 }
 
 #[tokio::test]

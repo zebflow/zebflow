@@ -18,9 +18,10 @@
 //!   `FW_NODE_WS_ROOM_NOT_OPEN`, and a pattern is refused.
 //! - A change that would take the state past the room's `--max-state` is
 //!   refused (`…_FULL`) and the state is left as it was.
-//! - Every client in the room is sent the full state at once; `--batch`
-//!   instead lets the room's 33 ms tick send it, at most once a tick — for
-//!   streams of ten or more changes a second.
+//! - Every client in the room is sent a `patch` of what changed at once;
+//!   `--batch` instead lets the room's 33 ms tick send it, at most once a
+//!   tick — for streams of ten or more changes a second. In a tick room it
+//!   goes out once, after the tick.
 //!
 //! The answer is `state: { key, room }`; the payload is kept.
 
@@ -144,12 +145,12 @@ pub fn definition(verb: Verb) -> NodeDefinition {
     dsl_flags.push(flag("--room", "room", "The exact room; default: the room of the trigger.room that started the run.", "text", false));
     dsl_flags.push(DslFlag {
         kind: DslFlagKind::Bool,
-        ..flag("--batch", "batch", "Let the room's 33 ms tick send the state, at most once a tick — for 10+ changes a second.", "", false)
+        ..flag("--batch", "batch", "Let the room's 33 ms tick send the change, at most once a tick — for 10+ changes a second.", "", false)
     });
     fields.push(field("room", "Room", "The exact room; empty: the room of the trigger.room that started the run."));
     fields.push(NodeFieldDef {
         field_type: NodeFieldType::Checkbox,
-        ..field("batch", "Batch", "Send the state on the room's 33 ms tick instead of at once.")
+        ..field("batch", "Batch", "Send the change on the room's 33 ms tick instead of at once.")
     });
     let mut layout = vec![LayoutItem::Field("key".to_string())];
     if verb != Verb::Delete {
@@ -181,8 +182,8 @@ pub fn definition(verb: Verb) -> NodeDefinition {
             "{does} The room's shared state is what every client of the room mirrors. `--key` is a JSON pointer; a part from \
              the payload is written with {{{{ }}}}, and a segment that resolves empty is refused. `--room` is an exact room \
              (a room that is not open is `FW_NODE_WS_ROOM_NOT_OPEN`); without it the room is the one of the `trigger.room` \
-             that started the run. A change past the room's `--max-state` is refused. Clients get the full state at once, \
-             or with `--batch` on the room's 33 ms tick. Adds `state: {{ key, room }}` and keeps the rest of the payload. Sending an event \
+             that started the run. A change past the room's `--max-state` is refused. Clients get a `patch` of only what \
+             changed at once, or with `--batch` on the room's 33 ms tick (in a tick room, after the tick). Adds `state: {{ key, room }}` and keeps the rest of the payload. Sending an event \
              without changing state is `ws.message.send`."
         ),
         input_schema: json!({ "type": "object", "description": "Any payload; it is kept and `state` is added." }),

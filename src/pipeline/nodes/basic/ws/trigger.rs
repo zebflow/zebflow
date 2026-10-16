@@ -121,7 +121,8 @@ pub fn definition() -> NodeDefinition {
             order — at most `--max-inputs` (default 30) per session, the rest dropped and counted; ticks never overlap (one that \
             outlasts `--every` delays the next and counts a tick_overrun), an empty tick still runs, and state changes go out \
             once, after the tick. The client is a plain `WebSocket` to `/ws/{owner}/{project}/rooms/{room}` (`?ticket=` for a private room) \
-            receiving `joined`, `state_patch`, `event` and `resync` (help topic `pipeline/examples/realtime-game`)."
+            naming the protocol `zebflow.rooms.v1`, receiving `joined`, `patch`, `event` and `resync` (help topic \
+            `pipeline/rooms-protocol`)."
             .to_string(),
         input_schema: json!({
             "type": "object",

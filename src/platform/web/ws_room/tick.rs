@@ -6,8 +6,9 @@
 //! `input.room: { room_id, event: "$tick", tick, dt_ms, inputs }`, every
 //! waiting input in arrival order; an empty tick runs too, since timers and
 //! respawns live in state. Ticks never overlap: one that outlasts `--every`
-//! delays the next and counts a `tick_overrun`. The state changes the tick
-//! made go out once, when it ends.
+//! delays the next and counts a `tick_overrun`. What the tick changed and
+//! sent goes out once, when it ends: one `patch { tick, ops, events }` per
+//! session.
 //!
 //! `$connect` and `$disconnect` run their own triggers as they arrive — but a
 //! `$disconnect` whose session still has inputs waiting runs right after the
@@ -117,19 +118,21 @@ impl Ticker {
             .iter()
             .map(|e| json!({ "session": e.session, "event": e.event, "payload": e.payload, "auth": e.auth }))
             .collect();
+        let tick = room.counter(Counter::Ticks);
         let input = json!({
             "room_id": ctx.room_id,
             "event": TICK_EVENT,
-            "tick": room.counter(Counter::Ticks),
+            "tick": tick,
             "dt_ms": dt_ms,
             "inputs": inputs,
         });
+        room.begin_tick();
         for compiled in resolved.for_event(&ctx.room_id, TICK_EVENT) {
             run_pipeline(ctx, room, resolved, compiled, input.clone(), "tick").await;
         }
         // Handled: each session's inputs stop counting as waiting.
         drop(taken);
-        room.flush();
+        room.end_tick(tick);
         if start.elapsed() > spec.every() {
             room.count(Counter::TickOverruns);
             self.next_at = Some(Instant::now());

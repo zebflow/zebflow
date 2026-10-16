@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::published_mcp::{OWNER, PROJECT, app_at, dsl, login, publish, send, temp_dir};
-use super::ws_rooms::{Socket, connect, hook, next_of, serve};
+use super::ws_rooms::{Socket, connect, hook, next, next_of, serve};
 
 async fn say(socket: &mut Socket, event: &str, payload: Value) {
     socket.send(Message::Text(json!({ "event": event, "payload": payload }).to_string().into())).await.expect("send");
@@ -240,6 +240,24 @@ async fn ticks(app: &axum::Router, cookie: &str, room: &str) -> u64 {
     listed(app, cookie, room).await["counters"]["ticks"].as_u64().expect("ticks")
 }
 
+#[tokio::test]
+async fn a_tick_sends_one_frame_with_the_state_it_changed_and_the_events_it_sent() {
+    let root = temp_dir("ws-room-tick-frame");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "bell-tick", r#"| trigger.room --room bell --event $tick --every 50ms | ws.state.put --key /tick --value "{{ input.room.tick }}" | ws.message.send --event rang --body "{{ input.room.tick }}""#).await;
+    let address = serve(app, &cookie).await;
+    let mut socket = connect(address, "bell", &[]).await;
+    next_of(&mut socket, "joined").await;
+    for _ in 0..3 {
+        let frame = next(&mut socket).await.expect("a frame");
+        assert_eq!(frame["type"], "patch", "nothing but one patch per tick: {frame}");
+        let tick = frame["tick"].clone();
+        assert_eq!(frame["ops"], json!([ { "op": "set", "path": ["tick"], "value": tick } ]), "{frame}");
+        assert_eq!(frame["events"], json!([ { "event": "rang", "payload": tick } ]), "{frame}");
+    }
+}
+
 /// One thread serves HTTP here, so a webhook that keeps it busy stops
 /// everything on it: the room must not be on it.
 #[tokio::test]
@@ -258,7 +276,7 @@ async fn a_slow_webhook_does_not_delay_a_tick() {
     let address = serve(app.clone(), &cookie).await;
     let mut socket = connect(address, "clock", &[]).await;
     next_of(&mut socket, "joined").await;
-    next_of(&mut socket, "state_patch").await;
+    next_of(&mut socket, "patch").await;
 
     let before = ticks(&app, &cookie, "clock").await;
     let started = std::time::Instant::now();

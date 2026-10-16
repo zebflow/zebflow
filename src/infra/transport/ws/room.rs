@@ -4,9 +4,10 @@
 //! A room is a value the hub ([`super::WsHub`]) registers. While it has
 //! sessions, one room loop takes its queue ([`super::queue`]) in order; with
 //! none, nothing runs for it. A state change is applied by the caller, under
-//! the state lock, and broadcast from there, so two writes are sent in the
-//! order they were made; a `--batch` write marks the state dirty and one
-//! short-lived task sends it 33 ms later, at most once a tick.
+//! the state lock, and sent from there, so two writes are sent in the order
+//! they were made; a `--batch` write marks the state dirty and one
+//! short-lived task sends it 33 ms later, at most once a tick. How a send
+//! reaches each session is [`super::delivery`].
 //!
 //! The room also carries what its loop must notice: [`RoomHandle::epoch`]
 //! rises whenever the project's active `trigger.room` set changes, so the
@@ -15,18 +16,17 @@
 //! tick room. In a tick room every state change waits: it goes out once per
 //! tick, after the tick pipeline ends ([`RoomHandle::flush`]).
 //!
-//! # Wire protocol (server → client JSON)
+//! # Wire protocol `zebflow.rooms.v1` (server → client JSON)
 //!
 //! | `type` | Additional fields | When |
 //! |---|---|---|
-//! | `"joined"` | `session_id`, `room`, `state` | Sent by the socket handler on connect |
-//! | `"state_patch"` | `state` | After a state change (at once, or on the batch tick) |
-//! | `"event"` | `event`, `payload` | After [`RoomHandle::emit`] |
+//! | `"joined"` | `session_id`, `room`, `state`, `resume?` | Sent by the socket handler on connect |
+//! | `"patch"` | `ops`; in a tick room also `tick`, `events` | After a state change (at once, on the batch tick, or once per tick) |
+//! | `"event"` | `event`, `payload` | After [`RoomHandle::emit`], outside a tick |
 //! | `"resync"` | `state` | Sent by the socket handler when a session fell behind |
 //!
-//! Delivery is decided on the server: every [`RoomBroadcast`] carries its
-//! [`EmitTarget`], and each session's socket loop forwards only what
-//! [`RoomBroadcast::is_for`] admits.
+//! Delivery is decided on the server: a frame is queued only for the
+//! sessions its [`EmitTarget`] selects.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -34,13 +34,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::sync::{Notify, mpsc};
 
+use super::delivery::{self, Attached, Delivery, Member};
 use super::queue::{RoomEvent, RoomQueue, SessionQueue};
-
-/// Capacity of the per-room broadcast channel. A session that falls further
-/// behind is sent `resync` with the whole state.
-pub const BROADCAST_CAPACITY: usize = 256;
 
 /// How long a `--batch` change waits before it is sent (≈ 30 fps).
 pub const BATCH_TICK: Duration = Duration::from_millis(33);
@@ -73,27 +70,6 @@ pub enum EmitTarget {
     Others(String),
     /// Every session of this identity (`user:<sub>`).
     User(String),
-}
-
-/// One message on a room's broadcast channel: the JSON text and who it is for.
-#[derive(Debug, Clone)]
-pub struct RoomBroadcast {
-    /// Serialised JSON, shared by every receiver.
-    pub text: Arc<str>,
-    /// Which sessions may receive it.
-    pub to: EmitTarget,
-}
-
-impl RoomBroadcast {
-    /// Whether the session `session_id`, signed in as `user`, may receive this.
-    pub fn is_for(&self, session_id: &str, user: Option<&str>) -> bool {
-        match &self.to {
-            EmitTarget::All => true,
-            EmitTarget::Session(id) => id == session_id,
-            EmitTarget::Others(id) => id != session_id,
-            EmitTarget::User(sub) => user == Some(sub.as_str()),
-        }
-    }
 }
 
 /// Whether a room was declared by an exact `trigger.room --room` or opened
@@ -195,11 +171,6 @@ pub const KICK_ROOM_CLOSED: Kick = Kick { code: 4410, reason: "room_closed" };
 /// `ws.session.close`: `4409`, `$disconnect { reason: "closed" }`.
 pub const KICK_CLOSED: Kick = Kick { code: 4409, reason: "closed" };
 
-struct Member {
-    user: Option<String>,
-    kick: mpsc::UnboundedSender<Kick>,
-}
-
 /// A state write past the room's `--max-state`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateFull {
@@ -218,8 +189,11 @@ pub struct RoomHandle {
     state: RwLock<Value>,
     state_bytes: AtomicU64,
     dirty: AtomicBool,
-    broadcast_tx: broadcast::Sender<RoomBroadcast>,
+    /// Lock order: `delivery`, then `state`, then `members`.
+    delivery: Mutex<Delivery>,
     members: Mutex<HashMap<String, Member>>,
+    /// Set while a tick's pipelines run: what they send waits for the tick's frame.
+    ticking: AtomicBool,
     counters: Counters,
     last_activity_ms: AtomicI64,
     empty_since: Mutex<Option<Instant>>,
@@ -248,7 +222,6 @@ fn rfc3339(ms: i64) -> String {
 impl RoomHandle {
     /// A new, empty room.
     pub fn new(name: &str, kind: RoomKind, settings: RoomSettings) -> Arc<Self> {
-        let (broadcast_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let now = now_ms();
         Arc::new(Self {
             name: name.to_string(),
@@ -259,8 +232,9 @@ impl RoomHandle {
             state: RwLock::new(json!({})),
             state_bytes: AtomicU64::new(2),
             dirty: AtomicBool::new(false),
-            broadcast_tx,
+            delivery: Mutex::new(Delivery::new()),
             members: Mutex::new(HashMap::new()),
+            ticking: AtomicBool::new(false),
             counters: Counters::default(),
             last_activity_ms: AtomicI64::new(now),
             empty_since: Mutex::new(Some(Instant::now())),
@@ -328,16 +302,56 @@ impl RoomHandle {
         &self.instance
     }
 
-    /// Subscribe to this room's broadcasts.
-    pub fn subscribe(&self) -> broadcast::Receiver<RoomBroadcast> {
-        self.broadcast_tx.subscribe()
+    fn delivery(&self) -> std::sync::MutexGuard<'_, Delivery> {
+        self.delivery.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Send a named event to the sessions `to` selects.
+    fn members(&self) -> std::sync::MutexGuard<'_, HashMap<String, Member>> {
+        self.members.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Send a named event to the sessions `to` selects: an `event` frame at
+    /// once, or, while a tick runs, a part of the tick's frame.
     pub fn emit(&self, event: &str, payload: Value, to: EmitTarget) {
-        let msg = json!({ "type": "event", "event": event, "payload": payload });
-        let _ = self.broadcast_tx.send(RoomBroadcast { text: msg.to_string().into(), to });
+        let mut delivery = self.delivery();
+        if self.ticking.load(Ordering::Acquire) {
+            delivery.hold_for_tick(event, payload, to);
+        } else {
+            delivery.send_event(&delivery::event_frame(event, &payload), &to, &mut self.members());
+        }
+        drop(delivery);
         self.touch();
+    }
+
+    /// Give the socket of the seated session `session_id` its frames and its
+    /// whole view; `None` when it holds no seat.
+    pub fn attach(&self, session_id: &str) -> Option<Attached> {
+        let mut delivery = self.delivery();
+        let mut members = self.members();
+        members.get_mut(session_id).map(|member| delivery.attach(member))
+    }
+
+    /// The seat stays, but no socket holds it: nothing is sent to it.
+    pub fn detach(&self, session_id: &str) {
+        let _delivery = self.delivery();
+        if let Some(member) = self.members().get_mut(session_id) {
+            delivery::detach(member);
+        }
+    }
+
+    /// Whether the session fell more than a backlog behind.
+    pub fn is_behind(&self, session_id: &str) -> bool {
+        self.members().get(session_id).is_some_and(delivery::is_behind)
+    }
+
+    /// A behind session's whole view, from which its next patch follows;
+    /// its socket has dropped every frame it had queued.
+    pub fn resync(&self, session_id: &str) -> Option<Value> {
+        let mut delivery = self.delivery();
+        let mut members = self.members();
+        let view = members.get_mut(session_id).map(|member| delivery.resync(member))?;
+        self.count(Counter::Resyncs);
+        Some(view)
     }
 
     /// The room's state now.
@@ -387,10 +401,10 @@ impl RoomHandle {
             return Err(StateFull { limit, would_be: text.len() as u64 });
         }
         self.state_bytes.store(text.len() as u64, Ordering::Relaxed);
-        // A batch change still waiting goes out with this one.
-        self.dirty.store(false, Ordering::Release);
-        let _ = self.broadcast_tx.send(state_patch(&text));
         drop(state);
+        // A batch change still waiting goes out with this one.
+        self.dirty.store(true, Ordering::Release);
+        self.send_changes(None);
         self.touch();
         Ok(())
     }
@@ -404,20 +418,43 @@ impl RoomHandle {
         });
     }
 
-    /// Send the state if a change is waiting: a batch's 33 ms, or a tick's end.
+    /// Send what changed if a change is waiting (a batch's 33 ms).
     pub fn flush(&self) {
-        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-        if self.dirty.swap(false, Ordering::AcqRel) {
-            let text = state.to_string();
-            self.state_bytes.store(text.len() as u64, Ordering::Relaxed);
-            let _ = self.broadcast_tx.send(state_patch(&text));
+        self.send_changes(None);
+    }
+
+    /// A tick's pipelines start: what they send waits for its frame.
+    pub fn begin_tick(&self) {
+        self.ticking.store(true, Ordering::Release);
+    }
+
+    /// A tick ended: one frame per session carries the state it changed and
+    /// the events it sent.
+    pub fn end_tick(&self, tick: u64) {
+        self.ticking.store(false, Ordering::Release);
+        self.send_changes(Some(tick));
+    }
+
+    /// Send every session what changed since the last send.
+    fn send_changes(&self, tick: Option<u64>) {
+        let mut delivery = self.delivery();
+        let dirty = self.dirty.swap(false, Ordering::AcqRel);
+        if !dirty && (tick.is_none() || !delivery.has_tick_events()) {
+            return;
         }
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if dirty {
+            self.state_bytes.store(json_len(&state), Ordering::Relaxed);
+        }
+        delivery.send_changes(state, &mut self.members(), tick);
     }
 
     /// Forget the state (a fixed room whose last session left).
     fn reset_state(&self) {
+        let mut delivery = self.delivery();
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         *state = json!({});
+        delivery.reset();
         self.state_bytes.store(2, Ordering::Relaxed);
         self.dirty.store(false, Ordering::Release);
     }
@@ -448,10 +485,7 @@ impl RoomHandle {
     }
 
     pub(super) fn add_member(&self, session_id: &str, user: Option<String>, kick: mpsc::UnboundedSender<Kick>) {
-        self.members
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(session_id.to_string(), Member { user, kick });
+        self.members().insert(session_id.to_string(), Member::new(user, kick));
         *self.empty_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.touch();
     }
@@ -488,13 +522,7 @@ impl RoomHandle {
         let members = self.members.lock().unwrap_or_else(|e| e.into_inner());
         let mut closed = 0;
         for (id, member) in members.iter() {
-            let hit = match which {
-                EmitTarget::All => true,
-                EmitTarget::Session(s) => s == id,
-                EmitTarget::Others(s) => s != id,
-                EmitTarget::User(sub) => member.user.as_deref() == Some(sub.as_str()),
-            };
-            if hit && member.kick.send(kick).is_ok() {
+            if member.is_targeted(which, id) && member.kick.send(kick).is_ok() {
                 closed += 1;
             }
         }
@@ -541,13 +569,6 @@ impl RoomHandle {
             entry["members"] = json!(self.member_users());
         }
         entry
-    }
-}
-
-fn state_patch(state_text: &str) -> RoomBroadcast {
-    RoomBroadcast {
-        text: format!(r#"{{"type":"state_patch","state":{state_text}}}"#).into(),
-        to: EmitTarget::All,
     }
 }
 
@@ -635,42 +656,83 @@ mod tests {
         RoomHandle::new("lobby", RoomKind::Opened, RoomSettings { max_state, ..RoomSettings::fixed("t") })
     }
 
+    /// Seat `id` signed in as `user` and attach a socket to it.
+    pub(crate) fn seat(room: &RoomHandle, id: &str, user: Option<&str>) -> (Attached, mpsc::UnboundedReceiver<Kick>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        room.add_member(id, user.map(str::to_string), tx);
+        (room.attach(id).expect("seated"), rx)
+    }
+
+    /// The next frame queued for a session, read.
+    pub(crate) fn frame(attached: &mut Attached) -> Option<Value> {
+        attached.frames.try_recv().ok().map(|text| serde_json::from_str(&text).expect("json"))
+    }
+
     #[test]
-    fn a_target_selects_sessions_and_identities() {
-        let b = |to| RoomBroadcast { text: "{}".into(), to };
-        assert!(b(EmitTarget::Session("s1".into())).is_for("s1", None));
-        assert!(!b(EmitTarget::Session("s1".into())).is_for("s2", None));
-        assert!(!b(EmitTarget::Others("s1".into())).is_for("s1", None));
-        assert!(b(EmitTarget::Others("s1".into())).is_for("s2", None));
-        assert!(b(EmitTarget::User("u-17".into())).is_for("s9", Some("u-17")));
-        assert!(!b(EmitTarget::User("u-17".into())).is_for("s9", Some("u-18")));
-        assert!(!b(EmitTarget::User("u-17".into())).is_for("s9", None));
-    }
-
-    #[tokio::test]
-    async fn an_emit_reaches_subscribers_with_its_target() {
+    fn an_emit_reaches_only_the_sessions_its_target_selects() {
         let room = room(DEFAULT_MAX_STATE);
-        let mut rx = room.subscribe();
+        let (mut s1, _k1) = seat(&room, "s1", Some("u-17"));
+        let (mut s2, _k2) = seat(&room, "s2", Some("u-18"));
         room.emit("hi", json!({ "a": 1 }), EmitTarget::Session("s1".into()));
-        let got = rx.recv().await.expect("broadcast");
-        assert!(got.is_for("s1", None) && !got.is_for("s2", None));
-        let v: Value = serde_json::from_str(&got.text).unwrap();
-        assert_eq!(v, json!({ "type": "event", "event": "hi", "payload": { "a": 1 } }));
+        assert_eq!(frame(&mut s1), Some(json!({ "type": "event", "event": "hi", "payload": { "a": 1 } })));
+        assert_eq!(frame(&mut s2), None);
+        room.emit("bye", json!({}), EmitTarget::Others("s1".into()));
+        assert_eq!((frame(&mut s1), frame(&mut s2).map(|f| f["event"].clone())), (None, Some(json!("bye"))));
+        room.emit("dm", json!({}), EmitTarget::User("u-17".into()));
+        assert_eq!((frame(&mut s1).map(|f| f["event"].clone()), frame(&mut s2)), (Some(json!("dm")), None));
     }
 
     #[tokio::test]
-    async fn a_change_is_sent_at_once_and_a_batch_on_the_tick() {
+    async fn a_change_sends_one_small_patch_at_once_and_a_batch_on_the_tick() {
         let room = room(DEFAULT_MAX_STATE);
-        let mut rx = room.subscribe();
-        room.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
-        let now: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
-        assert_eq!(now, json!({ "type": "state_patch", "state": { "a": 1 } }));
+        room.apply(StateOp::Set, "/players", Some(json!({ "s1": { "x": 0, "y": 0 }, "s2": { "x": 9, "y": 9 } })), false).unwrap();
+        let (mut s1, _k) = seat(&room, "s1", None);
+        assert_eq!(s1.view, json!({ "players": { "s1": { "x": 0, "y": 0 }, "s2": { "x": 9, "y": 9 } } }), "attach gives the whole view");
+        room.apply(StateOp::Merge, "/players/s1", Some(json!({ "x": 1 })), false).unwrap();
+        assert_eq!(
+            frame(&mut s1),
+            Some(json!({ "type": "patch", "ops": [ { "op": "set", "path": ["players", "s1", "x"], "value": 1 } ] })),
+            "only the changed leaf, not the state"
+        );
         room.apply(StateOp::Set, "/b", Some(json!(2)), true).unwrap();
-        room.apply(StateOp::Set, "/c", Some(json!(3)), true).unwrap();
-        assert!(rx.try_recv().is_err(), "a batch waits for the tick");
-        let tick: Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
-        assert_eq!(tick["state"], json!({ "a": 1, "b": 2, "c": 3 }), "two batch changes, one send");
-        assert!(rx.try_recv().is_err());
+        room.apply(StateOp::Delete, "/players/s2", None, true).unwrap();
+        assert_eq!(frame(&mut s1), None, "a batch waits for the tick");
+        tokio::time::sleep(BATCH_TICK * 3).await;
+        let tick = frame(&mut s1).expect("one send");
+        assert_eq!(tick["ops"], json!([ { "op": "del", "path": ["players", "s2"] }, { "op": "set", "path": ["b"], "value": 2 } ]), "two batch changes, one patch");
+        assert_eq!(frame(&mut s1), None);
+        room.apply(StateOp::Set, "/b", Some(json!(2)), false).unwrap();
+        assert_eq!(frame(&mut s1), None, "a write that changes nothing sends nothing");
+    }
+
+    #[test]
+    fn a_session_that_falls_behind_is_skipped_until_it_resyncs() {
+        let room = room(DEFAULT_MAX_STATE);
+        let (mut slow, _k) = seat(&room, "slow", None);
+        for i in 0..delivery::SESSION_BACKLOG + 5 {
+            room.apply(StateOp::Set, "/n", Some(json!(i)), false).unwrap();
+        }
+        assert!(room.is_behind("slow"));
+        while slow.frames.try_recv().is_ok() {}
+        assert_eq!(room.resync("slow"), Some(json!({ "n": delivery::SESSION_BACKLOG + 4 })), "the whole view as last sent");
+        assert!(!room.is_behind("slow"));
+        room.apply(StateOp::Set, "/n", Some(json!(0)), false).unwrap();
+        assert_eq!(frame(&mut slow).unwrap()["ops"], json!([ { "op": "set", "path": ["n"], "value": 0 } ]), "patches follow the resync");
+        assert_eq!(room.counter(Counter::Resyncs), 1);
+    }
+
+    #[test]
+    fn a_detached_seat_is_sent_nothing_and_attaching_again_gives_the_whole_view() {
+        let room = room(DEFAULT_MAX_STATE);
+        let (mut first, _k) = seat(&room, "s1", None);
+        room.detach("s1");
+        room.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        room.emit("hi", json!({}), EmitTarget::All);
+        assert_eq!(frame(&mut first), None);
+        assert_eq!(room.session_count(), 1, "the seat stays");
+        let mut again = room.attach("s1").expect("seated");
+        assert_eq!(again.view, json!({ "a": 1 }));
+        assert_eq!(frame(&mut again), None);
     }
 
     #[test]
@@ -701,25 +763,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tick_room_sends_its_state_once_when_the_tick_ends() {
+    async fn a_tick_sends_one_frame_with_its_ops_and_its_events() {
         let room = room(DEFAULT_MAX_STATE);
         room.redeclared(Some(TickSpec { every_ms: 50, max_inputs: 30 }));
-        let mut rx = room.subscribe();
+        let (mut s1, _k1) = seat(&room, "s1", None);
+        let (mut s2, _k2) = seat(&room, "s2", None);
         room.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        room.begin_tick();
         room.apply(StateOp::Set, "/b", Some(json!(2)), true).unwrap();
+        room.emit("hit", json!({ "by": "s1" }), EmitTarget::All);
+        room.emit("you", json!({}), EmitTarget::Session("s2".into()));
         tokio::time::sleep(BATCH_TICK * 2).await;
-        assert!(rx.try_recv().is_err(), "nothing goes out during the tick, not even a batch");
+        assert_eq!(frame(&mut s1), None, "nothing goes out during the tick, not even a batch or an event");
         assert_eq!(room.get_state(), json!({ "a": 1, "b": 2 }), "the state itself changed at once");
-        room.flush();
-        let sent: Value = serde_json::from_str(&rx.try_recv().expect("one send").text).unwrap();
-        assert_eq!(sent["state"], json!({ "a": 1, "b": 2 }));
-        room.flush();
-        assert!(rx.try_recv().is_err(), "an unchanged state is not sent again");
+        room.end_tick(7);
+        let ops = json!([ { "op": "set", "path": ["a"], "value": 1 }, { "op": "set", "path": ["b"], "value": 2 } ]);
+        assert_eq!(
+            frame(&mut s1),
+            Some(json!({ "type": "patch", "tick": 7, "ops": ops, "events": [ { "event": "hit", "payload": { "by": "s1" } } ] }))
+        );
+        assert_eq!(frame(&mut s2).unwrap()["events"], json!([ { "event": "hit", "payload": { "by": "s1" } }, { "event": "you", "payload": {} } ]));
+        assert_eq!((frame(&mut s1), frame(&mut s2)), (None, None), "one frame per tick");
+        room.begin_tick();
+        room.end_tick(8);
+        assert_eq!(frame(&mut s1), None, "a tick that changed nothing sends nothing");
+        room.emit("between", json!({}), EmitTarget::All);
+        assert_eq!(frame(&mut s1).unwrap()["type"], "event", "outside a tick an event goes out as an event frame");
         assert_eq!(room.describe(false)["mode"], "tick");
         room.redeclared(None);
         assert_eq!(room.describe(false)["mode"], "event");
         room.apply(StateOp::Set, "/a", Some(json!(3)), false).unwrap();
-        assert!(rx.try_recv().is_ok(), "an event room sends at once again");
+        assert!(frame(&mut s1).is_some(), "an event room sends at once again");
     }
 
     #[test]

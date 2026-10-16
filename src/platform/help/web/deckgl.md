@@ -420,13 +420,24 @@ export default function LiveFleet(input) {
 
   useEffect(() => {
     const ws = new WebSocket(
-      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${input.script.ws}`
+      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${input.script.ws}`,
+      "zebflow.rooms.v1"
     );
+    let state = {};
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.type === "state_patch") {
-        // ws.state.* sends the room's FULL state on every change.
-        setVehicles(msg.state?.vehicles || []);
+      if (msg.type === "joined" || msg.type === "resync") {
+        // The whole state, once; after it only what changed.
+        state = msg.state;
+        setVehicles(state.vehicles || []);
+      } else if (msg.type === "patch") {
+        // ws.state.* sends only what changed: set / del at a path of keys.
+        for (const { op, path, value } of msg.ops) {
+          let at = state;
+          for (const key of path.slice(0, -1)) at = at[key] ??= {};
+          if (op === "set") at[path[path.length - 1]] = value; else delete at[path[path.length - 1]];
+        }
+        setVehicles([...(state.vehicles || [])]);
       } else if (msg.type === "event" && msg.event === "telemetry") {
         // ws.message.send sends one event; merge it into what we have.
         setVehicles(prev => {
