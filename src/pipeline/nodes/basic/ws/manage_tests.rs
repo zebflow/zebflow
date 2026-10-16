@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{ROOM_NOT_OPEN_CODE, build, room_close, room_list, room_open, session_close, ticket_create};
-use crate::infra::transport::ws::{KICK_CLOSED, KICK_ROOM_CLOSED, RoomSettings, WsHub};
+use crate::infra::transport::ws::{KICK_CLOSED, KICK_ROOM_CLOSED, RoomDecl, RoomSettings, WsHub};
 use crate::pipeline::PipelineError;
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput};
 
@@ -16,7 +16,7 @@ fn hub() -> Arc<WsHub> {
     hub.declare(
         "demo",
         "site-a",
-        &[("lobby".to_string(), "pipelines/lobby".to_string()), ("match-:id".to_string(), "pipelines/match".to_string())],
+        &[RoomDecl::new("lobby", "pipelines/lobby"), RoomDecl::new("match-:id", "pipelines/match")],
     );
     hub
 }

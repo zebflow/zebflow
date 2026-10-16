@@ -26,7 +26,7 @@ pub use pattern::RoomPattern;
 pub use queue::{MAX_PENDING_PER_SESSION, RoomEvent, RoomQueue, SessionQueue};
 pub use room::{
     Counter, EmitTarget, KICK_CLOSED, KICK_ROOM_CLOSED, Kick, RoomBroadcast, RoomHandle, RoomKind, RoomSettings,
-    StateFull, StateOp,
+    StateFull, StateOp, TickSpec,
 };
 pub use ticket::{Ticket, TicketPass};
 
@@ -76,9 +76,37 @@ impl std::fmt::Display for HubRefusal {
     }
 }
 
+/// One active `trigger.room`, as the hub is told of it: its `--room`, its
+/// pipeline, and its tick when it is `--event $tick`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomDecl {
+    pub room: String,
+    pub pipeline: String,
+    pub tick: Option<TickSpec>,
+}
+
+impl RoomDecl {
+    /// A trigger that is not a tick.
+    pub fn new(room: &str, pipeline: &str) -> Self {
+        Self { room: room.to_string(), pipeline: pipeline.to_string(), tick: None }
+    }
+}
+
+/// A [`RoomDecl`] whose `--room` reads.
+struct Declared {
+    pattern: RoomPattern,
+    pipeline: String,
+    tick: Option<TickSpec>,
+}
+
+/// The tick of the first `$tick` trigger that matches `name`.
+fn tick_of(declared: &[Declared], name: &str) -> Option<TickSpec> {
+    declared.iter().filter(|d| d.pattern.matches(name)).find_map(|d| d.tick)
+}
+
 struct Inner {
     /// Lock order: `declared` before `rooms`.
-    declared: Mutex<HashMap<String, Vec<(RoomPattern, String)>>>,
+    declared: Mutex<HashMap<String, Vec<Declared>>>,
     rooms: Mutex<HashMap<String, Arc<RoomHandle>>>,
     tickets: ticket::TicketBook,
     sweeping: AtomicBool,
@@ -140,23 +168,27 @@ impl WsHub {
         self.inner.rooms.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The rooms a project's active `trigger.room` nodes declare, as
-    /// `(--room, pipeline)`. A fixed room appears with its trigger and closes
-    /// (`4410`) when no active trigger names it any more.
-    pub fn declare(&self, owner: &str, project: &str, rooms: &[(String, String)]) {
-        let parsed: Vec<(RoomPattern, String)> = rooms
+    /// The rooms a project's active `trigger.room` nodes declare. A fixed
+    /// room appears with its trigger and closes (`4410`) when no active
+    /// trigger names it any more. Every room of the project learns whether it
+    /// is a tick room and resolves its pipelines again.
+    pub fn declare(&self, owner: &str, project: &str, rooms: &[RoomDecl]) {
+        let parsed: Vec<Declared> = rooms
             .iter()
-            .filter_map(|(room, pipeline)| RoomPattern::parse(room).ok().map(|p| (p, pipeline.clone())))
+            .filter_map(|d| {
+                let pattern = RoomPattern::parse(&d.room).ok()?;
+                Some(Declared { pattern, pipeline: d.pipeline.clone(), tick: d.tick })
+            })
             .collect();
         let mut declared = self.inner.declared.lock().unwrap_or_else(|e| e.into_inner());
         let mut registry = self.rooms();
-        let fixed: HashMap<&str, &str> = parsed
-            .iter()
-            .filter_map(|(p, pipeline)| match p {
-                RoomPattern::Exact(name) => Some((name.as_str(), pipeline.as_str())),
-                _ => None,
-            })
-            .collect();
+        // A fixed room is declared by the first pipeline that names it.
+        let mut fixed: HashMap<&str, &str> = HashMap::new();
+        for d in &parsed {
+            if let RoomPattern::Exact(name) = &d.pattern {
+                fixed.entry(name.as_str()).or_insert(d.pipeline.as_str());
+            }
+        }
         let prefix = format!("{}/", project_key(owner, project));
         registry.retain(|key, room| {
             let gone = key.starts_with(&prefix) && room.kind() == RoomKind::Fixed && !fixed.contains_key(room.name());
@@ -172,7 +204,7 @@ impl WsHub {
         }
         // Every room of the project resolves its pipelines again.
         for (_, room) in registry.iter().filter(|(key, _)| key.starts_with(&prefix)) {
-            room.redeclared();
+            room.redeclared(tick_of(&parsed, room.name()));
         }
         drop(registry);
         if parsed.is_empty() {
@@ -186,10 +218,16 @@ impl WsHub {
     pub fn declares(&self, owner: &str, project: &str, name: &str) -> Option<RoomKind> {
         let declared = self.inner.declared.lock().unwrap_or_else(|e| e.into_inner());
         let patterns = declared.get(&project_key(owner, project))?;
-        if patterns.iter().any(|(p, _)| !p.is_pattern() && p.matches(name)) {
+        if patterns.iter().any(|d| !d.pattern.is_pattern() && d.pattern.matches(name)) {
             return Some(RoomKind::Fixed);
         }
-        patterns.iter().any(|(p, _)| p.is_pattern() && p.matches(name)).then_some(RoomKind::Opened)
+        patterns.iter().any(|d| d.pattern.is_pattern() && d.pattern.matches(name)).then_some(RoomKind::Opened)
+    }
+
+    /// The tick an active `$tick` trigger gives the room `name`, if any.
+    fn declared_tick(&self, owner: &str, project: &str, name: &str) -> Option<TickSpec> {
+        let declared = self.inner.declared.lock().unwrap_or_else(|e| e.into_inner());
+        tick_of(declared.get(&project_key(owner, project))?, name)
     }
 
     /// Open the room `name` under an active pattern.
@@ -202,6 +240,8 @@ impl WsHub {
             None => return Err(HubRefusal::Undeclared(name.to_string())),
             Some(RoomKind::Opened) => {}
         }
+        // Read before `rooms` is locked: `declared` comes first.
+        let tick = self.declared_tick(owner, project, name);
         let room = {
             let mut rooms = self.rooms();
             let key = room_key(owner, project, name);
@@ -209,6 +249,7 @@ impl WsHub {
                 return Err(HubRefusal::Taken(name.to_string()));
             }
             let room = RoomHandle::new(name, RoomKind::Opened, settings);
+            room.redeclared(tick);
             rooms.insert(key, room.clone());
             room
         };
@@ -258,7 +299,9 @@ impl WsHub {
             }
             let sessions = room.kick(&EmitTarget::All, KICK_ROOM_CLOSED);
             if room.kind() == RoomKind::Fixed {
-                rooms.insert(key, RoomHandle::new(room.name(), RoomKind::Fixed, room.settings().clone()));
+                let fresh = RoomHandle::new(room.name(), RoomKind::Fixed, room.settings().clone());
+                fresh.redeclared(room.tick());
+                rooms.insert(key, fresh);
             } else {
                 rooms.remove(&key);
             }

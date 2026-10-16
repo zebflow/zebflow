@@ -7,7 +7,7 @@ const P: &str = "site-a";
 
 fn hub_declaring(rooms: &[&str]) -> WsHub {
     let hub = WsHub::new();
-    let declared: Vec<(String, String)> = rooms.iter().map(|r| (r.to_string(), "pipelines/rooms".to_string())).collect();
+    let declared: Vec<RoomDecl> = rooms.iter().map(|r| RoomDecl::new(r, "pipelines/rooms")).collect();
     hub.declare(O, P, &declared);
     hub
 }
@@ -21,7 +21,7 @@ fn a_fixed_room_exists_while_declared_and_closes_when_not() {
     let hub = hub_declaring(&["lobby", "match-:id"]);
     assert_eq!(hub.list_rooms(), vec!["demo/site-a/lobby".to_string()], "a pattern declares no room by itself");
     let (_room, _guard, mut kicks) = hub.join(O, P, "lobby", "s1", None, None).expect("a fixed room is open");
-    hub.declare(O, P, &[("match-:id".into(), "pipelines/rooms".into())]);
+    hub.declare(O, P, &[RoomDecl::new("match-:id", "pipelines/rooms")]);
     assert!(hub.list_rooms().is_empty(), "no active trigger names lobby any more");
     assert_eq!(kicks.try_recv().unwrap(), KICK_ROOM_CLOSED);
 }
@@ -170,7 +170,7 @@ fn a_room_has_one_queue_in_arrival_order_while_any_session_holds_it() {
 
 #[test]
 fn a_declaration_tells_every_room_of_the_project_to_resolve_again() {
-    let declared = [("lobby".to_string(), "pipelines/rooms".to_string()), ("match-:id".to_string(), "pipelines/rooms".to_string())];
+    let declared = [RoomDecl::new("lobby", "pipelines/rooms"), RoomDecl::new("match-:id", "pipelines/rooms")];
     let hub = WsHub::new();
     hub.declare(O, P, &declared);
     hub.declare(O, "site-b", &declared);
@@ -180,4 +180,22 @@ fn a_declaration_tells_every_room_of_the_project_to_resolve_again() {
     hub.declare(O, P, &declared);
     assert!(rooms[0].epoch() > before[0] && rooms[1].epoch() > before[1], "both rooms of the project");
     assert_eq!(rooms[2].epoch(), before[2], "another project's room is untouched");
+}
+
+#[test]
+fn a_tick_trigger_makes_every_room_it_matches_a_tick_room() {
+    let tick = TickSpec { every_ms: 50, max_inputs: 30 };
+    let ticking = |room: &str| RoomDecl { tick: Some(tick), ..RoomDecl::new(room, "pipelines/tick") };
+    let hub = WsHub::new();
+    hub.declare(O, P, &[RoomDecl::new("lobby", "pipelines/chat"), ticking("lobby"), ticking("match-:id"), RoomDecl::new("zone-*", "pipelines/zone")]);
+    hub.open(O, P, "match-1", opened(None)).unwrap();
+    hub.open(O, P, "zone-1", opened(None)).unwrap();
+    assert_eq!(hub.room(O, P, "lobby").unwrap().tick(), Some(tick), "a fixed room");
+    assert_eq!(hub.room(O, P, "match-1").unwrap().tick(), Some(tick), "an opened room, from its open");
+    assert_eq!(hub.room(O, P, "zone-1").unwrap().tick(), None, "no $tick matches it");
+    hub.close(O, P, "lobby").unwrap();
+    assert_eq!(hub.room(O, P, "lobby").unwrap().tick(), Some(tick), "a closed fixed room comes back ticking");
+    hub.declare(O, P, &[RoomDecl::new("lobby", "pipelines/chat"), RoomDecl::new("match-:id", "pipelines/match")]);
+    assert_eq!(hub.room(O, P, "match-1").unwrap().tick(), None, "the $tick trigger was deactivated");
+    assert_eq!(hub.list(O, P, "*", false).unwrap()["rooms"][0]["mode"], "event");
 }

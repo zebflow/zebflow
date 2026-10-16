@@ -10,7 +10,10 @@
 //!
 //! The room also carries what its loop must notice: [`RoomHandle::epoch`]
 //! rises whenever the project's active `trigger.room` set changes, so the
-//! loop resolves the room's pipelines again then — and only then.
+//! loop resolves the room's pipelines again then — and only then — and
+//! [`RoomHandle::tick`] says whether a `--event $tick` trigger makes it a
+//! tick room. In a tick room every state change waits: it goes out once per
+//! tick, after the tick pipeline ends ([`RoomHandle::flush`]).
 //!
 //! # Wire protocol (server → client JSON)
 //!
@@ -110,6 +113,23 @@ impl RoomKind {
     }
 }
 
+/// What makes a room a tick room: an active `trigger.room --event $tick
+/// --every <ms> [--max-inputs <n>]` that matches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TickSpec {
+    /// `--every`, 16 ms to 1 s.
+    pub every_ms: u64,
+    /// `--max-inputs`: per session, the most inputs that wait for one tick.
+    pub max_inputs: u32,
+}
+
+impl TickSpec {
+    /// `--every` as a duration.
+    pub fn every(&self) -> Duration {
+        Duration::from_millis(self.every_ms)
+    }
+}
+
 /// What `ws.room.open` sets; a fixed room has the defaults.
 #[derive(Debug, Clone)]
 pub struct RoomSettings {
@@ -153,10 +173,13 @@ pub enum Counter {
     PipelineErrors,
     Resyncs,
     FloodCloses,
+    Ticks,
+    TickOverruns,
+    InputsDropped,
 }
 
 #[derive(Default)]
-struct Counters([AtomicU64; 6]);
+struct Counters([AtomicU64; 9]);
 
 /// Why a socket is closed by the server, sent as its close frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +229,8 @@ pub struct RoomHandle {
     turn: tokio::sync::Mutex<()>,
     /// Rises when the project's active `trigger.room` set changes.
     epoch: AtomicU64,
+    /// Set when a `--event $tick` trigger matches the room.
+    tick: RwLock<Option<TickSpec>>,
     /// Wakes the room loop when [`Self::epoch`] rose.
     changed: Notify,
 }
@@ -242,6 +267,7 @@ impl RoomHandle {
             queue: Mutex::new(None),
             turn: tokio::sync::Mutex::new(()),
             epoch: AtomicU64::new(0),
+            tick: RwLock::new(None),
             changed: Notify::new(),
         })
     }
@@ -276,10 +302,17 @@ impl RoomHandle {
         self.changed.notified().await
     }
 
-    /// The project's active `trigger.room` set changed.
-    pub(super) fn redeclared(&self) {
+    /// The project's active `trigger.room` set changed; `tick` is what it
+    /// now says of this room.
+    pub(super) fn redeclared(&self, tick: Option<TickSpec>) {
+        *self.tick.write().unwrap_or_else(|e| e.into_inner()) = tick;
         self.epoch.fetch_add(1, Ordering::AcqRel);
         self.changed.notify_one();
+    }
+
+    /// The tick, when this is a tick room.
+    pub fn tick(&self) -> Option<TickSpec> {
+        *self.tick.read().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn name(&self) -> &str {
@@ -318,8 +351,9 @@ impl RoomHandle {
     }
 
     /// Change the state at `path`. At once, every session is sent the whole
-    /// state; with `batch`, it is sent on the next 33 ms tick. A change that
-    /// would take the state past `--max-state` is undone and refused.
+    /// state; with `batch`, it is sent on the next 33 ms tick; in a tick room,
+    /// when the tick ends ([`Self::flush`]). A change that would take the
+    /// state past `--max-state` is undone and refused.
     pub fn apply(self: &Arc<Self>, op: StateOp, path: &str, value: Option<Value>, batch: bool) -> Result<(), StateFull> {
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         let saved = json_ptr_get(&state, path).cloned();
@@ -330,7 +364,8 @@ impl RoomHandle {
             Some(old) => json_ptr_set(state, path, old.clone()),
             None => json_ptr_delete(state, path),
         };
-        if batch {
+        let tick_room = self.tick().is_some();
+        if batch || tick_room {
             let after = json_ptr_get(&state, path).map(json_len).unwrap_or(0);
             let estimate = (self.state_bytes() + after).saturating_sub(before);
             if estimate > limit {
@@ -340,7 +375,8 @@ impl RoomHandle {
             self.state_bytes.store(estimate, Ordering::Relaxed);
             drop(state);
             self.touch();
-            if !self.dirty.swap(true, Ordering::AcqRel) {
+            // A tick room's loop sends it when the tick ends.
+            if !self.dirty.swap(true, Ordering::AcqRel) && !tick_room {
                 self.schedule_flush();
             }
             return Ok(());
@@ -372,8 +408,8 @@ impl RoomHandle {
         }
     }
 
-    /// Send the state if a batch change is waiting.
-    fn flush(&self) {
+    /// Send the state if a change is waiting: a batch's 33 ms, or a tick's end.
+    pub fn flush(&self) {
         let state = self.state.read().unwrap_or_else(|e| e.into_inner());
         if self.dirty.swap(false, Ordering::AcqRel) {
             let text = state.to_string();
@@ -395,7 +431,8 @@ impl RoomHandle {
         self.counters.0[counter as usize].fetch_add(1, Ordering::Relaxed);
     }
 
-    fn counter(&self, counter: Counter) -> u64 {
+    /// A counter's reading.
+    pub fn counter(&self, counter: Counter) -> u64 {
         self.counters.0[counter as usize].load(Ordering::Relaxed)
     }
 
@@ -484,7 +521,7 @@ impl RoomHandle {
             "room": self.name,
             "kind": self.kind.as_str(),
             "private": s.private,
-            "mode": "event",
+            "mode": if self.tick().is_some() { "tick" } else { "event" },
             "meta": s.meta,
             "sessions": self.session_count(),
             "max_sessions": s.max_sessions,
@@ -495,9 +532,9 @@ impl RoomHandle {
             "counters": {
                 "messages_in": self.counter(Counter::MessagesIn),
                 "messages_out": self.counter(Counter::MessagesOut),
-                "ticks": 0,
-                "tick_overruns": 0,
-                "inputs_dropped": 0,
+                "ticks": self.counter(Counter::Ticks),
+                "tick_overruns": self.counter(Counter::TickOverruns),
+                "inputs_dropped": self.counter(Counter::InputsDropped),
                 "pipeline_runs": self.counter(Counter::PipelineRuns),
                 "pipeline_errors": self.counter(Counter::PipelineErrors),
                 "resyncs": self.counter(Counter::Resyncs),
@@ -665,6 +702,28 @@ mod tests {
         assert_eq!(room.get_state(), json!({ "players": { "s1": { "x": 5, "y": 0 } } }));
         room.apply(StateOp::Delete, "/players/s1", None, false).unwrap();
         assert_eq!(room.get_state(), json!({ "players": {} }));
+    }
+
+    #[tokio::test]
+    async fn a_tick_room_sends_its_state_once_when_the_tick_ends() {
+        let room = room(DEFAULT_MAX_STATE);
+        room.redeclared(Some(TickSpec { every_ms: 50, max_inputs: 30 }));
+        let mut rx = room.subscribe();
+        room.apply(StateOp::Set, "/a", Some(json!(1)), false).unwrap();
+        room.apply(StateOp::Set, "/b", Some(json!(2)), true).unwrap();
+        tokio::time::sleep(BATCH_TICK * 2).await;
+        assert!(rx.try_recv().is_err(), "nothing goes out during the tick, not even a batch");
+        assert_eq!(room.get_state(), json!({ "a": 1, "b": 2 }), "the state itself changed at once");
+        room.flush();
+        let sent: Value = serde_json::from_str(&rx.try_recv().expect("one send").text).unwrap();
+        assert_eq!(sent["state"], json!({ "a": 1, "b": 2 }));
+        room.flush();
+        assert!(rx.try_recv().is_err(), "an unchanged state is not sent again");
+        assert_eq!(room.describe(false)["mode"], "tick");
+        room.redeclared(None);
+        assert_eq!(room.describe(false)["mode"], "event");
+        room.apply(StateOp::Set, "/a", Some(json!(3)), false).unwrap();
+        assert!(rx.try_recv().is_ok(), "an event room sends at once again");
     }
 
     #[test]

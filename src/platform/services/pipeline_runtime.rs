@@ -78,6 +78,9 @@ pub struct WsTriggerSpec {
     /// Required roles — JWT claim `roles` must match one. Empty = any authenticated user.
     #[serde(default)]
     pub auth_required_role: Vec<String>,
+    /// `--event $tick --every … --max-inputs …`: the tick of the rooms it matches.
+    #[serde(default)]
+    pub tick: Option<crate::infra::transport::ws::TickSpec>,
 }
 
 impl WsTriggerSpec {
@@ -357,6 +360,8 @@ impl CompiledPipeline {
                         .unwrap_or_default()
                         .to_string();
                     let (auth_type, auth_credential, auth_required_role) = trigger_auth(&node.config);
+                    let tick = crate::pipeline::nodes::basic::ws::trigger::tick_of(&node.config)
+                        .map_err(|err| trigger_refused(meta, node, err))?;
                     ws_triggers.push(WsTriggerSpec {
                         node_id: node.id.clone(),
                         room,
@@ -364,6 +369,7 @@ impl CompiledPipeline {
                         auth_type,
                         auth_credential,
                         auth_required_role,
+                        tick,
                     });
                 }
                 "trigger.topic" => {
@@ -519,7 +525,7 @@ fn check_trigger_flags(
     use crate::pipeline::nodes::basic::trigger::webhook;
     use crate::pipeline::nodes::shared::limits::choice;
     let code = if node.kind == "trigger.room" {
-        "FW_NODE_TRIGGER_ROOM_CONFIG"
+        crate::pipeline::nodes::basic::ws::trigger::CONFIG_CODE
     } else {
         webhook::CONFIG_CODE
     };
@@ -673,17 +679,18 @@ impl PipelineRuntimeService {
     }
 
     /// Replace the active set and tell the room hub what one project's
-    /// `trigger.room` nodes now declare.
+    /// `trigger.room` nodes now declare, ticks included.
     fn store(&self, next: HashMap<ActivePipelineKey, CompiledPipeline>, owner: &str, project: &str) {
-        let mut rooms: Vec<(String, String)> = next
+        use crate::infra::transport::ws::RoomDecl;
+        let mut rooms: Vec<RoomDecl> = next
             .values()
             .filter(|compiled| compiled.owner == owner && compiled.project == project)
             .flat_map(|compiled| {
-                compiled.ws_triggers.iter().map(|t| (t.room.clone(), compiled.file_rel_path.clone()))
+                compiled.ws_triggers.iter().map(|t| RoomDecl { tick: t.tick, ..RoomDecl::new(&t.room, &compiled.file_rel_path) })
             })
             .collect();
-        rooms.sort();
-        rooms.dedup_by(|a, b| a.0 == b.0);
+        // By room and path, so a fixed room names the same pipeline each time.
+        rooms.sort_by(|a, b| (&a.room, &a.pipeline).cmp(&(&b.room, &b.pipeline)));
         self.inner.store(Arc::new(next));
         self.ws_hub.declare(owner, project, &rooms);
     }

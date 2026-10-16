@@ -1353,11 +1353,13 @@ impl ProjectService {
         Ok(())
     }
 
-    /// One join rule per room (`rooms.md` § The join rule): every active
-    /// `trigger.room` that can match the same room — an exact name, or two
-    /// patterns that overlap — declares the same `--auth` / `--credential` /
-    /// `--role`. The refusal names both pipelines.
-    fn ensure_room_join_rules_agree(
+    /// One join rule and one tick per room (`rooms.md` § The join rule,
+    /// § Events and ticks): every active `trigger.room` that can match the
+    /// same room — an exact name, or two patterns that overlap — declares the
+    /// same `--auth` / `--credential` / `--role`, and every `--event $tick`
+    /// among them the same `--every` / `--max-inputs`. The refusal names both
+    /// pipelines.
+    fn ensure_room_rules_agree(
         &self,
         owner: &str,
         project: &str,
@@ -1393,6 +1395,19 @@ impl ProjectService {
                             spec.room,
                             candidate.file_rel_path,
                             spec.describe_join_rule()
+                        ),
+                    ));
+                }
+                if let (Some(theirs), Some(ours)) = (other.tick, spec.tick)
+                    && overlaps
+                    && theirs != ours
+                {
+                    return Err(PlatformError::new(
+                        "PLATFORM_PIPELINE_ROOM_TICK_MIXED",
+                        format!(
+                            "a room has one tick: trigger.room --room {} --event $tick in pipeline '{}' declares --every {}ms --max-inputs {} and trigger.room --room {} --event $tick in pipeline '{}' declares --every {}ms --max-inputs {}, and both can match the same room; declare the same on both",
+                            other.room, file, theirs.every_ms, theirs.max_inputs,
+                            spec.room, candidate.file_rel_path, ours.every_ms, ours.max_inputs
                         ),
                     ));
                 }
@@ -1460,7 +1475,7 @@ impl ProjectService {
             self.ensure_mcp_tools_publishable(&owner, &project, &compiled)?;
         }
         if !compiled.ws_triggers.is_empty() {
-            self.ensure_room_join_rules_agree(&owner, &project, &compiled)?;
+            self.ensure_room_rules_agree(&owner, &project, &compiled)?;
         }
 
         let snapshot_path =

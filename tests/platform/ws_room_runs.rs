@@ -6,11 +6,25 @@ use futures::SinkExt;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
-use super::published_mcp::{app_at, dsl, login, publish, temp_dir};
+use super::published_mcp::{OWNER, PROJECT, app_at, dsl, login, publish, send, temp_dir};
 use super::ws_rooms::{Socket, connect, next_of, serve};
 
 async fn say(socket: &mut Socket, event: &str, payload: Value) {
     socket.send(Message::Text(json!({ "event": event, "payload": payload }).to_string().into())).await.expect("send");
+}
+
+/// One room as `GET …/ws/rooms` lists it.
+async fn listed(app: &axum::Router, cookie: &str, room: &str) -> Value {
+    let (status, list) = send(app, cookie, "GET", &format!("/api/projects/{OWNER}/{PROJECT}/ws/rooms?room={room}"), Value::Null).await;
+    assert_eq!(status.as_u16(), 200, "{list}");
+    list["rooms"][0].clone()
+}
+
+/// The next frame of event `name`, failing on any other event first.
+async fn next_named(socket: &mut Socket, name: &str) -> Value {
+    let frame = next_of(socket, "event").await;
+    assert_eq!(frame["event"], name, "{frame}");
+    frame["payload"].clone()
 }
 
 /// The next `event` frame's name.
@@ -82,4 +96,115 @@ async fn activation_and_deactivation_change_what_an_open_room_runs() {
     say(&mut socket, "ping", json!({})).await;
     say(&mut socket, "ping", json!({})).await;
     assert_eq!([next_event(&mut socket).await, next_event(&mut socket).await], ["b", "b"], "a deactivated pipeline runs no more");
+}
+
+#[tokio::test]
+async fn a_tick_gets_every_input_of_its_interval_in_arrival_order_up_to_max_inputs() {
+    let root = temp_dir("ws-room-tick");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "arena-tick", r#"| trigger.room --room arena --event $tick --every 1s --max-inputs 2 | ws.message.send --event tick --body "{{ input.room }}""#).await;
+    publish(&app, &cookie, "arena-move", r#"| trigger.room --room arena --event move | ws.message.send --event moved --body 1"#).await;
+    let address = serve(app.clone(), &cookie).await;
+    let mut a = connect(address, "arena", &[]).await;
+    let mut b = connect(address, "arena", &[]).await;
+    let a_id = next_of(&mut a, "joined").await["session_id"].clone();
+    let b_id = next_of(&mut b, "joined").await["session_id"].clone();
+
+    let first = next_named(&mut a, "tick").await;
+    assert_eq!(first["inputs"], json!([]), "an empty tick still runs: {first}");
+    assert_eq!((first["room_id"].as_str(), first["event"].as_str()), (Some("arena"), Some("$tick")));
+    for i in 1..=3 {
+        say(&mut a, "move", json!({ "i": i })).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    say(&mut b, "move", json!({ "i": 9 })).await;
+
+    let second = next_named(&mut a, "tick").await;
+    let inputs = |who: &Value, i: u64| json!({ "session": who, "event": "move", "payload": { "i": i }, "auth": null });
+    assert_eq!(second["inputs"], json!([inputs(&a_id, 1), inputs(&a_id, 2), inputs(&b_id, 9)]), "in arrival order; a's third is past --max-inputs 2");
+    assert_eq!(second["tick"].as_u64(), first["tick"].as_u64().map(|t| t + 1));
+    let dt = second["dt_ms"].as_u64().expect("dt_ms");
+    assert!((900..1500).contains(&dt), "dt_ms {dt}");
+
+    let room = listed(&app, &cookie, "arena").await;
+    assert_eq!(room["mode"], "tick", "{room}");
+    assert_eq!(room["counters"]["inputs_dropped"], 1, "{room}");
+    assert!(room["counters"]["ticks"].as_u64() >= Some(2), "{room}");
+}
+
+#[tokio::test]
+async fn a_tick_that_outlasts_every_delays_the_next_and_counts_an_overrun() {
+    let root = temp_dir("ws-room-overrun");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(
+        &app,
+        &cookie,
+        "forge-tick",
+        r#"| trigger.room --room forge --event $tick --every 50ms | javascript.script.run -- "const s = Date.now(); let w = 0; while (Date.now() < s + 120) { w += new Array(200000).fill(7).join('').length; } return { s, e: Date.now() };" | ws.message.send --event tick --body "{{ { tick: input.room.tick, s: input.script.s, e: input.script.e } }}""#,
+    )
+    .await;
+    let address = serve(app.clone(), &cookie).await;
+    let mut socket = connect(address, "forge", &[]).await;
+    next_of(&mut socket, "joined").await;
+    let mut ticks = Vec::new();
+    for _ in 0..4 {
+        ticks.push(next_named(&mut socket, "tick").await);
+    }
+    for pair in ticks.windows(2) {
+        assert_eq!(pair[1]["tick"].as_u64(), pair[0]["tick"].as_u64().map(|t| t + 1), "{pair:?}");
+        assert!(pair[1]["s"].as_i64() >= pair[0]["e"].as_i64(), "a tick starts after the last one ended: {pair:?}");
+    }
+    let counters = listed(&app, &cookie, "forge").await["counters"].clone();
+    assert!(counters["tick_overruns"].as_u64() >= Some(3), "{counters}");
+}
+
+#[tokio::test]
+async fn a_tick_trigger_turns_an_open_room_into_a_tick_room_and_back() {
+    let root = temp_dir("ws-room-mode");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "hall-chat", r#"| trigger.room --room hall --event chat | ws.message.send --event said --recipient session --body 1"#).await;
+    let address = serve(app.clone(), &cookie).await;
+    let mut socket = connect(address, "hall", &[]).await;
+    next_of(&mut socket, "joined").await;
+    assert_eq!(listed(&app, &cookie, "hall").await["mode"], "event");
+
+    publish(&app, &cookie, "hall-tick", r#"| trigger.room --room hall --event $tick --every 100ms | ws.message.send --event tick --body "{{ input.room.inputs }}""#).await;
+    assert_eq!(listed(&app, &cookie, "hall").await["mode"], "tick");
+    say(&mut socket, "chat", json!({ "text": "hi" })).await;
+    let inputs = loop {
+        let inputs = next_named(&mut socket, "tick").await;
+        if inputs != json!([]) {
+            break inputs;
+        }
+    };
+    assert_eq!(inputs[0]["payload"], json!({ "text": "hi" }), "the chat waited for the tick, its own trigger did not run");
+
+    let answer = dsl(&app, &cookie, "deactivate pipeline pipelines/tests/hall-tick.zf.json").await;
+    assert_eq!(answer["ok"], json!(true), "{answer}");
+    assert_eq!(listed(&app, &cookie, "hall").await["mode"], "event");
+    say(&mut socket, "chat", json!({ "text": "again" })).await;
+    while next_event(&mut socket).await != "said" {}
+}
+
+#[tokio::test]
+async fn activation_refuses_two_ticks_for_one_room_and_every_without_a_tick() {
+    let root = temp_dir("ws-room-tick-rules");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "arenas", r#"| trigger.room --room "arena-*" --event $tick --every 50ms | ws.message.send --body 1"#).await;
+    publish(&app, &cookie, "arenas-too", r#"| trigger.room --room "arena-:id" --event $tick --every 50ms | ws.message.send --body 2"#).await;
+    for (name, body, why) in [
+        ("arena-slow", r#"| trigger.room --room arena-1 --event $tick --every 100ms | ws.message.send --body 1"#, "one tick"),
+        ("lobby-every", r#"| trigger.room --room lobby --event move --every 50ms | ws.message.send --body 1"#, "belong to --event $tick"),
+        ("lobby-tick", r#"| trigger.room --room lobby --event $tick | ws.message.send --body 1"#, "needs --every"),
+    ] {
+        let registered = dsl(&app, &cookie, &format!("register pipelines/tests/{name} -- {body}")).await;
+        let activated = dsl(&app, &cookie, &format!("activate pipeline pipelines/tests/{name}.zf.json")).await;
+        assert_ne!(activated["ok"], json!(true), "{name}: {activated}");
+        let text = format!("{registered} {activated}");
+        assert!(text.contains(why), "{name}: {text}");
+    }
 }

@@ -10,7 +10,8 @@
 //! 3. **Events** — inbound `{event, payload}` messages go on the room's one
 //!    queue; the room loop ([`room_loop`]) runs the matching pipelines
 //!    ([`events`]) **one at a time, in arrival order across every session**.
-//!    A session with 256 events waiting is closed with `1008`.
+//!    A session with 256 events waiting is closed with `1008`. In a tick
+//!    room client events wait for the next tick ([`tick`]).
 //! 4. **Lifecycle** — the server raises `$connect` after `joined` and
 //!    `$disconnect { reason }` when the socket ends, on the same queue.
 //!    Clients cannot send `$`-prefixed events, and a trigger with an empty
@@ -24,6 +25,7 @@
 mod admission;
 mod events;
 mod room_loop;
+mod tick;
 
 use super::*;
 use crate::infra::transport::ws::{Counter, Kick};

@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use super::message_send::{self, Config as SendConfig};
 use super::state::{self, Config as StateConfig, Verb};
-use crate::infra::transport::ws::{Kick, RoomHandle, RoomSettings, SessionGuard, WsHub};
+use crate::infra::transport::ws::{Kick, RoomDecl, RoomHandle, RoomSettings, SessionGuard, WsHub};
 use crate::infra::ws_client::WsClientManager;
 use crate::pipeline::engines::BasicPipelineEngine;
 use crate::pipeline::interface::PipelineEngine;
@@ -49,7 +49,7 @@ type Seat = (SessionGuard, mpsc::UnboundedReceiver<Kick>);
 /// A hub whose project declares `room` (a fixed room), with one socket joined.
 fn hub_with(room: &str) -> (Arc<WsHub>, Arc<RoomHandle>, Seat) {
     let hub = Arc::new(WsHub::new());
-    hub.declare("demo", "site-a", &[(room.to_string(), "pipelines/room".to_string())]);
+    hub.declare("demo", "site-a", &[RoomDecl::new(room, "pipelines/room")]);
     let (handle, guard, kicks) = hub.join("demo", "site-a", room, "s-joined", None, None).expect("a fixed room is open");
     (hub, handle, (guard, kicks))
 }
@@ -57,7 +57,7 @@ fn hub_with(room: &str) -> (Arc<WsHub>, Arc<RoomHandle>, Seat) {
 /// A hub declaring `pattern` with each of `rooms` opened.
 fn hub_opening(pattern: &str, rooms: &[&str]) -> Arc<WsHub> {
     let hub = Arc::new(WsHub::new());
-    hub.declare("demo", "site-a", &[(pattern.to_string(), "pipelines/room".to_string())]);
+    hub.declare("demo", "site-a", &[RoomDecl::new(pattern, "pipelines/room")]);
     for room in rooms {
         hub.open("demo", "site-a", room, RoomSettings::fixed("pipelines/open")).expect("open");
     }
