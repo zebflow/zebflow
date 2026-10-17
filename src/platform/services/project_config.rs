@@ -66,6 +66,9 @@ pub struct ProjectConfigurationService {
     users_root: PathBuf,
     update_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
     declarations: Mutex<HashMap<PathBuf, ConfigCacheEntry>>,
+    /// The parsed configuration, by file, with the file identity it was
+    /// read from: every pipeline run reads it.
+    parsed: Mutex<HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, ZebflowJson)>>,
 }
 
 impl ProjectConfigurationService {
@@ -75,6 +78,7 @@ impl ProjectConfigurationService {
             users_root,
             update_locks: Mutex::new(HashMap::new()),
             declarations: Mutex::new(HashMap::new()),
+            parsed: Mutex::new(HashMap::new()),
         }
     }
 
@@ -125,13 +129,26 @@ impl ProjectConfigurationService {
     ///
     /// Malformed and unsupported files are rejected so runtime behavior never
     /// silently changes because an authoritative project file is damaged.
+    /// The parse is cached against the file's size and modification time,
+    /// as [`Self::project_layout`] is: a pipeline run reads it every time.
     pub fn read_or_default(
         &self,
         owner: &str,
         project: &str,
     ) -> Result<ZebflowJson, PlatformError> {
         let path = self.config_path(owner, project);
-        self.read_path_or_default(&path, &self.legacy_path(owner, project), project)
+        let stamp = file_stamp(&path);
+        if let Some((was, config)) = self.parsed.lock().unwrap_or_else(|err| err.into_inner()).get(&path)
+            && *was == stamp
+        {
+            return Ok(config.clone());
+        }
+        let config = self.read_path_or_default(&path, &self.legacy_path(owner, project), project)?;
+        self.parsed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(path, (stamp, config.clone()));
+        Ok(config)
     }
 
     /// Effective repository layout for one project.
@@ -214,6 +231,7 @@ impl ProjectConfigurationService {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(path);
+        self.parsed.lock().unwrap_or_else(|err| err.into_inner()).remove(path);
     }
 
     fn read_path_or_default(

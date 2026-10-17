@@ -36,6 +36,22 @@ pub fn durable_persist(temporary: tempfile::NamedTempFile, path: &Path) -> io::R
 /// `store`/`cache` home. A file or directory move is one `rename`, atomic on
 /// a same-filesystem move: either `old` lands fully at `new` or `old` is left
 /// untouched, never a partial tree recognizable as neither shape.
+/// Which file or directory is at `path` now: its inode, so one replaced or
+/// made again under the same name is told apart. `None` when nothing is there.
+pub fn file_identity(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(meta.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        Some(0)
+    }
+}
+
 pub fn migrate_tier_entry(old: &Path, new: &Path) -> io::Result<()> {
     if old == new || !old.exists() {
         return Ok(());

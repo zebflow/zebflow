@@ -516,6 +516,44 @@ pub struct SqliteDataAdapter {
     /// contract's "reading a credential when the key is absent" rejection,
     /// enforced by the storage boundary rather than by a caller remembering.
     keyring: Option<Arc<CredentialKeyring>>,
+    /// Open connections to each project's invocation log, so a run record
+    /// costs a write, not an open and a schema check.
+    invocation_conns: InvocationConns,
+}
+
+/// How many idle connections are kept per invocation log.
+const INVOCATION_CONNS_KEPT: usize = 4;
+
+/// Idle connections to invocation logs, by file, each with the file it was
+/// opened on: a log deleted or replaced since is opened again.
+#[derive(Default)]
+struct InvocationConns(Mutex<std::collections::HashMap<PathBuf, Vec<(u64, Connection)>>>);
+
+/// One connection to a project's invocation log, given back to be kept
+/// when dropped.
+pub(crate) struct InvocationConn<'a> {
+    conn: Option<Connection>,
+    file: u64,
+    path: PathBuf,
+    kept: &'a InvocationConns,
+}
+
+impl std::ops::Deref for InvocationConn<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn.as_ref().expect("held until dropped")
+    }
+}
+
+impl Drop for InvocationConn<'_> {
+    fn drop(&mut self) {
+        let Some(conn) = self.conn.take() else { return };
+        let mut kept = self.kept.0.lock().unwrap_or_else(|e| e.into_inner());
+        let idle = kept.entry(std::mem::take(&mut self.path)).or_default();
+        if idle.len() < INVOCATION_CONNS_KEPT && idle.iter().all(|(file, _)| *file == self.file) {
+            idle.push((self.file, conn));
+        }
+    }
 }
 
 fn hub_access_grant_from_row(row: &Row<'_>) -> rusqlite::Result<HubAccessGrant> {
@@ -592,6 +630,7 @@ impl SqliteDataAdapter {
             conn: Arc::new(Mutex::new(conn)),
             data_root,
             keyring: None,
+            invocation_conns: InvocationConns::default(),
         };
         adapter.open_credential_keyring()?;
         Ok(adapter)
@@ -745,18 +784,35 @@ impl SqliteDataAdapter {
         ))
     }
 
+    /// A connection to the project's invocation log: a kept one while the
+    /// file is the one it was opened on, else a new one.
     fn open_project_invocations_conn(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Option<Connection>, PlatformError> {
+    ) -> Result<Option<InvocationConn<'_>>, PlatformError> {
         let Some(path) = self.project_invocations_db_path(owner, project)? else {
             return Ok(None);
         };
+        if let Some(file) = crate::infra::io::durable::file_identity(&path) {
+            let mut kept = self.invocation_conns.0.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(idle) = kept.get_mut(&path) {
+                idle.retain(|(was, _)| *was == file);
+                if let Some((_, conn)) = idle.pop() {
+                    return Ok(Some(InvocationConn { conn: Some(conn), file, path, kept: &self.invocation_conns }));
+                }
+            }
+        }
+        let conn = Self::open_invocations_file(&path)?;
+        let file = crate::infra::io::durable::file_identity(&path).unwrap_or_default();
+        Ok(Some(InvocationConn { conn: Some(conn), file, path, kept: &self.invocation_conns }))
+    }
+
+    fn open_invocations_file(path: &Path) -> Result<Connection, PlatformError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&path)
+        let conn = Connection::open(path)
             .map_err(|e| PlatformError::new("PLATFORM_INVOCATION_LOG_OPEN", e.to_string()))?;
         conn.execute_batch(
             "
@@ -797,7 +853,7 @@ impl SqliteDataAdapter {
             ",
         )
         .map_err(|e| PlatformError::new("PLATFORM_INVOCATION_LOG_SCHEMA", e.to_string()))?;
-        Ok(Some(conn))
+        Ok(conn)
     }
 
     fn error_group_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PipelineErrorGroup> {

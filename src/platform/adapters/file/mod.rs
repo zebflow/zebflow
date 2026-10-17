@@ -112,6 +112,9 @@ pub struct FilesystemFileAdapter {
     /// reader, and a second one here could accept a document the real reader
     /// refuses.
     configs: Arc<ProjectConfigurationService>,
+    /// The project roots whose folders are made, each with which directories
+    /// its swappable folders were then ([`scaffold_identity`]).
+    scaffolded: std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<u64>>>,
     /// Where the credential behind an object-store backend is read from.
     ///
     /// Absent on the adapters built for tests and migrations that never
@@ -126,6 +129,7 @@ impl FilesystemFileAdapter {
         Self {
             root,
             configs,
+            scaffolded: Default::default(),
             credentials: None,
         }
     }
@@ -321,6 +325,17 @@ impl FileAdapter for FilesystemFileAdapter {
             file_store_id,
         };
 
+        // Every request resolves the layout, often more than once; the
+        // folders below are made again only when one a project can lose or
+        // swap whole (an import, a removed project) is not the one they were
+        // made in.
+        let identity = scaffold_identity(&resolved);
+        if identity.is_some()
+            && self.scaffolded.lock().unwrap_or_else(|e| e.into_inner()).get(&resolved.root) == identity.as_ref()
+        {
+            return Ok(resolved);
+        }
+
         // A pre-tier project has its whole runtime cache sitting at the old
         // `data/runtime`, not just the `pipelines`/`agent_docs` children this
         // adapter used to scaffold individually — so the entire directory
@@ -374,8 +389,21 @@ impl FileAdapter for FilesystemFileAdapter {
 
         Self::ensure_git_repo(&resolved.repo_dir, &resolved.repo_git_dir)?;
 
+        if let Some(identity) = scaffold_identity(&resolved) {
+            self.scaffolded.lock().unwrap_or_else(|e| e.into_inner()).insert(resolved.root.clone(), identity);
+        }
         Ok(resolved)
     }
+}
+
+/// Which directories a project's root and the folders it can swap whole
+/// are now — an import replaces `repo/`, `data/store/` or `files/` — or
+/// `None` when one is missing.
+fn scaffold_identity(layout: &ProjectFileLayout) -> Option<Vec<u64>> {
+    [&layout.root, &layout.data_dir, &layout.data_store_dir(), &layout.files_dir, &layout.repo_dir, &layout.repo_git_dir]
+        .into_iter()
+        .map(|dir| crate::infra::io::durable::file_identity(dir))
+        .collect()
 }
 
 /// Builds selected file adapter.
