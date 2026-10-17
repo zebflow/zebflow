@@ -99,12 +99,15 @@ in arrival order, as `input.room.inputs` (`{ session, event, payload, auth }`
 each), with `input.room.tick` (its number) and `input.room.dt_ms` (the time
 since the last one). A session sending more than `--max-inputs` (default 30)
 in one interval has the rest dropped and counted (`inputs_dropped` in
-`ws.room.list`).
+`ws.room.list`). `--state /players` adds `input.room.state.players`: where
+every player stands as the tick starts, so a move onto a taken tile is
+refused. Only the paths named are copied — name what the tick reads, not
+the whole state.
 
 ```
 register game/ws-tick --
-[tick] trigger.room --room "room-*" --event $tick --every 50ms --max-inputs 10
-[moves] javascript.script.run -- "const moved = {}; let count = 0; for (const i of input.room.inputs) { if (i.event === 'player.move' && i.payload) { moved[i.session] = { x: i.payload.x, y: i.payload.y, tick: input.room.tick }; count += 1; } } return { moved, count };"
+[tick] trigger.room --room "room-*" --event $tick --every 50ms --max-inputs 10 --state /players
+[moves] javascript.script.run -- "const players = input.room.state.players || {}; const taken = new Set(Object.values(players).map(p => p.x + ',' + p.y)); const moved = {}; let count = 0; for (const i of input.room.inputs) { if (i.event !== 'player.move' || !i.payload) continue; const at = i.payload.x + ',' + i.payload.y; if (taken.has(at)) continue; const was = players[i.session] || moved[i.session]; if (was) taken.delete(was.x + ',' + was.y); taken.add(at); moved[i.session] = { x: i.payload.x, y: i.payload.y, tick: input.room.tick }; count += 1; } return { moved, count };"
 [any] logic.if --when "input.script.count > 0"
 [save] ws.state.update --key /players --value "{{ input.script.moved }}"
 
@@ -133,7 +136,7 @@ whenever the player moves, and draws `state.players`, applying each tick's
 ## Nodes Used
 
 - `trigger.webhook` — HTTP lobby and room pages
-- `trigger.room --room "room-*" --event $tick --every 50ms` — the game's tick: every move of the interval in one run; `--event $connect` / `$disconnect` seat and remove players. `--room` is required: an exact name is a fixed room, a pattern (`room-*`, `room-:id`) declares opened rooms
+- `trigger.room --room "room-*" --event $tick --every 50ms --state /players` — the game's tick: every move of the interval in one run, reading where everyone stands; `--event $connect` / `$disconnect` seat and remove players. `--room` is required: an exact name is a fixed room, a pattern (`room-*`, `room-:id`) declares opened rooms
 - `ws.room.open` — opens a game room under that pattern; `ws.room.close` ends it (every player gets `4410`)
 - `sekejap.query.run` — track which rooms exist; plain `SELECT`/`INSERT`, no `--table`/`--op`
 - `javascript.script.run` — shape the lobby rows and new room ids; its answer sits under `script` (`$nodes.<id>.script.<field>`), the rest of the payload is kept

@@ -165,6 +165,8 @@ fn tags_of(value: &Value, flag: &str, code: &'static str, prefix: bool) -> Resul
     Ok(tags)
 }
 
+/// Each occurrence of a repeated flag as text, a `{{ [list] }}` flattened,
+/// empty ones dropped.
 fn collect_tags(value: &Value, flag: &str, code: &'static str, out: &mut Vec<String>) -> Result<(), PipelineError> {
     match value {
         Value::Array(items) => items.iter().try_for_each(|item| collect_tags(item, flag, code, out)),

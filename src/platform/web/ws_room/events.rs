@@ -93,9 +93,23 @@ pub(super) async fn run_pipeline(
     room: &RoomHandle,
     resolved: &Resolved,
     compiled: &CompiledPipeline,
-    input: Value,
+    mut input: Value,
     run_of: &str,
 ) {
+    // `--state`: the paths the matching triggers name, read now, after
+    // every run before this one.
+    let event = input.get("event").and_then(Value::as_str).unwrap_or_default().to_string();
+    let paths: Vec<String> = compiled
+        .ws_triggers
+        .iter()
+        .filter(|t| admission::trigger_matches(&t.room, &t.event, &ctx.room_id, &event))
+        .flat_map(|t| t.state.iter().cloned())
+        .collect();
+    if !paths.is_empty()
+        && let Some(envelope) = input.as_object_mut()
+    {
+        envelope.insert("state".to_string(), room.read_state(&paths));
+    }
     let pctx = PipelineContext {
         owner: ctx.owner.clone(),
         project: ctx.project.clone(),

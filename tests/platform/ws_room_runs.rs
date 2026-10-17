@@ -258,6 +258,42 @@ async fn a_tick_sends_one_frame_with_the_state_it_changed_and_the_events_it_sent
     }
 }
 
+/// `--state /count`: each tick reads the count the last one wrote, and
+/// nothing it did not name — `/notes` is in the state but never copied.
+#[tokio::test]
+async fn a_tick_reads_the_state_it_names_and_only_that() {
+    let root = temp_dir("ws-room-tick-state");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(
+        &app,
+        &cookie,
+        "tally-tick",
+        r#"| trigger.room --room tally --event $tick --every 50ms --state /count | ws.state.put --key /count --value "{{ ((input.room.state.count) || 0) + input.room.inputs.length }}" | ws.state.put --key /notes --value "not read" | ws.message.send --event seen --body "{{ input.room.state }}""#,
+    )
+    .await;
+    let address = serve(app, &cookie).await;
+    let mut socket = connect(address, "tally", &[]).await;
+    next_of(&mut socket, "joined").await;
+    for _ in 0..3 {
+        say(&mut socket, "tap", json!({})).await;
+    }
+    let mut last = 0;
+    for _ in 0..40 {
+        let frame = next_of(&mut socket, "patch").await;
+        let seen = &frame["events"][0]["payload"];
+        let keys: Vec<&String> = seen.as_object().expect("an object").keys().collect();
+        assert!(keys.is_empty() || keys == ["count"], "only the named path is copied: {seen}");
+        let count = seen["count"].as_u64().unwrap_or(0);
+        assert!(count >= last, "each tick reads what the last wrote: {count} after {last}");
+        last = count;
+        if last == 3 {
+            return;
+        }
+    }
+    panic!("the count never reached 3 taps: {last}");
+}
+
 /// One thread serves HTTP here, so a webhook that keeps it busy stops
 /// everything on it: the room must not be on it.
 #[tokio::test]

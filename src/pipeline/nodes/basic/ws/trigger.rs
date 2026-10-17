@@ -40,6 +40,14 @@
 //!
 //! A tick answers `room: { room_id, event: "$tick", tick, dt_ms, inputs: [ { session, event, payload, auth } ] }`.
 //!
+//! # Reading the state: `--state`
+//!
+//! `--state /pos` (repeatable) adds `state` to the answer: the room's state
+//! at each named path, where it sits in the state (`state: { pos: { … } }`),
+//! read just before the run under one lock; `/` is the whole state. Only
+//! the named paths are copied, so a tick that moves players does not copy
+//! their inventories, and a trigger without `--state` copies nothing.
+//!
 //! Without `--room`, the room nodes downstream (`ws.state.*`,
 //! `ws.message.send`) act on `$trigger.room_id`, and `ws.message.send
 //! --recipient session|others` targets `$trigger.session_id`.
@@ -71,6 +79,31 @@ const EVERY_RANGE: (std::time::Duration, std::time::Duration) =
 /// `--max-inputs` when unset, and its bounds.
 pub const DEFAULT_MAX_INPUTS: u32 = 30;
 const MAX_INPUTS_RANGE: (u32, u32) = (1, 256);
+/// The most `--state` paths one trigger names.
+pub const MAX_STATE_PATHS: usize = 16;
+
+/// The paths of the room's state `--state` hands each run: JSON pointers,
+/// `/` for the whole state. A `{{ }}` is refused: a trigger is read once, at
+/// activation, not per event.
+pub fn state_of(config: &serde_json::Value) -> Result<Vec<String>, PipelineError> {
+    let mut paths = Vec::new();
+    super::collect_tags(config.get("state").unwrap_or(&serde_json::Value::Null), "--state", CONFIG_CODE, &mut paths)?;
+    if paths.len() > MAX_STATE_PATHS {
+        return Err(PipelineError::new(CONFIG_CODE, format!("--state names {} paths; at most {MAX_STATE_PATHS}", paths.len())));
+    }
+    for path in &paths {
+        let Some(rest) = path.strip_prefix('/') else {
+            return Err(PipelineError::new(CONFIG_CODE, format!("--state {path} is not a JSON pointer: it starts with /")));
+        };
+        if path.contains('{') || path.contains('}') {
+            return Err(PipelineError::new(CONFIG_CODE, format!("--state {path}: a trigger names fixed paths; read one entry from input.room.state")));
+        }
+        if !rest.is_empty() && rest.split('/').any(str::is_empty) {
+            return Err(PipelineError::new(CONFIG_CODE, format!("--state {path}: a segment is empty")));
+        }
+    }
+    Ok(paths)
+}
 
 /// The tick a `trigger.room` configuration declares: `Some` for
 /// `--event $tick`, which needs `--every`; `--every` and `--max-inputs` on
@@ -121,7 +154,8 @@ pub fn definition() -> NodeDefinition {
             this trigger runs once per tick with `room: { tick, dt_ms, inputs: [ { session, event, payload, auth } ] }` in arrival \
             order — at most `--max-inputs` (default 30) per session, the rest dropped and counted; ticks never overlap (one that \
             outlasts `--every` delays the next and counts a tick_overrun), an empty tick still runs, and state changes go out \
-            once, after the tick. The client is a plain `WebSocket` to `/ws/{owner}/{project}/rooms/{room}` (`?ticket=` for a private room) \
+            once, after the tick. `--state /pos` (repeatable; `/` = all) adds `state: { pos: { … } }` to `room`: the room's state \
+            at those paths, read just before the run — only what is named is copied. The client is a plain `WebSocket` to `/ws/{owner}/{project}/rooms/{room}` (`?ticket=` for a private room) \
             naming the protocol `zebflow.rooms.v1`, receiving `joined`, `patch`, `event` and `resync` (help topic \
             `pipeline/rooms-protocol`)."
             .to_string(),
@@ -199,6 +233,11 @@ pub fn definition() -> NodeDefinition {
                 },
                 "max_inputs": {
                     "description": "With --event $tick: per session, the most inputs that wait for one tick (default 30, 1-256)."
+                },
+                "state": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Paths of the room's state each run gets as input.room.state (/pos, /hp); / is the whole state."
                 }
             }
         }),
@@ -231,6 +270,16 @@ pub fn definition() -> NodeDefinition {
                 "number",
                 false,
             ),
+            DslFlag {
+                kind: DslFlagKind::RepeatedList,
+                ..super::flag(
+                    "--state",
+                    "state",
+                    "A path of the room's state each run gets as input.room.state, repeated (--state /pos --state /hp); / is the whole state.",
+                    "text",
+                    false,
+                )
+            },
         ].into_iter().chain(auth_flags("joining the room")).collect(),
         fields: [
             NodeFieldDef {
@@ -249,11 +298,13 @@ pub fn definition() -> NodeDefinition {
             },
             super::field("every", "Every", "With $tick: how often the room ticks, 16ms to 1s."),
             super::field("max_inputs", "Max inputs", "With $tick: per session, the most inputs per tick (default 30)."),
+            super::field("state", "State", "Paths of the room's state each run reads as input.room.state (/pos); / is all of it."),
         ].into_iter().chain(auth_fields("The room's join rule, checked once at connect; a refused visitor is closed with 4401.")).collect(),
         layout: vec![
             LayoutItem::Field("room".to_string()),
             LayoutItem::Field("event".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("every".to_string()), LayoutItem::Field("max_inputs".to_string())] },
+            LayoutItem::Field("state".to_string()),
             LayoutItem::Field("auth".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string()), LayoutItem::Field("role".to_string())] },
         ],
@@ -267,6 +318,11 @@ pub fn definition() -> NodeDefinition {
                     { "session": "s_8f2", "event": "move", "payload": { "dx": 1 }, "auth": { "sub": "u-17" } }
                 ] } }))
                 .note("Every client event of the room waits for the tick; resolve them in one run, in order, and every client gets one result."),
+            crate::pipeline::model::NodeExample::dsl("A tick that reads where everyone stands", r#"trigger.room --room world --event $tick --every 100ms --state /pos"#)
+                .output(serde_json::json!({ "room": { "room_id": "world", "event": "$tick", "tick": 88, "dt_ms": 100,
+                    "inputs": [ { "session": "s_8f2", "event": "move", "payload": { "x": 4, "y": 7 }, "auth": null } ],
+                    "state": { "pos": { "s_8f2": { "x": 4, "y": 6 }, "s_1c9": { "x": 4, "y": 7 } } } } }))
+                .note("Refuse a move onto a taken tile: input.room.state.pos holds every player's tile as the tick starts."),
         ],
         ..Default::default()
     }
@@ -308,6 +364,10 @@ pub struct Config {
     /// With `--event $tick`: per session, the most inputs per tick.
     #[serde(default)]
     pub max_inputs: serde_json::Value,
+
+    /// Paths of the room's state each run gets ([`state_of`]).
+    #[serde(default)]
+    pub state: serde_json::Value,
 }
 
 /// `trigger.room` node instance.
@@ -369,6 +429,19 @@ mod tests {
             json!({ "event": "move", "max_inputs": 3 }),
         ] {
             assert_eq!(tick_of(&refused).expect_err(&refused.to_string()).code, CONFIG_CODE, "{refused}");
+        }
+    }
+
+    #[test]
+    fn state_names_fixed_pointers() {
+        assert_eq!(state_of(&json!({})).unwrap(), Vec::<String>::new());
+        assert_eq!(state_of(&json!({ "state": "/pos" })).unwrap(), vec!["/pos"]);
+        assert_eq!(state_of(&json!({ "state": ["/pos", "/hp/boss"] })).unwrap(), vec!["/pos", "/hp/boss"]);
+        assert_eq!(state_of(&json!({ "state": "/" })).unwrap(), vec!["/"]);
+        let many: Vec<String> = (0..=MAX_STATE_PATHS).map(|i| format!("/k{i}")).collect();
+        for refused in [json!("pos"), json!("/pos//x"), json!("/players/{id}"), json!({ "a": 1 }), json!(many)] {
+            let config = json!({ "state": refused });
+            assert_eq!(state_of(&config).expect_err(&config.to_string()).code, CONFIG_CODE, "{config}");
         }
     }
 }

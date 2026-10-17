@@ -81,6 +81,9 @@ pub struct WsTriggerSpec {
     /// `--event $tick --every … --max-inputs …`: the tick of the rooms it matches.
     #[serde(default)]
     pub tick: Option<crate::infra::transport::ws::TickSpec>,
+    /// `--state`: the paths of the room's state each run gets.
+    #[serde(default)]
+    pub state: Vec<String>,
 }
 
 impl WsTriggerSpec {
@@ -362,6 +365,8 @@ impl CompiledPipeline {
                     let (auth_type, auth_credential, auth_required_role) = trigger_auth(&node.config);
                     let tick = crate::pipeline::nodes::basic::ws::trigger::tick_of(&node.config)
                         .map_err(|err| trigger_refused(meta, node, err))?;
+                    let state = crate::pipeline::nodes::basic::ws::trigger::state_of(&node.config)
+                        .map_err(|err| trigger_refused(meta, node, err))?;
                     ws_triggers.push(WsTriggerSpec {
                         node_id: node.id.clone(),
                         room,
@@ -370,6 +375,7 @@ impl CompiledPipeline {
                         auth_credential,
                         auth_required_role,
                         tick,
+                        state,
                     });
                 }
                 "trigger.topic" => {

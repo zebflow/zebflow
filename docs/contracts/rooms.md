@@ -82,6 +82,7 @@ A room runs in one of two modes, chosen by its triggers.
 | When | no `trigger.room --event $tick` matches it | one does: `trigger.room --room "match-:id" --event $tick --every 50ms` |
 | A client event | runs its `--event` trigger | waits for the next tick — every client event, chat included |
 | The tick pipeline gets | — | `input.room: { room_id, event: "$tick", tick, dt_ms, inputs: [ { session, event, payload, auth } … ] }` — every waiting input, in arrival order |
+| `--state /pos` (any trigger) | adds `input.room.state` | the same: the state at the named paths as the run starts |
 | State goes out | on each change, or each 33 ms with `--batch` | once per tick, after the tick pipeline ends |
 
 - **A room handles one thing at a time, in arrival order across all its
@@ -89,6 +90,12 @@ A room runs in one of two modes, chosen by its triggers.
   moves never interleave, so a pipeline that reads state and writes it back
   needs no lock. A slow step (a model call, a heavy query) holds the room, so
   it belongs in a webhook that answers later with `ws.message.send`.
+- **A pipeline reads the room's state through its trigger:** `--state /pos`
+  (repeatable, at most 16; `/` is the whole state) adds `input.room.state`,
+  each path where it sits in the state (`{ pos: { … } }`, a path holding
+  nothing left out), read under one lock just before the run, after every
+  run before it. Only the named paths are copied; a trigger without
+  `--state` copies nothing. Paths are fixed at activation (`{{ }}` refused).
 - `--every` is 16 ms to 1 s. A room never runs two ticks at once: a tick that
   outlasts `--every` delays the next and counts a `tick_overrun`.
 - `--every` is required with `$tick`; it and `--max-inputs` are refused on any

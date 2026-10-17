@@ -365,6 +365,23 @@ impl RoomHandle {
         self.state.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The state at each of `paths`, where it sits in the state, copied under
+    /// one read lock; `/` is the whole state. A path holding nothing is left
+    /// out. Only what is named is cloned (`trigger.room --state`).
+    pub fn read_state(&self, paths: &[String]) -> Value {
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        if paths.iter().any(|path| segments(path).is_empty()) {
+            return state.clone();
+        }
+        let mut out = json!({});
+        for path in paths {
+            if let Some(value) = json_ptr_get(&state, path) {
+                json_ptr_set(&mut out, path, value.clone());
+            }
+        }
+        out
+    }
+
     /// The size of the state as last measured, in bytes of JSON.
     pub fn state_bytes(&self) -> u64 {
         self.state_bytes.load(Ordering::Relaxed)
@@ -794,6 +811,18 @@ mod tests {
         let mut again = room.attach("s1").expect("seated");
         assert_eq!(again.view, json!({ "a": 1 }));
         assert_eq!(frame(&mut again), None);
+    }
+
+    #[test]
+    fn read_state_copies_only_the_named_paths_where_they_sit() {
+        let room = room(DEFAULT_MAX_STATE);
+        room.apply(StateOp::Set, "/pos", Some(json!({ "s1": { "x": 4, "y": 7 } })), false, &[]).expect("fits");
+        room.apply(StateOp::Set, "/hp/boss", Some(json!(90)), false, &[]).expect("fits");
+        room.apply(StateOp::Set, "/info", Some(json!({ "s1": { "name": "Aisling" } })), false, &[]).expect("fits");
+        let paths = |list: &[&str]| list.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        assert_eq!(room.read_state(&paths(&["/pos"])), json!({ "pos": { "s1": { "x": 4, "y": 7 } } }));
+        assert_eq!(room.read_state(&paths(&["/hp/boss", "/gone"])), json!({ "hp": { "boss": 90 } }));
+        assert_eq!(room.read_state(&paths(&["/pos", "/"])), room.get_state());
     }
 
     #[test]
