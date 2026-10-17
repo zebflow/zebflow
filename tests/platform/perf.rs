@@ -184,6 +184,9 @@ async fn perf_room_against_plain_axum_socket() {
     let cookie = login(&app).await;
     // What the room keeps is visible to nobody, so this measures the run, not the fanout.
     publish(&app, &cookie, "ev-room", r#"| trigger.room --room ev --event gps | ws.state.put --key "/pos/{{ input.room.payload.id }}" --value "{{ input.room.payload }}" --visible-to ops"#).await;
+    // The same run on a state that stays at 100 keys: what the run costs
+    // when the state is small.
+    publish(&app, &cookie, "ev-small", r#"| trigger.room --room ev-small --event gps | ws.state.put --key "/pos/{{ input.room.payload.id % 100 }}" --value "{{ input.room.payload }}" --visible-to ops"#).await;
     publish(
         &app,
         &cookie,
@@ -204,6 +207,7 @@ async fn perf_room_against_plain_axum_socket() {
         }
     };
     flood(address, "ev", counter("ev", "pipeline_runs")).await;
+    flood(address, "ev-small", counter("ev-small", "pipeline_runs")).await;
     // A tick run takes every waiting input and adds how many to /n, which a
     // watcher reads from the patches.
     let mut watcher = connect(address, "tk", &[]).await;

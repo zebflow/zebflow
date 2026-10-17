@@ -6,8 +6,10 @@
 //! none, nothing runs for it. A state change is applied by the caller, under
 //! the state lock, and sent from there, so two writes are sent in the order
 //! they were made; a `--batch` write marks the state dirty and one
-//! short-lived task sends it 33 ms later, at most once a tick. How a send
-//! reaches each session is [`super::delivery`].
+//! short-lived task sends it 33 ms later, at most once a tick. A write
+//! notes the path it changed and counts the bytes it added or took away,
+//! so neither a write nor its send costs the size of the whole state. How a
+//! send reaches each session is [`super::delivery`].
 //!
 //! The room also carries what its loop must notice: [`RoomHandle::epoch`]
 //! rises whenever the project's active `trigger.room` set changes, so the
@@ -28,7 +30,7 @@
 //! Delivery is decided on the server: a frame is queued only for the
 //! sessions its [`EmitTarget`] selects.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -193,6 +195,10 @@ pub struct RoomHandle {
     /// The `--visible-to` rules; changed only under the `state` write lock.
     visibility: Mutex<Visibility>,
     state_bytes: AtomicU64,
+    /// The paths written since the last send, none above another, each
+    /// with when it was first written; taken under the `state` lock, after
+    /// `visibility`.
+    touched: Mutex<Touched>,
     dirty: AtomicBool,
     /// Lock order: `delivery`, then `state`, then `members`.
     delivery: Mutex<Delivery>,
@@ -237,6 +243,7 @@ impl RoomHandle {
             state: RwLock::new(json!({})),
             visibility: Mutex::new(Visibility::default()),
             state_bytes: AtomicU64::new(2),
+            touched: Mutex::new(Touched::default()),
             dirty: AtomicBool::new(false),
             delivery: Mutex::new(Delivery::new()),
             members: Mutex::new(HashMap::new()),
@@ -397,57 +404,60 @@ impl RoomHandle {
     /// all, an update without it keeps what limits it.
     pub fn apply(self: &Arc<Self>, op: StateOp, path: &str, value: Option<Value>, batch: bool, visible_to: &[String]) -> Result<(), StateFull> {
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+        let parts = segments(path);
         let merged: Vec<String> = match (&op, &value) {
             (StateOp::Merge, Some(Value::Object(patch))) => patch.keys().cloned().collect(),
             _ => Vec::new(),
         };
-        let limit_path = || {
-            let parts = segments(path);
+        let mut bytes = self.state_bytes() as i64;
+        let mut undo = Vec::new();
+        for (at, new) in writes_of(&state, op, &parts, value) {
+            let (old, added) = swap_entry(&mut state, &at, new);
+            bytes += added;
+            undo.push((at, old));
+        }
+        let limit = self.settings.max_state;
+        if bytes.max(0) as u64 > limit {
+            for (at, old) in undo.into_iter().rev() {
+                swap_entry(&mut state, &at, old);
+            }
+            return Err(StateFull { limit, would_be: bytes as u64 });
+        }
+        self.state_bytes.store(bytes.max(0) as u64, Ordering::Relaxed);
+        {
             let mut vis = self.visibility.lock().unwrap_or_else(|e| e.into_inner());
+            let mut touched = self.touched.lock().unwrap_or_else(|e| e.into_inner());
+            // A put or a delete changes the rules at its path only; an update
+            // that limits its path anew changes who sees all of it.
+            let limits_anew = match op {
+                StateOp::Merge => !visible_to.is_empty() && vis.rule(&parts).is_none_or(|tags| !tags.iter().eq(visible_to.iter().collect::<BTreeSet<_>>())),
+                StateOp::Set | StateOp::Delete => true,
+            };
+            if limits_anew {
+                touched.add(owned(&parts));
+            }
             match op {
                 StateOp::Set => vis.put(&parts, visible_to),
                 StateOp::Merge => vis.update(&parts, merged.iter().map(String::as_str), visible_to),
                 StateOp::Delete => vis.delete(&parts),
             }
-        };
-        let saved = json_ptr_get(&state, path).cloned();
-        let before = saved.as_ref().map(json_len).unwrap_or(0);
-        apply_state_op(&mut state, op, path, value);
-        let limit = self.settings.max_state;
-        let undo = |state: &mut Value| match &saved {
-            Some(old) => json_ptr_set(state, path, old.clone()),
-            None => json_ptr_delete(state, path),
-        };
+            for (at, _) in undo {
+                touched.add(at);
+            }
+        }
+        drop(state);
+        self.touch();
         let tick_room = self.tick().is_some();
         if batch || tick_room {
-            let after = json_ptr_get(&state, path).map(json_len).unwrap_or(0);
-            let estimate = (self.state_bytes() + after).saturating_sub(before);
-            if estimate > limit {
-                undo(&mut state);
-                return Err(StateFull { limit, would_be: estimate });
-            }
-            self.state_bytes.store(estimate, Ordering::Relaxed);
-            limit_path();
-            drop(state);
-            self.touch();
             // A tick room's loop sends it when the tick ends.
             if !self.dirty.swap(true, Ordering::AcqRel) && !tick_room {
                 self.schedule_flush();
             }
             return Ok(());
         }
-        let text = state.to_string();
-        if text.len() as u64 > limit {
-            undo(&mut state);
-            return Err(StateFull { limit, would_be: text.len() as u64 });
-        }
-        self.state_bytes.store(text.len() as u64, Ordering::Relaxed);
-        limit_path();
-        drop(state);
         // A batch change still waiting goes out with this one.
         self.dirty.store(true, Ordering::Release);
         self.send_changes(None);
-        self.touch();
         Ok(())
     }
 
@@ -484,15 +494,10 @@ impl RoomHandle {
         if !dirty && (tick.is_none() || !delivery.has_tick_events()) {
             return;
         }
-        let (state, vis) = {
-            let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-            let vis = self.visibility.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            (state.clone(), vis)
-        };
-        if dirty {
-            self.state_bytes.store(json_len(&state), Ordering::Relaxed);
-        }
-        delivery.send_changes(state, vis, &mut self.members(), tick);
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        let vis = self.visibility.lock().unwrap_or_else(|e| e.into_inner());
+        let touched = std::mem::take(&mut *self.touched.lock().unwrap_or_else(|e| e.into_inner())).in_order();
+        delivery.send_changes(&state, &vis, &touched, &mut self.members(), tick);
     }
 
     /// Forget the state (a fixed room whose last session left).
@@ -501,6 +506,7 @@ impl RoomHandle {
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         *state = json!({});
         *self.visibility.lock().unwrap_or_else(|e| e.into_inner()) = Visibility::default();
+        *self.touched.lock().unwrap_or_else(|e| e.into_inner()) = Touched::default();
         delivery.reset();
         self.state_bytes.store(2, Ordering::Relaxed);
         self.dirty.store(false, Ordering::Release);
@@ -649,8 +655,144 @@ impl RoomHandle {
     }
 }
 
+/// The bytes of `value` as compact JSON, counted without being kept.
 fn json_len(value: &Value) -> u64 {
-    serde_json::to_vec(value).map(|v| v.len() as u64).unwrap_or(0)
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len() as u64;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
+
+/// What a change writes: each entry it replaces, named by the highest key
+/// the write creates or changes (so the object above it is there already),
+/// with its new value — `None` removes it. A key under a value that is not
+/// an object, or a delete of a key that is not there, writes nothing.
+fn writes_of(state: &Value, op: StateOp, parts: &[&str], value: Option<Value>) -> Vec<(Vec<String>, Option<Value>)> {
+    let set = |value: Value| landing(state, parts, false).map(|at| placed(parts, at, value)).into_iter().collect();
+    match op {
+        StateOp::Set => set(value.unwrap_or(Value::Null)),
+        StateOp::Delete if parts.is_empty() => Vec::new(),
+        StateOp::Delete => landing(state, parts, true).map(|_| (owned(parts), None)).into_iter().collect(),
+        StateOp::Merge => {
+            let Some(Value::Object(patch)) = value else { return Vec::new() };
+            match json_ptr_get(state, &parts.join("/")) {
+                // A shallow merge is one write per key it merges.
+                Some(Value::Object(_)) => patch
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let mut at = owned(parts);
+                        at.push(key);
+                        (at, Some(value))
+                    })
+                    .collect(),
+                Some(_) => Vec::new(),
+                None => set(Value::Object(patch)),
+            }
+        }
+    }
+}
+
+/// How many keys of `parts` the write reaches: all of them when they are
+/// all there, else up to and with the first it creates. `None` when a key
+/// sits under a value that is not an object, or a delete misses its key.
+fn landing(state: &Value, parts: &[&str], delete: bool) -> Option<usize> {
+    let mut at = state;
+    for (depth, part) in parts.iter().enumerate() {
+        match at.as_object()?.get(*part) {
+            Some(next) => at = next,
+            None => return (!delete).then_some(depth + 1),
+        }
+    }
+    Some(parts.len())
+}
+
+/// The write of `value` at `parts`, landing after `at` keys: the objects
+/// it creates on the way wrap it.
+fn placed(parts: &[&str], at: usize, value: Value) -> (Vec<String>, Option<Value>) {
+    let value = parts[at..].iter().rev().fold(value, |inner, key| json!({ *key: inner }));
+    (owned(&parts[..at]), Some(value))
+}
+
+fn owned(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|part| part.to_string()).collect()
+}
+
+/// Put `new` at `at` (`None` removes it), whose parent object is there:
+/// the value it replaced, and how many bytes of JSON the state grew by.
+fn swap_entry(state: &mut Value, at: &[String], new: Option<Value>) -> (Option<Value>, i64) {
+    let Some((last, above)) = at.split_last() else {
+        let new = new.unwrap_or_else(|| json!({}));
+        let grew = json_len(&new) as i64 - json_len(state) as i64;
+        return (Some(std::mem::replace(state, new)), grew);
+    };
+    let Some(map) = above.iter().try_fold(state, |at, part| at.get_mut(part.as_str())).and_then(Value::as_object_mut) else {
+        return (None, 0);
+    };
+    let others = map.len() as i64 - i64::from(map.contains_key(last));
+    // `"key":value`, and a comma when the object holds others.
+    let entry = |value: &Value| json_len(&Value::String(last.clone())) as i64 + 1 + json_len(value) as i64 + i64::from(others > 0);
+    match new {
+        Some(new) => {
+            let size = entry(&new);
+            match map.insert(last.clone(), new) {
+                Some(old) => {
+                    let grew = size - entry(&old);
+                    (Some(old), grew)
+                }
+                None => (None, size),
+            }
+        }
+        None => match map.remove(last) {
+            Some(old) => {
+                let size = entry(&old);
+                (Some(old), -size)
+            }
+            None => (None, 0),
+        },
+    }
+}
+
+/// The paths written since the last send, none above another, each with
+/// the order it was first written in.
+#[derive(Default)]
+struct Touched {
+    paths: BTreeMap<Vec<String>, u64>,
+    next: u64,
+}
+
+impl Touched {
+    /// Note `path`, unless a path above it is noted; a path above others
+    /// replaces them, and goes where the first of them was.
+    fn add(&mut self, path: Vec<String>) {
+        if (0..=path.len()).any(|depth| self.paths.contains_key(&path[..depth])) {
+            return;
+        }
+        let under: Vec<Vec<String>> = self.paths.range(path.clone()..).take_while(|(p, _)| p.starts_with(&path)).map(|(p, _)| p.clone()).collect();
+        let mut first = self.next;
+        self.next += 1;
+        for gone in under {
+            if let Some(seq) = self.paths.remove(&gone) {
+                first = first.min(seq);
+            }
+        }
+        self.paths.insert(path, first);
+    }
+
+    /// The paths, in the order they were written.
+    fn in_order(self) -> Vec<Vec<String>> {
+        let mut paths: Vec<_> = self.paths.into_iter().collect();
+        paths.sort_by_key(|(_, seq)| *seq);
+        paths.into_iter().map(|(path, _)| path).collect()
+    }
 }
 
 // ---- State helpers ---------------------------------------------------------
@@ -667,19 +809,6 @@ fn json_ptr_get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
     Some(cur)
 }
 
-/// Apply a [`StateOp`] mutation to the state tree.
-fn apply_state_op(state: &mut Value, op: StateOp, path: &str, value: Option<Value>) {
-    match op {
-        StateOp::Set => json_ptr_set(state, path, value.unwrap_or(Value::Null)),
-        StateOp::Merge => {
-            if let Some(Value::Object(patch)) = value {
-                json_ptr_merge(state, path, patch);
-            }
-        }
-        StateOp::Delete => json_ptr_delete(state, path),
-    }
-}
-
 /// Set `value` at `path`, creating intermediate objects as needed.
 fn json_ptr_set(root: &mut Value, path: &str, value: Value) {
     let parts = segments(path);
@@ -694,34 +823,6 @@ fn json_ptr_set(root: &mut Value, path: &str, value: Value) {
     }
     if let Value::Object(map) = cur {
         map.insert((*last).to_string(), value);
-    }
-}
-
-/// Shallow-merge `patch` into the object at `path`, creating it if absent.
-fn json_ptr_merge(root: &mut Value, path: &str, patch: serde_json::Map<String, Value>) {
-    let mut cur = root;
-    for part in segments(path) {
-        let Value::Object(map) = cur else { return };
-        cur = map.entry(part.to_string()).or_insert_with(|| json!({}));
-    }
-    if let Value::Object(target) = cur {
-        target.extend(patch);
-    }
-}
-
-/// Remove the key at `path` from its parent object.
-fn json_ptr_delete(root: &mut Value, path: &str) {
-    let parts = segments(path);
-    let Some((last, above)) = parts.split_last() else { return };
-    let mut cur = root;
-    for part in above {
-        match cur.as_object_mut().and_then(|map| map.get_mut(*part)) {
-            Some(next) => cur = next,
-            None => return,
-        }
-    }
-    if let Value::Object(map) = cur {
-        map.remove(*last);
     }
 }
 
@@ -777,7 +878,7 @@ mod tests {
         assert_eq!(frame(&mut s1), None, "a batch waits for the tick");
         tokio::time::sleep(BATCH_TICK * 3).await;
         let tick = frame(&mut s1).expect("one send");
-        assert_eq!(tick["ops"], json!([ { "op": "del", "path": ["players", "s2"] }, { "op": "set", "path": ["b"], "value": 2 } ]), "two batch changes, one patch");
+        assert_eq!(tick["ops"], json!([ { "op": "set", "path": ["b"], "value": 2 }, { "op": "del", "path": ["players", "s2"] } ]), "two batch changes, one patch, in the order they were made");
         assert_eq!(frame(&mut s1), None);
         room.apply(StateOp::Set, "/b", Some(json!(2)), false, &[]).unwrap();
         assert_eq!(frame(&mut s1), None, "a write that changes nothing sends nothing");
@@ -850,6 +951,72 @@ mod tests {
                         cfg!(debug_assertions)
                     );
                 }
+            }
+        }
+    }
+
+    /// Random writes, deletes, merges, limits and tag changes, at once and
+    /// batched: after every send each client, applying only the patches it
+    /// was sent, holds exactly its view, and the size kept is the state's.
+    #[test]
+    fn every_send_leaves_each_client_holding_its_view_and_the_size_exact() {
+        let room = room(DEFAULT_MAX_STATE);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let mut clients: Vec<(String, Attached, Value)> = (0..4)
+            .map(|i| {
+                let id = format!("s{i}");
+                let (attached, kick) = seat(&room, &id, None);
+                std::mem::forget(kick);
+                let view = attached.view.clone();
+                (id, attached, view)
+            })
+            .collect();
+        let keys = ["a", "b", "pos", "hp"];
+        let tags = ["red", "blue"];
+        for step in 0..3000 {
+            let depth = 1 + next(3) as usize;
+            let path: String = (0..depth).map(|_| format!("/{}", keys[next(4) as usize])).collect();
+            let visible: Vec<String> = match next(4) {
+                0 => vec![tags[next(2) as usize].to_string()],
+                _ => Vec::new(),
+            };
+            let value = match next(3) {
+                0 => json!(next(5)),
+                1 => json!({ keys[next(4) as usize]: next(5), keys[next(4) as usize]: { "x": next(3) } }),
+                _ => json!([next(3)]),
+            };
+            let batch = next(3) == 0;
+            match next(6) {
+                0 | 1 => room.apply(StateOp::Set, &path, Some(value), batch, &visible).expect("fits"),
+                2 | 3 => room.apply(StateOp::Merge, &path, Some(value), batch, &visible).expect("fits"),
+                4 => room.apply(StateOp::Delete, &path, None, batch, &visible).expect("fits"),
+                _ => {
+                    let id = format!("s{}", next(4));
+                    let tag = tags[next(2) as usize].to_string();
+                    room.retag(&id, &["*".to_string()], &[tag]);
+                }
+            }
+            let state = room.get_state();
+            assert_eq!(room.state_bytes(), json_len(&state), "step {step}: the size kept is the state's");
+            // Batch writes pile up between checks. A send takes the delivery
+            // lock first, so this one also waits out a batch send under way.
+            if step % 7 != 0 {
+                continue;
+            }
+            room.flush();
+            let vis = room.visibility.lock().unwrap().clone();
+            for (id, attached, held) in clients.iter_mut() {
+                while let Some(frame) = frame(attached) {
+                    super::super::view::apply(held, frame["ops"].as_array().unwrap());
+                }
+                let mine = room.members().get(id.as_str()).unwrap().tags.clone();
+                assert_eq!(*held, vis.view(&state, &vis.key(&mine)), "step {step}: {id} holds its view");
             }
         }
     }

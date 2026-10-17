@@ -6,9 +6,12 @@
 //! state: it remembers the state and its `--visible-to` rules as of its last
 //! send ([`Delivery::flushed`]) and, at each send, gives every session a
 //! `patch` of only what changed in **its view** — the view its tags had at
-//! its last frame against the one they have now ([`super::view`]). Each
-//! distinct view is cut once per send, and sessions that are sent the same
-//! thing share one encoding, and so the same bytes.
+//! its last frame against the one they have now ([`super::view`]). A send
+//! compares only the paths written since the last one, so it costs what
+//! changed, not the size of the state; a session whose view itself changed
+//! (its tags, or the tags a rule names) is compared whole. Each change of
+//! view is diffed once per send, and sessions that are sent the same thing
+//! share one encoding, and so the same bytes.
 //!
 //! A session whose queue is full is **behind**: it is skipped from then on
 //! and its socket is woken; the socket drops what is queued and asks for
@@ -22,7 +25,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
 
 use super::room::{EmitTarget, Kick};
-use super::view::{ViewKey, Visibility, diff};
+use super::view::{ViewKey, Visibility, diff, diff_under};
 
 /// How many frames a session may fall behind before it is sent `resync`.
 pub const SESSION_BACKLOG: usize = 256;
@@ -154,30 +157,32 @@ impl Delivery {
     }
 
     /// Send every live session what changed in its view since the last
-    /// send: `patch { ops }`, or in a tick room `patch { tick, ops, events }`
+    /// send — `touched`, the paths written since then, none above another —
+    /// as `patch { ops }`, or in a tick room `patch { tick, ops, events }`
     /// carrying the tick's events too. A session that has nothing new is
     /// sent nothing.
-    pub fn send_changes(&mut self, state: Value, vis: Visibility, members: &mut HashMap<String, Member>, tick: Option<u64>) {
+    pub fn send_changes(&mut self, state: &Value, vis: &Visibility, touched: &[Vec<String>], members: &mut HashMap<String, Member>, tick: Option<u64>) {
         // Events wait only for the frame of the tick that sent them.
         let events = if tick.is_some() { std::mem::take(&mut self.tick_events) } else { Vec::new() };
-        let (old_state, old_vis) = (std::mem::replace(&mut self.flushed, state), std::mem::replace(&mut self.flushed_vis, vis));
-        let (new_state, new_vis) = (&self.flushed, &self.flushed_vis);
-        // Each distinct view cut once, each change of view diffed once, each
-        // distinct frame encoded once.
-        let mut old_views: HashMap<ViewKey, Value> = HashMap::new();
-        let mut new_views: HashMap<ViewKey, Value> = HashMap::new();
+        let (old_state, old_vis) = (&self.flushed, &self.flushed_vis);
+        // Each change of view diffed once, each distinct frame encoded once.
         let mut changes: HashMap<(ViewKey, ViewKey), Vec<Value>> = HashMap::new();
         let mut frames: HashMap<(ViewKey, ViewKey, Vec<usize>), Option<Frame>> = HashMap::new();
         for (id, member) in members.iter_mut().filter(|(_, m)| m.live()) {
             let was = old_vis.key(&member.sent_tags);
-            let is = new_vis.key(&member.tags);
+            let is = vis.key(&member.tags);
             member.sent_tags = member.tags.clone();
             let mine: Vec<usize> = events.iter().enumerate().filter(|(_, e)| member.is_targeted(&e.to, id)).map(|(i, _)| i).collect();
             let frame = frames.entry((was.clone(), is.clone(), mine)).or_insert_with_key(|(was, is, mine)| {
                 let ops = changes.entry((was.clone(), is.clone())).or_insert_with(|| {
-                    let before = old_views.entry(was.clone()).or_insert_with(|| old_vis.view(&old_state, was));
-                    let after = new_views.entry(is.clone()).or_insert_with(|| new_vis.view(new_state, is));
-                    diff(before, after)
+                    if was != is {
+                        return diff(&old_vis.view(old_state, was), &vis.view(state, is));
+                    }
+                    let mut ops = Vec::new();
+                    for path in touched {
+                        diff_under(path, old_vis.view_under(old_state, path, was).as_ref(), vis.view_under(state, path, is).as_ref(), &mut ops);
+                    }
+                    ops
                 });
                 if ops.is_empty() && mine.is_empty() {
                     return None;
@@ -187,6 +192,11 @@ impl Delivery {
             if let Some(frame) = frame {
                 member.send(frame);
             }
+        }
+        // The last send now holds what was written.
+        for path in touched {
+            put_at(&mut self.flushed, path, at_path(state, path).cloned());
+            self.flushed_vis.copy_under(path, vis);
         }
     }
 
@@ -224,4 +234,38 @@ pub(super) fn is_attached(member: &Member) -> bool {
 /// Whether the session fell behind.
 pub(super) fn is_behind(member: &Member) -> bool {
     member.behind
+}
+
+/// The value at `path`, if any.
+fn at_path<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter().try_fold(root, |at, part| at.as_object()?.get(part))
+}
+
+/// Put `value` at `path`, making the objects above it; `None` removes
+/// what is there and makes nothing.
+fn put_at(root: &mut Value, path: &[String], value: Option<Value>) {
+    let Some((last, above)) = path.split_last() else {
+        *root = value.unwrap_or_else(|| json!({}));
+        return;
+    };
+    let mut at = root;
+    for part in above {
+        let Value::Object(map) = at else { return };
+        at = match value {
+            Some(_) => map.entry(part.clone()).or_insert_with(|| json!({})),
+            None => match map.get_mut(part) {
+                Some(next) => next,
+                None => return,
+            },
+        };
+    }
+    let Value::Object(map) = at else { return };
+    match value {
+        Some(value) => {
+            map.insert(last.clone(), value);
+        }
+        None => {
+            map.remove(last);
+        }
+    }
 }

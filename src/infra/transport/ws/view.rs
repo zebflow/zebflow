@@ -23,6 +23,8 @@ use serde_json::{Map, Value, json};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Visibility {
     rules: BTreeMap<Vec<String>, BTreeSet<String>>,
+    /// Every tag some rule names, with how many rules name it.
+    named: BTreeMap<String, usize>,
 }
 
 /// A session's tags that some rule names: two sessions with the same ones
@@ -56,16 +58,54 @@ impl Visibility {
 
     fn limit(&mut self, path: &[&str], tags: &[String]) {
         if !tags.is_empty() && !path.is_empty() {
-            self.rules.insert(owned(path), tags.iter().cloned().collect());
+            self.insert(owned(path), tags.iter().cloned().collect());
+        }
+    }
+
+    fn insert(&mut self, path: Vec<String>, tags: BTreeSet<String>) {
+        for tag in &tags {
+            *self.named.entry(tag.clone()).or_default() += 1;
+        }
+        if let Some(gone) = self.rules.insert(path, tags) {
+            self.unname(&gone);
+        }
+    }
+
+    fn unname(&mut self, tags: &BTreeSet<String>) {
+        for tag in tags {
+            if let Some(count) = self.named.get_mut(tag) {
+                *count -= 1;
+                if *count == 0 {
+                    self.named.remove(tag);
+                }
+            }
         }
     }
 
     /// Drop every rule at or under `path`.
     fn forget(&mut self, path: &[&str]) {
-        let start = owned(path);
-        let under: Vec<Vec<String>> = self.rules.range(start.clone()..).take_while(|(key, _)| key.starts_with(&start)).map(|(key, _)| key.clone()).collect();
+        self.forget_under(&owned(path));
+    }
+
+    fn forget_under(&mut self, start: &[String]) {
+        let under: Vec<Vec<String>> = self.rules.range(start.to_vec()..).take_while(|(key, _)| key.starts_with(start)).map(|(key, _)| key.clone()).collect();
         for key in under {
-            self.rules.remove(&key);
+            if let Some(tags) = self.rules.remove(&key) {
+                self.unname(&tags);
+            }
+        }
+    }
+
+    /// The tags that may see `path`, when a rule limits it there.
+    pub fn rule(&self, path: &[&str]) -> Option<&BTreeSet<String>> {
+        self.rules.get(&owned(path))
+    }
+
+    /// Make the rules at and under `path` the ones `from` has there.
+    pub fn copy_under(&mut self, path: &[String], from: &Visibility) {
+        self.forget_under(path);
+        for (key, tags) in from.rules.range(path.to_vec()..).take_while(|(key, _)| key.starts_with(path)) {
+            self.insert(key.clone(), tags.clone());
         }
     }
 
@@ -76,11 +116,7 @@ impl Visibility {
 
     /// The tags among `tags` that some rule names.
     pub fn key(&self, tags: &BTreeSet<String>) -> ViewKey {
-        if self.rules.is_empty() {
-            return Vec::new();
-        }
-        let named: BTreeSet<&String> = self.rules.values().flatten().collect();
-        tags.iter().filter(|tag| named.contains(tag)).cloned().collect()
+        tags.iter().filter(|tag| self.named.contains_key(*tag)).cloned().collect()
     }
 
     /// `state` as a session whose [`Visibility::key`] is `key` sees it.
@@ -90,6 +126,22 @@ impl Visibility {
         }
         let mut path = Vec::new();
         self.view_at(state, key, &mut path)
+    }
+
+    /// The value at `path` as a session whose key is `key` sees it: `None`
+    /// when nothing is there or a rule at or above `path` hides it.
+    pub fn view_under(&self, state: &Value, path: &[String], key: &ViewKey) -> Option<Value> {
+        let mut at = state;
+        for (depth, part) in path.iter().enumerate() {
+            at = at.as_object()?.get(part)?;
+            if self.rules.get(&path[..=depth]).is_some_and(|tags| !key.iter().any(|tag| tags.contains(tag))) {
+                return None;
+            }
+        }
+        if self.rules.is_empty() {
+            return Some(at.clone());
+        }
+        Some(self.view_at(at, key, &mut path.to_vec()))
     }
 
     fn view_at(&self, value: &Value, key: &ViewKey, path: &mut Vec<String>) -> Value {
@@ -130,6 +182,18 @@ pub fn diff(old: &Value, new: &Value) -> Vec<Value> {
     let mut path = Vec::new();
     diff_at(old, new, &mut path, &mut ops);
     ops
+}
+
+/// The operations that turn the value at `path` from `old` into `new`,
+/// each `None` where nothing is.
+pub fn diff_under(path: &[String], old: Option<&Value>, new: Option<&Value>, ops: &mut Vec<Value>) {
+    let mut keys: Vec<&str> = path.iter().map(String::as_str).collect();
+    match (old, new) {
+        (None, None) => {}
+        (Some(_), None) => ops.push(del_op(&keys)),
+        (None, Some(new)) => ops.push(set_op(&keys, new)),
+        (Some(old), Some(new)) => diff_at(old, new, &mut keys, ops),
+    }
 }
 
 fn diff_at<'a>(old: &'a Value, new: &'a Value, path: &mut Vec<&'a str>, ops: &mut Vec<Value>) {
