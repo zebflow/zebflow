@@ -44,3 +44,5 @@ mod ws_room_page;
 mod ws_room_views;
 #[path = "platform/pipeline_tabs.rs"]
 mod pipeline_tabs;
+#[path = "platform/perf.rs"]
+mod perf;

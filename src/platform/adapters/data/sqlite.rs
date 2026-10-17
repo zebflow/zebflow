@@ -8265,6 +8265,59 @@ mod tests {
         );
     }
 
+    /// What recording one successful run costs: the webhook path writes one
+    /// record per success today. Against the floor of the same insert on one
+    /// connection kept open. An ignored diagnostic, not a timing assertion:
+    /// `cargo test --release --lib run_record_write_benchmark -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual run record cost measurement"]
+    fn run_record_write_benchmark() {
+        use std::time::Instant;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        let entry = |n: usize| PipelineInvocationEntry {
+            run_id: format!("run-{n}"),
+            at: 1_700_000_000 + n as i64,
+            duration_ms: 1,
+            status: "ok".to_string(),
+            trigger: "webhook".to_string(),
+            error: None,
+            trace: Vec::new(),
+        };
+        let runs = 2000;
+        let start = Instant::now();
+        for n in 0..runs {
+            adapter
+                .log_pipeline_invocation("superadmin", "default", "pipelines/bench.zf.json", &entry(n), 100, None)
+                .expect("log");
+        }
+        let took = start.elapsed();
+        eprintln!("record-bench log_pipeline_invocation (today)      {:>8.1} µs/record", took.as_secs_f64() * 1e6 / runs as f64);
+
+        let conn = Connection::open(tmp.path().join("floor.db")).expect("open");
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
+             CREATE TABLE r (id INTEGER PRIMARY KEY, file TEXT, run_id TEXT, at INTEGER, trace_json TEXT);",
+        )
+        .expect("schema");
+        let start = Instant::now();
+        for n in 0..runs {
+            conn.execute("INSERT INTO r (file, run_id, at, trace_json) VALUES (?1, ?2, ?3, '[]')", params!["pipelines/bench.zf.json", format!("run-{n}"), n as i64])
+                .expect("insert");
+        }
+        let took = start.elapsed();
+        eprintln!("record-bench one open connection, insert only     {:>8.1} µs/record", took.as_secs_f64() * 1e6 / runs as f64);
+        let start = Instant::now();
+        let tx = conn.unchecked_transaction().expect("tx");
+        for n in 0..runs {
+            tx.execute("INSERT INTO r (file, run_id, at, trace_json) VALUES (?1, ?2, ?3, '[]')", params!["pipelines/bench.zf.json", format!("run-{n}"), n as i64])
+                .expect("insert");
+        }
+        tx.commit().expect("commit");
+        let took = start.elapsed();
+        eprintln!("record-bench one connection, {runs} in one transaction {:>8.1} µs/record", took.as_secs_f64() * 1e6 / runs as f64);
+    }
+
     #[test]
     fn invocation_logs_are_project_local_under_data_logs() {
         let tmp = tempfile::tempdir().expect("tempdir");

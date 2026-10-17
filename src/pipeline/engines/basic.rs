@@ -3258,6 +3258,94 @@ mod tests {
         }
     }
 
+    /// What one run costs, phase by phase and whole, without HTTP, sockets or
+    /// records (`docs/contracts/rooms.md` § The fast lane; the 100k study in
+    /// the ledger). An ignored diagnostic, not a timing assertion; run it in a
+    /// release build:
+    /// `cargo test --release --lib run_cost_benchmark -- --ignored --nocapture`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "manual run cost measurement"]
+    async fn run_cost_benchmark() {
+        use crate::infra::io::state::{DynStateBus, MemStateBus};
+        use std::time::Instant;
+        let bus: DynStateBus = Arc::new(MemStateBus::new());
+        let engine = Arc::new(super::BasicPipelineEngine::default().with_state_bus(bus));
+        let ctx = |n: u64| PipelineContext {
+            owner: "bench".into(),
+            project: "bench".into(),
+            pipeline: "bench".into(),
+            request_id: format!("bench-{n}"),
+            route: String::new(),
+            input: json!({ "id": n, "lat": -6.2, "lng": 106.8 }),
+            trigger: None,
+            placeholder: None,
+        };
+        let report = |what: &str, runs: u64, took: std::time::Duration| {
+            eprintln!(
+                "run-bench {what:<46} {:>9.1} µs/run  {:>9.0} runs/s  (debug_assertions={})",
+                took.as_secs_f64() * 1e6 / runs as f64,
+                runs as f64 / took.as_secs_f64(),
+                cfg!(debug_assertions)
+            );
+        };
+
+        // Phases, alone.
+        let graph = build_pipeline_graph("bench", "| trigger.manual | kv.entry.put --key \"/pos/{{ input.manual.id }}\" --value \"{{ input.manual }}\"").expect("graph");
+        let runs = 2000;
+        let start = Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(engine.flow_plan(&graph).expect("plan"));
+        }
+        report("phase: flow + retention plan", runs, start.elapsed());
+        let node = &graph.nodes[1];
+        let start = Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(engine.build_node(node).ok());
+        }
+        report("phase: build_node (kv.entry.put)", runs, start.elapsed());
+        let payload = json!({ "manual": { "id": 7, "lat": -6.2, "lng": 106.8 } });
+        let start = Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(super::resolve_config_expressions(node.config.clone(), &payload, &json!({}), &engine.language).expect("resolved"));
+        }
+        report("phase: resolve 2 path expressions (V8)", runs, start.elapsed());
+
+        // Whole runs, one after another, then 4 at a time.
+        for (what, dsl) in [
+            ("run: trigger only", "| trigger.manual"),
+            ("run: trigger + kv put, no expressions", "| trigger.manual | kv.entry.put --key /pos/a --value 1"),
+            ("run: trigger + kv put, 2 path expressions", "| trigger.manual | kv.entry.put --key \"/pos/{{ input.manual.id }}\" --value \"{{ input.manual }}\""),
+            ("run: trigger + script", "| trigger.manual | javascript.script.run -- \"return { x: input.manual.id * 2 };\""),
+            ("run: trigger + script + 2 kv puts (3 nodes)", "| trigger.manual | javascript.script.run -- \"return { x: input.manual.id * 2 };\" | kv.entry.put --key \"/a/{{ input.manual.id }}\" --value \"{{ input.script.x }}\" | kv.entry.put --key \"/b/{{ input.manual.id }}\" --value \"{{ input.manual }}\""),
+        ] {
+            let graph = build_pipeline_graph("bench", dsl).expect("graph");
+            for n in 0..50 {
+                engine.execute_async(&graph, &ctx(n)).await.expect("warm");
+            }
+            let runs = 2000;
+            let start = Instant::now();
+            for n in 0..runs {
+                engine.execute_async(&graph, &ctx(n)).await.expect("run");
+            }
+            report(what, runs, start.elapsed());
+            let start = Instant::now();
+            let tasks: Vec<_> = (0..4u64)
+                .map(|t| {
+                    let (engine, graph) = (engine.clone(), graph.clone());
+                    tokio::spawn(async move {
+                        for n in 0..runs / 4 {
+                            engine.execute_async(&graph, &ctx(t * runs + n)).await.expect("run");
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.await.expect("task");
+            }
+            report(&format!("{what} ×4 tasks"), runs, start.elapsed());
+        }
+    }
+
     /// A curated bundle ships in the binary, so a declaration it cannot run
     /// under is a startup-shaped bug rather than a user's problem.
     ///

@@ -813,6 +813,47 @@ mod tests {
         assert_eq!(frame(&mut again), None);
     }
 
+    /// What one state change costs to send, by how big the room's state is
+    /// and how many sessions watch it: today every change clones the state
+    /// and diffs whole views. An ignored diagnostic, not a timing assertion:
+    /// `cargo test --release --lib room_change_cost_benchmark -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "manual room change cost measurement"]
+    async fn room_change_cost_benchmark() {
+        use std::time::Instant;
+        for keys in [100usize, 10_000, 100_000] {
+            for sessions in [1usize, 100] {
+                let room = room(64_000_000);
+                let pos: serde_json::Map<String, Value> =
+                    (0..keys).map(|i| (format!("d{i}"), json!({ "lat": -6.2, "lng": 106.8, "h": 90 }))).collect();
+                room.apply(StateOp::Set, "/pos", Some(Value::Object(pos)), false, &[]).expect("fits");
+                let mut seats: Vec<_> = (0..sessions).map(|i| seat(&room, &format!("s{i}"), None)).collect();
+                let drain = |seats: &mut Vec<(Attached, mpsc::UnboundedReceiver<Kick>)>| {
+                    for (attached, _) in seats.iter_mut() {
+                        while attached.frames.try_recv().is_ok() {}
+                    }
+                };
+                drain(&mut seats);
+                let changes = if keys >= 100_000 { 20 } else { 200 };
+                for (what, batch) in [("at once", false), ("batched + flush", true)] {
+                    let start = Instant::now();
+                    for n in 0..changes {
+                        room.apply(StateOp::Merge, &format!("/pos/d{}", n % keys), Some(json!({ "lat": n })), batch, &[]).expect("fits");
+                        if batch {
+                            room.flush();
+                        }
+                        drain(&mut seats);
+                    }
+                    eprintln!(
+                        "room-bench {keys:>7} keys {sessions:>4} sessions, one change {what:<16} {:>10.1} µs/change (debug_assertions={})",
+                        start.elapsed().as_secs_f64() * 1e6 / changes as f64,
+                        cfg!(debug_assertions)
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn read_state_copies_only_the_named_paths_where_they_sit() {
         let room = room(DEFAULT_MAX_STATE);
