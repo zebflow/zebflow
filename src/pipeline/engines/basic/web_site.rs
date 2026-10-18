@@ -275,7 +275,7 @@ impl BasicPipelineEngine {
         trace.push(format!("generated_status={status}"));
         Ok(vec![NodeExecutionOutput {
             output_pins: vec![site::OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(payload, json!({
+            payload: with_answer(payload.clone(), json!({
                 "site": {
                     "mode": site::Mode::Page.as_str(),
                     "status": status,
@@ -350,7 +350,7 @@ impl BasicPipelineEngine {
         let skipped: usize = built.iter().map(|b| b.written.skipped).sum();
         Ok(vec![NodeExecutionOutput {
             output_pins: vec![site::OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(payload, json!({
+            payload: with_answer(payload.clone(), json!({
                 "site": {
                     "mode": site::Mode::Docs.as_str(),
                     "status": "ok",

@@ -551,7 +551,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({
+            payload: crate::pipeline::nodes::shared::util::with_answer(input.payload, json!({
                 "message": { "sent": true, "id": id, "recipient": recipients_raw, "subject": subject, "attached": attached }
             })),
             trace: vec![format!("mail.message.send: delivered to relay {host}:{port}")],

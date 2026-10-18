@@ -108,7 +108,7 @@ impl GitSyncService {
     }
 
     fn repo_dir(&self, owner: &str, project: &str) -> Result<PathBuf, PlatformError> {
-        Ok(self.platform.file.ensure_project_layout(owner, project)?.repo_dir)
+        Ok(self.platform.file.ensure_project_layout(owner, project)?.repo_dir.clone())
     }
 
     fn remote(&self, owner: &str, project: &str) -> Result<(String, String, String), PlatformError> {

@@ -675,7 +675,7 @@ impl NodeHandler for Node {
         };
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "layer": layer })),
+            payload: with_answer(input.payload, json!({ "layer": layer })),
             trace: vec![format!("node_kind={}", self.operation.kind())],
         })
     }

@@ -349,7 +349,7 @@ impl Node {
 }
 
 /// The payload passed on, with the answer beside it for the engine to lift.
-pub fn with_envelope(payload: &Value, envelope: Value) -> Value {
+pub fn with_envelope(payload: Value, envelope: Value) -> Value {
     with_answer(payload, json!({ ENVELOPE_KEY: envelope }))
 }
 
@@ -386,7 +386,7 @@ impl NodeHandler for Node {
         };
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_envelope(&input.payload, envelope),
+            payload: with_envelope(input.payload, envelope),
             trace: vec![format!("node_kind={NODE_KIND}"), what],
         })
     }

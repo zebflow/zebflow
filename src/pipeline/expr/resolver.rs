@@ -1,7 +1,9 @@
 //! Resolve `{{ expr }}` expressions in a node config Value before the node executes.
 //!
-//! All expressions found in one config object are batched into a single Deno
-//! pool invocation for efficiency.
+//! Each expression runs natively when [`super::native`] compiles it (once,
+//! cached by its text) and has an exact answer for the values at hand. The
+//! rest of one config's expressions are batched into a single Deno pool
+//! invocation.
 //!
 //! # Expression-mode sandbox security
 //!
@@ -27,12 +29,14 @@
 //! Whole-field expressions (`{{ expr }}` and nothing else) return the native JS type.
 //! Interpolated expressions (`"Hello {{ name }}!"`) stringify the result and concatenate.
 
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use serde_json::{Value, json};
 
+use super::native::{self, Names, Scope};
 use super::scanner::{ExprField, Segment, scan};
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, ExecutionContext, LanguageEngine, ModuleSource,
@@ -187,14 +191,59 @@ pub fn optional_nodes_paths(expr: &str) -> String {
     out
 }
 
+/// Each expression's native form, compiled the first time it is seen:
+/// `None` when it needs Deno. Keyed by the expression as written.
+static NATIVE: LazyLock<RwLock<HashMap<String, Option<Arc<native::Expr>>>>> = LazyLock::new(Default::default);
+
+/// Expressions are config text, so the set is the pipelines' own; a server
+/// that somehow sees more than this many starts the cache again.
+const NATIVE_KEPT: usize = 50_000;
+
+fn native_of(expr: &str) -> Option<Arc<native::Expr>> {
+    if let Some(found) = NATIVE.read().unwrap_or_else(|e| e.into_inner()).get(expr) {
+        return found.clone();
+    }
+    let compiled = native::compile(&optional_nodes_paths(expr), Names::Expression).ok().map(Arc::new);
+    let mut cache = NATIVE.write().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= NATIVE_KEPT {
+        cache.clear();
+    }
+    cache.insert(expr.to_string(), compiled.clone());
+    compiled
+}
+
+/// Which engine evaluates `{{ }}`. Only tests ask for Deno alone, to hold
+/// the native answers to Deno's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExprEngine {
+    /// Native where the expression and its values allow, Deno for the rest.
+    NativeFirst,
+    /// Every expression in Deno.
+    DenoOnly,
+}
+
 /// Resolve all `{{ expr }}` expressions in `config` and return the mutated copy.
 ///
 /// Returns the original `config` unchanged (zero mutation) if no expressions are found.
+///
+/// Each expression runs natively when [`native`] compiles it and its values
+/// have an exact answer there; the rest go to Deno in one batch, as before.
+/// A config whose expressions are all native never reaches Deno.
 pub fn resolve_config_expressions(
+    config: Value,
+    input: &Value,
+    metadata: &Value,
+    language: &Arc<dyn LanguageEngine>,
+) -> Result<Value, PipelineError> {
+    resolve_config_expressions_with(config, input, metadata, language, ExprEngine::NativeFirst)
+}
+
+pub fn resolve_config_expressions_with(
     mut config: Value,
     input: &Value,
     metadata: &Value,
     language: &Arc<dyn LanguageEngine>,
+    engine: ExprEngine,
 ) -> Result<Value, PipelineError> {
     let fields = scan(&config);
     if fields.is_empty() {
@@ -212,6 +261,146 @@ pub fn resolve_config_expressions(
             }
         }
     }
+
+    // Native first. An answer is kept under `e{i}` as the Deno batch keys
+    // it; `undefined` is no key at all, as `JSON.stringify` leaves it.
+    let mut result_map = serde_json::Map::new();
+    let mut deno: Vec<usize> = Vec::new();
+    if engine == ExprEngine::NativeFirst {
+        let scope = Scope::of_node(input, metadata);
+        for (i, expr) in exprs.iter().enumerate() {
+            match native_of(expr).map(|e| e.eval(&scope).map(native::Js::into_json)) {
+                Some(Ok(Some(value))) => {
+                    result_map.insert(format!("e{i}"), value);
+                }
+                Some(Ok(None)) => {}
+                Some(Err(native::Fallback)) | None => deno.push(i),
+            }
+        }
+    } else {
+        deno = (0..exprs.len()).collect();
+    }
+    if !deno.is_empty() {
+        let batch: Vec<&str> = deno.iter().map(|i| exprs[*i].as_str()).collect();
+        // An unexpected answer shape leaves the config as written, as it
+        // always has.
+        let Some(answers) = run_in_deno(&batch, input, metadata, language)? else {
+            return Ok(config);
+        };
+        for (j, i) in deno.iter().enumerate() {
+            for tag in ["e", "x"] {
+                if let Some(v) = answers.get(&format!("{tag}{j}")) {
+                    result_map.insert(format!("{tag}{i}"), v.clone());
+                }
+            }
+        }
+    }
+
+    // An expression that threw is the author's mistake, and it is reported as
+    // one. Silently substituting null makes a wrong pipeline look like a
+    // working one, which is the most expensive failure mode a platform has.
+    // Authors who genuinely want a missing value write `?.` or `??`, both of
+    // which the sandbox supports.
+    for (i, expr) in exprs.iter().enumerate() {
+        let Some(message) = result_map.get(&format!("x{i}")).and_then(Value::as_str) else {
+            continue;
+        };
+        let where_used = fields
+            .iter()
+            .find(|f| {
+                f.segments
+                    .iter()
+                    .any(|seg| matches!(seg, Segment::Expr(e) if e == expr))
+            })
+            .map(|f| f.ptr.clone())
+            .unwrap_or_default();
+        return Err(PipelineError::new(
+            "FW_EXPR_EVAL",
+            format!("expression {{{{ {expr} }}}} at config{where_used} failed: {message}"),
+        ));
+    }
+
+    // Substitute evaluation results back into the config.
+    for field in &fields {
+        let replacement = build_replacement(field, &exprs, &result_map);
+        apply_json_ptr(&mut config, &field.ptr, replacement);
+    }
+
+    Ok(config)
+}
+
+/// A config's `{{ }}`, found and compiled once, for a pipeline compiled when
+/// it is activated: [`CompiledConfig::fill`] gives the config
+/// [`resolve_config_expressions`] would, without scanning the config or
+/// looking an expression up on each run.
+pub struct CompiledConfig {
+    fields: Vec<ExprField>,
+    exprs: Vec<String>,
+    native: Vec<Option<Arc<native::Expr>>>,
+}
+
+impl CompiledConfig {
+    /// `None` when the config holds no `{{ }}`.
+    pub fn of(config: &Value) -> Option<CompiledConfig> {
+        let fields = scan(config);
+        if fields.is_empty() {
+            return None;
+        }
+        let mut exprs: Vec<String> = Vec::new();
+        for field in &fields {
+            for seg in &field.segments {
+                if let Segment::Expr(e) = seg
+                    && !exprs.contains(e)
+                {
+                    exprs.push(e.clone());
+                }
+            }
+        }
+        let native = exprs.iter().map(|e| native_of(e)).collect();
+        Some(CompiledConfig { fields, exprs, native })
+    }
+
+    /// `config` with its expressions filled in. An expression native code
+    /// does not compile, or has no exact answer for these values, sends the
+    /// whole config to [`resolve_config_expressions`], which asks Deno for
+    /// that one; the answer is the same either way.
+    pub fn fill(
+        &self,
+        config: &Value,
+        input: &Value,
+        metadata: &Value,
+        language: &Arc<dyn LanguageEngine>,
+    ) -> Result<Value, PipelineError> {
+        let slow = || resolve_config_expressions(config.clone(), input, metadata, language);
+        let scope = Scope::of_node(input, metadata);
+        let mut result_map = serde_json::Map::new();
+        for (i, expr) in self.native.iter().enumerate() {
+            let Some(expr) = expr else { return slow() };
+            match expr.eval(&scope).map(native::Js::into_json) {
+                Ok(Some(value)) => {
+                    result_map.insert(format!("e{i}"), value);
+                }
+                Ok(None) => {}
+                Err(native::Fallback) => return slow(),
+            }
+        }
+        let mut out = config.clone();
+        for field in &self.fields {
+            let replacement = build_replacement(field, &self.exprs, &result_map);
+            apply_json_ptr(&mut out, &field.ptr, replacement);
+        }
+        Ok(out)
+    }
+}
+
+/// The Deno batch: every expression in one sandbox trip, each answer under
+/// `e{i}` and each thrown error under `x{i}`, `i` its place in `exprs`.
+fn run_in_deno(
+    exprs: &[&str],
+    input: &Value,
+    metadata: &Value,
+    language: &Arc<dyn LanguageEngine>,
+) -> Result<Option<serde_json::Map<String, Value>>, PipelineError> {
 
     // Build the batch JS function body.
     // Each expression is assigned to a plain var inside a try/catch so one error doesn't
@@ -325,42 +514,10 @@ pub fn resolve_config_expressions(
             )
         })?;
 
-    let result_map = match run_output.value {
-        Value::Object(m) => m,
-        _ => return Ok(config), // Unexpected result shape — leave config unchanged.
-    };
-
-    // An expression that threw is the author's mistake, and it is reported as
-    // one. Silently substituting null makes a wrong pipeline look like a
-    // working one, which is the most expensive failure mode a platform has.
-    // Authors who genuinely want a missing value write `?.` or `??`, both of
-    // which the sandbox supports.
-    for (i, expr) in exprs.iter().enumerate() {
-        let Some(message) = result_map.get(&format!("x{i}")).and_then(Value::as_str) else {
-            continue;
-        };
-        let where_used = fields
-            .iter()
-            .find(|f| {
-                f.segments
-                    .iter()
-                    .any(|seg| matches!(seg, Segment::Expr(e) if e == expr))
-            })
-            .map(|f| f.ptr.clone())
-            .unwrap_or_default();
-        return Err(PipelineError::new(
-            "FW_EXPR_EVAL",
-            format!("expression {{{{ {expr} }}}} at config{where_used} failed: {message}"),
-        ));
+    match run_output.value {
+        Value::Object(m) => Ok(Some(m)),
+        _ => Ok(None),
     }
-
-    // Substitute evaluation results back into the config.
-    for field in &fields {
-        let replacement = build_replacement(field, &exprs, &result_map);
-        apply_json_ptr(&mut config, &field.ptr, replacement);
-    }
-
-    Ok(config)
 }
 
 /// Build the replacement value for one `ExprField`.
@@ -479,5 +636,87 @@ mod tests {
         ] {
             assert_eq!(optional_nodes_paths(expr), want, "{expr}");
         }
+    }
+
+    /// Native and Deno give the same config for every expression the
+    /// generator makes, over values that pull JavaScript's rules apart:
+    /// integers and doubles, `-0`, big integers, numeric strings, empty
+    /// strings, non-ASCII text, `null` and missing keys, number-like object
+    /// keys, skipped nodes. Where native has no exact answer it hands the
+    /// expression to Deno, so a failure here is a wrong native answer.
+    #[test]
+    fn native_answers_are_denos_answers() {
+        use super::{ExprEngine, resolve_config_expressions_with};
+        use crate::language::{DenoSandboxEngine, LanguageEngine};
+        use serde_json::{Value, json};
+        use std::sync::Arc;
+
+        let language: Arc<dyn LanguageEngine> = Arc::new(DenoSandboxEngine::default());
+        let input = json!({
+            "a": 1, "b": 2.5, "c": -3, "z": 0, "neg": -0.0, "f1": 1.0, "big": 9007199254740993u64, "huge": 1e300,
+            "s": "héllo", "n": "42", "fs": "1.5", "ws": " 7 ", "e": "", "w": "abc", "u": "日本",
+            "t": true, "f": false, "nil": null,
+            "arr": [1, "x", null, { "k": 1 }, 2.0],
+            "obj": { "k": "v", "2": "two", "1": "one", "inner": { "d": 4 } },
+            "webhook": { "body": { "id": 7, "tags": ["a", "b"] } }
+        });
+        let metadata = json!({
+            "trigger": { "body": { "id": 7 }, "query": { "q": "x" } },
+            "nodes": { "n1": { "x": 1, "rows": [{ "id": 3 }] }, "skipped": null },
+        });
+        const PATHS: &[&str] = &[
+            "input.a", "input.b", "input.c", "input.z", "input.neg", "input.f1", "input.big", "input.huge",
+            "input.s", "input.n", "input.fs", "input.ws", "input.e", "input.w", "input.u", "input.t", "input.f",
+            "input.nil", "input.missing", "input.arr", "input.arr[0]", "input.arr[1]", "input.arr[4]", "input.arr[9]",
+            "input.arr.length", "input.obj", "input.obj.k", "input.obj['2']", "input.obj[1]", "input.obj.inner.d",
+            "input.s.length", "input.w[1]", "input.missing?.x", "input.nil?.x.y", "$input.a", "$trigger.body.id",
+            "$trigger.query", "$nodes.n1.x", "$nodes.n1.rows[0].id", "$nodes.skipped.x", "$nodes.absent.y",
+            "input.webhook.body", "input.webhook.body.tags", "$item", "$index", "input.obj.toString", "input.missing.deep",
+        ];
+        const LITERALS: &[&str] = &[
+            "0", "1", "-1", "2.5", "0.1", "1e21", "1e-7", "3", "'x'", "''", "'7'", "' 12 '", "'é'", "true", "false",
+            "null", "undefined", "NaN", "Infinity", "{ b: 1, 2: 'two', a: input.missing }", "[1, input.missing, 'z']",
+            "{}", "[]",
+        ];
+        const BINARY: &[&str] = &[
+            "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "===", "!==", "==", "!=", "&&", "||", "??",
+        ];
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        fn make(depth: usize, next: &mut dyn FnMut(usize) -> usize) -> String {
+            let pick = if depth == 0 { next(2) } else { next(7) };
+            match pick {
+                0 => PATHS[next(PATHS.len())].to_string(),
+                1 => LITERALS[next(LITERALS.len())].to_string(),
+                2 | 3 => format!("({} {} {})", make(depth - 1, next), BINARY[next(BINARY.len())], make(depth - 1, next)),
+                4 => format!("({} ? {} : {})", make(depth - 1, next), make(depth - 1, next), make(depth - 1, next)),
+                5 => format!("{}({})", ["!", "-", "+", "typeof "][next(4)], make(depth - 1, next)),
+                _ => format!("{{ k: {}, j: [{}] }}", make(depth - 1, next), make(depth - 1, next)),
+            }
+        }
+        let (mut native_answered, mut cases) = (0, 0);
+        for _ in 0..4000 {
+            let expr = make(3, &mut next);
+            let config = json!({ "whole": format!("{{{{ {expr} }}}}"), "text": format!("<{{{{ {expr} }}}}>") });
+            let deno = resolve_config_expressions_with(config.clone(), &input, &metadata, &language, ExprEngine::DenoOnly);
+            let native = resolve_config_expressions_with(config, &input, &metadata, &language, ExprEngine::NativeFirst);
+            cases += 1;
+            if super::native_of(&expr).is_some_and(|e| e.eval(&crate::pipeline::expr::native::Scope::of_node(&input, &metadata)).is_ok()) {
+                native_answered += 1;
+            }
+            match (&deno, &native) {
+                (Ok(d), Ok(n)) => assert_eq!(d, n, "{expr}"),
+                (Err(d), Err(n)) => assert_eq!((d.code, &d.message), (n.code, &n.message), "{expr}"),
+                _ => panic!("{expr}: deno {deno:?} native {native:?}"),
+            }
+        }
+        eprintln!("{cases} expressions, {native_answered} answered natively, all equal to Deno");
+        assert!(native_answered * 2 > cases, "the generator should mostly hit the native path");
+        let _: Value = Value::Null;
     }
 }

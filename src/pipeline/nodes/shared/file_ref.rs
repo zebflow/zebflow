@@ -189,6 +189,10 @@ pub fn resolve_manual_input_files(
 /// bytes sit under `tmp/runs/{request_id}/files/`, one folder per run, so the
 /// whole folder goes at once. Best-effort by design: a folder that is already
 /// gone, or was never written, is the common case and not an error.
+///
+/// Only a run that wrote there deletes: the store notes every write into a
+/// run's folder ([`crate::zebfs::ZebFs::take_run_write`]), and every other
+/// run (nearly all) touches no disk here.
 pub fn remove_run_temporary_files(
     platform: &Arc<PlatformService>,
     owner: &str,
@@ -197,6 +201,10 @@ pub fn remove_run_temporary_files(
 ) {
     let request_part = sanitize_path_part(request_id);
     if request_part.is_empty() {
+        return;
+    }
+
+    if !crate::zebfs::ZebFs::take_run_write(&request_part) {
         return;
     }
     // Through the default store, whichever it is: a temporary FileRef was

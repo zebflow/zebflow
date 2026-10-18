@@ -97,7 +97,7 @@ impl NodeHandler for Node {
         }
         .map_err(bus_error(CODE))?;
         Ok(answer(
-            &input.payload,
+            input.payload,
             json!({ "entry": { "key": self.key, "deleted": deleted } }),
             format!("{NODE_KIND}: key={} deleted={deleted} durable={}", self.key, self.durable),
         ))

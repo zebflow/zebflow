@@ -297,7 +297,7 @@ fn dataset(file: Value, crs: Value, layer: Option<&str>, feature_count: Value, f
 fn answer(payload: &Value, dataset: Map<String, Value>, trace: String) -> NodeExecutionOutput {
     NodeExecutionOutput {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        payload: with_answer(payload, json!({ "dataset": dataset })),
+        payload: with_answer(payload.clone(), json!({ "dataset": dataset })),
         trace: vec![format!("node_kind={NODE_KIND} {trace}")],
     }
 }

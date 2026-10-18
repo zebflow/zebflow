@@ -334,7 +334,7 @@ impl WsClientManager {
                                                             &owner_s,
                                                             &project_s,
                                                             &file_rel_path_s,
-                                                            &PipelineInvocationEntry {
+                                                            PipelineInvocationEntry {
                                                                 run_id: ctx.request_id.clone(),
                                                                 at: fired_at.timestamp(),
                                                                 duration_ms,
@@ -361,7 +361,7 @@ impl WsClientManager {
                                                             &owner_s,
                                                             &project_s,
                                                             &file_rel_path_s,
-                                                            &PipelineInvocationEntry {
+                                                            PipelineInvocationEntry {
                                                                 run_id: ctx.request_id.clone(),
                                                                 at: fired_at.timestamp(),
                                                                 duration_ms,

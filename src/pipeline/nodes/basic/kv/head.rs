@@ -97,7 +97,7 @@ impl NodeHandler for Node {
         }
         .map_err(bus_error(CODE))?;
         Ok(answer(
-            &input.payload,
+            input.payload,
             json!({ "entry": { "key": self.key, "exists": exists } }),
             format!("{NODE_KIND}: key={} exists={exists} durable={}", self.key, self.durable),
         ))

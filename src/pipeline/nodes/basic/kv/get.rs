@@ -116,7 +116,7 @@ impl NodeHandler for Node {
         let found = stored.is_some();
         let value = stored.unwrap_or_else(|| self.default.clone());
         Ok(answer(
-            &input.payload,
+            input.payload,
             json!({ "entry": { "key": self.key, "value": value, "found": found } }),
             format!("{NODE_KIND}: key={} found={found} durable={}", self.key, self.durable),
         ))

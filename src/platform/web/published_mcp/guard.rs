@@ -287,7 +287,7 @@ impl Door<'_> {
         let cfg = platform.zebflow_cfg.read_or_default(self.owner, self.project).unwrap_or_default();
         let retention = crate::platform::model::resolve_invocation_retention(&cfg, Some(&tool.compiled.graph));
         platform.pipeline_hits.record_failure(self.owner, self.project, file, "mcp.door", mcp_trigger::AUTH_CODE, &message);
-        let _ = platform.data.log_pipeline_invocation(self.owner, self.project, file, &entry, retention.max_invocations, retention.max_age_secs);
+        let _ = platform.data.log_pipeline_invocation(self.owner, self.project, file, entry.clone(), retention.max_invocations, retention.max_age_secs);
         let bounds = cfg.configs.pipelines.logging.error_group_bounds();
         if let Err(e) = platform.data.record_pipeline_error(self.owner, self.project, file, &entry, bounds) {
             eprintln!("warning: error group not recorded for {}/{}: {}", self.owner, self.project, e.message);

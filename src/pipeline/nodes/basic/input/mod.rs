@@ -762,7 +762,7 @@ impl NodeHandler for Node {
         }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, answer_at(name, value)),
+            payload: with_answer(input.payload, answer_at(name, value)),
             trace: vec![trace],
         })
     }

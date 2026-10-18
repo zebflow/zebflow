@@ -211,7 +211,7 @@ pub struct Settings {
 
 impl Settings {
     pub fn of(config: &Value) -> Result<Self, PipelineError> {
-        let config: Config = serde_json::from_value(config.clone())
+        let config: Config = crate::pipeline::nodes::shared::util::typed_config(&config)
             .map_err(|err| PipelineError::new(CONFIG_CODE, err.to_string()))?;
         let duration_ms = |value: &Value, flag: &str, default: &str| -> Result<u64, PipelineError> {
             let text = match value {

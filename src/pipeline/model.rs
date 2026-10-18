@@ -1596,6 +1596,18 @@ pub struct ExecuteOptions {
     /// caller at once and later nodes keep running). The HTTP ingress waits
     /// on it beside the run.
     pub responder: Option<Responder>,
+    /// The graph is the one the active runtime validated at activation
+    /// (`trigger.webhook`, `trigger.room` runs), so the run does not
+    /// validate it again.
+    pub prevalidated: bool,
+    /// The active pipeline's compiled lane: a run of a pipeline that
+    /// compiles (one straight line) runs as its program.
+    pub lane: Option<std::sync::Arc<crate::pipeline::engines::basic::CompiledLane>>,
+    /// The caller never reads the run's value (`PipelineOutput::value`): a
+    /// webhook answers with what `web.response.send` sent, a room run with
+    /// what it wrote. The run then keeps no copy of each node's answer for
+    /// it, and its value is `null`.
+    pub discard_value: bool,
 }
 
 /// The one-shot hand-off of a run's response to the HTTP caller waiting on

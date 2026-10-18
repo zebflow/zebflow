@@ -34,7 +34,7 @@ export default function SongPage(input) {
 
 struct Site {
     root: std::path::PathBuf,
-    layout: ProjectFileLayout,
+    layout: Arc<ProjectFileLayout>,
     engine: BasicPipelineEngine,
 }
 

@@ -86,7 +86,7 @@ pub(super) async fn run(server: &PublishedServer, tool: &PublishedTool, argument
                 }
             }
         }
-        let _ = platform.data.log_pipeline_invocation(owner, project, file_rel_path, &entry, retention.max_invocations, retention.max_age_secs);
+        let _ = platform.data.log_pipeline_invocation(owner, project, file_rel_path, entry, retention.max_invocations, retention.max_age_secs);
         run
     });
     let run = tokio::select! {

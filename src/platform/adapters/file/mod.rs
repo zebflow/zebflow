@@ -19,15 +19,21 @@ pub const S3_CREDENTIAL_KIND: &str = "s3";
 /// File adapter contract used by project service.
 pub trait FileAdapter: Send + Sync {
     /// Stable adapter id.
+    /// Drops what is cached about one project's folders and configuration,
+    /// after a change made around the adapter (an import swapping folders
+    /// in). The next request looks at the disk again.
+    fn forget_project(&self, _owner: &str, _project: &str) {}
+
     fn id(&self) -> &'static str;
     /// Ensure root layout exists.
     fn initialize(&self) -> Result<(), PlatformError>;
     /// Ensure one project folder tree exists and return resolved paths.
+    /// One project's layout, shared: what a request reads, never a copy.
     fn ensure_project_layout(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<ProjectFileLayout, PlatformError>;
+    ) -> Result<Arc<ProjectFileLayout>, PlatformError>;
     /// The credential this instance selected for a project's bucket
     /// (`data/store/files-backend.json`), read without resolving the store,
     /// so a project whose selection is wrong can still be shown and repaired.
@@ -114,7 +120,10 @@ pub struct FilesystemFileAdapter {
     configs: Arc<ProjectConfigurationService>,
     /// The project roots whose folders are made, each with which directories
     /// its swappable folders were then ([`scaffold_identity`]).
-    scaffolded: std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<u64>>>,
+    scaffolded: std::sync::RwLock<std::collections::HashMap<PathBuf, (std::time::Instant, Vec<u64>)>>,
+    /// Each project's resolved layout by owner, then project, with when it
+    /// was resolved and the configuration generation it was resolved at.
+    resolved: std::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, ResolvedLayout>>>,
     /// Where the credential behind an object-store backend is read from.
     ///
     /// Absent on the adapters built for tests and migrations that never
@@ -130,6 +139,7 @@ impl FilesystemFileAdapter {
             root,
             configs,
             scaffolded: Default::default(),
+            resolved: Default::default(),
             credentials: None,
         }
     }
@@ -233,6 +243,14 @@ impl FilesystemFileAdapter {
 }
 
 impl FileAdapter for FilesystemFileAdapter {
+    fn forget_project(&self, owner: &str, project: &str) {
+        self.scaffolded.write().unwrap_or_else(|e| e.into_inner()).remove(&self.project_root(owner, project));
+        if let Some(projects) = self.resolved.write().unwrap_or_else(|e| e.into_inner()).get_mut(owner) {
+            projects.remove(project);
+        }
+        self.configs.forget_project(owner, project);
+    }
+
     fn id(&self) -> &'static str {
         "file.filesystem"
     }
@@ -282,7 +300,35 @@ impl FileAdapter for FilesystemFileAdapter {
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<ProjectFileLayout, PlatformError> {
+    ) -> Result<Arc<ProjectFileLayout>, PlatformError> {
+        // Every request resolves the layout, often more than once, and it
+        // changes only with the project's configuration or its folders. So
+        // it is resolved once and shared: within STAMP_TRUST of resolving,
+        // and while no configuration was written or found changed since, a
+        // request reads this one, with no path built and nothing copied.
+        let trust = crate::platform::services::project_config::STAMP_TRUST;
+        let generation = crate::platform::services::project_config::config_generation();
+        if let Some(found) = self.resolved.read().unwrap_or_else(|e| e.into_inner()).get(owner).and_then(|projects| projects.get(project))
+            && found.generation == generation
+            && found.at.elapsed() < trust
+        {
+            return Ok(found.layout.clone());
+        }
+        let layout = Arc::new(self.resolve_project_layout(owner, project)?);
+        self.resolved
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(owner.to_string())
+            .or_default()
+            .insert(project.to_string(), ResolvedLayout { at: std::time::Instant::now(), generation, layout: layout.clone() });
+        Ok(layout)
+    }
+}
+
+impl FilesystemFileAdapter {
+    /// The layout resolved from the declaration, its folders made when they
+    /// are not the ones they were made in.
+    fn resolve_project_layout(&self, owner: &str, project: &str) -> Result<ProjectFileLayout, PlatformError> {
         let root = self.project_root(owner, project);
         let data_dir = root.join("data");
         let files_dir = root.join("files");
@@ -329,10 +375,26 @@ impl FileAdapter for FilesystemFileAdapter {
         // folders below are made again only when one a project can lose or
         // swap whole (an import, a removed project) is not the one they were
         // made in.
-        let identity = scaffold_identity(&resolved);
-        if identity.is_some()
-            && self.scaffolded.lock().unwrap_or_else(|e| e.into_inner()).get(&resolved.root) == identity.as_ref()
+        //
+        // Within STAMP_TRUST of the last look the folders are taken as they
+        // were, with no `stat` at all; an import that swaps them calls
+        // `forget_project` and the next request looks again.
+        let trust = crate::platform::services::project_config::STAMP_TRUST;
+        if self
+            .scaffolded
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&resolved.root)
+            .is_some_and(|(checked, _)| checked.elapsed() < trust)
         {
+            return Ok(resolved);
+        }
+        let identity = scaffold_identity(&resolved);
+        if let Some(found) = &identity
+            && let Some(entry) = self.scaffolded.write().unwrap_or_else(|e| e.into_inner()).get_mut(&resolved.root)
+            && entry.1 == *found
+        {
+            entry.0 = std::time::Instant::now();
             return Ok(resolved);
         }
 
@@ -390,10 +452,17 @@ impl FileAdapter for FilesystemFileAdapter {
         Self::ensure_git_repo(&resolved.repo_dir, &resolved.repo_git_dir)?;
 
         if let Some(identity) = scaffold_identity(&resolved) {
-            self.scaffolded.lock().unwrap_or_else(|e| e.into_inner()).insert(resolved.root.clone(), identity);
+            self.scaffolded.write().unwrap_or_else(|e| e.into_inner()).insert(resolved.root.clone(), (std::time::Instant::now(), identity));
         }
         Ok(resolved)
     }
+}
+
+/// One project's layout as resolved, for [`FilesystemFileAdapter::resolved`].
+struct ResolvedLayout {
+    at: std::time::Instant,
+    generation: u64,
+    layout: Arc<ProjectFileLayout>,
 }
 
 /// Which directories a project's root and the folders it can swap whole

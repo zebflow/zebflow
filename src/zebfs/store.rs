@@ -5,13 +5,22 @@
 //! implementation answers. A third backend is one more variant here and its
 //! arm in each verb; the callers do not change.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use super::backend::FileBackend;
 use super::error::ZebFsError;
 use super::local::LocalZebFs;
 use super::model::{ZebFsEntry, ZebFsObject, ZebFsStat};
 use super::s3::S3ZebFs;
+
+/// The runs that wrote into their `tmp/runs/{run}/` folder and have not
+/// been asked about since, by run; a run id is unique, so it is enough. A run's cleanup asks
+/// ([`ZebFs::take_run_write`]) and deletes the folder only when one did,
+/// so the run that wrote nothing there, which is nearly every run, touches
+/// no disk on its way out.
+static RUN_WRITES: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
 
 /// A project's file store.
 #[derive(Debug, Clone)]
@@ -50,7 +59,26 @@ impl ZebFs {
         }
     }
 
+    /// Notes a write that lands in a run's temporary folder. Noted before
+    /// the write, so a failed write's partial folder is cleaned up too.
+    fn note_write(&self, path: &str) {
+        let path = path.trim_start_matches(['/', '.']);
+        if let Some(rest) = path.strip_prefix("tmp/runs/")
+            && let Some(run) = rest.split('/').next().filter(|run| !run.is_empty())
+        {
+            RUN_WRITES.lock().unwrap_or_else(|e| e.into_inner()).insert(run.to_string());
+        }
+    }
+
+    /// Whether anything was written under `tmp/runs/{run}/` in any store
+    /// since the last ask, and forgets it. Asked before a store is even
+    /// opened, so a run that wrote nothing there costs one set lookup.
+    pub fn take_run_write(run: &str) -> bool {
+        RUN_WRITES.lock().unwrap_or_else(|e| e.into_inner()).remove(run)
+    }
+
     pub fn put(&self, path: &str, bytes: &[u8]) -> Result<ZebFsStat, ZebFsError> {
+        self.note_write(path);
         match self {
             Self::Local(s) => s.put(path, bytes),
             Self::S3(s) => s.put(path, bytes),
@@ -93,6 +121,7 @@ impl ZebFs {
 
     /// Writes one object from a local file without holding it in memory.
     pub fn put_from_file(&self, path: &str, src: &Path) -> Result<ZebFsStat, ZebFsError> {
+        self.note_write(path);
         match self {
             Self::Local(s) => s.put_from_file(path, src),
             Self::S3(s) => s.put_from_file(path, src),
@@ -121,6 +150,7 @@ impl ZebFs {
     }
 
     pub fn create_prefix(&self, prefix: &str) -> Result<ZebFsStat, ZebFsError> {
+        self.note_write(prefix);
         match self {
             Self::Local(s) => s.create_prefix(prefix),
             Self::S3(s) => s.create_prefix(prefix),
@@ -135,6 +165,7 @@ impl ZebFs {
     }
 
     pub fn copy(&self, from: &str, to: &str) -> Result<ZebFsStat, ZebFsError> {
+        self.note_write(to);
         match self {
             Self::Local(s) => s.copy(from, to),
             Self::S3(s) => s.copy(from, to),

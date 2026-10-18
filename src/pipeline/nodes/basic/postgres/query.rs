@@ -232,7 +232,7 @@ impl NodeHandler for Node {
         let answer = run(options, sql, &params, self.config.write, limit).await?;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, answer),
+            payload: with_answer(input.payload, answer),
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }

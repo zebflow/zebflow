@@ -234,7 +234,7 @@ impl NodeHandler for Node {
         let affected = write.then(|| result.affected_rows.unwrap_or(0));
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, query::answer(columns, rows, result.truncated, affected)),
+            payload: with_answer(input.payload, query::answer(columns, rows, result.truncated, affected)),
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("row_count={}", result.row_count),

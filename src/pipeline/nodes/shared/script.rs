@@ -3,7 +3,10 @@
 //! (TypeScript). Each family folder holds only its [`Language`]; the
 //! definition, the build and the run are here, once.
 //!
-//! The source is the body after `--`; it compiles when the node is built. The
+//! The source is the body after `--`; it compiles when the node is built. A
+//! body that is one `return <expression>;` the native expression compiler
+//! takes runs in Rust, with the answer Deno would give; any other body, or
+//! values native code has no exact answer for, run in the sandbox. The
 //! answer is one key, `script: <what the code returned>`, the rest of the
 //! payload kept. A `__signal` or `__zf_files` key in a returned object is
 //! lifted out to the top of the payload, where the engine reads and strips it.
@@ -169,7 +172,11 @@ pub struct Config {
 
 pub struct Node {
     node_id: String,
-    compiled: CompiledProgram,
+    /// The sandbox program. A native body compiles it only if a run ever
+    /// needs it.
+    compiled: std::sync::OnceLock<CompiledProgram>,
+    native: Option<crate::pipeline::expr::native::Expr>,
+    source: String,
     language: &'static Language,
     engine: std::sync::Arc<dyn LanguageEngine>,
 }
@@ -184,15 +191,36 @@ impl Node {
         engine: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
         let config: Config =
-            serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(language.config_code, err.to_string()))?;
+            crate::pipeline::nodes::shared::util::typed_config(&config).map_err(|err| PipelineError::new(language.config_code, err.to_string()))?;
         if config.source.trim().is_empty() {
             return Err(PipelineError::new(language.config_code, format!("node '{node_id}' has no source; write it after --")));
         }
+        let native = crate::pipeline::expr::native::compile_script(&config.source).ok();
+        let node = Self {
+            node_id: node_id.to_string(),
+            compiled: std::sync::OnceLock::new(),
+            native,
+            source: config.source,
+            language,
+            engine,
+        };
+        if node.native.is_none() {
+            node.program()?;
+        }
+        Ok(node)
+    }
+
+    /// The sandbox program, compiled on first need.
+    fn program(&self) -> Result<&CompiledProgram, PipelineError> {
+        if let Some(compiled) = self.compiled.get() {
+            return Ok(compiled);
+        }
+        let (node_id, language, engine) = (&self.node_id, self.language, &self.engine);
         let module = ModuleSource {
             id: format!("pipeline:{node_id}"),
             source_path: None,
             kind: SourceKind::Tsx,
-            code: config.source,
+            code: self.source.clone(),
         };
         let ir = engine
             .parse(&module)
@@ -210,7 +238,7 @@ impl Node {
                     format!("node '{node_id}': {err}"),
                 )
             })?;
-        Ok(Self { node_id: node_id.to_string(), compiled, language, engine })
+        Ok(self.compiled.get_or_init(|| compiled))
     }
 }
 
@@ -231,7 +259,7 @@ pub fn answer(payload: &Value, mut returned: Value) -> Value {
     for (key, value) in lifted {
         answer[key] = value;
     }
-    crate::pipeline::nodes::shared::util::with_answer(payload, answer)
+    crate::pipeline::nodes::shared::util::with_answer(payload.clone(), answer)
 }
 
 #[async_trait]
@@ -253,6 +281,18 @@ impl NodeHandler for Node {
                 format!("unsupported input pin '{}'", input.input_pin),
             ));
         }
+        if let Some(expr) = &self.native {
+            let scope = crate::pipeline::expr::native::Scope::of_script(&input.payload);
+            if let Ok(value) = expr.eval(&scope) {
+                // `undefined` returned reads as null, as the sandbox's answer does.
+                let value = value.into_json().unwrap_or(Value::Null);
+                return Ok(NodeExecutionOutput {
+                    output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+                    payload: answer(&input.payload, value),
+                    trace: vec![format!("node_kind={}", self.language.kind), "engine=native".to_string()],
+                });
+            }
+        }
         let read = |key: &str| input.metadata.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
         let ctx = ExecutionContext {
             project: read("project"),
@@ -263,7 +303,7 @@ impl NodeHandler for Node {
         };
         let out = self
             .engine
-            .run(&self.compiled, input.payload.clone(), &ctx)
+            .run(self.program()?, input.payload.clone(), &ctx)
             .map_err(|err| PipelineError::new(self.language.run_code, format!("node '{}': {}", self.node_id, err)))?;
         let mut trace = vec![format!("node_kind={}", self.language.kind)];
         trace.extend(out.trace);

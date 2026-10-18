@@ -103,10 +103,10 @@ pub fn answer(delivered: Value) -> Value {
     };
     let mut merged = Value::Object(serde_json::Map::new());
     for item in &items {
-        merged = with_answer(&merged, item.clone());
+        merged = with_answer(merged, item.clone());
     }
     let count = items.len();
-    with_answer(&merged, json!({ ANSWER_KEY: { "items": items, "count": count } }))
+    with_answer(merged, json!({ ANSWER_KEY: { "items": items, "count": count } }))
 }
 
 #[async_trait]
@@ -127,7 +127,7 @@ impl NodeHandler for Node {
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let payload = match input.metadata.get(super::LOOP_ITEMS_METADATA_KEY) {
             Some(Value::Array(items)) => with_answer(
-                &input.payload,
+                input.payload,
                 json!({ ANSWER_KEY: { "items": items, "count": items.len() } }),
             ),
             _ => answer(input.payload),

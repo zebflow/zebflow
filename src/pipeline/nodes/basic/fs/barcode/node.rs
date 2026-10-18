@@ -355,7 +355,7 @@ impl NodeHandler for Node {
             map.insert("height".into(), json!(drawing.height_px()));
         }
         let trace = format!("node_kind={NODE_KIND} {} {facts} {}", plan.symbology.name, barcode["ref"]);
-        let payload = with_answer(&input.payload, json!({ "barcode": barcode }));
+        let payload = with_answer(input.payload, json!({ "barcode": barcode }));
         Ok(NodeExecutionOutput { output_pins: vec![OUTPUT_PIN_OUT.into()], payload, trace: vec![trace] })
     }
 }

@@ -1,9 +1,10 @@
 //! Engine-level `{{ expr }}` expression resolution for pipeline node configs.
 //!
 //! Every string field in a node's `config` object may contain `{{ js_expr }}` placeholders.
-//! Before a node executes, the pipeline engine resolves all such expressions in one Deno
-//! sandbox trip — giving every node access to `$input`, `$trigger`, and `$nodes`
-//! without any per-node implementation required.
+//! Before a node executes, the pipeline engine resolves them, giving every node access to
+//! `$input`, `$trigger`, and `$nodes` without any per-node implementation required. An
+//! expression [`native`] compiles runs in Rust with the answer Deno would give; the rest
+//! go to the Deno sandbox in one trip.
 //!
 //! # Quick reference
 //!
@@ -37,9 +38,11 @@
 //! --url "{{ $nodes.userLookup.query.rows[0].api_endpoint }}"
 //! ```
 
+pub mod native;
 pub mod resolver;
 pub mod scanner;
 
 pub use resolver::{
-    FOREACH_METADATA_KEY, build_expression_scope_input, optional_nodes_paths, resolve_config_expressions,
+    CompiledConfig, ExprEngine, FOREACH_METADATA_KEY, build_expression_scope_input, optional_nodes_paths, resolve_config_expressions,
+    resolve_config_expressions_with,
 };

@@ -372,18 +372,30 @@ const SENSITIVE_KEYS: &[&str] = &[
 /// and `API KEY` are one name. A trailing `s` is also dropped, because a field
 /// holding several secrets is spelled `tokens` at least as often as `token` and
 /// a list of secrets is not less secret than one.
+///
+/// Every key of every request and every trace passes through here, so it
+/// compares in place and allocates nothing: a key with more letters and
+/// digits than [`SENSITIVE_KEY_ROOM`] is longer than any name in the list.
 pub(crate) fn is_sensitive_payload_key(key: &str) -> bool {
-    let normalized = key
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let singular = normalized.strip_suffix('s').unwrap_or(&normalized);
+    let mut normalized = [0u8; SENSITIVE_KEY_ROOM];
+    let mut len = 0;
+    for byte in key.bytes().filter(u8::is_ascii_alphanumeric) {
+        if len == SENSITIVE_KEY_ROOM {
+            return false;
+        }
+        normalized[len] = byte.to_ascii_lowercase();
+        len += 1;
+    }
+    let normalized = &normalized[..len];
+    let singular = normalized.strip_suffix(b"s").unwrap_or(normalized);
     SENSITIVE_KEYS.iter().any(|candidate| {
-        let candidate = candidate.replace('_', "");
-        normalized == candidate || singular == candidate
+        let candidate = candidate.bytes().filter(|byte| *byte != b'_');
+        candidate.clone().eq(normalized.iter().copied()) || candidate.eq(singular.iter().copied())
     })
 }
+
+/// Longer than every name in [`SENSITIVE_KEYS`] once its `_` are gone.
+const SENSITIVE_KEY_ROOM: usize = 32;
 
 /// Collects the literal secret values a request carries, so the engine can
 /// strike them out of every trace the run writes.
@@ -539,6 +551,28 @@ mod tests {
         );
         assert!(!is_sensitive_payload_key("username"));
         assert!(!is_sensitive_payload_key("tokenizer"));
+    }
+
+    /// The comparison in place answers what the rule as written answers:
+    /// letters and digits, lower case, an `s` dropped, against each name
+    /// without its `_`.
+    #[test]
+    fn the_key_check_without_allocating_is_the_rule_as_written() {
+        let rule = |key: &str| {
+            let normalized = key.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+            let singular = normalized.strip_suffix('s').unwrap_or(&normalized);
+            super::SENSITIVE_KEYS.iter().any(|candidate| {
+                let candidate = candidate.replace('_', "");
+                normalized == candidate || singular == candidate
+            })
+        };
+        let mut keys: Vec<String> = super::SENSITIVE_KEYS.iter().flat_map(|k| [k.to_string(), format!("{k}s"), format!("{k}ss"), k.to_uppercase(), k.replace('_', "-"), format!("x{k}")]).collect();
+        keys.extend(["", "s", "id", "lat", "café_token", "tökens", "pass word"].map(String::from));
+        keys.extend(["a".repeat(31), "a".repeat(40), format!("{}token", "z".repeat(40))]);
+        assert!(super::SENSITIVE_KEYS.iter().all(|k| k.replace('_', "").len() < super::SENSITIVE_KEY_ROOM));
+        for key in &keys {
+            assert_eq!(is_sensitive_payload_key(key), rule(key), "'{key}'");
+        }
     }
 
     #[test]

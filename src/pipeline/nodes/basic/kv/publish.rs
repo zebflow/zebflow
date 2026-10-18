@@ -108,7 +108,7 @@ impl NodeHandler for Node {
         let (owner, project) = scope(&input);
         let delivered = self.bus.publish(&owner, &project, &self.topic, self.body.clone()).map_err(bus_error(CODE))?;
         Ok(answer(
-            &input.payload,
+            input.payload,
             json!({ "message": { "topic": self.topic, "delivered": delivered } }),
             format!("{NODE_KIND}: topic={} delivered={delivered}", self.topic),
         ))

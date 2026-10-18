@@ -173,7 +173,7 @@ impl Node {
 fn invalid(payload: &Value, reason: &str) -> NodeExecutionOutput {
     NodeExecutionOutput {
         output_pins: vec![OUTPUT_PIN_INVALID.to_string()],
-        payload: crate::pipeline::nodes::shared::util::with_answer(payload, json!({ "token": { "valid": false, "reason": reason } })),
+        payload: crate::pipeline::nodes::shared::util::with_answer(payload.clone(), json!({ "token": { "valid": false, "reason": reason } })),
         trace: vec![format!("node_kind={NODE_KIND}"), format!("invalid={reason}")],
     }
 }
@@ -269,7 +269,7 @@ impl NodeHandler for Node {
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_VALID.to_string()],
                     payload: crate::pipeline::nodes::shared::util::with_answer(
-                        &input.payload,
+                        input.payload,
                         json!({ "token": { "valid": true, "claims": data.claims } }),
                     ),
                     trace: vec![format!("node_kind={NODE_KIND}"), "valid=true".to_string()],

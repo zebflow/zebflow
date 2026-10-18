@@ -69,8 +69,12 @@ pub(super) struct RunState<'a> {
     /// open now. A closed frame is dropped, and its body's answers with it.
     pub frames: Vec<HashMap<usize, Value>>,
     /// Each node's latest answer (the last output's payload), for `value`.
-    pub last_answer: Vec<Option<Value>>,
-    pub last_in_time: Option<Value>,
+    /// Shared with `last_in_time` when one answer is both: a sink's answer
+    /// is copied once, not twice.
+    pub last_answer: Vec<Option<std::sync::Arc<Value>>>,
+    pub last_in_time: Option<std::sync::Arc<Value>>,
+    /// [`crate::pipeline::model::ExecuteOptions::discard_value`].
+    pub discard_value: bool,
 }
 
 impl RunState<'_> {
@@ -104,7 +108,7 @@ impl RunState<'_> {
 
     /// A node that never ran: recorded `skipped`, announced, and `null` to
     /// every `$nodes` reader from now on.
-    fn record_skip(&mut self, idx: usize) {
+    pub fn record_skip(&mut self, idx: usize) {
         let node = &self.graph.nodes[idx];
         if let Some(frame) = self.frames.last_mut() {
             frame.remove(&idx);
@@ -135,12 +139,13 @@ impl RunState<'_> {
     /// The run's result. `value` is the answer of the last sink that ran (a
     /// node with no outgoing edge), in DSL text order; when none ran, the
     /// last answer in time.
-    pub fn finish(self, plan: &FlowPlan) -> PipelineOutput {
+    pub fn finish(mut self, plan: &FlowPlan) -> PipelineOutput {
         let value = (0..self.last_answer.len())
             .rev()
             .filter(|&i| plan.sink[i])
-            .find_map(|i| self.last_answer[i].clone())
+            .find_map(|i| self.last_answer[i].take())
             .or(self.last_in_time)
+            .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or(Value::Null);
         PipelineOutput {
             value: strip_private_markers(value),
@@ -382,7 +387,7 @@ impl BasicPipelineEngine {
         delivery: Delivery,
     ) -> Result<(), PipelineError> {
         let base = plan.loops.contains_key(&node).then(|| delivery.payload.clone());
-        let ran = self.run_node(graph, plan, node, delivery, run).await?;
+        let ran = self.run_node(graph, plan, node, delivery, run, None).await?;
         scope.nodes.insert(node, NodeState::Done);
         match ran {
             Ran::Routed(payload) => {

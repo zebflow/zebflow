@@ -359,7 +359,7 @@ impl NodeHandler for Node {
 fn answer(payload: &Value, data: Map<String, Value>, trace: String) -> NodeExecutionOutput {
     NodeExecutionOutput {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        payload: with_answer(payload, json!({ "data": data })),
+        payload: with_answer(payload.clone(), json!({ "data": data })),
         trace: vec![format!("node_kind={NODE_KIND} {trace}")],
     }
 }

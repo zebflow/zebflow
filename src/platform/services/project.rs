@@ -580,7 +580,7 @@ impl ProjectService {
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<ProjectFileLayout, PlatformError> {
+    ) -> Result<Arc<ProjectFileLayout>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.file.ensure_project_layout(&owner, &project)
@@ -651,7 +651,7 @@ impl ProjectService {
             }
         }
 
-        let mut config = self.zebflow_cfg.read_or_default(&owner, &project)?;
+        let mut config = Arc::unwrap_or_clone(self.zebflow_cfg.read_or_default(&owner, &project)?);
         let bootstrap: Vec<String> = config
             .configs
             .bootstrap
@@ -764,7 +764,7 @@ impl ProjectService {
         &self,
         owner: &str,
         req: &CreateProjectRequest,
-    ) -> Result<(PlatformProject, ProjectFileLayout), PlatformError> {
+    ) -> Result<(PlatformProject, Arc<ProjectFileLayout>), PlatformError> {
         let owner = slug_segment(owner);
         if owner.is_empty() {
             return Err(PlatformError::new(
@@ -942,6 +942,9 @@ impl ProjectService {
                 }
             }
         }
+        // Both roots changed under the adapter's feet.
+        self.file.forget_project(&old_owner, &project);
+        self.file.forget_project(&new_owner_slug, &project);
 
         Ok(())
     }

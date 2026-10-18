@@ -64,7 +64,7 @@ pub fn answer_under(source: &str, payload: Value) -> Value {
     };
     let mut answer = Map::new();
     answer.insert(source.to_string(), envelope);
-    with_answer(&Value::Object(private), Value::Object(answer))
+    with_answer(Value::Object(private), Value::Object(answer))
 }
 
 /// The run's trigger envelope (`$trigger`), from a node's metadata.

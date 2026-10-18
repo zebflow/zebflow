@@ -140,12 +140,19 @@ pub(super) async fn ws_room_handler(
     let project = crate::platform::model::slug_segment(&project);
     // Random, not a clock reading: two upgrades in the same nanosecond shared a slot.
     let session_id = format!("ws-{}", uuid::Uuid::new_v4().simple());
-    ws.on_upgrade(move |socket| async move {
+    ws.read_buffer_size(SOCKET_BUFFER).write_buffer_size(SOCKET_BUFFER).on_upgrade(move |socket| async move {
         // The socket lives on the fast lane from here on.
         lane().spawn(socket::handle_ws_room(SessionCtx { owner, project, room_id, session_id, headers, state }, pass, socket));
     })
     .into_response()
 }
+
+/// Each room socket's read and write buffer. axum's are 128 KiB each, a
+/// quarter of a megabyte a socket before it carries anything, so a 1 GB
+/// device could hold only a few thousand. A room message is small; a larger
+/// one is read and written in more pieces, never refused for it (the message
+/// limit is its own setting).
+const SOCKET_BUFFER: usize = 8 * 1024;
 
 #[cfg(test)]
 mod tests {

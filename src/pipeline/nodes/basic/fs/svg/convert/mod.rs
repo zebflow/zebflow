@@ -392,7 +392,7 @@ impl Node {
 
 /// The project's bytes for the resolver: repo `static/` and the node's store.
 struct ProjectStore {
-    layout: crate::platform::model::ProjectFileLayout,
+    layout: Arc<crate::platform::model::ProjectFileLayout>,
     store: crate::zebfs::ZebFs,
 }
 
@@ -483,7 +483,7 @@ impl NodeHandler for Node {
             let existing = store.stored_ref(&rel, ORIGIN, "generated", RASTER_CODE)?;
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: with_answer(&input.payload, json!({ "image": existing })),
+                payload: with_answer(input.payload, json!({ "image": existing })),
                 trace: vec![format!("node={} node_kind={NODE_KIND} out={rel} skipped", input.node_id)],
             });
         }
@@ -508,7 +508,7 @@ impl NodeHandler for Node {
             obj.insert("layout".into(), rendered.layout.clone());
             obj.insert("source_deleted".into(), json!(source_deleted));
         }
-        let out = with_answer(&input.payload, json!({ "image": image }));
+        let out = with_answer(input.payload, json!({ "image": image }));
 
         let total_ms = started.elapsed().as_millis() as u64;
         Ok(NodeExecutionOutput {

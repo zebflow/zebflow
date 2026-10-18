@@ -326,7 +326,7 @@ impl NodeHandler for Node {
             let existing = store.stored_ref(&out_rel, ORIGIN, "sanitized", RASTER_CODE)?;
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: with_answer(&input.payload, json!({ "image": existing })),
+                payload: with_answer(input.payload, json!({ "image": existing })),
                 trace: vec![format!("node_kind={NODE_KIND} src={rel} out={out_rel} skipped")],
             });
         }
@@ -348,7 +348,7 @@ impl NodeHandler for Node {
         }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "image": image })),
+            payload: with_answer(input.payload, json!({ "image": image })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} src={rel} out={out_rel} {width}x{height} {ext} key=#{:02x}{:02x}{:02x} tolerance={} soften={} bytes={} total_ms={}",
                 self.key[0], self.key[1], self.key[2], self.tolerance, self.soften, bytes.len(), started.elapsed().as_millis()

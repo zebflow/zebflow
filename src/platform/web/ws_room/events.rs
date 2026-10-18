@@ -25,7 +25,7 @@ pub(super) struct RoomCtx {
 pub(super) struct Resolved {
     epoch: u64,
     /// Sorted by path, so a room runs them in the same order every time.
-    pipelines: Vec<CompiledPipeline>,
+    pipelines: Vec<Arc<CompiledPipeline>>,
     engine: crate::pipeline::BasicPipelineEngine,
 }
 
@@ -35,13 +35,14 @@ impl Resolved {
         // Read the epoch first: a change after it raises it again, and the
         // loop resolves once more.
         let epoch = room.epoch();
-        let mut pipelines: Vec<CompiledPipeline> = ctx
+        let mut pipelines: Vec<Arc<CompiledPipeline>> = ctx
             .state
             .platform
             .pipeline_runtime
             .list_project(&ctx.owner, &ctx.project)
-            .into_iter()
+            .iter()
             .filter(|compiled| compiled.ws_triggers.iter().any(|t| admission::declares(&t.room, &ctx.room_id)))
+            .cloned()
             .collect();
         pipelines.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
         let state = &ctx.state;
@@ -67,6 +68,7 @@ impl Resolved {
     pub(super) fn for_event<'a>(&'a self, room: &'a str, event: &'a str) -> impl Iterator<Item = &'a CompiledPipeline> + 'a {
         self.pipelines
             .iter()
+            .map(|compiled| &**compiled)
             .filter(move |compiled| compiled.ws_triggers.iter().any(|t| admission::trigger_matches(&t.room, &t.event, room, event)))
     }
 }
@@ -123,7 +125,16 @@ pub(super) async fn run_pipeline(
     room.count(Counter::PipelineRuns);
     let started = std::time::Instant::now();
     let at = crate::platform::model::now_ts();
-    if let Err(err) = resolved.engine.execute_async(&compiled.graph, &pctx).await {
+    // The graph is the active runtime's, validated at activation.
+    // What a room run does is what it wrote and sent; its value is read by
+    // no one, so the run keeps none.
+    let options = crate::pipeline::model::ExecuteOptions {
+        prevalidated: true,
+        lane: Some(compiled.lane.clone()),
+        discard_value: true,
+        ..Default::default()
+    };
+    if let Err(err) = resolved.engine.execute_with_options_async(&compiled.graph, &pctx, &options).await {
         room.count(Counter::PipelineErrors);
         if ctx.state.platform.ws_hub.failure_due(&ctx.owner, &ctx.project, &compiled.file_rel_path, started) {
             record_failure(ctx, compiled, &pctx.request_id, at, started.elapsed(), &err);
@@ -163,5 +174,5 @@ fn record_failure(
     if let Err(e) = platform.data.record_pipeline_error(owner, project, file, &entry, bounds) {
         eprintln!("warning: error group not recorded for {owner}/{project}: {}", e.message);
     }
-    let _ = platform.data.log_pipeline_invocation(owner, project, file, &entry, retention.max_invocations, retention.max_age_secs);
+    let _ = platform.data.log_pipeline_invocation(owner, project, file, entry, retention.max_invocations, retention.max_age_secs);
 }

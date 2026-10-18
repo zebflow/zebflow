@@ -123,7 +123,7 @@ impl NodeHandler for Node {
         }
         .map_err(bus_error(CODE))?;
         Ok(answer(
-            &input.payload,
+            input.payload,
             json!({ "entry": { "key": self.key, "value": value } }),
             format!("{NODE_KIND}: key={} amount={} value={value} durable={}", self.key, self.amount, self.durable),
         ))

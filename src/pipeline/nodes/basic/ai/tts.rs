@@ -556,7 +556,7 @@ impl Node {
     ) -> Result<Self, PipelineError> {
         check_config_profile(config)?;
         let config: Config =
-            serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(CONFIG_CODE, err.to_string()))?;
+            crate::pipeline::nodes::shared::util::typed_config(&config).map_err(|err| PipelineError::new(CONFIG_CODE, err.to_string()))?;
         let settings = config.settings()?;
         Ok(Self { config, settings, credentials, platform })
     }
@@ -781,7 +781,7 @@ impl NodeHandler for Node {
         let answer = self.deliver(platform, owner, project, synthesis)?;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, answer),
+            payload: crate::pipeline::nodes::shared::util::with_answer(input.payload, answer),
             trace: vec![format!(
                 "node_kind={NODE_KIND} provider={provider} credential={credential_id} lipsync={}",
                 self.settings.lipsync.as_str()
@@ -1786,7 +1786,7 @@ mod tests {
         let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
         let file = build(json!({ "provider": "piper", "credential_id": "c", "text": "hi there", "filename": "greeting", "option": { "lipsync": "timed_words" } })).expect("node");
         let answer = file.deliver(&platform, "superadmin", "default", synthesis()).expect("written");
-        let payload = crate::pipeline::nodes::shared::util::with_answer(&json!({ "kept": 1 }), answer);
+        let payload = crate::pipeline::nodes::shared::util::with_answer(json!({ "kept": 1 }), answer);
         assert_eq!(payload["kept"], 1);
         let audio = &payload["audio"];
         assert_eq!(audio["__zf_type"], "file_ref");
@@ -1800,7 +1800,7 @@ mod tests {
 
         let inline = build(json!({ "provider": "piper", "credential_id": "c", "text": "hi", "filename": "unused", "return": "inline" })).expect("node");
         let answer = inline.deliver(&platform, "superadmin", "default", synthesis()).expect("answered");
-        let payload = crate::pipeline::nodes::shared::util::with_answer(&json!({ "kept": 1 }), answer);
+        let payload = crate::pipeline::nodes::shared::util::with_answer(json!({ "kept": 1 }), answer);
         assert_eq!(payload["kept"], 1);
         let audio = &payload["audio"];
         let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, audio["base64"].as_str().expect("base64")).expect("decodes");

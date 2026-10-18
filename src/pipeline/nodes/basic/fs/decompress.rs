@@ -191,7 +191,7 @@ impl NodeHandler for Node {
             // Skipped: nothing was written and the archive stays.
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: with_answer(&input.payload, json!({ "archive": { "folder": folder, "items": [], "count": 0, "source_deleted": false } })),
+                payload: with_answer(input.payload, json!({ "archive": { "folder": folder, "items": [], "count": 0, "source_deleted": false } })),
                 trace: vec![format!("node_kind={NODE_KIND} src={source_rel} out={folder} skipped=true")],
             });
         }
@@ -232,7 +232,7 @@ impl NodeHandler for Node {
         let count = items.len();
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "archive": { "folder": folder, "items": items, "count": count, "source_deleted": source_deleted } })),
+            payload: with_answer(input.payload, json!({ "archive": { "folder": folder, "items": items, "count": count, "source_deleted": source_deleted } })),
             trace: vec![format!("node_kind={NODE_KIND} src={source_rel} out={folder} store={} files={count}", store.id)],
         })
     }

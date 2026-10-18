@@ -4,7 +4,9 @@
 //! project wants `shared`, `pinned`, or `dedicated` runtime behavior, but the actual worker
 //! assignment remains platform-controlled and belongs here.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use crate::infra::execution::placement::{
     PlacementPolicy, PlacementPolicyKind, ProjectRuntimeMode, ProjectRuntimePlacement,
@@ -18,12 +20,17 @@ use crate::platform::model::{ProjectRuntimeSelectionRequest, now_ts, slug_segmen
 #[derive(Clone)]
 pub struct ClusterPlacementService {
     data: Arc<dyn DataAdapter>,
+    /// Every webhook asks where its project runs. The answer is read from
+    /// the catalog at most once per `STAMP_TRUST` per project, not on each
+    /// request through the catalog's one connection; a placement written
+    /// here drops its entry at once.
+    recent: Arc<RwLock<HashMap<String, (Instant, Option<ProjectRuntimePlacement>)>>>,
 }
 
 impl ClusterPlacementService {
     /// Create a new placement service backed by the platform catalog adapter.
     pub fn new(data: Arc<dyn DataAdapter>) -> Self {
-        Self { data }
+        Self { data, recent: Arc::default() }
     }
 
     /// Default placement for a fresh standalone-style project.
@@ -37,7 +44,16 @@ impl ClusterPlacementService {
         owner: &str,
         project: &str,
     ) -> Result<Option<ProjectRuntimePlacement>, PlatformError> {
-        self.data.get_project_runtime_placement(owner, project)
+        let key = format!("{owner}/{project}");
+        let trust = crate::platform::services::project_config::STAMP_TRUST;
+        if let Some((read, placement)) = self.recent.read().unwrap_or_else(|e| e.into_inner()).get(&key)
+            && read.elapsed() < trust
+        {
+            return Ok(placement.clone());
+        }
+        let placement = self.data.get_project_runtime_placement(owner, project)?;
+        self.recent.write().unwrap_or_else(|e| e.into_inner()).insert(key, (Instant::now(), placement.clone()));
+        Ok(placement)
     }
 
     /// Resolve and persist placement for a freshly created or cloned project.
@@ -111,6 +127,7 @@ impl ClusterPlacementService {
             updated_at: now,
         };
         self.data.put_project_runtime_placement(&placement)?;
+        self.recent.write().unwrap_or_else(|e| e.into_inner()).remove(&format!("{}/{}", placement.owner, placement.project));
         Ok(placement)
     }
 

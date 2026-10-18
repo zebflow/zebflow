@@ -413,7 +413,7 @@ impl Node {
     ) -> Result<Self, PipelineError> {
         check_config_profile(config)?;
         let config: Config =
-            serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(CONFIG_CODE, err.to_string()))?;
+            crate::pipeline::nodes::shared::util::typed_config(&config).map_err(|err| PipelineError::new(CONFIG_CODE, err.to_string()))?;
         let tools = listed(&config.tool);
         if tools.len() > MAX_TOOLS as usize {
             return Err(PipelineError::new(
@@ -470,7 +470,7 @@ impl Node {
         const FN_TRIGGER: &str = "trigger.function";
 
         let mut defs = Vec::new();
-        for compiled in platform.pipeline_runtime.list_project(owner, project) {
+        for compiled in platform.pipeline_runtime.list_project(owner, project).iter() {
             let Some(trigger) = compiled.graph.nodes.iter().find(|n| n.kind == FN_TRIGGER) else {
                 continue;
             };
@@ -734,7 +734,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "text": text })),
+            payload: crate::pipeline::nodes::shared::util::with_answer(input.payload, json!({ "text": text })),
             trace: result.trace,
         })
     }

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::contracts::kinds::{
     LEGACY_PROJECT_CONFIGURATION_FILE, PROJECT_CONFIGURATION_BACKUP_FILE,
@@ -22,6 +22,24 @@ use crate::platform::model::{
 use crate::zebfs::FileBackend;
 
 /// Modification time and size of `path`, or `None` when it does not exist.
+/// How long a cached read is trusted without looking at the file again.
+/// A write through this service drops the entry at once; this only bounds
+/// how late an edit made outside the process is seen. Inside it, a request
+/// reads the parse from memory and touches no disk: on some machines one
+/// `stat` costs tens of microseconds and they do not run in parallel, which
+/// capped a whole server near 1,700 requests a second.
+pub const STAMP_TRUST: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Raised every time a project's configuration is written or forgotten. What
+/// is compiled from a configuration (a pipeline's compiled program) notes the
+/// generation it was compiled at and compiles again when it moved.
+static CONFIG_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The current configuration generation; see [`CONFIG_GENERATION`].
+pub fn config_generation() -> u64 {
+    CONFIG_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
@@ -57,6 +75,8 @@ pub fn is_template_tree_locked(locked: &[String], rel_path: &str) -> bool {
 struct ConfigCacheEntry {
     /// `None` when the configuration file was absent at the time of the read.
     stamp: Option<(std::time::SystemTime, u64)>,
+    /// When the stamp was last compared with the file.
+    checked: std::time::Instant,
     layout: ResolvedProjectLayout,
     backend: FileBackend,
 }
@@ -65,10 +85,19 @@ struct ConfigCacheEntry {
 pub struct ProjectConfigurationService {
     users_root: PathBuf,
     update_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
-    declarations: Mutex<HashMap<PathBuf, ConfigCacheEntry>>,
+    /// Read-mostly: every request reads it several times, a write is a
+    /// config change. A read lock lets those reads run side by side.
+    declarations: RwLock<HashMap<PathBuf, ConfigCacheEntry>>,
     /// The parsed configuration, by file, with the file identity it was
     /// read from: every pipeline run reads it.
-    parsed: Mutex<HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, ZebflowJson)>>,
+    parsed: RwLock<HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, std::time::Instant, Arc<ZebflowJson>)>>,
+    /// The same parse by owner, then project, with when it was taken and the
+    /// configuration generation it was taken at: what a request reads, with
+    /// no path built. Any write or change found raises the generation.
+    shared: RwLock<HashMap<String, HashMap<String, (std::time::Instant, u64, Arc<ZebflowJson>)>>>,
+    /// How long a cached read is trusted: [`STAMP_TRUST`], or zero for a
+    /// caller that edits the file behind the service and reads at once.
+    trust: std::time::Duration,
 }
 
 impl ProjectConfigurationService {
@@ -77,9 +106,17 @@ impl ProjectConfigurationService {
         Self {
             users_root,
             update_locks: Mutex::new(HashMap::new()),
-            declarations: Mutex::new(HashMap::new()),
-            parsed: Mutex::new(HashMap::new()),
+            declarations: RwLock::new(HashMap::new()),
+            parsed: RwLock::new(HashMap::new()),
+            shared: RwLock::new(HashMap::new()),
+            trust: STAMP_TRUST,
         }
+    }
+
+    /// The same service, trusting a cached read for `trust` instead.
+    pub fn with_trust(mut self, trust: std::time::Duration) -> Self {
+        self.trust = trust;
+        self
     }
 
     fn repo_path(&self, owner: &str, project: &str) -> PathBuf {
@@ -131,23 +168,53 @@ impl ProjectConfigurationService {
     /// silently changes because an authoritative project file is damaged.
     /// The parse is cached against the file's size and modification time,
     /// as [`Self::project_layout`] is: a pipeline run reads it every time.
+    ///
+    /// The parse is shared, not copied: every reader holds the same one.
     pub fn read_or_default(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<ZebflowJson, PlatformError> {
-        let path = self.config_path(owner, project);
-        let stamp = file_stamp(&path);
-        if let Some((was, config)) = self.parsed.lock().unwrap_or_else(|err| err.into_inner()).get(&path)
-            && *was == stamp
+    ) -> Result<Arc<ZebflowJson>, PlatformError> {
+        let generation = config_generation();
+        if let Some((at, taken_at, config)) =
+            self.shared.read().unwrap_or_else(|err| err.into_inner()).get(owner).and_then(|projects| projects.get(project))
+            && *taken_at == generation
+            && at.elapsed() < self.trust
         {
             return Ok(config.clone());
         }
-        let config = self.read_path_or_default(&path, &self.legacy_path(owner, project), project)?;
-        self.parsed
-            .lock()
+        let config = self.read_by_path(owner, project)?;
+        self.shared
+            .write()
             .unwrap_or_else(|err| err.into_inner())
-            .insert(path, (stamp, config.clone()));
+            .entry(owner.to_string())
+            .or_default()
+            .insert(project.to_string(), (std::time::Instant::now(), generation, config.clone()));
+        Ok(config)
+    }
+
+    /// [`Self::read_or_default`] through the cache by file.
+    fn read_by_path(&self, owner: &str, project: &str) -> Result<Arc<ZebflowJson>, PlatformError> {
+        let path = self.config_path(owner, project);
+        if let Some((_, checked, config)) = self.parsed.read().unwrap_or_else(|err| err.into_inner()).get(&path)
+            && checked.elapsed() < self.trust
+        {
+            return Ok(config.clone());
+        }
+        let stamp = file_stamp(&path);
+        if let Some((was, checked, config)) = self.parsed.write().unwrap_or_else(|err| err.into_inner()).get_mut(&path)
+            && *was == stamp
+        {
+            *checked = std::time::Instant::now();
+            return Ok(config.clone());
+        }
+        let config = Arc::new(self.read_path_or_default(&path, &self.legacy_path(owner, project), project)?);
+        // Read from disk: new, or changed behind the service.
+        CONFIG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.parsed
+            .write()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(path, (stamp, std::time::Instant::now(), config.clone()));
         Ok(config)
     }
 
@@ -190,15 +257,27 @@ impl ProjectConfigurationService {
         project: &str,
     ) -> Result<(ResolvedProjectLayout, FileBackend), PlatformError> {
         let path = self.config_path(owner, project);
-        let stamp = file_stamp(&path);
         {
             let cache = self
                 .declarations
-                .lock()
+                .read()
                 .unwrap_or_else(|err| err.into_inner());
             if let Some(entry) = cache.get(&path)
+                && entry.checked.elapsed() < self.trust
+            {
+                return Ok((entry.layout.clone(), entry.backend));
+            }
+        }
+        let stamp = file_stamp(&path);
+        {
+            let mut cache = self
+                .declarations
+                .write()
+                .unwrap_or_else(|err| err.into_inner());
+            if let Some(entry) = cache.get_mut(&path)
                 && entry.stamp == stamp
             {
+                entry.checked = std::time::Instant::now();
                 return Ok((entry.layout.clone(), entry.backend));
             }
         }
@@ -211,14 +290,16 @@ impl ProjectConfigurationService {
             )
         })?;
         let layout = config.layout();
+        CONFIG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut cache = self
             .declarations
-            .lock()
+            .write()
             .unwrap_or_else(|err| err.into_inner());
         cache.insert(
             path,
             ConfigCacheEntry {
                 stamp,
+                checked: std::time::Instant::now(),
                 layout: layout.clone(),
                 backend,
             },
@@ -226,12 +307,22 @@ impl ProjectConfigurationService {
         Ok((layout, backend))
     }
 
+    /// Drops what is cached for one project, for a change made around this
+    /// service (an import swapping the repository in).
+    pub fn forget_project(&self, owner: &str, project: &str) {
+        self.forget_layout(&self.config_path(owner, project));
+        if let Some(projects) = self.shared.write().unwrap_or_else(|err| err.into_inner()).get_mut(owner) {
+            projects.remove(project);
+        }
+    }
+
     fn forget_layout(&self, path: &Path) {
+        CONFIG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.declarations
-            .lock()
+            .write()
             .unwrap_or_else(|err| err.into_inner())
             .remove(path);
-        self.parsed.lock().unwrap_or_else(|err| err.into_inner()).remove(path);
+        self.parsed.write().unwrap_or_else(|err| err.into_inner()).remove(path);
     }
 
     fn read_path_or_default(
@@ -287,7 +378,7 @@ impl ProjectConfigurationService {
         config: &ZebflowJson,
     ) -> Result<(), PlatformError> {
         self.forget_layout(path);
-        write_contract_yaml::<ProjectConfigurationContract>(
+        let written = write_contract_yaml::<ProjectConfigurationContract>(
             path,
             ContractMetadata::named(project),
             ProjectConfigurationSpec::from(config.clone()),
@@ -297,7 +388,11 @@ impl ProjectConfigurationService {
                 "PROJECT_CONFIG_WRITE",
                 format!("{} ({})", err, err.category()),
             )
-        })
+        });
+        // Again after: a read between the first forget and the write cached
+        // the old file, and would now be trusted for STAMP_TRUST.
+        self.forget_layout(path);
+        written
     }
 
     /// Reads `zebflow.yaml`, applies a mutation, and writes it back atomically.
@@ -421,6 +516,7 @@ impl ProjectConfigurationService {
         self.forget_layout(&path);
         write_contract_yaml::<ProjectConfigurationContract>(&path, metadata, spec.clone())
             .map_err(|err| PlatformError::new("PROJECT_CONFIG_MIGRATE", err.to_string()))?;
+        self.forget_layout(&path);
         let reopened = read_optional_contract_yaml::<ProjectConfigurationContract>(&path)
             .map_err(|err| PlatformError::new("PROJECT_CONFIG_MIGRATE", err.to_string()))?
             .ok_or_else(|| {
@@ -478,7 +574,7 @@ impl ProjectConfigurationService {
         owner: &str,
         project: &str,
     ) -> Result<ZebflowJsonDistributionHub, PlatformError> {
-        Ok(self.read_or_default(owner, project)?.distribution.hub)
+        Ok(self.read_or_default(owner, project)?.distribution.hub.clone())
     }
 
     pub fn set_hub_distribution(
@@ -499,7 +595,7 @@ impl ProjectConfigurationService {
         owner: &str,
         project: &str,
     ) -> Result<ZebflowJsonAssistant, PlatformError> {
-        Ok(self.read_or_default(owner, project)?.configs.assistant)
+        Ok(self.read_or_default(owner, project)?.configs.assistant.clone())
     }
 
     /// Returns the portable runtime profile section of `zebflow.yaml`.
@@ -508,7 +604,7 @@ impl ProjectConfigurationService {
         owner: &str,
         project: &str,
     ) -> Result<ProjectRuntimeProfile, PlatformError> {
-        Ok(self.read_or_default(owner, project)?.configs.runtime)
+        Ok(self.read_or_default(owner, project)?.configs.runtime.clone())
     }
 
     /// Sets the portable runtime profile section of `zebflow.yaml`, preserving other fields.
@@ -530,7 +626,7 @@ impl ProjectConfigurationService {
         owner: &str,
         project: &str,
     ) -> Result<ProjectBootstrapPlan, PlatformError> {
-        Ok(self.read_or_default(owner, project)?.configs.bootstrap)
+        Ok(self.read_or_default(owner, project)?.configs.bootstrap.clone())
     }
 
     /// Sets the bootstrap/activation plan section of `zebflow.yaml`, preserving other fields.
@@ -565,7 +661,7 @@ impl ProjectConfigurationService {
         owner: &str,
         project: &str,
     ) -> Result<ZebflowJsonRweLibraries, PlatformError> {
-        Ok(self.read_or_default(owner, project)?.configs.rwe.libraries)
+        Ok(self.read_or_default(owner, project)?.configs.rwe.libraries.clone())
     }
 
     /// Adds or updates one enabled library entry in `rwe.libraries`.
@@ -659,7 +755,8 @@ impl ProjectConfigurationService {
             .read_or_default(owner, project)?
             .configs
             .locks
-            .templates)
+            .templates
+            .clone())
     }
 
     /// Initializes zebflow.yaml with defaults if it doesn't already exist.
@@ -691,10 +788,30 @@ mod tests {
 
     use super::*;
 
+    /// A file edited behind the service is seen once the trust window has
+    /// passed, and at once after `forget_project`; inside the window the
+    /// cached read answers and the disk is not touched.
+    #[test]
+    fn an_outside_edit_is_seen_after_the_trust_window_or_a_forget() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectConfigurationService::new(root.path().join("users"));
+        let mut config = ZebflowJson::default();
+        config.metadata.title = "Before".to_string();
+        service.write("owner", "project", &config).unwrap();
+        assert_eq!(service.read_or_default("owner", "project").unwrap().metadata.title, "Before");
+
+        let path = service.config_path("owner", "project");
+        let edited = std::fs::read_to_string(&path).unwrap().replace("Before", "After");
+        std::fs::write(&path, edited).unwrap();
+        assert_eq!(service.read_or_default("owner", "project").unwrap().metadata.title, "Before");
+        service.forget_project("owner", "project");
+        assert_eq!(service.read_or_default("owner", "project").unwrap().metadata.title, "After");
+    }
+
     #[test]
     fn missing_config_defaults_but_malformed_and_future_configs_fail() {
         let root = tempfile::tempdir().unwrap();
-        let service = ProjectConfigurationService::new(root.path().join("users"));
+        let service = ProjectConfigurationService::new(root.path().join("users")).with_trust(std::time::Duration::ZERO);
         assert!(service.read_or_default("owner", "project").is_ok());
 
         let path = service.config_path("owner", "project");
@@ -725,7 +842,7 @@ mod tests {
     #[test]
     fn config_write_is_strict_and_roundtrips() {
         let root = tempfile::tempdir().unwrap();
-        let service = ProjectConfigurationService::new(root.path().join("users"));
+        let service = ProjectConfigurationService::new(root.path().join("users")).with_trust(std::time::Duration::ZERO);
         let mut config = ZebflowJson::default();
         config.metadata.title = "Stable".to_string();
         service.write("owner", "project", &config).unwrap();

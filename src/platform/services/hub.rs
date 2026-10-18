@@ -3164,9 +3164,10 @@ impl HubService {
         )?;
         sanitize_hub_export_entries(&mut preview.entries)?;
         let media = hub_cover_media_review(
-            &self
+            self
                 .projects
-                .project_layout(&source_owner, &source_project)?,
+                .project_layout(&source_owner, &source_project)?
+                .as_ref(),
             image_file_path,
             &publisher,
         )?;
@@ -3218,7 +3219,8 @@ impl HubService {
         let layout = self
             .projects
             .project_layout(source_owner, source_project)?
-            .repo_layout;
+            .repo_layout
+            .clone();
         let schema_document_rel = layout.schema_document_rel();
 
         options.include_libraries.sort();
@@ -11903,7 +11905,7 @@ mod tests {
     fn project_declaring_src(
         platform: &crate::platform::services::PlatformService,
         project: &str,
-    ) -> ProjectFileLayout {
+    ) -> std::sync::Arc<ProjectFileLayout> {
         platform
             .projects
             .create_or_update_project(

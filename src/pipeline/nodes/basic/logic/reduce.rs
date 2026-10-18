@@ -235,7 +235,7 @@ impl NodeHandler for Node {
         }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ ANSWER_KEY: acc })),
+            payload: with_answer(input.payload, json!({ ANSWER_KEY: acc })),
             trace: vec![format!("node_kind={NODE_KIND}"), format!("items={}", items.len())],
         })
     }

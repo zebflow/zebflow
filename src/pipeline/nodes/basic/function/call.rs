@@ -222,7 +222,7 @@ impl NodeHandler for Node {
             .map_err(|e| PipelineError::new(e.code, e.message))?;
         Ok(NodeExecutionOutput {
             output_pins: vec!["out".to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, serde_json::json!({ "result": result })),
+            payload: crate::pipeline::nodes::shared::util::with_answer(input.payload, serde_json::json!({ "result": result })),
             trace: vec![format!("function.result.call: '{}' ok", slug)],
         })
     }

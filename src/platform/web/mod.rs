@@ -309,8 +309,24 @@ struct PlatformWebSession {
 }
 
 /// Shared app state used by platform routes.
+///
+/// One allocation behind one `Arc`: axum hands every middleware and handler
+/// its own copy of the state on every request, and a copy that counted each
+/// field's `Arc` separately cost a dozen contended atomic increments and as
+/// many decrements, several times a request. Fields read as before through
+/// [`std::ops::Deref`].
 #[derive(Clone)]
-pub struct PlatformAppState {
+pub struct PlatformAppState(Arc<PlatformAppStateInner>);
+
+impl std::ops::Deref for PlatformAppState {
+    type Target = PlatformAppStateInner;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// What [`PlatformAppState`] shares.
+pub struct PlatformAppStateInner {
     /// Platform service graph.
     pub platform: Arc<PlatformService>,
     /// Keeps the pipeline switch attached to the project service alive.
@@ -336,6 +352,60 @@ pub struct PlatformAppState {
     oauth_state_secret: [u8; 32],
     /// Refusals at the doors of published MCP routes, per client and route.
     mcp_failures: Arc<published_mcp::FailureLimiter>,
+    /// Each project's webhook engine by owner, then project
+    /// ([`project_engine`]).
+    project_engines: std::sync::RwLock<HashMap<String, HashMap<String, ProjectEngine>>>,
+}
+
+/// One project's engine, with the configuration generation and the layout
+/// it was built from.
+struct ProjectEngine {
+    generation: u64,
+    layout: Option<Arc<crate::platform::model::ProjectFileLayout>>,
+    engine: Arc<BasicPipelineEngine>,
+}
+
+/// The engine a project's webhook runs take. Every field of an engine is a
+/// platform service or a fact of the project's layout, none is a run's, so
+/// one is built per configuration generation and layout and shared by every
+/// run: a request no longer builds a sandbox, a layout handle and a dozen
+/// service handles for each run.
+fn project_engine(state: &PlatformAppState, owner: &str, project: &str) -> Arc<BasicPipelineEngine> {
+    let generation = crate::platform::services::project_config::config_generation();
+    let layout = state.platform.projects.project_layout(owner, project).ok();
+    let same_layout = |built: &Option<Arc<crate::platform::model::ProjectFileLayout>>| match (built, &layout) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    if let Some(found) = state.project_engines.read().unwrap_or_else(|e| e.into_inner()).get(owner).and_then(|projects| projects.get(project))
+        && found.generation == generation
+        && same_layout(&found.layout)
+    {
+        return found.engine.clone();
+    }
+    let engine = Arc::new(
+        BasicPipelineEngine::new(
+            Arc::new(state.platform.project_sandbox(owner, project)),
+            state.frontend.rwe.clone(),
+            Some(state.platform.credentials.clone()),
+        )
+        .with_platform(state.platform.clone())
+        .with_template_cache(state.template_cache.clone())
+        .with_project_layout(layout.clone())
+        .with_ws_hub(state.platform.ws_hub.clone())
+        .with_ws_client_manager(state.ws_client_manager.clone())
+        .with_state_bus(state.platform.state_bus.clone())
+        .with_data_root(state.platform.config.data_root.clone()),
+    );
+    state
+        .project_engines
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(owner.to_string())
+        .or_default()
+        .insert(project.to_string(), ProjectEngine { generation, layout, engine: engine.clone() });
+    engine
 }
 
 /// Builds Zebflow platform router.
@@ -1355,7 +1425,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         });
     platform.projects.attach_pipeline_switch(Arc::downgrade(&pipeline_switch));
 
-    let app_state = PlatformAppState {
+    let app_state = PlatformAppState(Arc::new(PlatformAppStateInner {
         platform,
         pipeline_switch,
         http_client: reqwest::Client::new(),
@@ -1369,7 +1439,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         sessions,
         oauth_state_secret: crate::infra::secrets::signed::process_key(),
         mcp_failures: Arc::new(published_mcp::FailureLimiter::default()),
-    };
+        project_engines: Default::default(),
+    }));
 
     // An office upgraded from 0.10 migrates what it can before it serves a
     // request; anything it cannot is logged and shown, never left silent.
@@ -2116,7 +2187,7 @@ fn externalize_rwe_scripts(
             .platform
             .zebflow_cfg
             .read_or_default(owner, project)
-            .map(|config| config.configs.rwe.deployment_asset_base)?,
+            .map(|config| config.configs.rwe.deployment_asset_base.clone())?,
         None => None,
     };
 
@@ -5101,7 +5172,7 @@ async fn render_project_pipelines_with_tab(
     }
 
     let repo_layout = match state.platform.file.ensure_project_layout(&owner, &project) {
-        Ok(layout) => layout.repo_layout,
+        Ok(layout) => layout.repo_layout.clone(),
         Err(err) => return internal_error(err),
     };
 
@@ -5453,7 +5524,7 @@ async fn render_project_editor(
     };
 
     let repo_layout = match state.platform.file.ensure_project_layout(&owner, &project) {
-        Ok(layout) => layout.repo_layout,
+        Ok(layout) => layout.repo_layout.clone(),
         Err(err) => return internal_error(err),
     };
 
@@ -12217,6 +12288,11 @@ async fn api_delete_project(
             eprintln!("WARN: Failed to remove project dir {:?}: {e}", project_root);
         }
     }
+    // A project made again under the same name starts from the disk.
+    state.platform.file.forget_project(&owner_slug, &project_slug);
+    if let Some(projects) = state.project_engines.write().unwrap_or_else(|e| e.into_inner()).get_mut(&owner_slug) {
+        projects.remove(&project_slug);
+    }
     // With its record gone, a sync drops whatever the switch could not.
     for file_rel_path in &unswitched {
         state.scheduler.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
@@ -12267,7 +12343,7 @@ async fn api_pipeline_registry(
     // Git reports repository-relative paths, while pipeline identity is
     // source-relative, so the root is added back for those lookups.
     let repo_layout = match state.platform.projects.project_layout(&owner, &project) {
-        Ok(layout) => layout.repo_layout,
+        Ok(layout) => layout.repo_layout.clone(),
         Err(err) => return internal_error(err),
     };
     let git_map: std::collections::HashMap<String, String> = state
@@ -13307,7 +13383,7 @@ async fn api_git_commit(
                 .platform
                 .zebflow_cfg
                 .read_or_default(&owner_slug, &project_slug)
-                .map(|c| c.configs.git.remote.credential_id)
+                .map(|c| c.configs.git.remote.credential_id.clone())
                 .unwrap_or_default();
             if !req.credential_id.as_deref().unwrap_or_default().trim().is_empty()
                 || (!existing_cred.trim().is_empty()
@@ -14316,7 +14392,7 @@ async fn execute_pipeline_local(
                 owner,
                 project,
                 &meta.file_rel_path,
-                &PipelineInvocationEntry {
+                PipelineInvocationEntry {
                     run_id: request_id.clone(),
                     at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -14357,7 +14433,7 @@ async fn execute_pipeline_local(
                 owner,
                 project,
                 &meta.file_rel_path,
-                &PipelineInvocationEntry {
+                PipelineInvocationEntry {
                     run_id: request_id.clone(),
                     at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -14395,7 +14471,7 @@ async fn execute_pipeline_local(
             owner,
             project,
             &meta.file_rel_path,
-            &PipelineInvocationEntry {
+            PipelineInvocationEntry {
                 run_id: request_id.clone(),
                 at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -14433,7 +14509,7 @@ async fn execute_pipeline_local(
             owner,
             project,
             &meta.file_rel_path,
-            &PipelineInvocationEntry {
+            PipelineInvocationEntry {
                 run_id: request_id.clone(),
                 at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -14504,7 +14580,7 @@ async fn execute_pipeline_local(
                     &scope.0,
                     &scope.1,
                     &scope.2,
-                    &PipelineInvocationEntry {
+                    PipelineInvocationEntry {
                         run_id: run_id.clone(),
                         at,
                         duration_ms,
@@ -14549,7 +14625,7 @@ async fn execute_pipeline_local(
                     &scope.0,
                     &scope.1,
                     &scope.2,
-                    &entry,
+                    entry.clone(),
                     retention.max_invocations,
                     retention.max_age_secs,
                 );
@@ -14586,7 +14662,7 @@ async fn execute_pipeline_local(
         // The Studio's own execute route: its caller is the project's
         // developer, who sees every failure in full.
         return pipeline_run_sse_response(
-            engine,
+            Arc::new(engine),
             graph_for_run,
             ctx,
             true,
@@ -18331,7 +18407,7 @@ async fn api_upsert_settings_section(
             let check = |table: &crate::platform::services::addressing::sections::SectionTable| {
                 let mut pages = Vec::new();
                 let mut mcp = Vec::new();
-                for compiled in state.platform.pipeline_runtime.list_project(&owner, &project) {
+                for compiled in state.platform.pipeline_runtime.list_project(&owner, &project).iter() {
                     pages.extend(compiled.webhook_triggers.iter().map(|t| t.path.clone()));
                     for spec in &compiled.mcp_triggers {
                         mcp.push(spec.route.clone());
@@ -23595,7 +23671,7 @@ where
 /// result into the closing event and writes the record. Shared by the
 /// webhook ingress (`done` / `error`) and the execute route (`result`).
 fn pipeline_run_sse_response<A, F>(
-    engine: BasicPipelineEngine,
+    engine: Arc<BasicPipelineEngine>,
     graph: PipelineGraph,
     ctx: PipelineContext,
     errors_shown: bool,
@@ -23612,7 +23688,7 @@ where
     // `web.response.send` answers at once (`node-conventions.md` §4): the
     // stream carries it as `event: response` while the run goes on.
     let (responder, response_rx) = crate::pipeline::model::Responder::channel();
-    let options = ExecuteOptions { bus: Some(bus), responder: Some(responder) };
+    let options = ExecuteOptions { bus: Some(bus), responder: Some(responder), ..Default::default() };
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let result = engine
@@ -24060,9 +24136,9 @@ async fn dispatch_weberror(
     // Find the most specific matching weberror pipeline.
     let mut best: Option<(
         u8,
-        crate::platform::services::pipeline_runtime::CompiledPipeline,
+        Arc<crate::platform::services::pipeline_runtime::CompiledPipeline>,
     )> = None;
-    for compiled in state.platform.pipeline_runtime.list_project(owner, project) {
+    for compiled in state.platform.pipeline_runtime.list_project(owner, project).iter() {
         for trigger in &compiled.weberror_triggers {
             if let Some(spec) = match_specificity(&trigger.code, error_code) {
                 if best.as_ref().map_or(true, |(s, _)| spec > *s) {
@@ -24273,7 +24349,7 @@ async fn public_webhook_ingress_run(
     }
 
     struct Candidate {
-        compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
+        compiled: Arc<crate::platform::services::pipeline_runtime::CompiledPipeline>,
         trigger_node: String,
         path_params: serde_json::Map<String, Value>,
         static_segments: usize,
@@ -24286,37 +24362,24 @@ async fn public_webhook_ingress_run(
         errors: String,
     }
 
+    // The project's route index answers which triggers can take this
+    // request; they are ranked below as they always were.
     let mut candidates = Vec::<Candidate>::new();
-    for compiled in state
-        .platform
-        .pipeline_runtime
-        .list_project(&owner, &project)
-    {
-        for trigger in &compiled.webhook_triggers {
-            // A GET route answers HEAD too: the same run, the same headers,
-            // no body (RFC 9110 §9.3.2; the body is dropped on the way out).
-            let answers = trigger.method.eq_ignore_ascii_case(&method_key)
-                || (method_key == "HEAD" && trigger.method.eq_ignore_ascii_case("GET"));
-            if !answers {
-                continue;
-            }
-            let Some(path_match) = match_webhook_path(&trigger.path, &path) else {
-                continue;
-            };
-            candidates.push(Candidate {
-                auth_type: trigger.auth_type.clone(),
-                auth_credential: trigger.auth_credential.clone(),
-                auth_required_role: trigger.auth_required_role.clone(),
-                auth_optional: trigger.auth_optional,
-                errors: trigger.errors.clone(),
-                compiled: compiled.clone(),
-                trigger_node: trigger.node_id.clone(),
-                path_params: path_match.params,
-                static_segments: path_match.static_segments,
-                dynamic_segments: path_match.dynamic_segments,
-                total_segments: path_match.total_segments,
-            });
-        }
+    for found in state.platform.pipeline_runtime.webhook_matches(&owner, &project, &method_key, &path) {
+        let trigger = &found.compiled.webhook_triggers[found.trigger];
+        candidates.push(Candidate {
+            auth_type: trigger.auth_type.clone(),
+            auth_credential: trigger.auth_credential.clone(),
+            auth_required_role: trigger.auth_required_role.clone(),
+            auth_optional: trigger.auth_optional,
+            errors: trigger.errors.clone(),
+            trigger_node: trigger.node_id.clone(),
+            path_params: found.path.params,
+            static_segments: found.path.static_segments,
+            dynamic_segments: found.path.dynamic_segments,
+            total_segments: found.path.total_segments,
+            compiled: found.compiled,
+        });
     }
 
     candidates.sort_by(|a, b| {
@@ -24465,44 +24528,62 @@ async fn public_webhook_ingress_run(
         }
     };
 
-    let mut graph = selected.compiled.graph.clone();
-    if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph) {
-        state.platform.pipeline_hits.record_failure(
-            &owner,
-            &project,
-            &selected.compiled.file_rel_path,
-            "webhook.ingress",
-            err.code,
-            &err.message,
-        );
-        let _ = state.platform.data.log_pipeline_invocation(
-            &owner,
-            &project,
-            &selected.compiled.file_rel_path,
-            &PipelineInvocationEntry {
-                run_id: request_id.clone(),
-                at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
-                duration_ms: exec_start.elapsed().as_millis() as u64,
-                status: "error".to_string(),
-                trigger: "webhook".to_string(),
-                error: Some(err.message.clone()),
-                trace: vec![],
-            },
-            retention.max_invocations,
-            retention.max_age_secs,
-        );
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-        )
-            .into_response();
-    }
-    if let Err(err) = apply_rwe_project_options(&state, &owner, &project, &mut graph) {
-        return internal_error(err);
-    }
+    // A pipeline that reads a template from the repository has it read on
+    // every run, as RWE does. Any other runs the active graph with the
+    // project's RWE options applied, which only a configuration change can
+    // change: made once per configuration generation and shared, not copied
+    // for every request.
+    let graph: Arc<PipelineGraph> = if !reads_repo_template(&selected.compiled.graph) {
+        let generation = crate::platform::services::project_config::config_generation();
+        let made = selected.compiled.run_graph.get_or_make(generation, || {
+            let mut graph = selected.compiled.graph.clone();
+            apply_rwe_project_options(&state, &owner, &project, &mut graph).map(|_| graph)
+        });
+        match made {
+            Ok(graph) => graph,
+            Err(err) => return internal_error(err),
+        }
+    } else {
+        let mut graph = selected.compiled.graph.clone();
+        if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph) {
+            state.platform.pipeline_hits.record_failure(
+                &owner,
+                &project,
+                &selected.compiled.file_rel_path,
+                "webhook.ingress",
+                err.code,
+                &err.message,
+            );
+            let _ = state.platform.data.log_pipeline_invocation(
+                &owner,
+                &project,
+                &selected.compiled.file_rel_path,
+                PipelineInvocationEntry {
+                    run_id: request_id.clone(),
+                    at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                    duration_ms: exec_start.elapsed().as_millis() as u64,
+                    status: "error".to_string(),
+                    trigger: "webhook".to_string(),
+                    error: Some(err.message.clone()),
+                    trace: vec![],
+                },
+                retention.max_invocations,
+                retention.max_age_secs,
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response();
+        }
+        if let Err(err) = apply_rwe_project_options(&state, &owner, &project, &mut graph) {
+            return internal_error(err);
+        }
+        Arc::new(graph)
+    };
 
     let mut input = match build_webhook_ingress_input(
         &state.platform,
@@ -24529,8 +24610,9 @@ async fn public_webhook_ingress_run(
     };
     // The request's safe headers ride in the envelope (`webhook.headers`),
     // and verified JWT claims are `auth` when `--auth jwt` admitted it.
+    let shown_headers = safe_headers(&headers);
     if let Value::Object(ref mut map) = input {
-        map.insert("headers".to_string(), safe_headers(&headers));
+        map.insert("headers".to_string(), shown_headers.clone());
         if let Some(claims) = auth_claims {
             map.insert("auth".to_string(), claims);
         }
@@ -24557,10 +24639,9 @@ async fn public_webhook_ingress_run(
         // the path the visitor asked for, never the platform form a project
         // host rewrote it to.
         "pathname": visitor_path.clone().unwrap_or_else(|| webhook_url::pathname(&uri)),
-        "headers": safe_headers(&headers),
+        "headers": shown_headers,
     });
 
-    let credentials = state.platform.credentials.clone();
     let graph_for_run = graph.clone();
     let ctx = PipelineContext {
         owner: owner.clone(),
@@ -24568,29 +24649,12 @@ async fn public_webhook_ingress_run(
         pipeline: graph.id.clone(),
         request_id: request_id.clone(),
         route: path.clone(),
-        input: input.clone(),
+        input,
         trigger: Some(trigger),
         placeholder: None,
     };
     let file_rel_path = selected.compiled.file_rel_path.clone();
-    let engine = BasicPipelineEngine::new(
-        Arc::new(state.platform.project_sandbox(&owner, &project)),
-        state.frontend.rwe.clone(),
-        Some(credentials),
-    )
-    .with_platform(state.platform.clone())
-    .with_template_cache(state.template_cache.clone())
-    .with_project_layout(
-        state
-            .platform
-            .projects
-            .project_layout(&owner, &project)
-            .ok(),
-    )
-    .with_ws_hub(state.platform.ws_hub.clone())
-    .with_ws_client_manager(state.ws_client_manager.clone())
-    .with_state_bus(state.platform.state_bus.clone())
-    .with_data_root(state.platform.config.data_root.clone());
+    let engine = project_engine(&state, &owner, &project);
 
     // ── SSE streaming path (ExecutionBus) ──────────────────────────────────────
     // When the caller explicitly sends `Accept: text/event-stream`, the run
@@ -24626,7 +24690,7 @@ async fn public_webhook_ingress_run(
                     );
                     let _ = platform_sse.data.log_pipeline_invocation(
                         &owner_sse, &project_sse, &file_rel_path_sse,
-                        &PipelineInvocationEntry {
+                        PipelineInvocationEntry {
                             run_id: request_id_sse.clone(),
                             at,
                             duration_ms: elapsed_ms,
@@ -24650,7 +24714,7 @@ async fn public_webhook_ingress_run(
                     );
                     let _ = platform_sse.data.log_pipeline_invocation(
                         &owner_sse, &project_sse, &file_rel_path_sse,
-                        &PipelineInvocationEntry {
+                        PipelineInvocationEntry {
                             run_id: request_id_sse.clone(),
                             at,
                             duration_ms: elapsed_ms,
@@ -24673,22 +24737,39 @@ async fn public_webhook_ingress_run(
                 }
             }
         };
-        return pipeline_run_sse_response(engine, graph_for_run, ctx, errors_shown_sse, after_run, finish);
+        return pipeline_run_sse_response(engine, (*graph_for_run).clone(), ctx, errors_shown_sse, after_run, finish);
     }
 
     // `web.response.send` answers the caller the moment it runs
-    // (`node-conventions.md` §4). The run goes on to its end on its own task
-    // and is recorded there, so a later failure is in the record and never
-    // in the answer the caller already has. With no response node the
-    // caller waits for the run, as before.
-    let (responder, early_response) = crate::pipeline::model::Responder::channel();
-    let options = ExecuteOptions { responder: Some(responder), ..Default::default() };
+    // (`node-conventions.md` §4). The run goes on to its end and is recorded
+    // there, so a later failure is in the record and never in the answer the
+    // caller already has. With no response node the caller waits for the
+    // run, as before.
+    //
+    // The run is polled here, beside the request. A run that answers and
+    // ends — most routes — is finished the first time this handler is
+    // polled: no task is spawned for it and nothing waits across threads.
+    // A run with nodes after its answer yields once after answering (the
+    // engine does), so the caller is answered at once and the rest of the
+    // run goes on on a task of its own. A panic in the run is the failure it
+    // was when the run had a task of its own from the start.
+    let (responder, mut early_response) = crate::pipeline::model::Responder::channel();
+    // The graph came from the active runtime, validated at activation.
+    // The caller is answered with what `web.response.send` sent, never with
+    // the run's value (`node-conventions.md` §4), so the run keeps none.
+    let options = ExecuteOptions {
+        responder: Some(responder),
+        prevalidated: true,
+        lane: Some(selected.compiled.lane.clone()),
+        discard_value: true,
+        ..Default::default()
+    };
     let asked = stored_answer::Asked { method: &method, headers: &headers };
     let arrival = PageArrival::of_webhook(visitor_path.as_deref(), &headers);
     let record_platform = state.platform.clone();
     let record_scope = (owner.clone(), project.clone(), file_rel_path.clone(), request_id.clone());
     let error_bounds = project_cfg.configs.pipelines.logging.error_group_bounds();
-    let mut run_task = tokio::spawn(async move {
+    let mut run_task = Box::pin(futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async move {
         let run = engine.execute_with_options_async(&graph_for_run, &ctx, &options).await;
         let (owner, project, file_rel_path, request_id) = &record_scope;
         // `lifecycle: temporary` — the upload lived for the run. What
@@ -24709,7 +24790,7 @@ async fn public_webhook_ingress_run(
                     owner,
                     project,
                     file_rel_path,
-                    &PipelineInvocationEntry {
+                    PipelineInvocationEntry {
                         run_id: request_id.clone(),
                         at,
                         duration_ms,
@@ -24744,7 +24825,7 @@ async fn public_webhook_ingress_run(
                     owner,
                     project,
                     file_rel_path,
-                    &entry,
+                    entry.clone(),
                     retention.max_invocations,
                     retention.max_age_secs,
                 );
@@ -24757,14 +24838,21 @@ async fn public_webhook_ingress_run(
             }
         }
         run
-    });
+    })));
     let run = tokio::select! {
         biased;
-        Ok(envelope) = early_response => {
+        Ok(envelope) = &mut early_response => {
+            // The rest of the run, if any, goes on by itself.
+            tokio::spawn(run_task);
             return zf_envelope_response(&state, &owner, &project, &envelope, Some(asked), Some(arrival)).await;
         }
-        joined = &mut run_task => joined.unwrap_or_else(|join_error| {
-            Err(PipelineError::new("FW_ENGINE_RUNTIME", format!("the run's task ended early: {join_error}")))
+        finished = &mut run_task => finished.unwrap_or_else(|panic| {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|text| text.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "no message".to_string());
+            Err(PipelineError::new("FW_ENGINE_RUNTIME", format!("the run's task ended early: the run panicked: {message}")))
         }),
     };
     let output = match run {
@@ -26798,87 +26886,6 @@ mod preview_sql_tests {
     }
 }
 
-#[derive(Debug)]
-struct WebhookPathMatch {
-    params: serde_json::Map<String, Value>,
-    static_segments: usize,
-    dynamic_segments: usize,
-    total_segments: usize,
-}
-
-fn match_webhook_path(pattern: &str, actual: &str) -> Option<WebhookPathMatch> {
-    let normalized_pattern = normalize_webhook_path(pattern);
-    let normalized_actual = normalize_webhook_path(actual);
-
-    let pattern_segments = split_webhook_segments(&normalized_pattern);
-    let actual_segments = split_webhook_segments(&normalized_actual);
-    if pattern_segments.len() != actual_segments.len() {
-        return None;
-    }
-
-    let mut params = serde_json::Map::new();
-    let mut static_segments = 0usize;
-    let mut dynamic_segments = 0usize;
-
-    for (pattern_seg, actual_seg) in pattern_segments.iter().zip(actual_segments.iter()) {
-        if let Some(name) = path_param_name(pattern_seg) {
-            dynamic_segments += 1;
-            params.insert(name.to_string(), Value::String((*actual_seg).to_string()));
-            continue;
-        }
-        if pattern_seg == actual_seg {
-            static_segments += 1;
-            continue;
-        }
-        return None;
-    }
-
-    Some(WebhookPathMatch {
-        params,
-        static_segments,
-        dynamic_segments,
-        total_segments: pattern_segments.len(),
-    })
-}
-
-fn normalize_webhook_path(raw: &str) -> String {
-    let raw = raw.trim();
-    if raw.is_empty() || raw == "/" {
-        return "/".to_string();
-    }
-    let mut out = String::from("/");
-    out.push_str(raw.trim_matches('/'));
-    out
-}
-
-fn split_webhook_segments(path: &str) -> Vec<&str> {
-    if path == "/" {
-        return Vec::new();
-    }
-    path.trim_start_matches('/')
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-}
-
-fn path_param_name(segment: &str) -> Option<&str> {
-    // Support {name} style
-    if let Some(inner) = segment.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-        let name = inner.trim();
-        if !name.is_empty() && !name.contains('/') && !name.contains('{') && !name.contains('}') {
-            return Some(name);
-        }
-    }
-    // Support :name style
-    if let Some(name) = segment.strip_prefix(':') {
-        let name = name.trim();
-        if !name.is_empty() && !name.contains('/') && !name.contains(':') {
-            return Some(name);
-        }
-    }
-    None
-}
-
 fn pipeline_path_matches(base_path: &str, candidate_path: &str, recursive: bool) -> bool {
     let base = crate::platform::model::normalize_virtual_path(base_path);
     let candidate = crate::platform::model::normalize_virtual_path(candidate_path);
@@ -27600,6 +27607,16 @@ fn validate_execute_trigger(
             }
         }
     }
+}
+
+/// Whether a `web.response.send` in `graph` names a template to read from
+/// the repository: what [`hydrate_template_markup`] fills in.
+fn reads_repo_template(graph: &PipelineGraph) -> bool {
+    graph.nodes.iter().any(|node| {
+        node.kind == "web.response.send"
+            && !node.config.get("markup").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+            && node.config.get("template").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+    })
 }
 
 fn hydrate_template_markup(

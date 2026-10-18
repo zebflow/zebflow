@@ -109,7 +109,9 @@ struct NodesRetentionPlan {
     retained_nodes: HashSet<String>,
 }
 
+mod compiled;
 mod flow;
+pub use compiled::CompiledLane;
 mod scheduler;
 mod web_site;
 
@@ -389,25 +391,35 @@ pub struct FlowLoops {
 /// the run started with (`ctx.input`, what the trigger answers under its
 /// source key) — so `$trigger` is the envelope for every trigger, not only
 /// the ones whose ingress builds a snapshot of its own.
+/// A failed node's config for its trace entry: captured already, or still
+/// to be captured should the record take it.
+enum TraceConfig<'a> {
+    Captured(Option<Value>),
+    Pending(&'a Value),
+}
+
 fn trigger_envelope(ctx: &PipelineContext) -> Value {
     ctx.trigger.clone().unwrap_or_else(|| ctx.input.clone())
 }
 
+/// What every node of a run is handed beside its payload. Built for each
+/// node, so it is put together directly, in this order, rather than through
+/// a serializer.
 fn execution_metadata(
     ctx: &PipelineContext,
     nodes_scope: Value,
     placeholder: Option<Value>,
 ) -> Value {
-    json!({
-        "owner": ctx.owner,
-        "project": ctx.project,
-        "pipeline": ctx.pipeline,
-        "request_id": ctx.request_id,
-        "route": ctx.route,
-        "trigger": trigger_envelope(ctx),
-        "nodes": nodes_scope,
-        "placeholder": placeholder,
-    })
+    let mut map = serde_json::Map::with_capacity(8);
+    map.insert("owner".to_string(), Value::String(ctx.owner.clone()));
+    map.insert("project".to_string(), Value::String(ctx.project.clone()));
+    map.insert("pipeline".to_string(), Value::String(ctx.pipeline.clone()));
+    map.insert("request_id".to_string(), Value::String(ctx.request_id.clone()));
+    map.insert("route".to_string(), Value::String(ctx.route.clone()));
+    map.insert("trigger".to_string(), trigger_envelope(ctx));
+    map.insert("nodes".to_string(), nodes_scope);
+    map.insert("placeholder".to_string(), placeholder.unwrap_or(Value::Null));
+    Value::Object(map)
 }
 
 fn take_private_tokens(payload: &mut Value, key: &str) -> Vec<String> {
@@ -1103,7 +1115,7 @@ pub struct BasicPipelineEngine {
     /// Nodes that need a repository directory other than the source root read
     /// it from here instead of walking up from the template root, which only
     /// works for a source root exactly one segment deep.
-    repo_layout: Option<crate::platform::model::ProjectFileLayout>,
+    repo_layout: Option<Arc<crate::platform::model::ProjectFileLayout>>,
     /// Platform data root — used by SQLite nodes to locate the project DB.
     data_root: Option<std::path::PathBuf>,
     /// The bundle policy governing this engine's nodes.
@@ -1164,7 +1176,7 @@ impl BasicPipelineEngine {
     /// layout's source directory; there is no second way to set it.
     pub fn with_project_layout(
         mut self,
-        layout: Option<crate::platform::model::ProjectFileLayout>,
+        layout: Option<Arc<crate::platform::model::ProjectFileLayout>>,
     ) -> Self {
         self.template_root = layout.as_ref().map(|value| value.repo_source_dir());
         self.repo_layout = layout;
@@ -1260,16 +1272,16 @@ impl BasicPipelineEngine {
         }
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
-                serde_json::from_value(node.config.clone())
+                crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new("FW_NODE_TRIGGER_WEBHOOK_CONFIG", err.to_string()))?,
             ))),
             schedule::NODE_KIND => Ok(NodeDispatch::Schedule(schedule::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                     PipelineError::new("FW_NODE_TRIGGER_SCHEDULE_CONFIG", err.to_string())
                 })?,
             ))),
             manual::NODE_KIND => Ok(NodeDispatch::Manual(manual::Node::new(
-                serde_json::from_value(node.config.clone())
+                crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new("FW_NODE_TRIGGER_MANUAL_CONFIG", err.to_string()))?,
             ))),
             javascript::NODE_KIND => Ok(NodeDispatch::Script(crate::pipeline::nodes::shared::script::Node::build(
@@ -1285,7 +1297,7 @@ impl BasicPipelineEngine {
                 self.language.clone(),
             )?)),
             http::request::NODE_KIND => Ok(NodeDispatch::HttpRequest(http::request::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                     PipelineError::new("FW_NODE_HTTP_RESPONSE_FETCH_CONFIG", err.to_string())
                 })?,
                 self.language.clone(),
@@ -1301,7 +1313,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::SqliteQuery(sqlite::query::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                         PipelineError::new(sqlite::query::CONFIG_CODE, err.to_string())
                     })?,
                     data_root.clone(),
@@ -1315,7 +1327,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::SekejapQuery(sekejap::query::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                         PipelineError::new(sekejap::query::CONFIG_CODE, err.to_string())
                     })?,
                     data_root.clone(),
@@ -1329,7 +1341,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::SekejapRecord(sekejap::record::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                         PipelineError::new(sekejap::record::CONFIG_CODE, err.to_string())
                     })?,
                     data_root.clone(),
@@ -1343,7 +1355,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::BrowserRun(browser::run::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|e| {
                         PipelineError::new("FW_NODE_BROWSER_PAGE_RUN_CONFIG", e.to_string())
                     })?,
                     credentials.clone(),
@@ -1358,7 +1370,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::Postgres(postgres::query::Node::new(
-                    serde_json::from_value(node.config.clone())
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config)
                         .map_err(|err| PipelineError::new(postgres::query::CONFIG_CODE, err.to_string()))?,
                     credentials.clone(),
                 )?))
@@ -1371,14 +1383,14 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::TableQuery(table::query::Node::new(
-                    serde_json::from_value(node.config.clone())
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config)
                         .map_err(|err| PipelineError::new(table::query::CONFIG_CODE, err.to_string()))?,
                     platform.clone(),
                     self.language.clone(),
                 )?))
             }
             web::response::NODE_KIND => {
-                let config: web::response::Config = serde_json::from_value(node.config.clone())
+                let config: web::response::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(web::response::CODE_CONFIG, err.to_string()))?;
                 config.check()?;
                 if config.template.is_some() {
@@ -1399,7 +1411,7 @@ impl BasicPipelineEngine {
                         "data_root is not configured on this pipeline engine",
                     ));
                 }
-                let config: web::site::Config = serde_json::from_value(node.config.clone())
+                let config: web::site::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(web::site::CODE_CONFIG, err.to_string()))?;
                 config.check()?;
                 Ok(NodeDispatch::InlineWebSiteGenerate {
@@ -1419,24 +1431,24 @@ impl BasicPipelineEngine {
             )?)),
             logic::if_::NODE_KIND => Ok(NodeDispatch::LogicIf(logic::if_::Node::new(
                 &node.id,
-                serde_json::from_value(node.config.clone())
+                crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|e| PipelineError::new("FW_NODE_LOGIC_IF_CONFIG", e.to_string()))?,
                 self.language.clone(),
             )?)),
             logic::match_::NODE_KIND => Ok(NodeDispatch::LogicMatch(logic::match_::Node::new(
                 &node.id,
-                serde_json::from_value(node.config.clone())
+                crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|e| PipelineError::new("FW_NODE_LOGIC_MATCH_CONFIG", e.to_string()))?,
                 self.language.clone(),
             )?)),
             logic::collect::NODE_KIND => Ok(NodeDispatch::LogicCollect(logic::collect::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|e| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|e| {
                     PipelineError::new("FW_NODE_LOGIC_COLLECT_CONFIG", e.to_string())
                 })?,
             ))),
             logic::foreach_::NODE_KIND => {
                 Ok(NodeDispatch::LogicForeach(logic::foreach_::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|e| {
                         PipelineError::new("FW_NODE_LOGIC_FOREACH_CONFIG", e.to_string())
                     })?,
                     self.language.clone(),
@@ -1444,14 +1456,14 @@ impl BasicPipelineEngine {
             }
             logic::reduce::NODE_KIND => Ok(NodeDispatch::LogicReduce(logic::reduce::Node::new(
                 &node.id,
-                serde_json::from_value(node.config.clone()).map_err(|e| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|e| {
                     PipelineError::new("FW_NODE_LOGIC_REDUCE_CONFIG", e.to_string())
                 })?,
                 self.language.clone(),
             )?)),
             logic::retry::NODE_KIND => Ok(NodeDispatch::LogicRetry(logic::retry::Node::new(
                 &node.id,
-                serde_json::from_value(node.config.clone())
+                crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|e| PipelineError::new("FW_NODE_LOGIC_RETRY_CONFIG", e.to_string()))?,
                 self.language.clone(),
             )?)),
@@ -1463,7 +1475,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::AuthTokenCreate(auth::token_create::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                         PipelineError::new("FW_NODE_AUTH_TOKEN_CREATE_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
@@ -1477,7 +1489,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::AuthOAuthApprove(auth::oauth_approve::Node::new(
-                    serde_json::from_value(node.config.clone())
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config)
                         .map_err(|err| PipelineError::new(auth::oauth_approve::CODE_CONFIG, err.to_string()))?,
                     platform.clone(),
                 )?))
@@ -1490,14 +1502,14 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::AuthTokenVerify(auth::token_verify::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                         PipelineError::new("FW_NODE_AUTH_TOKEN_VERIFY_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
                 )?))
             }
             logic::concept::NODE_KIND => Ok(NodeDispatch::Concept(logic::concept::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                     PipelineError::new("FW_NODE_CONCEPT_CONFIG", err.to_string())
                 })?,
             ))),
@@ -1509,7 +1521,7 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::MailSend(mail::send::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                         PipelineError::new("FW_NODE_MAIL_MESSAGE_SEND_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
@@ -1517,17 +1529,17 @@ impl BasicPipelineEngine {
                 )?))
             }
             weberror::NODE_KIND => Ok(NodeDispatch::WebError(weberror::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                     PipelineError::new("FW_NODE_TRIGGER_ERROR_CONFIG", err.to_string())
                 })?,
             ))),
             ws::trigger::NODE_KIND => Ok(NodeDispatch::WsTrigger(ws::trigger::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                     PipelineError::new("FW_NODE_TRIGGER_ROOM_CONFIG", err.to_string())
                 })?,
             ))),
             ws::message_send::NODE_KIND => Ok(NodeDispatch::WsMessageSend(ws::message_send::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                     PipelineError::new(ws::message_send::CONFIG_CODE, err.to_string())
                 })?,
                 self.ws_hub.clone(),
@@ -1537,7 +1549,7 @@ impl BasicPipelineEngine {
                 let verb = ws::state::Verb::of_kind(kind).expect("matched above");
                 Ok(NodeDispatch::WsState(ws::state::Node::new(
                     verb,
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                         PipelineError::new(verb.codes().config, err.to_string())
                     })?,
                     self.ws_hub.clone(),
@@ -1545,21 +1557,21 @@ impl BasicPipelineEngine {
             }
             trigger_function::NODE_KIND => {
                 let config: trigger_function::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).unwrap_or_default();
                 Ok(NodeDispatch::TriggerFunction(trigger_function::Node::new(
                     config,
                 )))
             }
             function::call::NODE_KIND => {
                 let config: function::call::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                    crate::pipeline::nodes::shared::util::typed_config(&node.config).unwrap_or_default();
                 Ok(NodeDispatch::FunctionCall(function::call::Node::new(
                     config,
                     self.platform.clone(),
                 )))
             }
             fs::put::NODE_KIND => {
-                let config: fs::put::Config = serde_json::from_value(node.config.clone())
+                let config: fs::put::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(fs::put::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1577,7 +1589,7 @@ impl BasicPipelineEngine {
             | fs::object::MOVE_NODE_KIND
             | fs::object::MKDIR_NODE_KIND => {
                 let operation = fs::object::Operation::for_kind(&node.kind).expect("an fs object kind");
-                let config: fs::object::Config = serde_json::from_value(node.config.clone())
+                let config: fs::object::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(operation.config_code(), err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1596,7 +1608,7 @@ impl BasicPipelineEngine {
             | mapserver::crud::GET_KIND
             | mapserver::crud::LIST_KIND => {
                 let operation = mapserver::crud::Operation::from_kind(node.kind.as_str()).expect("an mapserver.layer kind");
-                let config: mapserver::crud::Config = serde_json::from_value(node.config.clone())
+                let config: mapserver::crud::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(operation.config_code(), err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1611,7 +1623,7 @@ impl BasicPipelineEngine {
                 )?))
             }
             table::convert::NODE_KIND => {
-                let config: table::convert::Config = serde_json::from_value(node.config.clone())
+                let config: table::convert::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(table::convert::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1625,7 +1637,7 @@ impl BasicPipelineEngine {
                 )?))
             }
             fs::compress::NODE_KIND => {
-                let config: fs::compress::Config = serde_json::from_value(node.config.clone())
+                let config: fs::compress::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(fs::compress::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1639,7 +1651,7 @@ impl BasicPipelineEngine {
                 )?))
             }
             fs::decompress::NODE_KIND => {
-                let config: fs::decompress::Config = serde_json::from_value(node.config.clone())
+                let config: fs::decompress::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(fs::decompress::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1653,7 +1665,7 @@ impl BasicPipelineEngine {
                 )?))
             }
             geo::inspect::NODE_KIND => {
-                let config: geo::inspect::Config = serde_json::from_value(node.config.clone())
+                let config: geo::inspect::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(geo::inspect::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1667,7 +1679,7 @@ impl BasicPipelineEngine {
                 )?))
             }
             geo::convert::NODE_KIND => {
-                let config: geo::convert::Config = serde_json::from_value(node.config.clone())
+                let config: geo::convert::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(geo::convert::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1681,7 +1693,7 @@ impl BasicPipelineEngine {
                 )?))
             }
             fs::pdf::convert::NODE_KIND => {
-                let config: fs::pdf::convert::Config = serde_json::from_value(node.config.clone())
+                let config: fs::pdf::convert::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(fs::pdf::convert::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1695,7 +1707,7 @@ impl BasicPipelineEngine {
                 )?))
             }
             fs::svg::convert::NODE_KIND => {
-                let config: fs::svg::convert::Config = serde_json::from_value(node.config.clone())
+                let config: fs::svg::convert::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|e| PipelineError::new(fs::svg::convert::CONFIG_CODE, e.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1706,7 +1718,7 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::SvgConvert(fs::svg::convert::Node::new(config, platform.clone())?))
             }
             fs::image::chromakey::NODE_KIND => {
-                let config: fs::image::chromakey::Config = serde_json::from_value(node.config.clone())
+                let config: fs::image::chromakey::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(fs::image::chromakey::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1717,7 +1729,7 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::ImgChromakey(fs::image::chromakey::Node::new(config, platform.clone())?))
             }
             fs::barcode::NODE_KIND => {
-                let config: fs::barcode::Config = serde_json::from_value(node.config.clone())
+                let config: fs::barcode::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(fs::barcode::node::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1728,7 +1740,7 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::Barcode(fs::barcode::Node::new(config, platform.clone())?))
             }
             fs::image::thumbnail::NODE_KIND => {
-                let config: fs::image::thumbnail::Config = serde_json::from_value(node.config.clone())
+                let config: fs::image::thumbnail::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(fs::image::thumbnail::CONFIG_CODE, err.to_string()))?;
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -1749,17 +1761,17 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::Input(node))
             }
             mcp_trigger::NODE_KIND => Ok(NodeDispatch::McpTrigger(mcp_trigger::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|err| {
                     PipelineError::new("FW_NODE_TRIGGER_MCP_CONFIG", err.to_string())
                 })?,
             ))),
             kv_subscribe::NODE_KIND => Ok(NodeDispatch::KvSubscribe(kv_subscribe::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|e| {
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|e| {
                     PipelineError::new("FW_NODE_TRIGGER_TOPIC_CONFIG", e.to_string())
                 })?,
             ))),
             trigger_ws_client::NODE_KIND => Ok(NodeDispatch::WsClientTrigger(
-                trigger_ws_client::Node::new(serde_json::from_value(node.config.clone()).map_err(
+                trigger_ws_client::Node::new(crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(
                     |e| PipelineError::new("FW_NODE_TRIGGER_SOCKET_CONFIG", e.to_string()),
                 )?),
             )),
@@ -1828,25 +1840,30 @@ impl PipelineEngine for BasicPipelineEngine {
         // `run_done` after the last, whatever the outcome — the n8n-style
         // canvas badges read these, and so may any SSE client.
         let started = std::time::Instant::now();
-        emit_lifecycle(
-            &options.bus,
-            "run_start",
-            format!("run {} start", ctx.request_id),
-            None,
-            Some(json!({ "run_id": ctx.request_id })),
-            &started,
-        );
+        // Each message is put together only when a bus is there to carry it.
+        if options.bus.is_some() {
+            emit_lifecycle(
+                &options.bus,
+                "run_start",
+                format!("run {} start", ctx.request_id),
+                None,
+                Some(json!({ "run_id": ctx.request_id })),
+                &started,
+            );
+        }
         let result = self.run_graph(graph, ctx, options).await;
         let status = if result.is_ok() { "ok" } else { "error" };
         let duration_ms = started.elapsed().as_millis() as u64;
-        emit_lifecycle(
-            &options.bus,
-            "run_done",
-            format!("run {} {} {} ms", ctx.request_id, status, duration_ms),
-            None,
-            Some(json!({ "run_id": ctx.request_id, "status": status, "duration_ms": duration_ms })),
-            &started,
-        );
+        if options.bus.is_some() {
+            emit_lifecycle(
+                &options.bus,
+                "run_done",
+                format!("run {} {} {} ms", ctx.request_id, status, duration_ms),
+                None,
+                Some(json!({ "run_id": ctx.request_id, "status": status, "duration_ms": duration_ms })),
+                &started,
+            );
+        }
         result
     }
 }
@@ -1933,8 +1950,34 @@ impl BasicPipelineEngine {
         ctx: &PipelineContext,
         options: &ExecuteOptions,
     ) -> Result<PipelineOutput, PipelineError> {
-        self.validate_graph(graph)?;
+        // A pipeline the active runtime compiled runs as its program.
+        if let Some(lane) = &options.lane
+            && let Some(program) = lane.program(self, graph)
+        {
+            return self.run_compiled(&program, graph, ctx, options).await;
+        }
+        // A graph the active runtime holds was validated when it was
+        // activated; validating it again on every run cost a graph clone and
+        // a build of every node before the run started building them anyway.
+        if !options.prevalidated {
+            self.validate_graph(graph)?;
+        }
         let (retention, plan) = self.flow_plan(graph)?;
+        let mut run = self.run_state(graph, ctx, options, retention)?;
+        let mut top = scheduler::ScopeRun::top(&plan, graph, &ctx.input);
+        self.run_scope(graph, &plan, &mut top, &mut run).await?;
+        Ok(run.finish(&plan))
+    }
+
+    /// What a run starts with, in either lane: the project's timeout and
+    /// trace capture, the confidential values to mask, the responder.
+    fn run_state<'r>(
+        &self,
+        graph: &'r PipelineGraph,
+        ctx: &'r PipelineContext,
+        options: &ExecuteOptions,
+        retention: NodesRetentionPlan,
+    ) -> Result<scheduler::RunState<'r>, PipelineError> {
         let run_started = std::time::Instant::now();
         let bus = options.bus.clone();
         // Project configuration is immutable for this invocation. Snapshot the
@@ -1983,7 +2026,7 @@ impl BasicPipelineEngine {
                     .and_then(|value| value.parse().ok())
             })
             .unwrap_or(crate::platform::model::default_pipeline_node_timeout_secs());
-        let mut run = scheduler::RunState {
+        Ok(scheduler::RunState {
             ctx,
             graph,
             bus,
@@ -1998,10 +2041,8 @@ impl BasicPipelineEngine {
             frames: vec![HashMap::new()],
             last_answer: vec![None; graph.nodes.len()],
             last_in_time: None,
-        };
-        let mut top = scheduler::ScopeRun::top(&plan, graph, &ctx.input);
-        self.run_scope(graph, &plan, &mut top, &mut run).await?;
-        Ok(run.finish(&plan))
+            discard_value: options.discard_value,
+        })
     }
 
     /// One node, once: resolve its config, build it, run it under its
@@ -2017,6 +2058,9 @@ impl BasicPipelineEngine {
         idx: usize,
         delivery: scheduler::Delivery,
         run: &mut scheduler::RunState<'_>,
+        // The compiled lane's step for this node: built once, its
+        // expressions compiled once. The interpreter passes none.
+        prep: Option<&compiled::Step>,
     ) -> Result<scheduler::Ran, PipelineError> {
         let node = &graph.nodes[idx];
         let ctx = run.ctx;
@@ -2043,25 +2087,34 @@ impl BasicPipelineEngine {
         // it is built, so a failure in either is announced as this node's
         // and the badge never stays "running".
         let node_start = std::time::Instant::now();
-        emit_lifecycle(
-            &bus,
-            "node_start",
-            format!("{} {} start", node.id, node.kind),
-            Some((&node.id, &node.kind)),
-            None,
-            &run_started,
-        );
+        if bus.is_some() {
+            emit_lifecycle(
+                &bus,
+                "node_start",
+                format!("{} {} start", node.id, node.kind),
+                Some((&node.id, &node.kind)),
+                None,
+                &run_started,
+            );
+        }
 
         // Resolve {{ expr }} placeholders before building, against the
         // `$nodes` of this node's ancestors as they stand now. A failure here
         // or in the build is the node's failure and routes like any other.
-        let resolved = resolve_config_expressions(
-            node.config.clone(),
-            &input.payload,
-            &input.metadata,
-            &self.language,
-        );
-        let effective_config = resolved.as_ref().map_or_else(|_| node.config.clone(), Clone::clone);
+        //
+        // A config with no `{{ }}` is used as stored: not copied, not
+        // compared with itself. Only one with expressions is resolved into a
+        // config of its own.
+        let ready = prep.and_then(compiled::Step::ready);
+        let resolved: Result<Option<Value>, PipelineError> = match prep.and_then(compiled::Step::templates) {
+            Some(templates) => templates.fill(&node.config, &input.payload, &input.metadata, &self.language).map(Some),
+            None if ready.is_some() || scan_exprs(&node.config).is_empty() => Ok(None),
+            None => resolve_config_expressions(node.config.clone(), &input.payload, &input.metadata, &self.language).map(Some),
+        };
+        let effective_config: &Value = match &resolved {
+            Ok(Some(config)) => config,
+            _ => &node.config,
+        };
         run.trace_capture.begin_node();
         // A declared canvas preview asks for that payload in the record —
         // see `TraceCapture::records_payload_for`. Read off the stored
@@ -2072,41 +2125,357 @@ impl BasicPipelineEngine {
         let preview_in =
             node.config["preview"]["in"].is_object() || input::is_input_kind(&node.kind);
         let preview_out = node.config["preview"]["out"].is_object();
-        // Captured before the node runs, because the error path needs it and
-        // the outcome is not known yet. At `on-error` a successful node
-        // drops it below; at `none` it is never taken at all.
-        let base_trace_config = if run.trace_capture.records_any_payload() {
-            run.trace_capture
-                .config(&effective_config)
-                .map(|config| mask_secret_config(&node.kind, config))
-        } else {
-            None
-        };
-        let built = resolved.and_then(|config| {
-            if config == node.config {
-                // No expressions resolved — use the node as stored.
-                self.build_node(node)
-            } else {
-                self.build_node(&PipelineNode { config, ..node.clone() })
-            }
-        });
-
         let trace_node_id = node.id.clone();
-        let trace_node_kind = node.kind.clone();
         let input_snapshot = input.payload.clone();
 
         // Per-node timeout: the node's `--timeout` → project config → env
         // var → default. A `--timeout` that is not a duration from 1s to 1h
         // fails the node here rather than being clamped into another limit.
-        let per_node_timeout = crate::pipeline::model::node_timeout(&effective_config);
+        let per_node_timeout = crate::pipeline::model::node_timeout(effective_config);
         let node_timeout = match &per_node_timeout {
             Ok(Some(duration)) => *duration,
             _ => std::time::Duration::from_secs(run.project_timeout_secs),
         };
-        let input_for_exec = input.clone();
-        let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> = match built {
-            Err(e) => Err(e),
-            Ok(dispatch) => {
+        // Built before the run when compiled; else now. A resolved config is
+        // lent to the build and kept: the record takes it if the node fails.
+        let (built, resolved) = match (ready, resolved) {
+            (Some(_), resolved) => (None, resolved),
+            (None, Err(e)) => (Some(Err(e)), Ok(None)),
+            // No expressions: the node as stored.
+            (None, Ok(None)) => (Some(self.build_node(node)), Ok(None)),
+            (None, Ok(Some(config))) => {
+                let resolved_node = PipelineNode {
+                    id: node.id.clone(),
+                    kind: node.kind.clone(),
+                    input_pins: node.input_pins.clone(),
+                    output_pins: node.output_pins.clone(),
+                    config,
+                };
+                (Some(self.build_node(&resolved_node)), Ok(Some(resolved_node.config)))
+            }
+        };
+        let effective_config: &Value = match &resolved {
+            Ok(Some(config)) => config,
+            _ => &node.config,
+        };
+        // The node takes its input; nothing below reads it again.
+        let input_for_exec = input;
+        let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> = match (ready, built) {
+            (Some(dispatch), _) => {
+                self.execute_dispatch(dispatch, input_for_exec, ctx, &trace_node_id, per_node_timeout, node_timeout).await
+            }
+            (None, Some(Ok(dispatch))) => {
+                self.execute_dispatch(&dispatch, input_for_exec, ctx, &trace_node_id, per_node_timeout, node_timeout).await
+            }
+            (None, Some(Err(e))) => Err(e),
+            (None, None) => unreachable!("a node is built now when it was not built before"),
+        };
+
+        let answered_before = run.response.is_some();
+        let ran = self.finish_node(plan, idx, node, exec_result, &input_snapshot, effective_config, &node_start, preview_in, preview_out, run);
+        // An answer with nodes still to run after it: yield once, so the
+        // caller has its answer before they run (`node-conventions.md` §4)
+        // whoever is polling this run — the HTTP ingress polls it itself.
+        if !answered_before && run.response.is_some() && run.responder.is_some() && !plan.outgoing[idx].is_empty() {
+            tokio::task::yield_now().await;
+        }
+        ran
+    }
+
+    /// A node's config as its trace entry records it, captured now: masked
+    /// where its kind keeps secrets.
+    fn trace_config(&self, node: &PipelineNode, config: &Value, run: &mut scheduler::RunState<'_>) -> Option<Value> {
+        run.trace_capture.config(config).map(|config| mask_secret_config(&node.kind, config))
+    }
+
+    /// Everything after a node ran, whichever lane ran it: the failure
+    /// record, the first response to the caller, signals, private markers,
+    /// files to write, the trace entry and the answer kept for later nodes.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_node(
+        &self,
+        plan: &flow::FlowPlan,
+        idx: usize,
+        node: &PipelineNode,
+        exec_result: Result<Vec<NodeExecutionOutput>, PipelineError>,
+        input_snapshot: &Value,
+        // The config the node ran with, captured into the record only when
+        // the record takes it: always at `full`, on a failure at `on-error`.
+        // At `on-error` a node that succeeds captures nothing.
+        config: &Value,
+        node_start: &std::time::Instant,
+        preview_in: bool,
+        preview_out: bool,
+        run: &mut scheduler::RunState<'_>,
+    ) -> Result<scheduler::Ran, PipelineError> {
+        let ctx = run.ctx;
+        let bus = run.bus.clone();
+        let run_started = run.run_started;
+        let trace_node_id = node.id.clone();
+        let trace_node_kind = node.kind.clone();
+        let keep_answer = preview_in || preview_out || run.retention.retained_nodes.contains(&node.id);
+        let mut outs = match exec_result {
+            Ok(outs) => outs,
+            Err(e) => {
+                return self.node_failed(plan, idx, node, e, &input_snapshot, TraceConfig::Pending(config), &node_start, run);
+            }
+        };
+        // First, as before the node ran: the config's bytes count against
+        // the node's capture budget ahead of its input and output.
+        let base_trace_config = if run.trace_capture.records_successful_payloads() {
+            self.trace_config(node, config, run)
+        } else {
+            None
+        };
+        // The first answering node of a run (`web.response.send`,
+        // `auth.oauth.approve`) answers the caller; a second one answers
+        // nobody, so it is recorded as having emitted nothing
+        // (`node-conventions.md` §4).
+        let second_response = crate::pipeline::nodes::basic::answering_kind(&node.kind) && run.response.is_some();
+        if second_response {
+            outs.clear();
+        }
+        let mut processed_payloads: Vec<Value> = Vec::new();
+        // Skipped entirely when not recorded: not capturing is cheaper than
+        // capturing and discarding, which is the point on a device.
+        let record_input = run.trace_capture.records_payload_for(true, preview_in);
+        let record_output = run.trace_capture.records_payload_for(true, preview_out);
+        let trace_input = if record_input {
+            run.trace_capture.capture(&input_snapshot)
+        } else {
+            Value::Null
+        };
+        for out in &mut outs {
+            // Writing the files a node answered with is part of the node: a
+            // failure here routes like any other.
+            // Taken, not copied: `out.payload` is set again below.
+            let mut output_payload = match materialize_node_output_files(
+                self.platform.as_ref(),
+                ctx,
+                &trace_node_kind,
+                std::mem::take(&mut out.payload),
+            ) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    let config = match base_trace_config {
+                        Some(captured) => TraceConfig::Captured(Some(captured)),
+                        None => TraceConfig::Pending(config),
+                    };
+                    return self.node_failed(plan, idx, node, e, &input_snapshot, config, &node_start, run);
+                }
+            };
+            let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
+            let payload_redact_except_paths = take_private_redact_except_paths(&mut output_payload);
+            let payload_output = if payload_redact_tokens.is_empty() {
+                output_payload
+            } else {
+                redact_json_value(&output_payload, &payload_redact_tokens, &payload_redact_except_paths, &[])
+            };
+            // Kept only when something reads it: a later `$nodes`, or a
+            // preview snapshot below.
+            if keep_answer {
+                processed_payloads.push(payload_output.clone());
+            }
+            out.payload = payload_output;
+        }
+
+        // Rule 3 by position: the node kind declares where a secret sits in
+        // its own output, and only the record is masked. `outs` — what the
+        // next node receives — is untouched, because a level shapes the
+        // record, never the run.
+        let node_output_value = if !record_output {
+            Value::Null
+        } else {
+            match declared_secret_paths(&trace_node_kind) {
+                Some(paths) => crate::pipeline::trace_capture::mask_secret_paths(&run.trace_capture.outputs(&outs), paths),
+                None => run.trace_capture.outputs(&outs),
+            }
+        };
+        let nodes_output_value = if processed_payloads.len() == 1 {
+            processed_payloads.pop().unwrap_or(Value::Null)
+        } else {
+            Value::Array(processed_payloads)
+        };
+        // A declared image preview of a temporary file keeps a small copy in
+        // the record, since the file itself is deleted with the run.
+        let preview_snapshot = if preview_in || preview_out {
+            crate::pipeline::trace_capture::preview_snapshot::snapshot_for(
+                self.platform.as_ref(),
+                &ctx.owner,
+                &ctx.project,
+                &node.config,
+                &input_snapshot,
+                &nodes_output_value,
+            )
+        } else {
+            None
+        };
+        if !second_response {
+            run.store_answer(node, idx, nodes_output_value);
+        }
+        // A `logic.retry` that sent a verdict round again is a wait, and the
+        // canvas should say so: `retry` in the record, `node_retry` on the
+        // bus, with the count the node stamped in `__zf_retry`. On the error
+        // road the failing node has already told this story, so the retry
+        // node stays `ok` there.
+        let verdict_retry = trace_node_kind == logic::retry::NODE_KIND
+            && outs.iter().any(|o| o.output_pins.iter().any(|p| p == logic::retry::OUTPUT_PIN_RETRY))
+            && input_snapshot
+                .get(RETRY_STATE_KEY)
+                .and_then(|s| s.get("error_key"))
+                .is_none();
+        let status_word = if verdict_retry {
+            "retry"
+        } else if outs.is_empty() {
+            // Ran and emitted nothing — a match with no case, a filter that
+            // filtered everything, a loop over an empty list. Not an error;
+            // grey in a run view where a green dot would lie.
+            "empty"
+        } else {
+            "ok"
+        };
+        run.node_trace.push(NodeTraceEntry {
+            node_id: trace_node_id.clone(),
+            node_kind: trace_node_kind.clone(),
+            config: base_trace_config,
+            duration_ms: node_start.elapsed().as_millis() as u64,
+            input: trace_input,
+            output: node_output_value,
+            error: second_response.then(|| {
+                "a response was already sent to the caller in this run; this one was not sent".to_string()
+            }),
+            status: status_word.to_string(),
+            error_code: None,
+            preview_snapshot,
+        });
+        let duration_ms = node_start.elapsed().as_millis() as u64;
+        if verdict_retry {
+            let state = outs
+                .first()
+                .and_then(|o| o.payload.get(RETRY_STATE_KEY))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let attempt = state.get("attempt").and_then(Value::as_u64).unwrap_or(1);
+            let max_attempts = state.get("max_attempts").and_then(Value::as_u64);
+            // The reason a wait is a wait: the pause the node took before the
+            // next attempt, as it stamped it (`--delay` grown by `--backoff`).
+            let message = state
+                .get("next_delay_ms")
+                .and_then(Value::as_u64)
+                .filter(|d| *d > 0)
+                .map(|d| format!("next attempt in {d} ms"));
+            emit_lifecycle(
+                &bus,
+                "node_retry",
+                match max_attempts {
+                    Some(max) => format!("{trace_node_id} {trace_node_kind} waiting {attempt}/{max} {duration_ms} ms"),
+                    None => format!("{trace_node_id} {trace_node_kind} waiting {attempt} {duration_ms} ms"),
+                },
+                Some((&trace_node_id, &trace_node_kind)),
+                Some(json!({
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "duration_ms": duration_ms,
+                    "message": message,
+                })),
+                &run_started,
+            );
+        } else {
+            let outcome = if outs.is_empty() { "node_empty" } else { "node_ok" };
+            if bus.is_some() {
+                emit_lifecycle(
+                    &bus,
+                    outcome,
+                    format!("{trace_node_id} {trace_node_kind} {duration_ms} ms"),
+                    Some((&trace_node_id, &trace_node_kind)),
+                    Some(json!({ "duration_ms": duration_ms })),
+                    &run_started,
+                );
+            }
+        }
+
+        for output in &mut outs {
+            // ── __signal extraction ──────────────────────────────────────
+            // Strip `__signal` from node output and route through the bus.
+            // Supports: string, object {kind,message,data}, or array of either.
+            if let Some(raw_signal) = output.payload.as_object_mut().and_then(|m| m.remove("__signal")) {
+                if let Some(ref bus) = bus {
+                    let emit = |s: &Value| {
+                        let signal = match s {
+                            Value::String(msg) => Signal {
+                                kind: "signal".to_string(),
+                                message: msg.clone(),
+                                node_id: trace_node_id.clone(),
+                                node_kind: trace_node_kind.clone(),
+                                data: None,
+                                at: format!("{}ms", node_start.elapsed().as_millis()),
+                            },
+                            Value::Object(obj) => Signal {
+                                kind: obj.get("kind").and_then(Value::as_str).unwrap_or("signal").to_string(),
+                                message: obj.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+                                node_id: trace_node_id.clone(),
+                                node_kind: trace_node_kind.clone(),
+                                data: obj.get("data").cloned(),
+                                at: format!("{}ms", node_start.elapsed().as_millis()),
+                            },
+                            _ => return,
+                        };
+                        bus.emit(signal);
+                    };
+                    if let Value::Array(items) = &raw_signal {
+                        for item in items {
+                            emit(item);
+                        }
+                    } else {
+                        emit(&raw_signal);
+                    }
+                }
+            }
+            // ── the answer to the caller ─────────────────────────────────
+            // An answering node hands what it answers beside its payload;
+            // the envelope is lifted out here, so the next node never sees
+            // it. The first answer goes to the caller at once, through the
+            // responder the HTTP ingress waits on.
+            if crate::pipeline::nodes::basic::answering_kind(&node.kind)
+                && let Some(envelope) = output
+                    .payload
+                    .as_object_mut()
+                    .and_then(|m| m.remove(web::response::ENVELOPE_KEY))
+                && run.response.is_none()
+            {
+                if let Some(responder) = &run.responder {
+                    responder.send(strip_private_markers(envelope.clone()));
+                }
+                run.response = Some(envelope);
+            }
+            run.trace.extend(output.trace.clone());
+        }
+        // The run's value is the last answer of an end node, else the last
+        // answer in time; only an end node keeps its own copy.
+        let last = if run.discard_value { None } else { outs.last().map(|o| Arc::new(o.payload.clone())) };
+        if plan.sink[idx] {
+            run.last_answer[idx] = last.clone();
+        } else {
+            run.last_answer[idx] = None;
+        }
+        if last.is_some() {
+            run.last_in_time = last;
+        }
+        Ok(scheduler::Ran::Answered(outs))
+    }
+
+    /// Runs one built node on its input, under its timeout. Shared by the
+    /// interpreter and the compiled lane, so a node runs the same way in
+    /// both; the node is borrowed, so a compiled pipeline builds it once.
+    async fn execute_dispatch(
+        &self,
+        dispatch: &NodeDispatch,
+        input_for_exec: NodeExecutionInput,
+        ctx: &PipelineContext,
+        timeout_node_id: &str,
+        per_node_timeout: Result<Option<std::time::Duration>, PipelineError>,
+        node_timeout: std::time::Duration,
+    ) -> Result<Vec<NodeExecutionOutput>, PipelineError> {
             let exec_fut = async {
                 match dispatch {
                     NodeDispatch::Webhook(node) => node.execute_many_async(input_for_exec).await,
@@ -2202,8 +2571,8 @@ impl BasicPipelineEngine {
 
                             let render_out = web::response::render_compiled_page(
                                 &compiled,
-                                input.payload.clone(),
-                                input.metadata,
+                                input_for_exec.payload.clone(),
+                                input_for_exec.metadata,
                                 self.rwe.as_ref(),
                                 self.language.as_ref(),
                                 &ctx.request_id,
@@ -2218,7 +2587,7 @@ impl BasicPipelineEngine {
                             }
                             Ok(vec![NodeExecutionOutput {
                                 output_pins: render_out.output_pins,
-                                payload: web::response::with_envelope(&input.payload, Value::Object(envelope)),
+                                payload: web::response::with_envelope(input_for_exec.payload, Value::Object(envelope)),
                                 trace: render_out.trace,
                             }])
                         })
@@ -2228,7 +2597,7 @@ impl BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::InlineWebSiteGenerate { node_id, config } => {
-                        self.run_site_generate(&node_id, &config, &input.payload, &input.metadata, ctx)
+                        self.run_site_generate(&node_id, &config, &input_for_exec.payload, &input_for_exec.metadata, ctx)
                     }
                     NodeDispatch::Agent(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::AiTts(node) => node.execute_many_async(input_for_exec).await,
@@ -2310,11 +2679,10 @@ impl BasicPipelineEngine {
                         platform,
                         egress,
                     } => {
-                        execute_installed_node(kind, config, platform, egress, input_for_exec).await
+                        execute_installed_node(kind.clone(), config.clone(), platform.clone(), egress.clone(), input_for_exec).await
                     }
                 }
             }; // end exec_fut
-                let timeout_node_id = trace_node_id.clone();
                 let timeout_is_per_node = matches!(per_node_timeout, Ok(Some(_)));
                 match per_node_timeout {
                     Err(refused) => Err(refused),
@@ -2330,234 +2698,6 @@ impl BasicPipelineEngine {
                         ))
                     }),
                 }
-            }
-        };
-
-        let mut outs = match exec_result {
-            Ok(outs) => outs,
-            Err(e) => {
-                return self.node_failed(plan, idx, node, e, &input_snapshot, base_trace_config, &node_start, run);
-            }
-        };
-        // The first answering node of a run (`web.response.send`,
-        // `auth.oauth.approve`) answers the caller; a second one answers
-        // nobody, so it is recorded as having emitted nothing
-        // (`node-conventions.md` §4).
-        let second_response = crate::pipeline::nodes::basic::answering_kind(&node.kind) && run.response.is_some();
-        if second_response {
-            outs.clear();
-        }
-        let mut processed_payloads: Vec<Value> = Vec::new();
-        // Skipped entirely when not recorded: not capturing is cheaper than
-        // capturing and discarding, which is the point on a device.
-        let record_input = run.trace_capture.records_payload_for(true, preview_in);
-        let record_output = run.trace_capture.records_payload_for(true, preview_out);
-        let trace_input = if record_input {
-            run.trace_capture.capture(&input_snapshot)
-        } else {
-            Value::Null
-        };
-        for out in &mut outs {
-            // Writing the files a node answered with is part of the node: a
-            // failure here routes like any other.
-            out.payload = match materialize_node_output_files(
-                self.platform.as_ref(),
-                ctx,
-                &trace_node_kind,
-                out.payload.clone(),
-            ) {
-                Ok(payload) => payload,
-                Err(e) => {
-                    return self.node_failed(plan, idx, node, e, &input_snapshot, base_trace_config, &node_start, run);
-                }
-            };
-            let mut output_payload = out.payload.clone();
-            let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
-            let payload_redact_except_paths = take_private_redact_except_paths(&mut output_payload);
-            let payload_output = if payload_redact_tokens.is_empty() {
-                output_payload
-            } else {
-                redact_json_value(&output_payload, &payload_redact_tokens, &payload_redact_except_paths, &[])
-            };
-            processed_payloads.push(payload_output.clone());
-            out.payload = payload_output;
-        }
-
-        // Rule 3 by position: the node kind declares where a secret sits in
-        // its own output, and only the record is masked. `outs` — what the
-        // next node receives — is untouched, because a level shapes the
-        // record, never the run.
-        let node_output_value = if !record_output {
-            Value::Null
-        } else {
-            match declared_secret_paths(&trace_node_kind) {
-                Some(paths) => crate::pipeline::trace_capture::mask_secret_paths(&run.trace_capture.outputs(&outs), paths),
-                None => run.trace_capture.outputs(&outs),
-            }
-        };
-        let nodes_output_value = if processed_payloads.len() == 1 {
-            processed_payloads[0].clone()
-        } else {
-            Value::Array(processed_payloads)
-        };
-        // A declared image preview of a temporary file keeps a small copy in
-        // the record, since the file itself is deleted with the run.
-        let preview_snapshot = if preview_in || preview_out {
-            crate::pipeline::trace_capture::preview_snapshot::snapshot_for(
-                self.platform.as_ref(),
-                &ctx.owner,
-                &ctx.project,
-                &node.config,
-                &input_snapshot,
-                &nodes_output_value,
-            )
-        } else {
-            None
-        };
-        if !second_response {
-            run.store_answer(node, idx, nodes_output_value);
-        }
-        // A `logic.retry` that sent a verdict round again is a wait, and the
-        // canvas should say so: `retry` in the record, `node_retry` on the
-        // bus, with the count the node stamped in `__zf_retry`. On the error
-        // road the failing node has already told this story, so the retry
-        // node stays `ok` there.
-        let verdict_retry = trace_node_kind == logic::retry::NODE_KIND
-            && outs.iter().any(|o| o.output_pins.iter().any(|p| p == logic::retry::OUTPUT_PIN_RETRY))
-            && input_snapshot
-                .get(RETRY_STATE_KEY)
-                .and_then(|s| s.get("error_key"))
-                .is_none();
-        let status_word = if verdict_retry {
-            "retry"
-        } else if outs.is_empty() {
-            // Ran and emitted nothing — a match with no case, a filter that
-            // filtered everything, a loop over an empty list. Not an error;
-            // grey in a run view where a green dot would lie.
-            "empty"
-        } else {
-            "ok"
-        };
-        run.node_trace.push(NodeTraceEntry {
-            node_id: trace_node_id.clone(),
-            node_kind: trace_node_kind.clone(),
-            config: if run.trace_capture.records_successful_payloads() { base_trace_config } else { None },
-            duration_ms: node_start.elapsed().as_millis() as u64,
-            input: trace_input,
-            output: node_output_value,
-            error: second_response.then(|| {
-                "a response was already sent to the caller in this run; this one was not sent".to_string()
-            }),
-            status: status_word.to_string(),
-            error_code: None,
-            preview_snapshot,
-        });
-        let duration_ms = node_start.elapsed().as_millis() as u64;
-        if verdict_retry {
-            let state = outs
-                .first()
-                .and_then(|o| o.payload.get(RETRY_STATE_KEY))
-                .cloned()
-                .unwrap_or(Value::Null);
-            let attempt = state.get("attempt").and_then(Value::as_u64).unwrap_or(1);
-            let max_attempts = state.get("max_attempts").and_then(Value::as_u64);
-            // The reason a wait is a wait: the pause the node took before the
-            // next attempt, as it stamped it (`--delay` grown by `--backoff`).
-            let message = state
-                .get("next_delay_ms")
-                .and_then(Value::as_u64)
-                .filter(|d| *d > 0)
-                .map(|d| format!("next attempt in {d} ms"));
-            emit_lifecycle(
-                &bus,
-                "node_retry",
-                match max_attempts {
-                    Some(max) => format!("{trace_node_id} {trace_node_kind} waiting {attempt}/{max} {duration_ms} ms"),
-                    None => format!("{trace_node_id} {trace_node_kind} waiting {attempt} {duration_ms} ms"),
-                },
-                Some((&trace_node_id, &trace_node_kind)),
-                Some(json!({
-                    "attempt": attempt,
-                    "max_attempts": max_attempts,
-                    "duration_ms": duration_ms,
-                    "message": message,
-                })),
-                &run_started,
-            );
-        } else {
-            let outcome = if outs.is_empty() { "node_empty" } else { "node_ok" };
-            emit_lifecycle(
-                &bus,
-                outcome,
-                format!("{trace_node_id} {trace_node_kind} {duration_ms} ms"),
-                Some((&trace_node_id, &trace_node_kind)),
-                Some(json!({ "duration_ms": duration_ms })),
-                &run_started,
-            );
-        }
-
-        for output in &mut outs {
-            // ── __signal extraction ──────────────────────────────────────
-            // Strip `__signal` from node output and route through the bus.
-            // Supports: string, object {kind,message,data}, or array of either.
-            if let Some(raw_signal) = output.payload.as_object_mut().and_then(|m| m.remove("__signal")) {
-                if let Some(ref bus) = bus {
-                    let emit = |s: &Value| {
-                        let signal = match s {
-                            Value::String(msg) => Signal {
-                                kind: "signal".to_string(),
-                                message: msg.clone(),
-                                node_id: trace_node_id.clone(),
-                                node_kind: trace_node_kind.clone(),
-                                data: None,
-                                at: format!("{}ms", node_start.elapsed().as_millis()),
-                            },
-                            Value::Object(obj) => Signal {
-                                kind: obj.get("kind").and_then(Value::as_str).unwrap_or("signal").to_string(),
-                                message: obj.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
-                                node_id: trace_node_id.clone(),
-                                node_kind: trace_node_kind.clone(),
-                                data: obj.get("data").cloned(),
-                                at: format!("{}ms", node_start.elapsed().as_millis()),
-                            },
-                            _ => return,
-                        };
-                        bus.emit(signal);
-                    };
-                    if let Value::Array(items) = &raw_signal {
-                        for item in items {
-                            emit(item);
-                        }
-                    } else {
-                        emit(&raw_signal);
-                    }
-                }
-            }
-            // ── the answer to the caller ─────────────────────────────────
-            // An answering node hands what it answers beside its payload;
-            // the envelope is lifted out here, so the next node never sees
-            // it. The first answer goes to the caller at once, through the
-            // responder the HTTP ingress waits on.
-            if crate::pipeline::nodes::basic::answering_kind(&node.kind)
-                && let Some(envelope) = output
-                    .payload
-                    .as_object_mut()
-                    .and_then(|m| m.remove(web::response::ENVELOPE_KEY))
-                && run.response.is_none()
-            {
-                if let Some(responder) = &run.responder {
-                    responder.send(strip_private_markers(envelope.clone()));
-                }
-                run.response = Some(envelope);
-            }
-            run.trace.extend(output.trace.clone());
-        }
-        let last = outs.last().map(|o| o.payload.clone());
-        if last.is_some() {
-            run.last_in_time = last.clone();
-        }
-        run.last_answer[idx] = last;
-        Ok(scheduler::Ran::Answered(outs))
     }
 
     /// A node that failed: routed when its `:error` pin is wired (a retry
@@ -2570,7 +2710,7 @@ impl BasicPipelineEngine {
         node: &PipelineNode,
         mut e: PipelineError,
         input_snapshot: &Value,
-        base_trace_config: Option<Value>,
+        config: TraceConfig<'_>,
         node_start: &std::time::Instant,
         run: &mut scheduler::RunState<'_>,
     ) -> Result<scheduler::Ran, PipelineError> {
@@ -2654,6 +2794,12 @@ impl BasicPipelineEngine {
         if routed_status.is_none() {
             emit_node_fail(&bus, trace_node_id, trace_node_kind, &e, node_start, &run_started);
         }
+        // The config before the input, in the order they were always taken.
+        let base_trace_config = match config {
+            TraceConfig::Captured(captured) => captured,
+            TraceConfig::Pending(config) if run.trace_capture.records_any_payload() => self.trace_config(node, config, run),
+            TraceConfig::Pending(_) => None,
+        };
         let input = if run.trace_capture.records_any_payload() {
             run.trace_capture.capture(input_snapshot)
         } else {
@@ -2698,23 +2844,29 @@ impl BasicPipelineEngine {
 /// The walk is recursive because a marker does not stay at the top: an
 /// `web.response.send` in the chain nests the whole upstream payload under
 /// `__zf_response.json`, and a top-level-only sweep would leave it there.
-fn strip_private_markers(value: Value) -> Value {
+fn strip_private_markers(mut value: Value) -> Value {
+    strip_private_markers_in_place(&mut value);
+    value
+}
+
+/// The markers taken out where they sit, every other key kept in its
+/// order. Every run's value and every answer passes through here, and a
+/// value with no marker in it is left as it is: nothing is rebuilt.
+fn strip_private_markers_in_place(value: &mut Value) {
     match value {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .filter(|(key, _)| {
-                    !matches!(
-                        key.as_str(),
-                        "__zf_private_trace_redact"
-                            | "__zf_private_redact"
-                            | "__zf_private_redact_except_paths"
-                    )
-                })
-                .map(|(key, item)| (key, strip_private_markers(item)))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.into_iter().map(strip_private_markers).collect()),
-        other => other,
+        Value::Object(map) => {
+            map.retain(|key, _| {
+                !matches!(
+                    key.as_str(),
+                    "__zf_private_trace_redact" | "__zf_private_redact" | "__zf_private_redact_except_paths"
+                )
+            });
+            for item in map.values_mut() {
+                strip_private_markers_in_place(item);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_private_markers_in_place),
+        _ => {}
     }
 }
 

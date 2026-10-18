@@ -284,7 +284,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "record": { "created": created, "edges": edge_count, "table": table } })),
+            payload: with_answer(input.payload, json!({ "record": { "created": created, "edges": edge_count, "table": table } })),
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("created={created}"),

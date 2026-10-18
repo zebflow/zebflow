@@ -161,36 +161,61 @@ impl Delivery {
     /// as `patch { ops }`, or in a tick room `patch { tick, ops, events }`
     /// carrying the tick's events too. A session that has nothing new is
     /// sent nothing.
-    pub fn send_changes(&mut self, state: &Value, vis: &Visibility, touched: &[Vec<String>], members: &mut HashMap<String, Member>, tick: Option<u64>) {
+    ///
+    /// `tagged`: whether any session was ever tagged. Until one was, all are
+    /// untagged and share one frame, and when it is empty no session is
+    /// visited.
+    pub fn send_changes(&mut self, state: &Value, vis: &Visibility, touched: &[Vec<String>], members: &mut HashMap<String, Member>, tick: Option<u64>, tagged: bool) {
         // Events wait only for the frame of the tick that sent them.
         let events = if tick.is_some() { std::mem::take(&mut self.tick_events) } else { Vec::new() };
         let (old_state, old_vis) = (&self.flushed, &self.flushed_vis);
         // Each change of view diffed once, each distinct frame encoded once.
         let mut changes: HashMap<(ViewKey, ViewKey), Vec<Value>> = HashMap::new();
         let mut frames: HashMap<(ViewKey, ViewKey, Vec<usize>), Option<Frame>> = HashMap::new();
-        for (id, member) in members.iter_mut().filter(|(_, m)| m.live()) {
+        let mut frame_for = |was: ViewKey, is: ViewKey, mine: Vec<usize>| -> Option<Frame> {
+            frames
+                .entry((was, is, mine))
+                .or_insert_with_key(|(was, is, mine)| {
+                    let ops = changes.entry((was.clone(), is.clone())).or_insert_with(|| {
+                        if was != is {
+                            return diff(&old_vis.view(old_state, was), &vis.view(state, is));
+                        }
+                        let mut ops = Vec::new();
+                        for path in touched {
+                            diff_under(path, old_vis.view_under(old_state, path, was).as_ref(), vis.view_under(state, path, is).as_ref(), &mut ops);
+                        }
+                        ops
+                    });
+                    if ops.is_empty() && mine.is_empty() {
+                        return None;
+                    }
+                    Some(patch_frame(tick, ops, mine.iter().map(|i| &events[*i].body)))
+                })
+                .clone()
+        };
+        // A session with no tags at its last frame and none now sees what
+        // every such session sees, so they share one frame, worked out once:
+        // a send costs what changed, not how many sessions are joined. With
+        // a tick's events each session's frame also depends on which events
+        // target it, so then each is worked out on its own.
+        let untagged = events.is_empty().then(|| frame_for(Vec::new(), Vec::new(), Vec::new()));
+        let nobody_sees_it = !tagged && matches!(untagged, Some(None));
+        for (id, member) in members.iter_mut().filter(|(_, m)| !nobody_sees_it && m.live()) {
+            if let Some(shared) = &untagged
+                && member.tags.is_empty()
+                && member.sent_tags.is_empty()
+            {
+                if let Some(frame) = shared {
+                    member.send(frame);
+                }
+                continue;
+            }
             let was = old_vis.key(&member.sent_tags);
             let is = vis.key(&member.tags);
             member.sent_tags = member.tags.clone();
             let mine: Vec<usize> = events.iter().enumerate().filter(|(_, e)| member.is_targeted(&e.to, id)).map(|(i, _)| i).collect();
-            let frame = frames.entry((was.clone(), is.clone(), mine)).or_insert_with_key(|(was, is, mine)| {
-                let ops = changes.entry((was.clone(), is.clone())).or_insert_with(|| {
-                    if was != is {
-                        return diff(&old_vis.view(old_state, was), &vis.view(state, is));
-                    }
-                    let mut ops = Vec::new();
-                    for path in touched {
-                        diff_under(path, old_vis.view_under(old_state, path, was).as_ref(), vis.view_under(state, path, is).as_ref(), &mut ops);
-                    }
-                    ops
-                });
-                if ops.is_empty() && mine.is_empty() {
-                    return None;
-                }
-                Some(patch_frame(tick, ops, mine.iter().map(|i| &events[*i].body)))
-            });
-            if let Some(frame) = frame {
-                member.send(frame);
+            if let Some(frame) = frame_for(was, is, mine) {
+                member.send(&frame);
             }
         }
         // The last send now holds what was written.

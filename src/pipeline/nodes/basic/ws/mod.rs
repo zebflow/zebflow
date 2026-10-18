@@ -92,7 +92,7 @@ pub fn build(kind: &str, config: &Value, hub: Option<Arc<WsHub>>) -> Result<Opti
 }
 
 fn parse<T: serde::de::DeserializeOwned>(config: &Value, code: &'static str) -> Result<T, PipelineError> {
-    serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(code, err.to_string()))
+    crate::pipeline::nodes::shared::util::typed_config(&config).map_err(|err| PipelineError::new(code, err.to_string()))
 }
 
 // ── Shared by the kinds ──────────────────────────────────────────────────────
@@ -265,7 +265,7 @@ fn refused(refusal: HubRefusal, code: &'static str) -> PipelineError {
 fn answer(payload: &Value, answer: Value, trace: String) -> NodeExecutionOutput {
     NodeExecutionOutput {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-        payload: with_answer(payload, answer),
+        payload: with_answer(payload.clone(), answer),
         trace: vec![trace],
     }
 }

@@ -191,6 +191,42 @@ pub struct CompiledPipeline {
     pub kv_subscribe_triggers: Vec<KvSubscribeTriggerSpec>,
     pub ws_client_triggers: Vec<WsClientTriggerSpec>,
     pub mcp_triggers: Vec<McpTriggerSpec>,
+    /// The pipeline compiled for its runs (`engines/basic/compiled.rs`),
+    /// made on its first run. A new activation is a new entry, so a new
+    /// lane: nothing compiled from the old graph outlives it.
+    #[serde(skip)]
+    pub lane: Arc<crate::pipeline::engines::basic::CompiledLane>,
+    /// The graph a webhook run takes with the project's RWE options applied,
+    /// made once per configuration generation (`web::run_graph`). Like the
+    /// lane, it goes with the entry.
+    #[serde(skip)]
+    pub run_graph: Arc<PreparedGraph>,
+}
+
+/// A graph prepared from an active entry's, and the configuration
+/// generation it was prepared at.
+#[derive(Default)]
+pub struct PreparedGraph(arc_swap::ArcSwapOption<(u64, Arc<PipelineGraph>)>);
+
+impl std::fmt::Debug for PreparedGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.load().is_some() { "prepared" } else { "not prepared" })
+    }
+}
+
+impl PreparedGraph {
+    /// The graph prepared at `generation`, made by `make` when there is
+    /// none for it.
+    pub fn get_or_make<E>(&self, generation: u64, make: impl FnOnce() -> Result<PipelineGraph, E>) -> Result<Arc<PipelineGraph>, E> {
+        if let Some(found) = self.0.load().as_deref()
+            && found.0 == generation
+        {
+            return Ok(found.1.clone());
+        }
+        let graph = Arc::new(make()?);
+        self.0.store(Some(Arc::new((generation, graph.clone()))));
+        Ok(graph)
+    }
 }
 
 impl CompiledPipeline {
@@ -481,6 +517,8 @@ impl CompiledPipeline {
             kv_subscribe_triggers,
             ws_client_triggers,
             mcp_triggers,
+            lane: Arc::default(),
+            run_graph: Arc::default(),
         })
     }
 }
@@ -667,8 +705,207 @@ pub struct PipelineRuntimeService {
     /// whenever the active set changes (`rooms.md`: a fixed room exists
     /// while its trigger is active).
     ws_hub: Arc<crate::infra::transport::ws::WsHub>,
-    inner: ArcSwap<HashMap<ActivePipelineKey, CompiledPipeline>>,
+    /// Each entry behind its own `Arc`: a request matching routes takes the
+    /// project's pipelines without copying a single graph.
+    inner: ArcSwap<HashMap<ActivePipelineKey, Arc<CompiledPipeline>>>,
+    /// The same entries by owner, then project, in path order, made when the
+    /// active set changes: a request reads its own project's pipelines, never
+    /// every project's.
+    by_project: ArcSwap<ProjectIndex>,
 }
+
+/// [`PipelineRuntimeService::by_project`].
+type ProjectIndex = HashMap<String, HashMap<String, Arc<ProjectActive>>>;
+
+/// One project's active set, as its requests read it.
+pub struct ProjectActive {
+    /// Its active pipelines, in path order.
+    pub pipelines: Arc<[Arc<CompiledPipeline>]>,
+    /// Its webhook routes: a request finds its own among them without
+    /// comparing its path with every route of the project.
+    webhooks: WebhookRoutes,
+}
+
+impl ProjectActive {
+    /// See [`PipelineRuntimeService::webhook_matches`].
+    pub fn webhook_matches(&self, method: &str, path: &str) -> Vec<WebhookMatch> {
+        let routes = &self.webhooks;
+        let methods: &[&str] = if method == "HEAD" { &["HEAD", "GET"] } else { std::slice::from_ref(&method) };
+        let key = webhook_segments(path).collect::<Vec<_>>().join("/");
+        let exact: Vec<WebhookMatch> = methods
+            .iter()
+            .filter_map(|m| routes.exact.get(*m).and_then(|by_path| by_path.get(&key)))
+            .flatten()
+            .filter_map(|(compiled, i)| {
+                let path = match_webhook_path(&compiled.webhook_triggers[*i].path, path)?;
+                Some(WebhookMatch { compiled: compiled.clone(), trigger: *i, path })
+            })
+            .collect();
+        if !exact.is_empty() {
+            return exact;
+        }
+        routes
+            .patterns
+            .iter()
+            .filter(|(compiled, i)| {
+                let trigger_method = &compiled.webhook_triggers[*i].method;
+                methods.iter().any(|m| trigger_method.eq_ignore_ascii_case(m))
+            })
+            .filter_map(|(compiled, i)| {
+                let path = match_webhook_path(&compiled.webhook_triggers[*i].path, path)?;
+                Some(WebhookMatch { compiled: compiled.clone(), trigger: *i, path })
+            })
+            .collect()
+    }
+}
+
+/// One project's webhook routes, by what a request can find them by.
+#[derive(Default)]
+struct WebhookRoutes {
+    /// Routes with no parameter, by method (upper case), then their
+    /// segments joined by `/`.
+    exact: HashMap<String, HashMap<String, Vec<(Arc<CompiledPipeline>, usize)>>>,
+    /// Routes with a parameter, matched one by one.
+    patterns: Vec<(Arc<CompiledPipeline>, usize)>,
+}
+
+/// A webhook trigger that answers a request: its pipeline, which of the
+/// pipeline's webhook triggers, and how its path matched.
+pub struct WebhookMatch {
+    pub compiled: Arc<CompiledPipeline>,
+    pub trigger: usize,
+    pub path: WebhookPathMatch,
+}
+
+fn index_by_project(all: &HashMap<ActivePipelineKey, Arc<CompiledPipeline>>) -> ProjectIndex {
+    let mut grouped: HashMap<String, HashMap<String, Vec<Arc<CompiledPipeline>>>> = HashMap::new();
+    for compiled in all.values() {
+        grouped.entry(compiled.owner.clone()).or_default().entry(compiled.project.clone()).or_default().push(compiled.clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(owner, projects)| {
+            let projects = projects
+                .into_iter()
+                .map(|(project, mut list)| {
+                    list.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
+                    let mut webhooks = WebhookRoutes::default();
+                    for compiled in &list {
+                        for (i, trigger) in compiled.webhook_triggers.iter().enumerate() {
+                            if webhook_segments(&trigger.path).any(|segment| path_param_name(segment).is_some()) {
+                                webhooks.patterns.push((compiled.clone(), i));
+                            } else {
+                                webhooks
+                                    .exact
+                                    .entry(trigger.method.to_ascii_uppercase())
+                                    .or_default()
+                                    .entry(webhook_segments(&trigger.path).collect::<Vec<_>>().join("/"))
+                                    .or_default()
+                                    .push((compiled.clone(), i));
+                            }
+                        }
+                    }
+                    (project, Arc::new(ProjectActive { pipelines: Arc::from(list), webhooks }))
+                })
+                .collect();
+            (owner, projects)
+        })
+        .collect()
+}
+
+/// How a webhook route matched a request path: its parameters and how
+/// specific it is, for ranking routes that both match.
+#[derive(Debug)]
+pub struct WebhookPathMatch {
+    pub params: serde_json::Map<String, serde_json::Value>,
+    pub static_segments: usize,
+    pub dynamic_segments: usize,
+    pub total_segments: usize,
+}
+
+pub fn match_webhook_path(pattern: &str, actual: &str) -> Option<WebhookPathMatch> {
+    let pattern_segments = webhook_segments(pattern);
+    let total_segments = pattern_segments.clone().count();
+    if total_segments != webhook_segments(actual).count() {
+        return None;
+    }
+
+    let mut params = serde_json::Map::new();
+    let mut static_segments = 0usize;
+    let mut dynamic_segments = 0usize;
+
+    for (pattern_seg, actual_seg) in pattern_segments.zip(webhook_segments(actual)) {
+        if let Some(name) = path_param_name(pattern_seg) {
+            dynamic_segments += 1;
+            params.insert(name.to_string(), serde_json::Value::String(actual_seg.to_string()));
+            continue;
+        }
+        if pattern_seg == actual_seg {
+            static_segments += 1;
+            continue;
+        }
+        return None;
+    }
+
+    Some(WebhookPathMatch {
+        params,
+        static_segments,
+        dynamic_segments,
+        total_segments,
+    })
+}
+
+/// A webhook path's segments, read where they sit: the pieces between
+/// slashes, empty ones skipped. Every request matches every webhook route
+/// of its project, so nothing is allocated for it.
+fn webhook_segments(path: &str) -> impl Iterator<Item = &str> + Clone {
+    path.trim().split('/').filter(|segment| !segment.is_empty())
+}
+
+#[cfg(test)]
+mod webhook_segment_tests {
+    /// The segments read in place are the ones the path once gave after
+    /// being normalized (one leading slash, none trailing) and split.
+    #[test]
+    fn segments_read_in_place_are_the_normalized_ones() {
+        let normalized = |raw: &str| -> Vec<String> {
+            let raw = raw.trim();
+            let path = if raw.is_empty() || raw == "/" { "/".to_string() } else { format!("/{}", raw.trim_matches('/')) };
+            if path == "/" {
+                return Vec::new();
+            }
+            path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).map(String::from).collect()
+        };
+        for raw in ["", "/", "//", " / ", "a", "/a", "a/", "/a/b", "a//b", "//a//b//", " /bench/one ", "/{id}/x", "/:id/", "/a b/c"] {
+            let read: Vec<String> = super::webhook_segments(raw).map(String::from).collect();
+            assert_eq!(read, normalized(raw), "'{raw}'");
+        }
+        let hit = super::match_webhook_path("/orders/{id}/items", "orders/42/items/").expect("matches");
+        assert_eq!((hit.static_segments, hit.dynamic_segments, hit.total_segments), (2, 1, 3));
+        assert_eq!(hit.params["id"], "42");
+        assert!(super::match_webhook_path("/orders/{id}", "/orders/42/items").is_none());
+    }
+}
+
+fn path_param_name(segment: &str) -> Option<&str> {
+    // Support {name} style
+    if let Some(inner) = segment.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let name = inner.trim();
+        if !name.is_empty() && !name.contains('/') && !name.contains('{') && !name.contains('}') {
+            return Some(name);
+        }
+    }
+    // Support :name style
+    if let Some(name) = segment.strip_prefix(':') {
+        let name = name.trim();
+        if !name.is_empty() && !name.contains('/') && !name.contains(':') {
+            return Some(name);
+        }
+    }
+    None
+}
+
+
 
 impl PipelineRuntimeService {
     pub fn new(
@@ -681,12 +918,13 @@ impl PipelineRuntimeService {
             node_registry,
             ws_hub,
             inner: ArcSwap::new(Arc::new(HashMap::new())),
+            by_project: ArcSwap::new(Arc::new(HashMap::new())),
         }
     }
 
     /// Replace the active set and tell the room hub what one project's
     /// `trigger.room` nodes now declare, ticks included.
-    fn store(&self, next: HashMap<ActivePipelineKey, CompiledPipeline>, owner: &str, project: &str) {
+    fn store(&self, next: HashMap<ActivePipelineKey, Arc<CompiledPipeline>>, owner: &str, project: &str) {
         use crate::infra::transport::ws::RoomDecl;
         let mut rooms: Vec<RoomDecl> = next
             .values()
@@ -697,6 +935,7 @@ impl PipelineRuntimeService {
             .collect();
         // By room and path, so a fixed room names the same pipeline each time.
         rooms.sort_by(|a, b| (&a.room, &a.pipeline).cmp(&(&b.room, &b.pipeline)));
+        self.by_project.store(Arc::new(index_by_project(&next)));
         self.inner.store(Arc::new(next));
         self.ws_hub.declare(owner, project, &rooms);
     }
@@ -737,7 +976,7 @@ impl PipelineRuntimeService {
                     continue;
                 }
             };
-            next.insert(compiled.key.clone(), compiled);
+            next.insert(compiled.key.clone(), Arc::new(compiled));
         }
 
         self.store(next, &owner, &project);
@@ -773,14 +1012,14 @@ impl PipelineRuntimeService {
                 .read_active_pipeline_source(&owner, &project, &meta)?;
             let compiled =
                 CompiledPipeline::from_active_meta(&meta, &source, Some(&self.node_registry))?;
-            next.insert(compiled.key.clone(), compiled);
+            next.insert(compiled.key.clone(), Arc::new(compiled));
         }
 
         self.store(next, &owner, &project);
         Ok(())
     }
 
-    pub fn get(&self, owner: &str, project: &str, file_rel_path: &str) -> Option<CompiledPipeline> {
+    pub fn get(&self, owner: &str, project: &str, file_rel_path: &str) -> Option<Arc<CompiledPipeline>> {
         let key = active_pipeline_key(owner, project, file_rel_path);
         self.inner.load().get(&key).cloned()
     }
@@ -795,19 +1034,30 @@ impl PipelineRuntimeService {
         self.store(next, &owner, &project);
     }
 
-    pub fn list_project(&self, owner: &str, project: &str) -> Vec<CompiledPipeline> {
-        let owner = crate::platform::model::slug_segment(owner);
-        let project = crate::platform::model::slug_segment(project);
-        self.inner
-            .load()
-            .values()
-            .filter(|compiled| compiled.owner == owner && compiled.project == project)
-            .cloned()
-            .collect()
+    /// One project's active set.
+    fn project_active(&self, owner: &str, project: &str) -> Option<Arc<ProjectActive>> {
+        let index = self.by_project.load();
+        let of = |owner: &str, project: &str| index.get(owner).and_then(|projects| projects.get(project)).cloned();
+        // Names arrive as slugs already; only one that is not is made one.
+        of(owner, project).or_else(|| of(&crate::platform::model::slug_segment(owner), &crate::platform::model::slug_segment(project)))
+    }
+
+    /// One project's active pipelines, in path order.
+    pub fn list_project(&self, owner: &str, project: &str) -> Arc<[Arc<CompiledPipeline>]> {
+        self.project_active(owner, project).map(|active| active.pipelines.clone()).unwrap_or_else(|| Arc::from(Vec::new()))
+    }
+
+    /// The webhook triggers of one project that answer `method` (upper
+    /// case) on `path`. A route with no parameter whose path is the request's
+    /// outranks every route with one (it has every segment static), so when
+    /// there is such a route only those are answered; else every route with
+    /// a parameter that matches. A `GET` route answers `HEAD` too.
+    pub fn webhook_matches(&self, owner: &str, project: &str, method: &str, path: &str) -> Vec<WebhookMatch> {
+        self.project_active(owner, project).map(|active| active.webhook_matches(method, path)).unwrap_or_default()
     }
 
     /// Returns all active compiled pipelines across every owner/project.
-    pub fn list_all(&self) -> Vec<CompiledPipeline> {
+    pub fn list_all(&self) -> Vec<Arc<CompiledPipeline>> {
         self.inner.load().values().cloned().collect()
     }
 }
@@ -874,6 +1124,70 @@ mod trigger_tests {
             updated_at: 0,
         };
         CompiledPipeline::from_active_meta(&meta, &source, None)
+    }
+
+    /// The route index picks the route that matching every route and
+    /// ranking them picks: most static segments, then fewest parameters,
+    /// then the pipeline's path; a GET route answers HEAD.
+    #[test]
+    fn the_route_index_picks_what_ranking_every_route_picks() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        use super::{active_pipeline_key, index_by_project, match_webhook_path};
+
+        let routes = [
+            ("pipelines/a.zf.json", "/orders/{id} --method POST"),
+            ("pipelines/b.zf.json", "/orders/today --method POST"),
+            ("pipelines/c.zf.json", "/orders/today --method POST"),
+            ("pipelines/d.zf.json", "/:kind/today --method POST"),
+            ("pipelines/e.zf.json", "/orders/{id}/items --method GET"),
+            ("pipelines/f.zf.json", "/orders/7/items --method GET"),
+            ("pipelines/g.zf.json", "/ --method GET"),
+            ("pipelines/h.zf.json", "/health"),
+        ];
+        let mut all = HashMap::new();
+        for (file, route) in routes {
+            let mut compiled = compile(&format!("| trigger.webhook --route {route}")).expect("compiles");
+            compiled.file_rel_path = file.to_string();
+            compiled.key = active_pipeline_key("demo", "site-a", file);
+            all.insert(compiled.key.clone(), Arc::new(compiled));
+        }
+        let index = index_by_project(&all);
+        let active = &index["demo"]["site-a"];
+        let rank = |found: Vec<(String, usize, usize, usize)>| {
+            let mut found = found;
+            found.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(b.3.cmp(&a.3)).then(a.0.cmp(&b.0)));
+            found.into_iter().next().map(|f| f.0)
+        };
+        for (method, path) in [
+            ("POST", "/orders/today"),
+            ("POST", "orders/42/"),
+            ("POST", "/things/today"),
+            ("GET", "/orders/7/items"),
+            ("HEAD", "/orders/7/items"),
+            ("HEAD", "/orders/8/items"),
+            ("GET", "/"),
+            ("HEAD", "/health"),
+            ("POST", "/health"),
+            ("DELETE", "/orders/today"),
+        ] {
+            let mut every = Vec::new();
+            for compiled in all.values() {
+                for trigger in &compiled.webhook_triggers {
+                    let answers = trigger.method.eq_ignore_ascii_case(method) || (method == "HEAD" && trigger.method.eq_ignore_ascii_case("GET"));
+                    if let (true, Some(m)) = (answers, match_webhook_path(&trigger.path, path)) {
+                        every.push((compiled.file_rel_path.clone(), m.static_segments, m.dynamic_segments, m.total_segments));
+                    }
+                }
+            }
+            let indexed = active
+                .webhook_matches(method, path)
+                .into_iter()
+                .map(|f| (f.compiled.file_rel_path.clone(), f.path.static_segments, f.path.dynamic_segments, f.path.total_segments))
+                .collect();
+            assert_eq!(rank(indexed), rank(every), "{method} {path}");
+        }
     }
 
     /// No `--method` is GET — the word the save check applies, not a second

@@ -58,7 +58,7 @@ const BASE_HEADER: &str = "x-zebflow-mcp-base";
 /// One published tool: the active pipeline and the trigger that publishes it.
 #[derive(Clone)]
 struct PublishedTool {
-    compiled: CompiledPipeline,
+    compiled: std::sync::Arc<CompiledPipeline>,
     spec: McpTriggerSpec,
 }
 

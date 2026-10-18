@@ -405,6 +405,29 @@ fn pipeline_identity_service(
 }
 
 /// Run the requested Zebflow server role.
+/// Hands back to the device the memory this process freed. glibc keeps what
+/// a thread freed in that thread's arena for the thread to use again, and
+/// gives it back only when asked: boot frees hundreds of thousands of
+/// allocations made by threads that then sit waiting, and a burst of load
+/// leaves the same behind, so without this the device holds tens of
+/// megabytes that nothing will use. Asked once boot is done and then every
+/// 30 s, on a thread of its own.
+fn return_freed_memory_periodically() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        let _ = std::thread::Builder::new().name("memory-return".into()).spawn(|| loop {
+            // SAFETY: glibc's own call; it takes each arena's lock itself.
+            unsafe {
+                malloc_trim(0);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+    }
+}
+
 async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>> {
     let host = configured_host();
     let port = configured_port();
@@ -427,6 +450,9 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
     println!("Mode: {}", display_mode(role));
     println!("Data: {}", data_root.display());
     println!("Flow: /login -> /home -> /projects/{{owner}}/{{project}}");
+
+    // Boot is done: what it freed goes back to the device.
+    return_freed_memory_periodically();
 
     // With the peer address: a published MCP route counts refused
     // attempts per client (`published-mcp.md`).
@@ -647,6 +673,9 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
     println!("Public route: {app_url}");
     println!("Mode: standalone app runtime");
 
+    // Boot is done: what it freed goes back to the device.
+    return_freed_memory_periodically();
+
     // With the peer address: a published MCP route counts refused
     // attempts per client (`published-mcp.md`).
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
@@ -661,6 +690,8 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
 
 #[tokio::main]
 pub async fn main() {
+    // Before anything can make a JavaScript runtime.
+    zebflow::language::init_v8_platform();
     if let Err(err) = run().await {
         // Displayed, not debugged: returning the error from `main` prints its
         // `Debug` form, which turns a refusal a person is meant to act on into

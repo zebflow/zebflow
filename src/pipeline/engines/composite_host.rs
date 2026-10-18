@@ -72,7 +72,7 @@ fn answer_key_of(kind: &str) -> String {
 fn answered(arriving: &Value, key: &str, value: Value) -> Value {
     let mut answer = Map::new();
     answer.insert(key.to_string(), value);
-    with_answer(arriving, Value::Object(answer))
+    with_answer(arriving.clone(), Value::Object(answer))
 }
 
 fn scope_of(input: &NodeExecutionInput) -> (String, String) {

@@ -173,7 +173,7 @@ impl NodeHandler for Node {
         let dataset = json!({ "source": rel_path, "store": source_store.id, "format": report.format, "layers": layers });
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "dataset": dataset })),
+            payload: with_answer(input.payload, json!({ "dataset": dataset })),
             trace: vec![format!("node_kind={NODE_KIND} path={rel_path}")],
         })
     }

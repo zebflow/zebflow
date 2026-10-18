@@ -355,7 +355,7 @@ impl NodeHandler for Node {
         let row_count = answer.get("row_count").cloned().unwrap_or(Value::Null);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "query": answer })),
+            payload: with_answer(input.payload, json!({ "query": answer })),
             trace: vec![format!("node_kind={NODE_KIND} rows={row_count}")],
         })
     }

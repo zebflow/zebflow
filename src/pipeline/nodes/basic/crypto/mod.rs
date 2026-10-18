@@ -99,7 +99,7 @@ pub fn build(
 }
 
 fn parse<T: DeserializeOwned>(config: &Value, code: &'static str) -> Result<T, PipelineError> {
-    serde_json::from_value(config.clone()).map_err(|err| PipelineError::new(code, err.to_string()))
+    crate::pipeline::nodes::shared::util::typed_config(&config).map_err(|err| PipelineError::new(code, err.to_string()))
 }
 
 // ── Shared by the kinds ──────────────────────────────────────────────────────
@@ -158,5 +158,5 @@ fn required(value: &Value, flag: &str, config_code: &'static str, empty_code: &'
 
 /// The node's answer under its noun, the rest of the payload kept.
 fn answer(pin: &str, payload: &Value, answer: Value, trace: String) -> NodeExecutionOutput {
-    NodeExecutionOutput { output_pins: vec![pin.to_string()], payload: with_answer(payload, answer), trace: vec![trace] }
+    NodeExecutionOutput { output_pins: vec![pin.to_string()], payload: with_answer(payload.clone(), answer), trace: vec![trace] }
 }

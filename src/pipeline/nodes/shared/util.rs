@@ -11,12 +11,22 @@ use crate::language::{
 use crate::pipeline::PipelineError;
 use crate::pipeline::expr::build_expression_scope_input;
 
+/// A node's typed config read from its JSON where it sits: what
+/// `serde_json::from_value(config.clone())` answers, without copying the
+/// config first. A node with `{{ }}` is built from its config on every run.
+pub fn typed_config<T: serde::de::DeserializeOwned>(config: &Value) -> Result<T, serde_json::Error> {
+    T::deserialize(config)
+}
+
 /// A node's answer added to the payload it was given, the rest kept
 /// (`docs/contracts/node-conventions.md` §5): each top-level key of `answer`
 /// replaces the payload's key of that name.
-pub fn with_answer(input: &Value, answer: Value) -> Value {
+///
+/// Takes the payload: a node hands on what it was given, so the payload is
+/// moved into the answer, not copied for it.
+pub fn with_answer(input: Value, answer: Value) -> Value {
     let mut payload = match input {
-        Value::Object(map) => map.clone(),
+        Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
     if let Value::Object(answer) = answer {

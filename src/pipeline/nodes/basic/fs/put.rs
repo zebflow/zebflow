@@ -483,7 +483,7 @@ impl NodeHandler for Node {
         };
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "file": file })),
+            payload: with_answer(input.payload, json!({ "file": file })),
             trace: vec![format!("node_kind={NODE_KIND} source={} path={key} store={} written={written}", source.flag(), store.id)],
         })
     }

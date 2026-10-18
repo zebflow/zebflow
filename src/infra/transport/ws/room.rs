@@ -200,6 +200,10 @@ pub struct RoomHandle {
     /// `visibility`.
     touched: Mutex<Touched>,
     dirty: AtomicBool,
+    /// Whether a session of this room was ever given a tag. Until one is,
+    /// every session sees the same view, so a send nobody can see in it
+    /// visits no session at all.
+    tagged: AtomicBool,
     /// Lock order: `delivery`, then `state`, then `members`.
     delivery: Mutex<Delivery>,
     members: Mutex<HashMap<String, Member>>,
@@ -245,6 +249,7 @@ impl RoomHandle {
             state_bytes: AtomicU64::new(2),
             touched: Mutex::new(Touched::default()),
             dirty: AtomicBool::new(false),
+            tagged: AtomicBool::new(false),
             delivery: Mutex::new(Delivery::new()),
             members: Mutex::new(HashMap::new()),
             ticking: AtomicBool::new(false),
@@ -497,7 +502,7 @@ impl RoomHandle {
         let state = self.state.read().unwrap_or_else(|e| e.into_inner());
         let vis = self.visibility.lock().unwrap_or_else(|e| e.into_inner());
         let touched = std::mem::take(&mut *self.touched.lock().unwrap_or_else(|e| e.into_inner())).in_order();
-        delivery.send_changes(&state, &vis, &touched, &mut self.members(), tick);
+        delivery.send_changes(&state, &vis, &touched, &mut self.members(), tick, self.tagged.load(Ordering::Acquire));
     }
 
     /// Forget the state (a fixed room whose last session left).
@@ -590,6 +595,9 @@ impl RoomHandle {
         let tags = {
             let mut members = self.members();
             let member = members.get_mut(session_id)?;
+            if !tag.is_empty() {
+                self.tagged.store(true, Ordering::Release);
+            }
             for gone in untag {
                 match gone.strip_suffix('*') {
                     Some(prefix) => member.tags.retain(|t| !t.starts_with(prefix)),
@@ -968,7 +976,9 @@ mod tests {
             seed ^= seed << 17;
             seed % n
         };
-        let mut clients: Vec<(String, Attached, Value)> = (0..4)
+        // Several sessions with no tags share one frame, so there are more
+        // than the tags can tell apart, and a session can lose its tags again.
+        let mut clients: Vec<(String, Attached, Value)> = (0..6)
             .map(|i| {
                 let id = format!("s{i}");
                 let (attached, kick) = seat(&room, &id, None);
@@ -997,9 +1007,12 @@ mod tests {
                 2 | 3 => room.apply(StateOp::Merge, &path, Some(value), batch, &visible).expect("fits"),
                 4 => room.apply(StateOp::Delete, &path, None, batch, &visible).expect("fits"),
                 _ => {
-                    let id = format!("s{}", next(4));
-                    let tag = tags[next(2) as usize].to_string();
-                    room.retag(&id, &["*".to_string()], &[tag]);
+                    let id = format!("s{}", next(6));
+                    let tag: Vec<String> = match next(3) {
+                        0 => Vec::new(),
+                        _ => vec![tags[next(2) as usize].to_string()],
+                    };
+                    room.retag(&id, &["*".to_string()], &tag);
                 }
             }
             let state = room.get_state();

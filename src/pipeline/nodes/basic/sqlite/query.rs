@@ -186,7 +186,7 @@ impl NodeHandler for Node {
             .map_err(|err| PipelineError::new(CODE, format!("task: {err}")))??;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, answer),
+            payload: with_answer(input.payload, answer),
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }

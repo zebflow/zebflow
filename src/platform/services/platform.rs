@@ -486,7 +486,7 @@ impl PlatformService {
     /// falling back to one.
     pub fn project_sandbox(&self, owner: &str, project: &str) -> DenoSandboxEngine {
         match self.file.ensure_project_layout(owner, project) {
-            Ok(layout) => DenoSandboxEngine::for_project(layout.files_dir),
+            Ok(layout) => DenoSandboxEngine::for_project(layout.files_dir.clone()),
             Err(_) => DenoSandboxEngine::default(),
         }
     }
@@ -538,7 +538,8 @@ impl PlatformService {
         let compiled = self
             .pipeline_runtime
             .list_project(owner, project)
-            .into_iter()
+            .iter()
+            .cloned()
             .find(|c| {
                 name_from_file_rel_path(&c.file_rel_path) == slug
                     && c.graph
@@ -648,7 +649,7 @@ impl PlatformService {
                     owner,
                     project,
                     &file_rel_path,
-                    &PipelineInvocationEntry {
+                    PipelineInvocationEntry {
                         run_id: ctx.request_id.clone(),
                         at,
                         duration_ms,
@@ -676,7 +677,7 @@ impl PlatformService {
                     owner,
                     project,
                     &file_rel_path,
-                    &PipelineInvocationEntry {
+                    PipelineInvocationEntry {
                         run_id: ctx.request_id.clone(),
                         at,
                         duration_ms,

@@ -196,6 +196,23 @@ async fn a_change_sends_each_session_one_small_patch_not_the_state() {
     assert_eq!(next_of(&mut b, "patch").await["ops"], json!([ { "op": "set", "path": ["players", a_id, "x"], "value": 2 } ]), "one changed leaf, one set");
 }
 
+/// A message many times larger than a socket's buffer goes through whole,
+/// in and back out: the buffer is how much is read at a time, not a limit.
+#[tokio::test]
+async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
+    let root = temp_dir("ws-rooms-large");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "lobby-note", r#"| trigger.room --room lobby --event note | ws.state.put --key /note --value "{{ input.room.payload.text }}""#).await;
+    let address = serve(app, &cookie).await;
+    let mut a = connect(address, "lobby", &[]).await;
+    next_of(&mut a, "joined").await;
+    let text = "z".repeat(100 * 1024);
+    a.send(Message::Text(json!({ "event": "note", "payload": { "text": text } }).to_string().into())).await.unwrap();
+    let patch = next_of(&mut a, "patch").await;
+    assert_eq!(patch["ops"][0]["value"], json!(text), "the whole value, back in the patch");
+}
+
 /// A webhook of the test project, called with a JSON body; its answer.
 pub(super) async fn hook(app: &axum::Router, route: &str, body: Value) -> Value {
     use tower::ServiceExt;

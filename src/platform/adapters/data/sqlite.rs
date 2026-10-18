@@ -519,6 +519,208 @@ pub struct SqliteDataAdapter {
     /// Open connections to each project's invocation log, so a run record
     /// costs a write, not an open and a schema check.
     invocation_conns: InvocationConns,
+    /// Run records are written by one thread, in batches, after the run
+    /// has answered; see [`InvocationWriter`].
+    invocation_writer: InvocationWriter,
+}
+
+/// The writer of run records into the projects' invocation logs.
+///
+/// A run hands its record over and goes on: a run used to write it on its
+/// own task, three statements each in their own transaction (insert, age
+/// out, trim), on a worker thread every other request was waiting for. One
+/// thread now takes whatever records have arrived, writes them per log in
+/// one transaction, and ages out and trims each pipeline once per batch.
+///
+/// Whatever reads or clears a log first waits for the records handed over
+/// before it ([`InvocationWriter::flush`]), so a run's record is there for
+/// anyone who looks after the run.
+#[derive(Default)]
+struct InvocationWriter(std::sync::OnceLock<(std::sync::mpsc::Sender<WriterJob>, std::thread::Thread)>);
+
+enum WriterJob {
+    Record { path: PathBuf, file_rel_path: String, entry: PipelineInvocationEntry, trace_json: String, max_n: usize, max_age_secs: Option<i64> },
+    Barrier(std::sync::mpsc::SyncSender<()>),
+}
+
+impl InvocationWriter {
+    /// The writer, started by the first record, and its thread: every
+    /// record after reads them without a lock.
+    fn writer(&self) -> &(std::sync::mpsc::Sender<WriterJob>, std::thread::Thread) {
+        self.0.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let thread = std::thread::Builder::new()
+                .name("invocation-log-writer".into())
+                .spawn(move || write_invocations(rx))
+                .expect("spawn the invocation log writer");
+            (tx, thread.thread().clone())
+        })
+    }
+
+    fn add(&self, job: WriterJob) {
+        let _ = self.writer().0.send(job);
+    }
+
+    /// Returns once every record handed over before the call is written.
+    /// The writer is woken for it, so a reader waits only for the writes
+    /// before it.
+    fn flush(&self) {
+        if self.0.get().is_none() {
+            return;
+        }
+        let (done, wait) = std::sync::mpsc::sync_channel(1);
+        self.add(WriterJob::Barrier(done));
+        self.writer().1.unpark();
+        let _ = wait.recv();
+    }
+}
+
+/// The writer thread: one batch is what arrives within `GATHER` of its
+/// first record, up to a bound. Under load that is many records per
+/// transaction; a quiet server writes each record a moment after its run.
+///
+/// It sleeps through the gathering rather than waiting on the queue: a run
+/// handing its record to a writer that waits on the queue must wake it, a
+/// system call and a thread switch per record, while to a sleeping writer
+/// it only queues it. A barrier wakes it ([`InvocationWriter::flush`]) and
+/// ends the gathering at once, so a reader waits no longer than the writes
+/// before it.
+fn write_invocations(rx: std::sync::mpsc::Receiver<WriterJob>) {
+    const BATCH: usize = 4096;
+    const GATHER: std::time::Duration = std::time::Duration::from_millis(2);
+    // Open logs, with the file they were opened on and when that was last
+    // compared: a project deleted and made again has a new file, and the
+    // old connection would write into the deleted one.
+    let mut logs: std::collections::HashMap<PathBuf, OpenLog> = std::collections::HashMap::new();
+    while let Ok(first) = rx.recv() {
+        let until = std::time::Instant::now() + GATHER;
+        let mut barrier = matches!(first, WriterJob::Barrier(_));
+        let mut jobs = vec![first];
+        while jobs.len() < BATCH && !barrier {
+            match rx.try_recv() {
+                Ok(job) => {
+                    barrier = matches!(job, WriterJob::Barrier(_));
+                    jobs.push(job);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    let left = until.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    // Woken early by a barrier, or by nothing: either way
+                    // the queue is looked at again.
+                    std::thread::park_timeout(left);
+                }
+            }
+        }
+        let mut barriers = Vec::new();
+        let mut by_log: Vec<(PathBuf, Vec<(String, PipelineInvocationEntry, String, usize, Option<i64>)>)> = Vec::new();
+        for job in jobs {
+            match job {
+                WriterJob::Barrier(done) => barriers.push(done),
+                WriterJob::Record { path, file_rel_path, entry, trace_json, max_n, max_age_secs } => {
+                    let record = (file_rel_path, entry, trace_json, max_n, max_age_secs);
+                    match by_log.iter_mut().find(|(p, _)| *p == path) {
+                        Some((_, records)) => records.push(record),
+                        None => by_log.push((path, vec![record])),
+                    }
+                }
+            }
+        }
+        for (path, records) in by_log {
+            if let Err(err) = write_batch(&mut logs, &path, records) {
+                eprintln!("warning: run records not written to {}: {}", path.display(), err.message);
+                logs.remove(&path);
+            }
+        }
+        for done in barriers {
+            let _ = done.send(());
+        }
+    }
+}
+
+/// One open invocation log: its connection, the file it was opened on,
+/// and when that was last compared with the path.
+struct OpenLog {
+    conn: Connection,
+    file: Option<u64>,
+    checked: std::time::Instant,
+}
+
+fn write_batch(
+    logs: &mut std::collections::HashMap<PathBuf, OpenLog>,
+    path: &Path,
+    records: Vec<(String, PipelineInvocationEntry, String, usize, Option<i64>)>,
+) -> Result<(), PlatformError> {
+    let trust = crate::platform::services::project_config::STAMP_TRUST;
+    let fresh = logs.get(path).is_some_and(|log| log.checked.elapsed() < trust);
+    if !fresh {
+        let file = crate::infra::io::durable::file_identity(path);
+        match logs.get_mut(path) {
+            Some(log) if file.is_some() && log.file == file => log.checked = std::time::Instant::now(),
+            _ => {
+                let conn = SqliteDataAdapter::open_invocations_file(path)?;
+                let file = crate::infra::io::durable::file_identity(path);
+                logs.insert(path.to_path_buf(), OpenLog { conn, file, checked: std::time::Instant::now() });
+            }
+        }
+    }
+    let conn = &mut logs.get_mut(path).expect("opened above").conn;
+    let tx = conn.transaction().map_err(SqliteDataAdapter::qe)?;
+    // Per pipeline: the newest record's time and limits, for one age-out
+    // and one trim after the inserts.
+    let mut limits: Vec<(String, i64, usize, Option<i64>)> = Vec::new();
+    {
+        let mut insert = tx
+            .prepare_cached(
+                "INSERT INTO pipeline_invocations
+                 (file_rel_path, run_id, at, duration_ms, status, trigger, error, trace_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(SqliteDataAdapter::qe)?;
+        for (file_rel_path, entry, trace_json, max_n, max_age_secs) in &records {
+            insert
+                .execute(params![
+                    file_rel_path,
+                    &entry.run_id,
+                    entry.at,
+                    entry.duration_ms as i64,
+                    &entry.status,
+                    &entry.trigger,
+                    entry.error.as_deref(),
+                    trace_json,
+                ])
+                .map_err(SqliteDataAdapter::qe)?;
+            match limits.iter_mut().find(|(f, ..)| f == file_rel_path) {
+                Some(limit) => *limit = (file_rel_path.clone(), entry.at.max(limit.1), *max_n, *max_age_secs),
+                None => limits.push((file_rel_path.clone(), entry.at, *max_n, *max_age_secs)),
+            }
+        }
+    }
+    for (file_rel_path, at, max_n, max_age_secs) in limits {
+        if let Some(max_age_secs) = max_age_secs {
+            let cutoff = at.saturating_sub(max_age_secs.max(0));
+            tx.execute(
+                "DELETE FROM pipeline_invocations
+                 WHERE file_rel_path = ?1 AND at < ?2",
+                params![file_rel_path, cutoff],
+            )
+            .map_err(SqliteDataAdapter::qe)?;
+        }
+        tx.execute(
+            "DELETE FROM pipeline_invocations
+             WHERE file_rel_path = ?1
+               AND id NOT IN (
+                 SELECT id FROM pipeline_invocations
+                 WHERE file_rel_path = ?1
+                 ORDER BY at DESC LIMIT ?2
+               )",
+            params![file_rel_path, max_n as i64],
+        )
+        .map_err(SqliteDataAdapter::qe)?;
+    }
+    tx.commit().map_err(SqliteDataAdapter::qe)
 }
 
 /// How many idle connections are kept per invocation log.
@@ -631,6 +833,7 @@ impl SqliteDataAdapter {
             data_root,
             keyring: None,
             invocation_conns: InvocationConns::default(),
+            invocation_writer: InvocationWriter::default(),
         };
         adapter.open_credential_keyring()?;
         Ok(adapter)
@@ -3769,6 +3972,7 @@ impl DataAdapter for SqliteDataAdapter {
     /// removing a project would delete a catalogue without saying so. That case
     /// is refused, naming what stands in the way.
     fn delete_project(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
+        self.invocation_writer.flush();
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Exclusive)
@@ -7320,48 +7524,20 @@ impl DataAdapter for SqliteDataAdapter {
         owner: &str,
         project: &str,
         file_rel_path: &str,
-        entry: &PipelineInvocationEntry,
+        entry: PipelineInvocationEntry,
         max_n: usize,
         max_age_secs: Option<i64>,
     ) -> Result<(), PlatformError> {
         let trace_json = serde_json::to_string(&entry.trace)?;
-        if let Some(conn) = self.open_project_invocations_conn(owner, project)? {
-            conn.execute(
-                "INSERT INTO pipeline_invocations
-                 (file_rel_path, run_id, at, duration_ms, status, trigger, error, trace_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    file_rel_path,
-                    &entry.run_id,
-                    entry.at,
-                    entry.duration_ms as i64,
-                    &entry.status,
-                    &entry.trigger,
-                    entry.error.as_deref(),
-                    &trace_json,
-                ],
-            )
-            .map_err(Self::qe)?;
-            if let Some(max_age_secs) = max_age_secs {
-                let cutoff = entry.at.saturating_sub(max_age_secs.max(0));
-                conn.execute(
-                    "DELETE FROM pipeline_invocations
-                     WHERE file_rel_path = ?1 AND at < ?2",
-                    params![file_rel_path, cutoff],
-                )
-                .map_err(Self::qe)?;
-            }
-            conn.execute(
-                "DELETE FROM pipeline_invocations
-                 WHERE file_rel_path = ?1
-                   AND id NOT IN (
-                     SELECT id FROM pipeline_invocations
-                     WHERE file_rel_path = ?1
-                     ORDER BY at DESC LIMIT ?2
-                   )",
-                params![file_rel_path, max_n as i64],
-            )
-            .map_err(Self::qe)?;
+        if let Some(path) = self.project_invocations_db_path(owner, project)? {
+            self.invocation_writer.add(WriterJob::Record {
+                path,
+                file_rel_path: file_rel_path.to_string(),
+                entry,
+                trace_json,
+                max_n,
+                max_age_secs,
+            });
             return Ok(());
         }
 
@@ -7514,6 +7690,7 @@ impl DataAdapter for SqliteDataAdapter {
         file_rel_path: &str,
         max_age_secs: Option<i64>,
     ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
+        self.invocation_writer.flush();
         let cutoff = max_age_secs.map(|age| now_ts().saturating_sub(age.max(0)));
         if let Some(conn) = self.open_project_invocations_conn(owner, project)? {
             let items = if let Some(cutoff) = cutoff {
@@ -7678,6 +7855,7 @@ impl DataAdapter for SqliteDataAdapter {
         owner: &str,
         project: &str,
     ) -> Result<PipelineInvocationLogStats, PlatformError> {
+        self.invocation_writer.flush();
         let Some(path) = self.project_invocations_db_path(owner, project)? else {
             return Ok(PipelineInvocationLogStats::default());
         };
@@ -7742,6 +7920,7 @@ impl DataAdapter for SqliteDataAdapter {
         project: &str,
         file_rel_path: Option<&str>,
     ) -> Result<u64, PlatformError> {
+        self.invocation_writer.flush();
         let Some(path) = self.project_invocations_db_path(owner, project)? else {
             return Ok(0);
         };
@@ -7777,6 +7956,7 @@ impl DataAdapter for SqliteDataAdapter {
         new_owner: &str,
         new_owner_user_id: &str,
     ) -> Result<(), PlatformError> {
+        self.invocation_writer.flush();
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Exclusive)
@@ -8344,7 +8524,7 @@ mod tests {
         let start = Instant::now();
         for n in 0..runs {
             adapter
-                .log_pipeline_invocation("superadmin", "default", "pipelines/bench.zf.json", &entry(n), 100, None)
+                .log_pipeline_invocation("superadmin", "default", "pipelines/bench.zf.json", entry(n), 100, None)
                 .expect("log");
         }
         let took = start.elapsed();
@@ -8404,12 +8584,17 @@ mod tests {
                 "superadmin",
                 "default",
                 "pipelines/demo.zf.json",
-                &entry,
+                entry,
                 20,
                 None,
             )
             .expect("log invocation");
 
+        // The record is written after the run, by the writer; a read through
+        // the adapter waits for it.
+        let stored = adapter
+            .get_pipeline_invocations("superadmin", "default", "pipelines/demo.zf.json", None)
+            .expect("read invocations");
         let project_log = tmp
             .path()
             .join("users")
@@ -8419,10 +8604,6 @@ mod tests {
             .join("logs")
             .join("invocations.db");
         assert!(project_log.exists(), "project invocation DB should exist");
-
-        let stored = adapter
-            .get_pipeline_invocations("superadmin", "default", "pipelines/demo.zf.json", None)
-            .expect("read invocations");
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].run_id, "run-1");
         assert_eq!(stored[0].trace.len(), 1);

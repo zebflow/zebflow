@@ -1263,7 +1263,7 @@ impl DslExecutor {
             &self.owner,
             &self.project,
             &meta.file_rel_path,
-            &crate::platform::model::PipelineInvocationEntry {
+            crate::platform::model::PipelineInvocationEntry {
                 run_id: ctx.request_id.clone(),
                 at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

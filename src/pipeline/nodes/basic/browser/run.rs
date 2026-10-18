@@ -315,7 +315,7 @@ impl NodeHandler for Node {
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: crate::pipeline::nodes::shared::util::with_answer(&input.payload, json!({ "page": payload })),
+            payload: crate::pipeline::nodes::shared::util::with_answer(input.payload, json!({ "page": payload })),
             trace: vec![format!(
                 "node_kind={NODE_KIND} credential={} status={}",
                 self.config.credential_id, status

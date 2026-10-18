@@ -287,7 +287,7 @@ impl NodeHandler for Node {
             let existing = store.stored_ref(&thumb_rel, NODE_KIND, "sanitized", CODE)?;
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: with_answer(&input.payload, json!({ "image": existing })),
+                payload: with_answer(input.payload, json!({ "image": existing })),
                 trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={thumb_rel} skipped")],
             });
         }
@@ -309,7 +309,7 @@ impl NodeHandler for Node {
         }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "image": image })),
+            payload: with_answer(input.payload, json!({ "image": image })),
             trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={thumb_rel} {actual_w}x{actual_h} {format} {}B", encoded.len())],
         })
     }

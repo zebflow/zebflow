@@ -217,7 +217,7 @@ impl PipelineScheduler {
                             &owner,
                             &project,
                             &file_rel_path,
-                            &PipelineInvocationEntry {
+                            PipelineInvocationEntry {
                                 run_id: ctx.request_id.clone(),
                                 at: fired_at.timestamp(),
                                 duration_ms,
@@ -245,7 +245,7 @@ impl PipelineScheduler {
                             &owner,
                             &project,
                             &file_rel_path,
-                            &PipelineInvocationEntry {
+                            PipelineInvocationEntry {
                                 run_id: ctx.request_id.clone(),
                                 at: fired_at.timestamp(),
                                 duration_ms,

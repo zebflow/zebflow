@@ -230,7 +230,7 @@ impl NodeHandler for Node {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: with_answer(
-                &input.payload,
+                input.payload,
                 json!({
                     "oauth": { "approved": true, "client": ticket.client_name, "redirect_host": ticket.redirect_host },
                     ENVELOPE_KEY: envelope,

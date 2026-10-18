@@ -22,19 +22,23 @@ use super::ws_rooms::{Socket, connect, next_of, serve};
 
 /// Webhook requests in flight at once.
 const IN_FLIGHT: usize = 32;
-const REQUESTS: usize = 4000;
+/// How long each route is driven: long enough to sample a profile from,
+/// the same for an engine at 1k req/s and one at 100k.
+const DRIVE: Duration = Duration::from_secs(3);
 
-/// `REQUESTS` POSTs of a small JSON body, `IN_FLIGHT` at a time, straight
+/// POSTs of a small JSON body for `DRIVE`, `IN_FLIGHT` at a time, straight
 /// into the router (no TCP): requests per second and p50 / p99.
 async fn hammer(app: &axum::Router, uri: &str) {
-    let latencies = Arc::new(Mutex::new(Vec::with_capacity(REQUESTS)));
+    let latencies = Arc::new(Mutex::new(Vec::new()));
     let start = Instant::now();
     let tasks: Vec<_> = (0..IN_FLIGHT)
         .map(|t| {
             let (app, uri, latencies) = (app.clone(), uri.to_string(), latencies.clone());
             tokio::spawn(async move {
-                for n in 0..REQUESTS / IN_FLIGHT {
-                    let body = json!({ "id": t * REQUESTS + n, "lat": -6.2, "lng": 106.8 }).to_string();
+                let mut n = 0;
+                while start.elapsed() < DRIVE {
+                    n += 1;
+                    let body = json!({ "id": t * 10_000_000 + n, "lat": -6.2, "lng": 106.8 }).to_string();
                     let request = Request::builder().uri(&uri).method("POST").header("content-type", "application/json").body(Body::from(body)).expect("request");
                     let began = Instant::now();
                     let response = app.clone().oneshot(request).await.expect("response");
@@ -55,7 +59,7 @@ async fn hammer(app: &axum::Router, uri: &str) {
     let at = |q: f64| l[((l.len() as f64 * q) as usize).min(l.len() - 1)].as_secs_f64() * 1e3;
     eprintln!(
         "perf-wh {uri:<40} {:>9.0} req/s  p50 {:>6.2} ms  p99 {:>6.2} ms  ({} in flight, debug_assertions={})",
-        REQUESTS as f64 / took.as_secs_f64(),
+        l.len() as f64 / took.as_secs_f64(),
         at(0.5),
         at(0.99),
         IN_FLIGHT,
@@ -83,6 +87,8 @@ async fn perf_webhook_against_plain_axum() {
     let root = temp_dir("perf-webhook");
     let app = app_at(&root).await;
     let cookie = login(&app).await;
+    // Three that pull apart: reads nothing, reads one field, three nodes.
+    publish(&app, &cookie, "wh-zero", r#"| trigger.webhook --route /bench/zero --method POST | web.response.send --body ok"#).await;
     publish(&app, &cookie, "wh-one", r#"| trigger.webhook --route /bench/one --method POST | web.response.send --body "{{ input.webhook.body.id }}""#).await;
     publish(
         &app,
@@ -91,7 +97,7 @@ async fn perf_webhook_against_plain_axum() {
         r#"| trigger.webhook --route /bench/three --method POST | javascript.script.run -- "return { x: input.webhook.body.id * 2 };" | kv.entry.put --key "/a/{{ input.webhook.body.id }}" --value "{{ input.webhook.body }}" | web.response.send --body "{{ input.script }}""#,
     )
     .await;
-    for route in ["/bench/one", "/bench/one", "/bench/three"] {
+    for route in ["/bench/zero", "/bench/one", "/bench/three"] {
         hammer(&app, &format!("/wh/{OWNER}/{PROJECT}{route}")).await;
     }
 }

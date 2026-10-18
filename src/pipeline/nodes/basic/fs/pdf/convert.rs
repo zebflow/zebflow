@@ -256,7 +256,7 @@ impl NodeHandler for Node {
             // Skipped: nothing was written.
             return Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                payload: with_answer(&input.payload, json!({ "pdf": { "folder": output_rel_dir, "items": [], "count": 0 } })),
+                payload: with_answer(input.payload, json!({ "pdf": { "folder": output_rel_dir, "items": [], "count": 0 } })),
                 trace: vec![format!("node_kind={NODE_KIND} src={rel_path} out={output_rel_dir} skipped=true")],
             });
         }
@@ -286,7 +286,7 @@ impl NodeHandler for Node {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: with_answer(
-                &input.payload,
+                input.payload,
                 json!({ "pdf": {
                     "folder": output_rel_dir,
                     "items": items,

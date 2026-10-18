@@ -285,7 +285,7 @@ pub fn output_pins(config: &serde_json::Value) -> Vec<String> {
         #[serde(default, deserialize_with = "deserialize_match_default")]
         default: MatchDefault,
     }
-    let routes: Routes = serde_json::from_value(config.clone()).unwrap_or_default();
+    let routes: Routes = crate::pipeline::nodes::shared::util::typed_config(&config).unwrap_or_default();
     let mut pins: Vec<String> = Vec::new();
     for pin in routes.cases.into_iter().map(|case| case.pin).chain(std::iter::once(routes.default.pin)) {
         if !pins.contains(&pin) {

@@ -119,7 +119,7 @@ impl NodeHandler for Node {
             entry["ttl"] = json!(ttl_text(seconds));
         }
         Ok(answer(
-            &input.payload,
+            input.payload,
             json!({ "entry": entry }),
             format!("{NODE_KIND}: key={} ttl={:?} updated={updated} durable={}", self.key, self.ttl, self.durable),
         ))

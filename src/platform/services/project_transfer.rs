@@ -568,6 +568,7 @@ impl ProjectTransferService {
         // directory the incoming layout expects but the archive left empty.
         // That includes `.git`: the archive never carries one, so the layout
         // starts a fresh repository, written by this machine's git.
+        self.file.forget_project(&owner, &project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         if staging.carries(ProjectBundleClass::Repo) {
             let history = staging.dir.join(PROJECT_BUNDLE_HISTORY_FILE);
@@ -636,6 +637,7 @@ impl ProjectTransferService {
                 recovery_dir: displaced_name,
             });
         }
+        self.file.forget_project(&owner, &project);
         let _ = self.file.ensure_project_layout(&owner, &project)?;
         Ok(displaced)
     }
@@ -1433,7 +1435,7 @@ mod tests {
     /// uncommitted edit, and a `.git/config` that names a program to run.
     fn project_with_history(instance: &TestInstance, project: &str) -> PathBuf {
         instance.config.ensure_initialized("owner", project, "History").unwrap();
-        let repo = instance.file.ensure_project_layout("owner", project).unwrap().repo_dir;
+        let repo = instance.file.ensure_project_layout("owner", project).unwrap().repo_dir.clone();
         git_in(&repo, &["checkout", "-q", "-b", "trunk"]);
         fs::write(repo.join("README.md"), "one\n").unwrap();
         git_in(&repo, &["add", "--all"]);
@@ -1465,7 +1467,7 @@ mod tests {
 
         instance.config.ensure_initialized("owner", "target", "Target").unwrap();
         instance.transfer.import_project("owner", "target", None, &archive).unwrap();
-        let repo = instance.file.ensure_project_layout("owner", "target").unwrap().repo_dir;
+        let repo = instance.file.ensure_project_layout("owner", "target").unwrap().repo_dir.clone();
         assert_eq!(git_in(&repo, &["log", "--format=%s"]), "second\nfirst");
         assert_eq!(git_in(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]), "trunk");
         assert_eq!(git_in(&repo, &["tag"]), "v1");
@@ -1491,7 +1493,7 @@ mod tests {
 
         instance.config.ensure_initialized("owner", "target", "Target").unwrap();
         instance.transfer.import_project("owner", "target", None, &archive).unwrap();
-        let repo = instance.file.ensure_project_layout("owner", "target").unwrap().repo_dir;
+        let repo = instance.file.ensure_project_layout("owner", "target").unwrap().repo_dir.clone();
         assert_eq!(git_in(&repo, &["log", "--format=%s"]), "Import owner/source");
         assert_eq!(fs::read_to_string(repo.join("README.md")).unwrap(), "uncommitted\n");
         assert_eq!(git_in(&repo, &["status", "--porcelain"]), "");

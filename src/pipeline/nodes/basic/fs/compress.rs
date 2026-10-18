@@ -274,7 +274,7 @@ impl NodeHandler for Node {
         let size = archive["size"].as_u64().unwrap_or(0);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: with_answer(&input.payload, json!({ "archive": archive })),
+            payload: with_answer(input.payload, json!({ "archive": archive })),
             trace: vec![format!("node_kind={NODE_KIND} srcs={} archive={archive_rel} store={} size={size}", source_paths.join(","), store.id)],
         })
     }
