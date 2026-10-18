@@ -206,6 +206,11 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
     ),
     ("platform-hub", "platform.hub", "pages/hub/page.tsx"),
     (
+        "platform-settings",
+        "platform.settings",
+        "pages/settings/page.tsx",
+    ),
+    (
         "platform-project-pipelines",
         "platform.project.pipelines",
         "pages/project-studio/pipelines/page.tsx",
@@ -533,6 +538,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
         .route("/profile", get(profile_page))
+        .route("/settings", get(instance_settings_page))
         .route("/account/password", get(account_password_page))
         .route("/hub", get(platform_hub_page))
         .route("/dev/design-system", get(design_system_page))
@@ -658,6 +664,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/platform/users",
             get(api_list_users).post(api_create_user),
+        )
+        .route(
+            "/api/platform/settings",
+            get(api_get_instance_settings).put(api_put_instance_settings),
         )
         .route("/api/platform/users/{owner}", delete(api_delete_user))
         .route("/api/profile", get(api_get_profile).put(api_update_profile))
@@ -3083,18 +3093,36 @@ fn render_login_page(
                 "description": "Login page for Zebflow platform"
             },
             "error": error.unwrap_or(""),
-            "default_identifier": state.platform.config.default_owner,
+            // A convenience for the first sign-in only: once its person has
+            // chosen a password, or another name, the login names nobody.
+            "default_identifier": if state.platform.users.must_change_password(&state.platform.config.default_owner).unwrap_or(false) {
+                state.platform.config.default_owner.as_str()
+            } else {
+                ""
+            },
             "app_version": APP_VERSION,
         }),
     )?;
     Ok((status, Html(html)).into_response())
 }
 
+/// Runs password work on the blocking pool. Argon2 is slow and memory-hard on
+/// purpose, so a check on a request thread would stall every request that
+/// thread serves while it hashes; `UserService` bounds how many run at once.
+async fn password_work<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, PlatformError> + Send + 'static,
+) -> Result<T, PlatformError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|err| Err(PlatformError::new("PLATFORM_PASSWORD_TASK", err.to_string())))
+}
+
 async fn login_submit(
     State(state): State<PlatformAppState>,
     Form(req): Form<LoginRequest>,
 ) -> Response {
-    match state.platform.auth.login(&req.identifier, &req.password) {
+    let auth = state.platform.auth.clone();
+    match password_work(move || auth.login(&req.identifier, &req.password)).await {
         Ok(Some(session)) => {
             // Grafana's rule: while the credential is still the generated one,
             // the browser lands on the change-password screen instead of home.
@@ -3130,6 +3158,12 @@ async fn login_submit(
         // either was read.
         Err(err) if err.code == LOCAL_LOGIN_DISABLED_CODE => {
             match render_login_page(&state, Some(&err.message), StatusCode::FORBIDDEN) {
+                Ok(resp) => resp,
+                Err(err) => internal_error(err),
+            }
+        }
+        Err(err) if err.code == "PLATFORM_LOGIN_THROTTLED" => {
+            match render_login_page(&state, Some(&err.message), StatusCode::TOO_MANY_REQUESTS) {
                 Ok(resp) => resp,
                 Err(err) => internal_error(err),
             }
@@ -3253,6 +3287,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
             "offices": offices,
             "hidden_projects": hidden_projects,
             "can_open_remote": can_open_remote,
+            "is_superadmin": is_superadmin_owner(&state, &owner),
             "runtime_targets": runtime_targets,
             "app_version": APP_VERSION,
         }),
@@ -3626,11 +3661,20 @@ fn is_project_hub_producer_enabled(
         .platform
         .zebflow_cfg
         .get_hub_distribution(owner, project)?;
-    Ok(cfg.producer_enabled && owner == state.platform.config.default_owner)
+    Ok(cfg.producer_enabled && is_first_boot_owner(state, owner))
 }
 
 fn can_manage_project_hub_producer(state: &PlatformAppState, owner: &str) -> bool {
-    owner == state.platform.config.default_owner
+    is_first_boot_owner(state, owner)
+}
+
+/// Whether `owner` is the account the instance made for itself on first
+/// boot: `default_owner`, or — when its person chose another name at first
+/// sign-in, so no account has that name — a superadmin.
+fn is_first_boot_owner(state: &PlatformAppState, owner: &str) -> bool {
+    let default_owner = &state.platform.config.default_owner;
+    owner == default_owner
+        || (matches!(state.platform.users.get_user(default_owner), Ok(None)) && is_superadmin_owner(state, owner))
 }
 
 fn require_project_hub_producer(
@@ -3677,8 +3721,43 @@ async fn profile_page(State(state): State<PlatformAppState>, headers: HeaderMap)
             },
             "owner": owner,
             "user": user,
+            "is_superadmin": is_superadmin_owner(&state, &owner),
             "effective_git_identity": resolved,
             "profile_api": "/api/profile",
+            "app_version": APP_VERSION,
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+/// This office's own settings: superadmins only; anyone else is sent home.
+async fn instance_settings_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    if !is_superadmin_owner(&state, &owner) {
+        return Redirect::to(HOME_PATH).into_response();
+    }
+    let service = &state.platform.instance_settings;
+    let effective = match service.effective() {
+        Ok(effective) => effective,
+        Err(err) => return internal_error(err),
+    };
+    match render_page(
+        &state,
+        "platform-settings",
+        "/settings",
+        json!({
+            "seo": {
+                "title": "Settings",
+                "description": "This office's own settings"
+            },
+            "owner": owner,
+            "settings": service.get(),
+            "effective": effective,
+            "settings_api": "/api/platform/settings",
             "app_version": APP_VERSION,
         }),
     ) {
@@ -3710,6 +3789,7 @@ async fn account_password_page(
             },
             "owner": owner,
             "forced": forced,
+            "name_choosable": state.platform.may_choose_account_name(&owner).unwrap_or(false),
             "password_api": "/api/profile/password",
             "app_version": APP_VERSION,
         }),
@@ -3731,24 +3811,32 @@ async fn api_change_password(
         )
             .into_response();
     };
-    if let Err(err) =
-        state
-            .platform
-            .users
-            .change_password(&owner, &req.current_password, &req.new_password)
-    {
-        let status = match err.code {
-            "PLATFORM_PASSWORD_INCORRECT" => StatusCode::FORBIDDEN,
-            "PLATFORM_PASSWORD_INVALID" | "PLATFORM_PASSWORD_INSECURE" => StatusCode::BAD_REQUEST,
-            "PLATFORM_USER_NOT_FOUND" => StatusCode::NOT_FOUND,
-            _ => return internal_error(err),
-        };
-        return (
-            status,
-            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
-        )
-            .into_response();
-    }
+    let (platform, who) = (state.platform.clone(), owner.clone());
+    let changed = password_work(move || match req.account_name.as_deref() {
+        Some(name) => platform.choose_account_name(&who, &req.current_password, name, &req.new_password),
+        None => platform.users.change_password(&who, &req.current_password, &req.new_password).map(|()| who),
+    })
+    .await;
+    let named = match changed {
+        Ok(named) => named,
+        Err(err) => {
+            let status = match err.code {
+                "PLATFORM_PASSWORD_INCORRECT" => StatusCode::FORBIDDEN,
+                "PLATFORM_PASSWORD_INVALID" | "PLATFORM_PASSWORD_INSECURE" | "PLATFORM_USER_INVALID" => {
+                    StatusCode::BAD_REQUEST
+                }
+                "PLATFORM_USER_EXISTS" | "PLATFORM_ACCOUNT_NAME_FIXED" => StatusCode::CONFLICT,
+                "PLATFORM_LOGIN_THROTTLED" => StatusCode::TOO_MANY_REQUESTS,
+                "PLATFORM_USER_NOT_FOUND" => StatusCode::NOT_FOUND,
+                _ => return internal_error(err),
+            };
+            return (
+                status,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response();
+        }
+    };
 
     // The password is chosen now, so the bootstrap cleartext no longer opens
     // anything and its zero-ceremony window closes: delete it. Only the
@@ -3764,15 +3852,19 @@ async fn api_change_password(
     }
 
     // Every other session of this user is now on a dead password; end them.
-    // The session that just proved it knows the new password stays.
+    // The session that just proved it knows the new password stays, under
+    // the name the account has now.
     let current_token = session_token(&headers);
     if let Ok(mut sessions) = state.sessions.lock() {
         sessions.retain(|token, session| {
             session.owner != owner || Some(token.as_str()) == current_token.as_deref()
         });
+        if let Some(session) = current_token.as_deref().and_then(|token| sessions.get_mut(token)) {
+            session.owner = named.clone();
+        }
     }
 
-    Json(json!({"ok": true})).into_response()
+    Json(json!({"ok": true, "owner": named})).into_response()
 }
 
 async fn design_system_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
@@ -9153,6 +9245,45 @@ async fn api_admin_db_delete_node(
 
 // ────────────────────────────────────────────────────────────────────────────
 
+/// This instance's settings and what they come to here.
+fn instance_settings_json(
+    settings: &crate::platform::services::instance_settings::InstanceSettings,
+    effective: &crate::platform::services::instance_settings::EffectiveSettings,
+) -> Value {
+    json!({"ok": true, "settings": settings, "effective": effective})
+}
+
+async fn api_get_instance_settings(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let service = &state.platform.instance_settings;
+    match service.effective() {
+        Ok(effective) => Json(instance_settings_json(&service.get(), &effective)).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_put_instance_settings(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(settings): Json<crate::platform::services::instance_settings::InstanceSettings>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let service = &state.platform.instance_settings;
+    match service.set(settings) {
+        Ok(effective) => Json(instance_settings_json(&service.get(), &effective)).into_response(),
+        Err(err) if err.code == "PLATFORM_SETTINGS_INVALID" => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_list_users(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
@@ -9171,7 +9302,8 @@ async fn api_create_user(
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    match state.platform.users.create_user(&req) {
+    let users = state.platform.users.clone();
+    match password_work(move || users.create_user(&req)).await {
         Ok(user) => Json(json!({"ok": true, "user": user})).into_response(),
         Err(err) if err.code == "PLATFORM_USER_EXISTS" => (
             StatusCode::CONFLICT,
@@ -9243,7 +9375,9 @@ async fn api_delete_user(
         )
             .into_response();
     }
-    match state.platform.users.authenticate(&caller, &req.password) {
+    let (users, who, password) =
+        (state.platform.users.clone(), caller.clone(), req.password.clone());
+    match password_work(move || users.authenticate(&who, &password)).await {
         Ok(true) => {}
         Ok(false) => {
             return (
@@ -9640,11 +9774,9 @@ async fn api_configure_platform_hub_service(
         )
             .into_response();
     }
-    match state
-        .platform
-        .users
-        .authenticate(&session_owner, &req.password)
-    {
+    let (users, who, password) =
+        (state.platform.users.clone(), session_owner.clone(), req.password.clone());
+    match password_work(move || users.authenticate(&who, &password)).await {
         Ok(true) => {}
         Ok(false) => {
             return (
@@ -10729,7 +10861,8 @@ async fn office_vouch_redeem(
     State(state): State<PlatformAppState>,
     Query(params): Query<OfficeVouchRedeemQuery>,
 ) -> Response {
-    match redeem_vouch_into_local_principal(&state, &params.v) {
+    let redeeming = state.clone();
+    match password_work(move || redeem_vouch_into_local_principal(&redeeming, &params.v)).await {
         Ok((owner, _write)) => {
             // §3a: opening a project is a vouch that lands in that project.
             let target = local_next_path(&params.next).unwrap_or(HOME_PATH);
@@ -10753,7 +10886,8 @@ async fn api_office_vouch_redeem(
     State(state): State<PlatformAppState>,
     Json(req): Json<OfficeVouchRedeemRequest>,
 ) -> Response {
-    match redeem_vouch_into_local_principal(&state, &req.vouch) {
+    let redeeming = state.clone();
+    match password_work(move || redeem_vouch_into_local_principal(&redeeming, &req.vouch)).await {
         Ok((owner, write)) => {
             let mut resp = Json(json!({
                 "ok": true,
@@ -12208,11 +12342,9 @@ async fn api_delete_project(
     }
 
     // Re-verify password
-    match state
-        .platform
-        .users
-        .authenticate(&owner_slug, &req.password)
-    {
+    let (users, who, password) =
+        (state.platform.users.clone(), owner_slug.clone(), req.password.clone());
+    match password_work(move || users.authenticate(&who, &password)).await {
         Ok(true) => {}
         Ok(false) => {
             return (
@@ -14907,6 +15039,9 @@ async fn api_pipeline_invocations(
             "file_rel_path": file_rel_path,
             "entries": entries,
             "count": entries.len(),
+            // Runs since start whose record was not kept: the records waiting
+            // to be written had filled the instance's limit.
+            "unrecorded": state.platform.data.unrecorded_runs(&owner, &project, file_rel_path).unwrap_or(0),
         }))
         .into_response(),
         Err(err) => internal_error(err),
@@ -21925,11 +22060,9 @@ async fn api_set_hub_producer_mode(
             .into_response();
     }
     if !internal_cluster_call {
-        match state
-            .platform
-            .users
-            .authenticate(&owner_slug, &req.password)
-        {
+        let (users, who, password) =
+            (state.platform.users.clone(), owner_slug.clone(), req.password.clone());
+        match password_work(move || users.authenticate(&who, &password)).await {
             Ok(true) => {}
             Ok(false) => {
                 return (
@@ -26965,6 +27098,7 @@ fn resolve_pipeline_registry_scope(
 fn forced_change_applies_to(path: &str) -> bool {
     path == "/home"
         || path == "/profile"
+        || path == "/settings"
         || path == "/hub"
         || path.starts_with("/home/")
         || path.starts_with("/projects/")
@@ -28112,6 +28246,8 @@ fn internal_error(err: PlatformError) -> Response {
         // Retraction destroyed the bytes and kept the coordinate, which is what
         // 410 says and 404 would not.
         "HUB_VERSION_RETRACTED" => StatusCode::GONE,
+        // A name's failed sign-ins make its next attempt wait.
+        "PLATFORM_LOGIN_THROTTLED" => StatusCode::TOO_MANY_REQUESTS,
         "INVALID_REQUEST"
         | "HUB_TOKEN_INVALID"
         | "HUB_ARTIFACT_PATH_INVALID"

@@ -27,6 +27,7 @@ export function getPage(input) {
 }
 
 export default function Page(input) {
+  const [accountName, setAccountName] = useState(input?.owner ?? "");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -35,6 +36,8 @@ export default function Page(input) {
   const [tone, setTone] = useState("muted");
   const api = input?.password_api ?? "/api/profile/password";
   const forced = Boolean(input?.forced);
+  // Only at the first sign-in of the account the instance made for itself.
+  const nameChoosable = Boolean(input?.name_choosable);
 
   const save = async (event) => {
     event.preventDefault();
@@ -56,6 +59,7 @@ export default function Page(input) {
         body: JSON.stringify({
           current_password: currentPassword,
           new_password: newPassword,
+          ...(nameChoosable ? { account_name: accountName.trim() } : {}),
         }),
       });
       if (response.status === 401) {
@@ -89,7 +93,7 @@ export default function Page(input) {
       <section className="w-full max-w-md">
         <header className="mb-6 text-center">
           <h1 className="text-2xl font-black tracking-tighter text-gray-900">
-            Change password
+            {nameChoosable ? "Set up your account" : "Change password"}
           </h1>
           <p className="mt-2 text-sm text-gray-500">
             Signed in as{" "}
@@ -110,6 +114,23 @@ export default function Page(input) {
               other signed-in session of this account is ended.
             </CardDescription>
             <form className="mt-5 flex flex-col gap-4" onSubmit={save}>
+              {nameChoosable ? (
+                <Field label="Account name" id="account-name">
+                  <Input
+                    id="account-name"
+                    value={accountName}
+                    onInput={(event) => setAccountName(event.currentTarget.value)}
+                    autoComplete="username"
+                    pattern="[a-z0-9_-]+"
+                    required
+                  />
+                  <p className="text-xs text-gray-500">
+                    Part of every address: /projects/{accountName.trim() || "…"}/…,
+                    /wh/{accountName.trim() || "…"}/…. Choose it now, at the first
+                    sign-in; after that it stays.
+                  </p>
+                </Field>
+              ) : null}
               <Field label="Current password" id="account-current-password">
                 <Input
                   id="account-current-password"
@@ -142,7 +163,7 @@ export default function Page(input) {
               </Field>
               <div className="flex flex-wrap items-center gap-3 pt-1">
                 <Button type="submit" variant="primary" disabled={busy}>
-                  {busy ? "Changing..." : "Change password"}
+                  {busy ? "Saving..." : nameChoosable ? "Save and continue" : "Change password"}
                 </Button>
                 {forced ? null : (
                   <Button as="a" href="/profile" variant="outline">

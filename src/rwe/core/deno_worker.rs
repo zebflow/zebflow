@@ -30,6 +30,7 @@ use deno_error::JsErrorBox;
 use serde_json::Value;
 
 use super::error::EngineError;
+use crate::language::engines::deno_sandbox::heap;
 
 // ---------------------------------------------------------------------------
 // Embedded JS — installs Zeb React SSR globals once at startup.
@@ -184,12 +185,17 @@ struct WorkerPool {
     next: AtomicUsize,
 }
 
-static WORKER_POOL: LazyLock<WorkerPool> = LazyLock::new(|| {
-    let count = std::env::var("RWE_WORKER_COUNT")
+/// How many page runtimes the pool keeps.
+pub fn render_runtime_count() -> usize {
+    std::env::var("RWE_WORKER_COUNT")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(3)
-        .max(1);
+        .max(1)
+}
+
+static WORKER_POOL: LazyLock<WorkerPool> = LazyLock::new(|| {
+    let count = render_runtime_count();
     eprintln!("rwe-js-runtime: starting {count} worker(s) (RWE_WORKER_COUNT={count})");
     let workers = (0..count).map(|i| Mutex::new(spawn_js_thread(i))).collect();
     WorkerPool {
@@ -237,11 +243,15 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
         .expect("rwe-js-runtime: failed building tokio runtime");
 
     tokio_rt.block_on(async move {
+        let heap = heap::current();
+        let (generation, limit) = (heap.generation, heap.limit);
         let mut js_rt = JsRuntime::new(RuntimeOptions {
             module_loader: Some(Rc::new(RweModuleLoader)),
             extensions: vec![rwe_ops::init()],
+            create_params: heap.params,
             ..Default::default()
         });
+        let heap_reached = heap::stop_at_heap_limit(&mut js_rt, limit);
 
         // The kill switch, held by a thread the render cannot reach.
         let isolate_handle = js_rt.v8_isolate().thread_safe_handle();
@@ -258,6 +268,9 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             eprintln!("rwe-js-runtime[{worker_id}]: tool_init failed: {e}");
             return;
         }
+        // What the runtime holds before its first render: the floor its
+        // heap returns to at best.
+        let baseline = used_heap(&mut js_rt);
 
         let mut render_count: u64 = 0;
 
@@ -266,11 +279,18 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             // Periodic restart: spawn a replacement worker to handle this request,
             // then exit cleanly so the pool slot is refreshed on the next request.
             // The user never sees a RWE_RESTART error.
-            if render_count >= RESTART_AFTER_RENDERS {
-                eprintln!(
-                    "rwe-js-runtime[{worker_id}]: scheduled restart after {render_count} renders \
-                     — forwarding to fresh worker"
-                );
+            // A changed heap limit retires the runtime the same way, so the
+            // render runs on one made with the limit now in force.
+            let heap_changed = heap::generation() != generation;
+            if render_count >= RESTART_AFTER_RENDERS || heap_changed {
+                if heap_changed {
+                    eprintln!("rwe-js-runtime[{worker_id}]: heap limit changed — forwarding to fresh worker");
+                } else {
+                    eprintln!(
+                        "rwe-js-runtime[{worker_id}]: scheduled restart after {render_count} renders \
+                         — forwarding to fresh worker"
+                    );
+                }
                 let one_shot_tx = spawn_js_thread(worker_id);
                 // Forward the request; one_shot_tx drop after this fn closes the channel
                 // once the one-shot worker has received and processed the message.
@@ -315,6 +335,21 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
                 return;
             }
 
+            if heap_reached.get() {
+                eprintln!(
+                    "rwe-js-runtime[{worker_id}]: render reached the {} heap limit — \
+                     stopped, worker retiring",
+                    heap::describe(limit)
+                );
+                let _ = req.reply.send(Err(EngineError::new(
+                    "RWE_MEMORY",
+                    format!("SSR render reached its memory limit ({} heap) and was stopped", heap::describe(limit)),
+                )));
+                // Its heap is near full and its script was cut off: replaced
+                // like a terminated one.
+                return;
+            }
+
             let result = match result {
                 Ok(r) => r,
                 Err(_panic) => {
@@ -330,8 +365,34 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             };
             let _ = req.reply.send(result);
             render_count += 1;
+
+            // A runtime never unloads a page module, so every render leaves
+            // its heap a little larger. Past half the room its limit leaves
+            // above its baseline it is replaced now, between renders, rather
+            // than stopped mid-render by the limit later. Garbage counts as
+            // used until collected, so a full collection decides first.
+            if limit > 0 {
+                let retire_above = baseline + limit.saturating_sub(baseline) / 2;
+                if used_heap(&mut js_rt) > retire_above {
+                    js_rt.v8_isolate().low_memory_notification();
+                    let used = used_heap(&mut js_rt);
+                    if used > retire_above {
+                        eprintln!(
+                            "rwe-js-runtime[{worker_id}]: heap at {}MiB of its {} limit after {render_count} renders \
+                             — retiring between renders",
+                            used >> 20,
+                            heap::describe(limit)
+                        );
+                        return;
+                    }
+                }
+            }
         }
     });
+}
+
+fn used_heap(js_rt: &mut JsRuntime) -> usize {
+    js_rt.v8_isolate().get_heap_statistics().used_heap_size()
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +584,13 @@ pub fn render_ssr(
         }
 
         match reply_rx.recv_timeout(timeout) {
+            // A render stopped by its heap limit retired its runtime; it
+            // runs once more on a fresh one, whose heap holds no earlier
+            // render. A render that needs more than a whole limit fails there.
+            Ok(Err(err)) if err.code == "RWE_MEMORY" && attempt == 0 => {
+                last = Some(err);
+                continue;
+            }
             Ok(response) => {
                 return match response? {
                     JsResponse::Rendered { html, page_config } => {

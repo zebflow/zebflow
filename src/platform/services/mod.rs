@@ -28,6 +28,7 @@ pub mod fonts;
 pub mod git_sync;
 pub mod hub;
 pub mod hub_repository;
+pub mod instance_settings;
 pub mod library;
 pub mod mcp_session;
 pub mod migration;
@@ -64,6 +65,7 @@ pub use dependency_lock::{
     DependencyStatusItem, DependencyStatusReport,
 };
 pub use hub::HubService;
+pub use instance_settings::InstanceSettingsService;
 pub use library::LibraryService;
 pub use mcp_session::McpSessionService;
 pub use migration::MigrationService;

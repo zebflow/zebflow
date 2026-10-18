@@ -83,7 +83,7 @@ export default function Page(input) {
 
   return (
     <>
-      <ChromeHeader />
+      <ChromeHeader superadmin={Boolean(input?.is_superadmin)} />
       <main className="pb-16 pt-24">
         <section className="mx-auto max-w-3xl px-6">
           <header className="mb-8 border-b border-gray-200 pb-4">

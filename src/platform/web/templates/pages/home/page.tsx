@@ -88,7 +88,7 @@ export default function Page(input) {
 
   return (
     <>
-      <ChromeHeader />
+      <ChromeHeader superadmin={Boolean(input?.is_superadmin)} />
 
       <main className="pb-20 pt-28">
         <section className="mx-auto w-full max-w-[1960px] px-6 sm:px-10">

@@ -4317,6 +4317,11 @@ pub struct ChangePasswordRequest {
     pub current_password: String,
     /// The replacement password.
     pub new_password: String,
+    /// A name for the account, accepted only at the first sign-in of the
+    /// account the instance made for itself
+    /// (`PlatformService::may_choose_account_name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
 }
 
 /// Minimal auth session value.

@@ -492,7 +492,7 @@ export default function Page(input) {
 
   return (
     <>
-      <ChromeHeader />
+      <ChromeHeader superadmin={isSuperadmin} />
       <main className="pb-20 pt-28">
         <section className="mx-auto w-full max-w-[1960px] px-6 sm:px-10">
           <div className="mb-8 flex flex-col gap-6 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">

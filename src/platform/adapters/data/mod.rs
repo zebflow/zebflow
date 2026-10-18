@@ -38,6 +38,17 @@ pub trait DataAdapter: Send + Sync {
     /// local auth. The caller must have transferred or deleted every project
     /// they own first — a surviving project keeps its foreign key onto the
     /// user row, and this method fails rather than orphaning it.
+    /// Gives an account a new name: the same account, its identity and its
+    /// password, under `new_owner`. Its projects are not moved — the caller
+    /// transfers each one after. Refused when `new_owner` is taken.
+    fn rename_user(&self, old_owner: &str, new_owner: &str) -> Result<(), PlatformError> {
+        let _ = (old_owner, new_owner);
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "renaming users is not supported by this data adapter",
+        ))
+    }
+
     fn delete_user(&self, owner: &str, user_id: &str) -> Result<(), PlatformError> {
         let _ = (owner, user_id);
         Err(PlatformError::new(
@@ -847,6 +858,17 @@ pub trait DataAdapter: Send + Sync {
         _max_age_secs: Option<i64>,
     ) -> Result<(), PlatformError> {
         Ok(())
+    }
+
+    /// Sets how many bytes of run records may wait to be written; 0 is no
+    /// limit. A record past it is not kept and its run is counted instead
+    /// ([`DataAdapter::unrecorded_runs`]). Default: no-op.
+    fn set_run_record_queue_limit(&self, _bytes: usize) {}
+
+    /// How many of a pipeline's runs had no record kept since start, because
+    /// the records waiting to be written had filled their limit.
+    fn unrecorded_runs(&self, _owner: &str, _project: &str, _file_rel_path: &str) -> Result<u64, PlatformError> {
+        Ok(0)
     }
 
     /// Count a failed run into its error group (`kinds/invocation-record`,

@@ -14,7 +14,7 @@ pub use engines::{
     CompiledDenoSandboxScript, DenoSandboxAllowList, ScriptDiagnostic, ScriptPolicy,
     compile_body, DenoSandboxAllowListPatch, DenoSandboxConfig,
     DenoSandboxConfigPatch, DenoSandboxDangerZone, DenoSandboxDangerZonePatch, DenoSandboxEngine,
-    NoopLanguageEngine, init_v8_platform,
+    NoopLanguageEngine, init_v8_platform, runtime_heap_limit, sandbox_runtime_count, set_runtime_heap_limit,
 };
 pub use interface::LanguageEngine;
 pub use model::{

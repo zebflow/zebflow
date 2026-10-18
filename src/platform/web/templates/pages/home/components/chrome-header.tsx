@@ -12,7 +12,8 @@ function ProfileIcon() {
 
 /**
  * Fixed top bar for authenticated platform pages outside the project studio.
- * Home uses the hub dialog directly on `/home`.
+ * Home uses the hub dialog directly on `/home`. `superadmin` adds the link to
+ * this office's settings.
  *
  * Why “chrome”: in UI jargon, *chrome* is the framing around the content window
  * (nav, toolbars, system trim) — the same sense as in “browser chrome”, not “Google Chrome”.
@@ -23,6 +24,11 @@ export default function ChromeHeader(props) {
       props.children
     ) : (
       <>
+        {props?.superadmin ? (
+          <Button as={Link} href="/settings" size="sm" variant="outline" className="rounded-md">
+            Settings
+          </Button>
+        ) : null}
         <Button
           as={Link}
           href="/profile"

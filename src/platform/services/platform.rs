@@ -14,7 +14,7 @@ use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateProjectRequest, CreateUserRequest, PipelineInvocationEntry, PlatformConfig,
-    PlatformOffice, PlatformOfficeNode, now_ts,
+    PlatformOffice, PlatformOfficeNode, now_ts, slug_segment,
 };
 use crate::platform::services::bootstrap::resolve_superadmin_password;
 use crate::platform::services::{
@@ -108,6 +108,9 @@ pub struct PlatformService {
     pub dependency_lock: Arc<DependencyLockService>,
     /// Projects the 0.11 migration at startup left for their owner.
     pub migration_notices: Arc<crate::platform::services::migration::MigrationNotices>,
+    /// This instance's own settings (`platform/settings.json`): its memory
+    /// shares, in force from boot.
+    pub instance_settings: Arc<crate::platform::services::InstanceSettingsService>,
 }
 
 impl PlatformService {
@@ -165,6 +168,13 @@ impl PlatformService {
         // anything can hold an ephemeral file open or begin serving.
         crate::platform::ephemeral::prepare_ephemeral_tier(&config.data_root)?;
         let data = build_data_adapter(config.data_adapter, &config.data_root)?;
+        // In force before anything makes a JavaScript runtime or hands over a
+        // run record: both read the limits these settings set.
+        let instance_settings = Arc::new(crate::platform::services::InstanceSettingsService::open(
+            &config.data_root,
+            data.clone(),
+        )?);
+        instance_settings.apply()?;
         // The configuration service is built first: the file adapter resolves
         // every project directory through the layout that service reads.
         let zebflow_cfg = Arc::new(ProjectConfigurationService::new(
@@ -372,6 +382,7 @@ impl PlatformService {
             hub,
             dependency_lock,
             migration_notices: Arc::new(Default::default()),
+            instance_settings,
         };
         svc.bootstrap_local_office()?;
         // Role does not change what an office is made of. `offices.md` §4 keeps
@@ -694,9 +705,101 @@ impl PlatformService {
         }
     }
 
-    /// Creates default superadmin + default project if missing.
+    /// Whether `owner` may still choose its account name: it is the account
+    /// this instance made for itself on first boot, still on its generated
+    /// password, holding only its starter project with nothing switched on.
+    /// That is the one moment its name is in no address anyone was given and
+    /// in no row but its own, so a name chosen then costs a rename of one
+    /// account and one project.
+    pub fn may_choose_account_name(&self, owner: &str) -> Result<bool, PlatformError> {
+        let owner = slug_segment(owner);
+        if owner != slug_segment(&self.config.default_owner) || !self.users.must_change_password(&owner)? {
+            return Ok(false);
+        }
+        for project in self.data.list_projects(&owner)? {
+            if project.project != self.config.default_project
+                || !self.projects.list_active_pipeline_meta(&owner, &project.project)?.is_empty()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The first sign-in of that account (see
+    /// [`PlatformService::may_choose_account_name`]), with the name and the
+    /// password its person chose: the current password is checked and
+    /// replaced, the account takes the name, and its starter project moves
+    /// under it. Answers the name the account now has.
+    ///
+    /// The name is the account's address everywhere — `/projects/{name}/…`,
+    /// `/wh/{name}/…` — so it is only chosen while nothing points at it yet;
+    /// after that it stays.
+    pub fn choose_account_name(
+        &self,
+        owner: &str,
+        current_password: &str,
+        name: &str,
+        new_password: &str,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let chosen = name.trim();
+        if chosen.is_empty() || slug_segment(chosen) != chosen {
+            return Err(PlatformError::new(
+                "PLATFORM_USER_INVALID",
+                "an account name is lowercase letters, digits, '-' and '_'",
+            ));
+        }
+        if chosen == owner {
+            self.users.change_password(&owner, current_password, new_password)?;
+            return Ok(owner);
+        }
+        if !self.may_choose_account_name(&owner)? {
+            return Err(PlatformError::new(
+                "PLATFORM_ACCOUNT_NAME_FIXED",
+                "the account name is chosen at the first sign-in only",
+            ));
+        }
+        if self.users.get_user(chosen)?.is_some() {
+            return Err(PlatformError::new("PLATFORM_USER_EXISTS", format!("user '{chosen}' already exists")));
+        }
+        // The password first: it proves the person holds the generated one,
+        // and a refusal here has changed nothing.
+        self.users.change_password(&owner, current_password, new_password)?;
+        let projects = self.data.list_projects(&owner)?;
+        self.data.rename_user(&owner, chosen)?;
+        for project in &projects {
+            if let Err(err) = self.projects.transfer_project_owner(&owner, &project.project, chosen) {
+                // The account keeps its old name rather than stand apart
+                // from its project.
+                let _ = self.data.rename_user(chosen, &owner);
+                return Err(err);
+            }
+            // Nothing of it is switched on (the gate above), so no route or
+            // trigger is held under the old name; the runtime only learns the
+            // new one. Refreshing the old would make its folders again.
+            self.pipeline_runtime.refresh_project(chosen, &project.project)?;
+            self.zebflow_cfg.forget_project(&owner, &project.project);
+            let _ = self.mcp_sessions.revoke_for_project(&owner, &project.project);
+        }
+        // Its folder is empty now that its project has moved out.
+        let _ = std::fs::remove_dir(self.config.data_root.join("users").join(&owner));
+        if let Err(err) = crate::platform::services::bootstrap::remove_generated_password_file(&self.config.data_root) {
+            eprintln!("warning: failed removing the bootstrap password file: {err}");
+        }
+        Ok(chosen.to_string())
+    }
+
+    /// Creates the first-boot superadmin and its starter project.
+    ///
+    /// The account is made once, on an instance that has no superadmin: one
+    /// whose person chose another name at first sign-in still has its
+    /// superadmin, and making `default_owner` again would hand the instance
+    /// a second one with a fresh generated password. The starter project is
+    /// kept while that account exists.
     pub fn bootstrap_defaults(&self) -> Result<(), PlatformError> {
-        if self.users.get_user(&self.config.default_owner)?.is_none() {
+        let has_superadmin = self.users.list_users()?.iter().any(|user| user.role == "superadmin");
+        if !has_superadmin && self.users.get_user(&self.config.default_owner)?.is_none() {
             let password =
                 resolve_superadmin_password(&self.config.data_root, &self.config.default_password)?;
             self.users.create_user(&CreateUserRequest {
@@ -718,6 +821,9 @@ impl PlatformService {
                     path.display()
                 );
             }
+        }
+        if self.users.get_user(&self.config.default_owner)?.is_none() {
+            return Ok(());
         }
 
         let first_boot = self
@@ -852,5 +958,59 @@ mod tests {
 
         let missing = platform.projects.set_project_hidden("superadmin", "nope", true);
         assert_eq!(missing.expect_err("no such project").code, "PLATFORM_PROJECT_MISSING");
+    }
+
+    /// An instance on its generated first-boot password, and that password.
+    fn generated_first_boot() -> (tempfile::TempDir, PlatformService, String) {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let platform = PlatformService::from_config(PlatformConfig {
+            data_root: data_root.path().to_path_buf(),
+            ..Default::default()
+        })
+        .expect("platform");
+        let generated = std::fs::read_to_string(crate::platform::services::bootstrap::generated_password_path(
+            data_root.path(),
+        ))
+        .expect("generated password");
+        (data_root, platform, generated.trim().to_string())
+    }
+
+    #[test]
+    fn the_first_sign_in_chooses_the_account_name_once() {
+        let (data_root, platform, generated) = generated_first_boot();
+        assert!(platform.may_choose_account_name("superadmin").expect("may"));
+
+        let named = platform
+            .choose_account_name("superadmin", &generated, "ops", "<chosen-password>")
+            .expect("choose");
+        assert_eq!(named, "ops");
+        assert!(platform.users.get_user("superadmin").expect("read").is_none());
+        let ops = platform.users.get_user("ops").expect("read").expect("ops");
+        assert_eq!(ops.role, "superadmin");
+        assert!(platform.users.authenticate("ops", "<chosen-password>").expect("auth"));
+        assert!(platform.projects.get_project("ops", "default").expect("read").is_some());
+        assert!(data_root.path().join("users/ops/default").exists());
+        assert!(!data_root.path().join("users/superadmin").exists());
+        assert!(!crate::platform::services::bootstrap::generated_password_path(data_root.path()).exists());
+
+        // Chosen once: the name now stays, and a later boot makes no second
+        // superadmin under the default name.
+        assert!(!platform.may_choose_account_name("ops").expect("may"));
+        let again = platform.choose_account_name("ops", "<chosen-password>", "other", "<another-password>");
+        assert_eq!(again.expect_err("fixed").code, "PLATFORM_ACCOUNT_NAME_FIXED");
+        platform.bootstrap_defaults().expect("next boot");
+        let names: Vec<String> = platform.users.list_users().expect("list").into_iter().map(|user| user.owner).collect();
+        assert_eq!(names, ["ops"]);
+    }
+
+    #[test]
+    fn a_name_is_not_chosen_without_the_generated_password() {
+        let (_data_root, platform, _generated) = generated_first_boot();
+        let refused = platform.choose_account_name("superadmin", "<wrong>", "ops", "<chosen-password>");
+        assert_eq!(refused.expect_err("wrong password").code, "PLATFORM_PASSWORD_INCORRECT");
+        assert!(platform.users.get_user("ops").expect("read").is_none());
+        let bad = platform.choose_account_name("superadmin", "<wrong>", "Ops Team", "<chosen-password>");
+        assert_eq!(bad.expect_err("not a slug").code, "PLATFORM_USER_INVALID");
+        assert!(platform.may_choose_account_name("superadmin").expect("may"), "nothing changed");
     }
 }

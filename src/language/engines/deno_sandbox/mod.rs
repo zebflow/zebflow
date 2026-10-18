@@ -13,6 +13,7 @@
 mod analyze;
 mod config;
 mod engine;
+pub(crate) mod heap;
 mod pool;
 mod runner;
 
@@ -22,6 +23,8 @@ pub use config::{
 };
 pub use analyze::{ScriptDiagnostic, ScriptPolicy, compile_body, static_property_name};
 pub use engine::{CompiledDenoSandboxScript, DenoSandboxEngine};
+pub use heap::{runtime_heap_limit, set_runtime_heap_limit};
+pub use pool::sandbox_runtime_count;
 
 /// Starts V8 with as many helper threads as the device has cores, one fewer
 /// as V8 itself would choose. Left to itself V8 counts the host's processors,

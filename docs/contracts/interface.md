@@ -357,7 +357,14 @@ already happened.
 
 The file's existence is the zero-ceremony window, and it closes: the first
 successful password change (the web UI's change-password screen, backed by
-`POST /api/profile/password`) deletes it. From then on the self-login above
+`POST /api/profile/password`) deletes it. That same first change is the one
+moment the account may take another name (`account_name` in the request; the
+screen shows the field): the account the instance made for itself, still on its
+generated password, holding only its starter project with nothing switched on.
+The name is every address the account has — `/projects/{name}/…`,
+`/wh/{name}/…` — so it is chosen before any of them is given out, and stays
+after. A later boot makes no second superadmin under `DEFAULT_OWNER` once one
+exists. From then on the self-login above
 fails with an error naming `zeb login` — one explicit sign-in, after which the
 stored session token carries every later command, the gh/docker pattern.
 `zeb admin reset-password <owner>` is the offline recovery: it rotates the
@@ -477,7 +484,8 @@ the counterexample that shows the cost.
 ```text
 /api/platform/*                      the instance: roster, db console,
                                      credential keyring, cluster, office
-                                     identity, hub service and catalogue
+                                     identity, hub service and catalogue,
+                                     settings (`platform/settings.json`)
 /api/users/{owner}/*                 one person's own space
 /api/projects/{owner}/{project}/*    one project, capability-guarded
 /api/hub/remote/*                    a peer hub, token-authenticated

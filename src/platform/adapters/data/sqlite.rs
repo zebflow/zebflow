@@ -535,11 +535,29 @@ pub struct SqliteDataAdapter {
 /// Whatever reads or clears a log first waits for the records handed over
 /// before it ([`InvocationWriter::flush`]), so a run's record is there for
 /// anyone who looks after the run.
+///
+/// The records waiting for the writer are memory, so they are bounded: the
+/// instance sets how many bytes may wait ([`InvocationWriter::set_limit`]).
+/// A record that would pass it is not kept, and its run is counted for its
+/// pipeline instead ([`InvocationWriter::unrecorded`]). Failures may fill
+/// twice the limit, so a burst of successes cannot take their room.
 #[derive(Default)]
-struct InvocationWriter(std::sync::OnceLock<(std::sync::mpsc::Sender<WriterJob>, std::thread::Thread)>);
+struct InvocationWriter {
+    started: std::sync::OnceLock<(std::sync::mpsc::Sender<WriterJob>, std::thread::Thread)>,
+    /// Bytes of the records handed over and not yet written.
+    queued: Arc<std::sync::atomic::AtomicUsize>,
+    /// The most `queued` may reach; 0 is no limit.
+    limit: std::sync::atomic::AtomicUsize,
+    /// Runs whose records were not kept, by log and pipeline, since start.
+    unrecorded: Mutex<std::collections::HashMap<(PathBuf, String), u64>>,
+}
+
+/// What a waiting record costs beyond its strings: the job, the entry and
+/// the channel's slot, rounded up.
+const RECORD_OVERHEAD: usize = 256;
 
 enum WriterJob {
-    Record { path: PathBuf, file_rel_path: String, entry: PipelineInvocationEntry, trace_json: String, max_n: usize, max_age_secs: Option<i64> },
+    Record { path: PathBuf, file_rel_path: String, entry: PipelineInvocationEntry, trace_json: String, max_n: usize, max_age_secs: Option<i64>, bytes: usize },
     Barrier(std::sync::mpsc::SyncSender<()>),
 }
 
@@ -547,11 +565,12 @@ impl InvocationWriter {
     /// The writer, started by the first record, and its thread: every
     /// record after reads them without a lock.
     fn writer(&self) -> &(std::sync::mpsc::Sender<WriterJob>, std::thread::Thread) {
-        self.0.get_or_init(|| {
+        self.started.get_or_init(|| {
             let (tx, rx) = std::sync::mpsc::channel();
+            let queued = self.queued.clone();
             let thread = std::thread::Builder::new()
                 .name("invocation-log-writer".into())
-                .spawn(move || write_invocations(rx))
+                .spawn(move || write_invocations(rx, queued))
                 .expect("spawn the invocation log writer");
             (tx, thread.thread().clone())
         })
@@ -561,11 +580,58 @@ impl InvocationWriter {
         let _ = self.writer().0.send(job);
     }
 
+    /// Hands a run's record over, or counts the run when the records
+    /// waiting leave no room for it.
+    fn add_record(
+        &self,
+        path: PathBuf,
+        file_rel_path: String,
+        entry: PipelineInvocationEntry,
+        trace_json: String,
+        max_n: usize,
+        max_age_secs: Option<i64>,
+    ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let bytes = RECORD_OVERHEAD
+            + trace_json.len()
+            + file_rel_path.len()
+            + entry.run_id.len()
+            + entry.error.as_ref().map_or(0, String::len);
+        let limit = self.limit.load(Relaxed);
+        let room = if entry.status == "error" { limit.saturating_mul(2) } else { limit };
+        let kept = self
+            .queued
+            .fetch_update(Relaxed, Relaxed, |queued| (limit == 0 || queued + bytes <= room).then_some(queued + bytes))
+            .is_ok();
+        if !kept {
+            *self
+                .unrecorded
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry((path, file_rel_path))
+                .or_insert(0) += 1;
+            return;
+        }
+        self.add(WriterJob::Record { path, file_rel_path, entry, trace_json, max_n, max_age_secs, bytes });
+    }
+
+    /// Sets how many bytes of records may wait for the writer; 0 is no
+    /// limit. Records already waiting stay.
+    fn set_limit(&self, bytes: usize) {
+        self.limit.store(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many of a pipeline's runs were not recorded since start.
+    fn unrecorded(&self, path: &Path, file_rel_path: &str) -> u64 {
+        let unrecorded = self.unrecorded.lock().unwrap_or_else(|e| e.into_inner());
+        unrecorded.get(&(path.to_path_buf(), file_rel_path.to_string())).copied().unwrap_or(0)
+    }
+
     /// Returns once every record handed over before the call is written.
     /// The writer is woken for it, so a reader waits only for the writes
     /// before it.
     fn flush(&self) {
-        if self.0.get().is_none() {
+        if self.started.get().is_none() {
             return;
         }
         let (done, wait) = std::sync::mpsc::sync_channel(1);
@@ -585,7 +651,7 @@ impl InvocationWriter {
 /// it only queues it. A barrier wakes it ([`InvocationWriter::flush`]) and
 /// ends the gathering at once, so a reader waits no longer than the writes
 /// before it.
-fn write_invocations(rx: std::sync::mpsc::Receiver<WriterJob>) {
+fn write_invocations(rx: std::sync::mpsc::Receiver<WriterJob>, queued: Arc<std::sync::atomic::AtomicUsize>) {
     const BATCH: usize = 4096;
     const GATHER: std::time::Duration = std::time::Duration::from_millis(2);
     // Open logs, with the file they were opened on and when that was last
@@ -615,11 +681,13 @@ fn write_invocations(rx: std::sync::mpsc::Receiver<WriterJob>) {
             }
         }
         let mut barriers = Vec::new();
-        let mut by_log: Vec<(PathBuf, Vec<(String, PipelineInvocationEntry, String, usize, Option<i64>)>)> = Vec::new();
+        let mut taken = 0;
+        let mut by_log: Vec<(PathBuf, Vec<BatchRecord>)> = Vec::new();
         for job in jobs {
             match job {
                 WriterJob::Barrier(done) => barriers.push(done),
-                WriterJob::Record { path, file_rel_path, entry, trace_json, max_n, max_age_secs } => {
+                WriterJob::Record { path, file_rel_path, entry, trace_json, max_n, max_age_secs, bytes } => {
+                    taken += bytes;
                     let record = (file_rel_path, entry, trace_json, max_n, max_age_secs);
                     match by_log.iter_mut().find(|(p, _)| *p == path) {
                         Some((_, records)) => records.push(record),
@@ -629,15 +697,47 @@ fn write_invocations(rx: std::sync::mpsc::Receiver<WriterJob>) {
             }
         }
         for (path, records) in by_log {
-            if let Err(err) = write_batch(&mut logs, &path, records) {
+            if let Err(err) = write_batch(&mut logs, &path, surviving(records)) {
                 eprintln!("warning: run records not written to {}: {}", path.display(), err.message);
                 logs.remove(&path);
             }
         }
+        queued.fetch_sub(taken, std::sync::atomic::Ordering::Relaxed);
         for done in barriers {
             let _ = done.send(());
         }
     }
+}
+
+/// One record in a batch: its pipeline, entry, trace, and that pipeline's
+/// retention (`max_n`, `max_age_secs`).
+type BatchRecord = (String, PipelineInvocationEntry, String, usize, Option<i64>);
+
+/// What of a batch its own trim would leave: per pipeline the newest
+/// `max_n` records, none older than `max_age_secs` before the newest.
+/// Records arrive in the order their runs finished, so newest is last. A
+/// pipeline running faster than its log is kept is written `max_n` times a
+/// batch instead of once a run; the rest would be deleted in the same
+/// transaction that inserted them.
+fn surviving(records: Vec<BatchRecord>) -> Vec<BatchRecord> {
+    let mut newest: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for (file, entry, ..) in &records {
+        let at = newest.entry(file.as_str()).or_insert(entry.at);
+        *at = (*at).max(entry.at);
+    }
+    let mut kept: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let keep: Vec<bool> = records
+        .iter()
+        .rev()
+        .map(|(file, entry, _, max_n, max_age_secs)| {
+            let count = kept.entry(file.as_str()).or_insert(0);
+            let young = max_age_secs.is_none_or(|age| entry.at >= newest[file.as_str()].saturating_sub(age.max(0)));
+            let keep = *count < (*max_n).max(1) && young;
+            *count += usize::from(keep);
+            keep
+        })
+        .collect();
+    records.into_iter().zip(keep.into_iter().rev()).filter_map(|(record, keep)| keep.then_some(record)).collect()
 }
 
 /// One open invocation log: its connection, the file it was opened on,
@@ -651,7 +751,7 @@ struct OpenLog {
 fn write_batch(
     logs: &mut std::collections::HashMap<PathBuf, OpenLog>,
     path: &Path,
-    records: Vec<(String, PipelineInvocationEntry, String, usize, Option<i64>)>,
+    records: Vec<BatchRecord>,
 ) -> Result<(), PlatformError> {
     let trust = crate::platform::services::project_config::STAMP_TRUST;
     let fresh = logs.get(path).is_some_and(|log| log.checked.elapsed() < trust);
@@ -3814,6 +3914,31 @@ impl DataAdapter for SqliteDataAdapter {
             .filter_map(|r| r.ok())
             .collect();
         Ok(users)
+    }
+
+    fn rename_user(&self, old_owner: &str, new_owner: &str) -> Result<(), PlatformError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(Self::qe)?;
+        let taken: bool = tx
+            .query_row("SELECT EXISTS(SELECT 1 FROM users WHERE owner = ?1)", params![new_owner], |row| row.get(0))
+            .map_err(Self::qe)?;
+        if taken {
+            return Err(PlatformError::new("PLATFORM_USER_EXISTS", format!("user '{new_owner}' already exists")));
+        }
+        let renamed = tx
+            .execute(
+                "UPDATE users SET owner = ?1, updated_at = ?2 WHERE owner = ?3",
+                params![new_owner, now_ts(), old_owner],
+            )
+            .map_err(Self::qe)?;
+        if renamed == 0 {
+            return Err(PlatformError::new("PLATFORM_USER_NOT_FOUND", format!("user '{old_owner}' not found")));
+        }
+        // A session token names the account it was issued to.
+        tx.execute("DELETE FROM mcp_sessions WHERE owner = ?1", params![old_owner]).map_err(Self::qe)?;
+        tx.commit().map_err(Self::qe)
     }
 
     fn delete_user(&self, owner: &str, user_id: &str) -> Result<(), PlatformError> {
@@ -7530,14 +7655,8 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<(), PlatformError> {
         let trace_json = serde_json::to_string(&entry.trace)?;
         if let Some(path) = self.project_invocations_db_path(owner, project)? {
-            self.invocation_writer.add(WriterJob::Record {
-                path,
-                file_rel_path: file_rel_path.to_string(),
-                entry,
-                trace_json,
-                max_n,
-                max_age_secs,
-            });
+            self.invocation_writer
+                .add_record(path, file_rel_path.to_string(), entry, trace_json, max_n, max_age_secs);
             return Ok(());
         }
 
@@ -7681,6 +7800,17 @@ impl DataAdapter for SqliteDataAdapter {
             .list_pipeline_error_groups(owner, project, None)?
             .into_iter()
             .find(|g| g.occurrences.iter().any(|(id, _)| id.starts_with(&prefix)) || g.first.run_id.starts_with(&prefix) || g.latest.run_id.starts_with(&prefix)))
+    }
+
+    fn set_run_record_queue_limit(&self, bytes: usize) {
+        self.invocation_writer.set_limit(bytes);
+    }
+
+    fn unrecorded_runs(&self, owner: &str, project: &str, file_rel_path: &str) -> Result<u64, PlatformError> {
+        Ok(match self.project_invocations_db_path(owner, project)? {
+            Some(path) => self.invocation_writer.unrecorded(&path, file_rel_path),
+            None => 0,
+        })
     }
 
     fn get_pipeline_invocations(
@@ -7991,6 +8121,17 @@ impl DataAdapter for SqliteDataAdapter {
             )
             .map_err(Self::qe)?;
         }
+
+        // The old owner's own "owner" binding names them as its subject, so
+        // the re-key above moved it along: it would leave them owning the
+        // project they gave away, and give it to the next account made with
+        // their name. The new owner's is made when the project is next opened.
+        tx.execute(
+            "DELETE FROM project_policy_bindings
+             WHERE owner = ?1 AND project = ?2 AND subject_kind = ?3 AND subject_id = ?4 AND policy_id = 'owner'",
+            params![new_owner, project, crate::platform::model::ProjectSubjectKind::User.key(), old_owner],
+        )
+        .map_err(Self::qe)?;
 
         // Hub asset versions: multiple owner columns that may reference the old owner.
         for col in &["authority_owner", "publisher_owner", "source_owner"] {
@@ -8552,6 +8693,62 @@ mod tests {
         tx.commit().expect("commit");
         let took = start.elapsed();
         eprintln!("record-bench one connection, {runs} in one transaction {:>8.1} µs/record", took.as_secs_f64() * 1e6 / runs as f64);
+    }
+
+    fn record(run_id: &str, at: i64, status: &str, error: Option<&str>) -> PipelineInvocationEntry {
+        PipelineInvocationEntry {
+            run_id: run_id.to_string(),
+            at,
+            duration_ms: 1,
+            status: status.to_string(),
+            trigger: "webhook".to_string(),
+            error: error.map(str::to_string),
+            trace: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_batch_writes_only_what_its_own_trim_would_leave() {
+        let batch: Vec<BatchRecord> = [
+            ("a", "a1", 100, 2, None),
+            ("b", "b1", 100, 5, Some(30)),
+            ("a", "a2", 101, 2, None),
+            ("a", "a3", 102, 2, None),
+            ("b", "b2", 140, 5, Some(30)),
+        ]
+        .into_iter()
+        .map(|(file, run, at, max_n, age)| (file.to_string(), record(run, at, "ok", None), String::new(), max_n, age))
+        .collect();
+        let kept: Vec<String> = surviving(batch).into_iter().map(|(_, entry, ..)| entry.run_id).collect();
+        // `a` keeps its newest two; `b`'s first is over 30 s older than its newest.
+        assert_eq!(kept, ["a2", "a3", "b2"]);
+    }
+
+    #[test]
+    fn a_record_past_the_limit_is_counted_and_a_failure_has_twice_the_room() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        let file = "pipelines/demo.zf.json";
+        adapter.set_run_record_queue_limit(RECORD_OVERHEAD + 600);
+        // Over the limit: a success is not kept, a failure under twice it is.
+        let long = "x".repeat(900);
+        adapter.log_pipeline_invocation("superadmin", "default", file, record("ok-long", 1, "ok", Some(&long)), 20, None).expect("log");
+        adapter.log_pipeline_invocation("superadmin", "default", file, record("error-long", 2, "error", Some(&long)), 20, None).expect("log");
+        // Once it is written the queue is empty, and a small success fits.
+        adapter.invocation_writer.flush();
+        adapter.log_pipeline_invocation("superadmin", "default", file, record("ok-short", 3, "ok", None), 20, None).expect("log");
+        let stored: Vec<String> = adapter
+            .get_pipeline_invocations("superadmin", "default", file, None)
+            .expect("read")
+            .into_iter()
+            .map(|entry| entry.run_id)
+            .collect();
+        assert_eq!(stored.len(), 2, "{stored:?}");
+        assert!(stored.contains(&"error-long".to_string()) && stored.contains(&"ok-short".to_string()));
+        assert_eq!(adapter.unrecorded_runs("superadmin", "default", file).expect("count"), 1);
+        assert_eq!(adapter.unrecorded_runs("superadmin", "default", "pipelines/other.zf.json").expect("count"), 0);
+        // Once written, nothing is waiting: the limit is room again.
+        assert_eq!(adapter.invocation_writer.queued.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -20,6 +20,10 @@ records what is on disk today.
 │
 ├── platform/
 │   ├── layout.json                    STORE — { "version": N }; migrations key off this
+│   ├── settings.json                  STORE — this instance's own settings (`/settings`,
+│   │                                          `/api/platform/settings`): its memory
+│   │                                          shares. Absent is every default; one
+│   │                                          that does not read refuses the boot
 │   ├── catalog.db (+ -wal, -shm)      STORE — users, projects, sessions, offices,
 │   │                                          credentials, members, policies, placements
 │   ├── credential-key                 STORE — 0600. The instance key that unwraps
@@ -190,6 +194,10 @@ them.
 │
 ├── platform/
 │   ├── layout.json                    STORE — { "version": N }; migrations key off this
+│   ├── settings.json                  STORE — this instance's own settings (`/settings`,
+│   │                                          `/api/platform/settings`): its memory
+│   │                                          shares. Absent is every default; one
+│   │                                          that does not read refuses the boot
 │   ├── catalog.db                     STORE — users, projects, sessions, offices
 │   ├── credential-key                 STORE — 0600, instance credential key
 │   ├── cluster-signing-key            STORE — 0600, controller identity (controller only)

@@ -15,6 +15,7 @@ use deno_error::JsErrorBox;
 use serde_json::Value;
 
 use super::config::DenoSandboxConfig;
+use super::heap;
 
 // ---------------------------------------------------------------------------
 // Thread-local result slot — JS op writes here; Rust reads after run.
@@ -586,13 +587,17 @@ const MAX_POOL_SIZE: usize = 8;
 
 static POOL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-static POOL: LazyLock<Vec<std::sync::mpsc::SyncSender<WorkItem>>> = LazyLock::new(|| {
-    let n = std::thread::available_parallelism()
+/// How many runtimes the sandbox keeps: one per core, at most
+/// `MAX_POOL_SIZE`.
+pub fn sandbox_runtime_count() -> usize {
+    std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(2)
-        .min(MAX_POOL_SIZE);
+        .min(MAX_POOL_SIZE)
+}
 
-    (0..n)
+static POOL: LazyLock<Vec<std::sync::mpsc::SyncSender<WorkItem>>> = LazyLock::new(|| {
+    (0..sandbox_runtime_count())
         .map(|i| {
             let (tx, rx) = std::sync::mpsc::sync_channel::<WorkItem>(64);
             std::thread::Builder::new()
@@ -667,9 +672,11 @@ fn spawn_watchdog(handle: deno_core::v8::IsolateHandle) -> WatchChannels {
     (cmd_tx, ack_rx)
 }
 
-fn build_runtime() -> JsRuntime {
+fn build_runtime() -> (JsRuntime, u64, usize) {
+    let heap = heap::current();
     let mut js_rt = JsRuntime::new(RuntimeOptions {
         extensions: vec![script_ops::init()],
+        create_params: heap.params,
         ..Default::default()
     });
 
@@ -683,7 +690,7 @@ fn build_runtime() -> JsRuntime {
         .execute_script("<sandbox_init>", FastString::from_static(SANDBOX_INIT))
         .expect("deno-sandbox: sandbox_init failed");
 
-    js_rt
+    (js_rt, heap.generation, heap.limit)
 }
 
 fn run_worker_thread(rx: std::sync::mpsc::Receiver<WorkItem>) {
@@ -700,13 +707,23 @@ fn run_worker_thread(rx: std::sync::mpsc::Receiver<WorkItem>) {
         // isolate in a terminating state, and the realm may be half-mutated by
         // a script that was cut off mid-statement. Rebuilding is the only way
         // to hand the next tenant a runtime that means anything.
+        //
+        // A run that arrives for a runtime of an older heap generation is
+        // carried over to the next one, so it runs with the current limit.
+        let mut carried: Option<WorkItem> = None;
         loop {
-            let mut js_rt = build_runtime();
+            let (mut js_rt, generation, limit) = build_runtime();
+            let heap_reached = heap::stop_at_heap_limit(&mut js_rt, limit);
             let handle = js_rt.v8_isolate().thread_safe_handle();
             let (watch_tx, watch_ack) = spawn_watchdog(handle);
 
             let mut retire = false;
-            while let Ok(item) = rx.recv() {
+            while let Some(item) = carried.take().or_else(|| rx.recv().ok()) {
+                if heap::generation() != generation {
+                    carried = Some(item);
+                    retire = true;
+                    break;
+                }
                 let budget = Duration::from_millis(item.work.config.timeout_ms.max(1));
                 let _ = watch_tx.send(WatchCmd::Arm(budget));
 
@@ -724,18 +741,19 @@ fn run_worker_thread(rx: std::sync::mpsc::Receiver<WorkItem>) {
                 // realm that will not come clean is carrying one tenant's
                 // state toward the next, so the worker is retired instead.
                 let unclean = !terminated && REALM_UNCLEAN.with(|flag| flag.get());
-
-
+                let out_of_memory = heap_reached.get();
                 let result = if terminated {
                     // Whatever error unwinding produced, the true cause is the
                     // watchdog, and the caller should be told that plainly.
                     Err("DenoSandboxError: timeout exceeded".to_string())
+                } else if out_of_memory {
+                    Err(format!("DenoSandboxError: memory limit exceeded ({} heap)", heap::describe(limit)))
                 } else {
                     result
                 };
                 let _ = item.reply.send(result);
 
-                if terminated || unclean {
+                if terminated || out_of_memory || unclean {
                     retire = true;
                     break;
                 }
