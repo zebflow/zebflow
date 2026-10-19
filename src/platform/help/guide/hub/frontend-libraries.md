@@ -15,9 +15,9 @@ These are the libraries Zebflow projects use directly in TSX (beyond
 - `zeb/threejs`
 - `zeb/threejs-vrm`
 - `zeb/graphui`
-- `zeb/livegeo`
 - `zeb/rooms`
 - `zeb/use`
+- `zeb/world`
 
 This area should help a user answer two questions fast:
 

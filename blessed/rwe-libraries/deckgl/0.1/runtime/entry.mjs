@@ -23,7 +23,7 @@
  *  cp deckgl.bundle.mjs libraries/zeb/deckgl/0.1/runtime/
  *
  * ── QUICK REFERENCE ─────────────────────────────────────────────────────────
- *  TSX import:   import DeckMap from "zeb/deckgl";
+ *  TSX import:   import { DeckMap } from "zeb/deckgl";
  *  Imperative:   window.__zebDeck.get("map-id").deck.setProps({ layers })
  *  Event:        container.addEventListener("zeb:deck:ready", e => e.detail.deck)
  */

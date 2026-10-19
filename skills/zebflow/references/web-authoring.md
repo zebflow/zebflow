@@ -49,7 +49,6 @@ Library surfaces:
 - `zeb/d3`
 - `zeb/deckgl`
 - `zeb/graphui`
-- `zeb/livegeo`
 - `zeb/markdown`
 - `zeb/pdf`
 - `zeb/potoru`
@@ -61,3 +60,4 @@ Library surfaces:
 - `zeb/threejs`
 - `zeb/threejs-vrm`
 - `zeb/use`
+- `zeb/world`

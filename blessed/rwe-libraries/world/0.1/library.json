@@ -1,0 +1,45 @@
+{
+  "name": "zeb/world",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "aslnut, a world engine on WebGPU and WebGL2, for RWE templates. <World options elements onReady viewChange> makes one world on a canvas of its own and keeps its elements in step by id (a restyle sets props on the element already there, never a rebuild); useWorld, useElement and useWorldEvent read it from overlays inside <World>. aslnut's whole root API is exported beside it: earth, plane, imagery, terrain, layer, data, scale, theme, shape and the rest. The tile worker (tilesWorkerUrl) and lazy chunks sit next to the entry. Fully offline; data credits stay on screen.",
+  "source": {
+    "provider": "zebflow",
+    "package": "aslnut (built from its sources; not on npm yet)",
+    "package_version": "0.1.2",
+    "packed_version": "0.1",
+    "packed_kind": "full",
+    "entry": "runtime/world.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-world-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "World",
+      "useWorld",
+      "useElement",
+      "useWorldEvent",
+      "tilesWorkerUrl",
+      "world",
+      "earth",
+      "plane",
+      "layer",
+      "data",
+      "scale",
+      "liveGraphics"
+    ],
+    "wrappers": []
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/world.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

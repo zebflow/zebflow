@@ -255,99 +255,6 @@ pub fn render(
     })
 }
 
-fn strip_rwe_client_imports(source: &str) -> String {
-    // By AST span, not by line: the exports of a `zeb/*` runtime library are
-    // globals the outer script installs, so the declaration goes; but a line
-    // that merely *looks* like one — a code sample inside a template literal
-    // — stays. The line filter used to eat the gallery's own examples.
-    use oxc_allocator::Allocator;
-    use oxc_ast::ast::Statement;
-    use oxc_parser::Parser;
-    use oxc_span::SourceType;
-
-    let alloc = Allocator::default();
-    let source_type = SourceType::default()
-        .with_module(true)
-        .with_jsx(true)
-        .with_typescript(true);
-    let parsed = Parser::new(&alloc, source, source_type).parse();
-    if parsed.panicked {
-        return strip_rwe_client_imports_by_line(source);
-    }
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for stmt in &parsed.program.body {
-        if let Statement::ImportDeclaration(import) = stmt {
-            let spec = import.source.value.as_str();
-            if spec == "zeb" || spec.starts_with("zeb/") {
-                let start = import.span.start as usize;
-                let mut end = import.span.end as usize;
-                if end < source.len() && source.as_bytes()[end] == b'\n' {
-                    end += 1;
-                }
-                ranges.push((start, end));
-            }
-        }
-    }
-    if ranges.is_empty() {
-        return source.to_string();
-    }
-    let mut out = String::with_capacity(source.len());
-    let mut cursor = 0;
-    for (start, end) in ranges {
-        out.push_str(&source[cursor..start]);
-        cursor = end;
-    }
-    out.push_str(&source[cursor..]);
-    out
-}
-
-/// The old line filter, kept only for a source oxc cannot parse.
-fn strip_rwe_client_imports_by_line(source: &str) -> String {
-    let logical = join_import_lines(source);
-    logical
-        .lines()
-        .filter(|line| {
-            let t = line.trim();
-            if !t.starts_with("import ") {
-                return true;
-            }
-            !(t.contains("from \"zeb/react\"")
-                || t.contains("from 'zeb'")
-                || t.contains("from \"zeb/")
-                || t.contains("from 'zeb/"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Collapse multi-line `import { … } from "…"` statements into a single line each.
-fn join_import_lines(source: &str) -> String {
-    let mut out = String::with_capacity(source.len());
-    let mut buf: Option<String> = None;
-    for line in source.lines() {
-        let t = line.trim();
-        if let Some(ref mut acc) = buf {
-            acc.push(' ');
-            acc.push_str(t);
-            if t.contains("from \"") || t.contains("from '") {
-                out.push_str(acc);
-                out.push('\n');
-                buf = None;
-            }
-        } else if t.starts_with("import ") && t.contains('{') && !t.contains("from ") {
-            buf = Some(t.to_string());
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if let Some(acc) = buf {
-        out.push_str(&acc);
-        out.push('\n');
-    }
-    out
-}
-
 /// Map a `zeb/*` library specifier to its versioned browser bundle URL.
 /// TODO: resolve version from project `zeb.lock` instead of hardcoding.
 fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
@@ -366,54 +273,64 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
         }
         "zeb/use" => Some("/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
         "zeb/rooms" => Some("/assets/libraries/zeb/rooms/0.1/runtime/rooms.bundle.mjs"),
-        "zeb/livegeo" => Some("/assets/libraries/zeb/livegeo/0.1/runtime/livegeo.bundle.mjs"),
         "zeb/pdf" => Some("/assets/libraries/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
         "zeb/potoru" => Some("/assets/libraries/zeb/potoru/0.1/runtime/potoru.bundle.mjs"),
+        "zeb/world" => Some("/assets/libraries/zeb/world/0.1/runtime/world.bundle.mjs"),
         _ => None,
     }
 }
 
-/// Build the outer-script preamble that imports each used `zeb/*` library
-/// from its versioned bundle URL and assigns all exports onto `globalThis`.
+/// Build the outer-script preamble that loads each used `zeb/*` library from
+/// its versioned bundle URL and files it under `globalThis.__zebLibs`.
+///
+/// A library's exports are never installed as globals. The compiler lowers each
+/// `import … from "zeb/<name>"` to declarations reading its registry entry
+/// (`zeb_lib::lower_import`), so two libraries that export one name cannot
+/// replace each other, nor a name the browser already owns.
 ///
 /// This runs in the outer script (a real URL context), so absolute-path
-/// imports like `/assets/libraries/…` resolve correctly. The inner user
-/// bundle (loaded as a `data:` URL) then just uses the symbols as globals —
-/// its `import { … } from "zeb/*"` lines are stripped by `strip_rwe_client_imports`.
+/// imports like `/assets/libraries/…` resolve correctly. The inner user bundle
+/// (loaded as a `data:` URL) is imported after the whole preamble has run.
 fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) -> String {
     let libs = detected_libs;
     if libs.is_empty() {
         return String::new();
     }
+    let registry = super::zeb_lib::REGISTRY;
     // Use dynamic `await import(...)` — NOT static `import * as ...`.
     // Static imports are hoisted: the bundle would be evaluated before the outer
-    // script body runs, so globalThis.createContext (etc.) wouldn't be set yet.
-    // Dynamic imports run in-order during script body execution, after the Zeb React
-    // globals have been installed above.
-    let mut out = String::new();
+    // script body runs, before the Zeb React globals it reads are installed.
+    // Dynamic imports run in-order during script body execution, after them.
+    let mut out = format!("{registry} ??= {{}};\n");
     for lib in libs {
-        // Non-empty enabled list = strict mode: skip unlisted libraries.
-        if !enabled_libraries.is_empty() && !enabled_libraries.contains(lib) {
+        let key = serde_json::to_string(lib).unwrap_or_else(|_| format!("\"{lib}\""));
+        // Non-empty enabled list = strict mode: skip unlisted libraries. A
+        // library that is not loaded still gets an entry, so naming it binds
+        // `undefined` rather than failing the whole page module.
+        let loadable = enabled_libraries.is_empty() || enabled_libraries.contains(lib);
+        let Some(url) = zeb_bundle_url(lib).filter(|_| loadable) else {
+            out.push_str(&format!("{registry}[{key}] ??= {{}};\n"));
             continue;
-        }
-        if let Some(url) = zeb_bundle_url(lib) {
-            let var = lib.replace('/', "_").replace('-', "_");
+        };
+        if lib == "zeb/markdown" {
+            // `Markdown` is a component built here from the library's
+            // `renderMarkdown`; the bundle itself exports only the functions.
             out.push_str(&format!(
-                "const __{var} = await import('{url}');\nObject.assign(globalThis, __{var});\n"
+                "{{\n\
+                 const __zebMarkdown = await import('{url}');\n\
+                 {registry}[{key}] = {{ ...__zebMarkdown, Markdown: function Markdown(props) {{\n\
+                 const text = (props && props.content) || (typeof (props && props.children) === 'string' ? props.children : '') || '';\n\
+                 const extra = (props && (props.className || props.class)) || '';\n\
+                 const className = 'prose' + (extra ? ' ' + extra : '');\n\
+                 return h('div', {{\n\
+                   className,\n\
+                   dangerouslySetInnerHTML: {{ __html: __zebMarkdown.renderMarkdown ? __zebMarkdown.renderMarkdown(text) : '' }}\n\
+                 }});\n\
+                 }} }};\n\
+                 }}\n"
             ));
-            if lib == "zeb/markdown" {
-                out.push_str(
-                    "globalThis.Markdown = function Markdown(props) {\n\
-                     const text = (props && props.content) || (typeof (props && props.children) === 'string' ? props.children : '') || '';\n\
-                     const extra = (props && (props.className || props.class)) || '';\n\
-                     const className = 'prose' + (extra ? ' ' + extra : '');\n\
-                     return h('div', {\n\
-                       className,\n\
-                       dangerouslySetInnerHTML: { __html: globalThis.renderMarkdown ? globalThis.renderMarkdown(text) : '' }\n\
-                     });\n\
-                   };\n",
-                );
-            }
+        } else {
+            out.push_str(&format!("{registry}[{key}] = await import('{url}');\n"));
         }
     }
     out
@@ -482,8 +399,9 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let tool_js = TOOL_INIT;
     // No `npm:preact` rewriting. A template reaches the runtime through
     // "zeb/react" and nothing else; there is no second spelling to translate.
-    let runtime_ready_source = strip_rwe_client_imports(client_source);
-    let encoded = STANDARD.encode(runtime_ready_source.as_bytes());
+    // The compiler has already lowered every `zeb/*` import to declarations,
+    // so nothing in the source needs stripping here.
+    let encoded = STANDARD.encode(client_source.as_bytes());
     format!(
         "{tool_js}\n\
          import {{ h, Fragment, hydrate, render, createContext, createPortal, forwardRef, memo,\
@@ -851,17 +769,14 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
 }
 
 fn transpile_client_cached(source: &str, timeout_ms: u64) -> Result<String, EngineError> {
-    // Strip "rwe" imports BEFORE passing to the Deno bundler. If stripped after,
-    // the bundler resolves "rwe" → absolute filesystem path which the browser can't load.
-    let stripped = strip_rwe_client_imports(source);
-    let key = stable_hash_u64(&stripped);
+    let key = stable_hash_u64(source);
     if let Ok(cache) = CLIENT_TRANSPILE_CACHE.lock()
         && let Some(cached) = cache.get(&key)
     {
         return Ok(cached.clone());
     }
 
-    let transpiled = deno_worker::transpile_client(&stripped, timeout_ms)?;
+    let transpiled = deno_worker::transpile_client(source, timeout_ms)?;
 
     if let Ok(mut cache) = CLIENT_TRANSPILE_CACHE.lock() {
         // keep cache lean by bounding entries; new entries overwrite oldest key eviction by clear.
@@ -1535,28 +1450,83 @@ mod tests {
         assert!(!html.contains("rel=\"stylesheet\""), "{html}");
     }
 
-    /// A runtime-library import is removed by its span; the same text inside
-    /// a template literal — a code sample — survives.
-    #[test]
-    fn stripping_runtime_imports_leaves_code_samples_alone() {
-        let source = "import { useDebounce } from \"zeb/use\";\nconst sample = `\nimport { Button } from \"zeb/ui/button\";\n`;\nexport default function P() { return null; }\n";
-        let out = strip_rwe_client_imports(source);
-        assert!(!out.contains("from \"zeb/use\""), "{out}");
-        assert!(out.contains("import { Button } from \"zeb/ui/button\";"), "{out}");
-    }
-
     #[test]
     fn zeb_preamble_uses_codemirror_entry_module() {
         let preamble = build_zeb_preamble(&["zeb/codemirror".to_string()], &[]);
 
         assert!(
-            preamble.contains("/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
-            "expected codemirror preamble to load entry.mjs, got {preamble}"
+            preamble.contains(
+                "globalThis.__zebLibs[\"zeb/codemirror\"] = await import('/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs');"
+            ),
+            "expected codemirror preamble to file entry.mjs under its registry key, got {preamble}"
         );
-        assert!(
-            preamble.contains("Object.assign(globalThis"),
-            "expected zeb preamble to expose library exports on globalThis, got {preamble}"
-        );
+    }
+
+    /// Libraries are filed, not spread: no export of any of them reaches
+    /// `globalThis`, so two libraries exporting one name cannot replace each
+    /// other, and a name the browser owns stays the browser's.
+    #[test]
+    fn the_preamble_files_each_library_and_spreads_none_onto_globalthis() {
+        let libs: Vec<String> = [
+            "zeb/threejs",
+            "zeb/threejs-vrm",
+            "zeb/d3",
+            "zeb/deckgl",
+            "zeb/codemirror",
+            "zeb/graphui",
+            "zeb/markdown",
+            "zeb/prosemirror",
+            "zeb/use",
+            "zeb/rooms",
+            "zeb/pdf",
+            "zeb/potoru",
+            "zeb/world",
+        ]
+        .iter()
+        .map(|lib| lib.to_string())
+        .collect();
+        let preamble = build_zeb_preamble(&libs, &[]);
+        assert!(!preamble.contains("Object.assign(globalThis"), "{preamble}");
+        assert!(preamble.starts_with("globalThis.__zebLibs ??= {};\n"), "{preamble}");
+        for lib in &libs {
+            assert!(
+                preamble.contains(&format!("globalThis.__zebLibs[\"{lib}\"]")),
+                "{lib} is filed under its own key: {preamble}"
+            );
+        }
+        // One statement per library, in the order the page named them.
+        let order: Vec<usize> = libs
+            .iter()
+            .map(|lib| preamble.find(&format!("globalThis.__zebLibs[\"{lib}\"]")).unwrap())
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{preamble}");
+    }
+
+    /// `Markdown` is a component the loader builds around the library's own
+    /// `renderMarkdown`; it is an entry of the library, not a global.
+    #[test]
+    fn the_markdown_component_is_an_entry_of_its_library() {
+        let preamble = build_zeb_preamble(&["zeb/markdown".to_string()], &[]);
+        assert!(preamble.contains("globalThis.__zebLibs[\"zeb/markdown\"] = { ...__zebMarkdown, Markdown: function Markdown(props)"), "{preamble}");
+        assert!(preamble.contains("__zebMarkdown.renderMarkdown"), "{preamble}");
+        assert!(!preamble.contains("globalThis.Markdown"), "{preamble}");
+        assert!(!preamble.contains("globalThis.renderMarkdown"), "{preamble}");
+    }
+
+    /// A project that lists its libraries gets only those loaded; a page that
+    /// names another still finds an (empty) entry to read from.
+    #[test]
+    fn a_library_outside_the_projects_list_is_not_loaded_but_is_registered() {
+        let libs = vec!["zeb/d3".to_string(), "zeb/use".to_string()];
+        let preamble = build_zeb_preamble(&libs, &["zeb/use".to_string()]);
+        assert!(!preamble.contains("d3.bundle.mjs"), "{preamble}");
+        assert!(preamble.contains("globalThis.__zebLibs[\"zeb/d3\"] ??= {};"), "{preamble}");
+        assert!(preamble.contains("use.bundle.mjs"), "{preamble}");
+    }
+
+    #[test]
+    fn no_libraries_means_no_preamble() {
+        assert_eq!(build_zeb_preamble(&[], &[]), "");
     }
 
     /// A markup-mounted library loads only where its placeholder can appear:
@@ -1742,6 +1712,14 @@ mod global_installation_tests {
             "zeb_ssr_init.js",
             include_str!("../runtime/zeb_ssr_init.js"),
         );
+    }
+
+    /// The server's library stand-ins are entries of one registry, never
+    /// globals: the only name the file installs is the registry itself.
+    #[test]
+    fn the_server_library_stand_ins_install_only_the_registry() {
+        let names = installed_globals(include_str!("../runtime/zeb_ssr_libs.js"));
+        assert_eq!(names, vec!["__zebLibs".to_string()], "zeb_ssr_libs.js installs: {names:?}");
     }
 
     #[test]

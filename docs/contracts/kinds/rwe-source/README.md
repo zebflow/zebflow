@@ -41,7 +41,7 @@ Four forms, and only four.
 
 | Form | Meaning |
 | --- | --- |
-| `"zeb/react"`, `"zeb/…"` | runtime-provided. Never a file, never bundled. Every file that uses a hook imports it here — there are no implicit globals |
+| `"zeb/react"`, `"zeb/…"` | runtime-provided. Never a file, never bundled. Every file that uses a hook or a library name imports it here — there are no implicit globals |
 | `"@/…"` | a project file, addressed from the template root |
 | `"npm:…"`, `"node:…"`, `"jsr:…"`, `"http://…"`, `"https://…"` | left alone; the compiler does not resolve them |
 | `"./…"`, `"../…"` | **refused** |
@@ -53,6 +53,13 @@ and namespace imports. Unsupported named exports are refused at compile time.
 It is available independently of optional library enablement. Zebflow helpers
 (`usePageState`, `useRouter`, `Link`, `cx`) remain in `"zeb/react"`; existing hook
 imports from `"zeb/react"` are still supported.
+
+A runtime library (`"zeb/threejs"`, `"zeb/d3"`, …) is bound per import to that
+library alone, on the server and in the browser: named imports, aliases
+(`import { a as b }`), namespace imports (`import * as ns`) and default imports
+all work, and a type-only import binds nothing. A library's exports are never
+globals, so two libraries may export the same name and a name the page did not
+import is not in scope.
 
 ### Why relative imports are refused
 

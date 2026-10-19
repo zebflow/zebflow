@@ -8,7 +8,7 @@ Runs on a plain WebGL canvas — no map backend (Mapbox/MapLibre) required.
 ## Import
 
 ```tsx
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 ```
 
 Named exports:
@@ -26,7 +26,7 @@ import {
   colorRamp,             // interpolate color stops at position t
   interpolateAlongPath,  // [lon, lat, heading] at progress along a path
   createAnimationLoop,   // rAF loop with play/pause/speed
-  DeckMap,               // Preact component (same as default export)
+  DeckMap,               // Zeb React component
 } from "zeb/deckgl";
 ```
 
@@ -276,7 +276,7 @@ const [view] = usePageState("sharedView", { longitude: 0, latitude: 0, zoom: 2 }
 
 ```tsx
 import { useState, useEffect, useRef } from "zeb";
-import DeckMap, { createAnimationLoop, interpolateAlongPath } from "zeb/deckgl";
+import { DeckMap, createAnimationLoop, interpolateAlongPath } from "zeb/deckgl";
 
 export default function FleetPlayback() {
   const [vehicles, setVehicles] = usePageState("vehicles", []);

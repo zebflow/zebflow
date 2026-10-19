@@ -1,0 +1,6 @@
+# Publish metadata for the blessed local-hub seed.
+# The seeder publishes this package as the reserved `zebflow` publisher.
+id: zebflow.world
+version: 0.1.0
+title: zeb/world
+description: "aslnut world engine for RWE templates (WebGPU and WebGL2): <World> with useWorld, useElement and useWorldEvent, plus aslnut's whole API for Earth and flat worlds, terrain, imagery, data sources, scales and entities. Offline; Apache-2.0."

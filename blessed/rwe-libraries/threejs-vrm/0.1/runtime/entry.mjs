@@ -18,7 +18,7 @@
  *  cp threejs-vrm.bundle.mjs libraries/zeb/threejs-vrm/0.1/runtime/
  *
  * ── QUICK REFERENCE ─────────────────────────────────────────────────────────
- *  TSX import:   import VrmViewer from "zeb/threejs-vrm";
+ *  TSX import:   import { VrmViewer } from "zeb/threejs-vrm";
  *  Imperative:   window.__zebVrm.get("viewer-id").playClip("idle")
  *  Event:        container.addEventListener("zeb:vrm:ready", e => e.detail.vrm)
  */

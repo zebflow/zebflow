@@ -8,7 +8,7 @@ pub(super) fn default_template_source(name: Option<&str>) -> String {
         .unwrap_or_else(|_| "\"Docs\"".to_string());
     format!(
         r##"import {{ useState, useEffect, useCallback }} from "zeb/react";
-import Markdown from "zeb/markdown";
+import {{ Markdown }} from "zeb/markdown";
 
 const DOCS_MARKDOWN_CSS = `
 .docs-markdown {{

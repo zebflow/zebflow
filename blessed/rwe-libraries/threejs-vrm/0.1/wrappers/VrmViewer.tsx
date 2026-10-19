@@ -2,7 +2,7 @@
  * VrmViewer — RWE wrapper for VRM avatar rendering.
  *
  * IMPORT in TSX page:
- *   import VrmViewer from "zeb/threejs-vrm";
+ *   import { VrmViewer } from "zeb/threejs-vrm";
  *
  * ─── Basic usage ──────────────────────────────────────────────────────────
  *   <VrmViewer

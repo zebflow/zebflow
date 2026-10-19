@@ -8,6 +8,7 @@ pub mod page_state;
 pub mod render;
 pub mod security;
 pub mod source_check;
+pub mod zeb_lib;
 pub mod zeb_react;
 
 pub use config::{CompileOptions, RuntimeMode, SecurityPolicy};

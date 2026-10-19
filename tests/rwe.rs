@@ -8,6 +8,8 @@ mod protocol;
 mod smoke;
 #[path = "rwe/template_render.rs"]
 mod template_render;
+#[path = "rwe/zeb_libraries.rs"]
+mod zeb_libraries;
 #[path = "rwe/zeb_react.rs"]
 mod zeb_react;
 #[path = "rwe/zeb_rooms.rs"]

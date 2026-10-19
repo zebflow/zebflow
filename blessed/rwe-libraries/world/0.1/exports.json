@@ -1,0 +1,1300 @@
+{
+  "package": "zeb/world",
+  "version": "0.1",
+  "raw": {
+    "Arc": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Area": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "AslnutError": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Avatars": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "BAKED_LOOK": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "BEHIND": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "BLOCK": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "BakedRoads": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Builder": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Buildings": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "CITY": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "CITY_KINDS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "CLEAR": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "CSV": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "CUSTOM_SCOPE": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Camera": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Cards": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Custom": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "CustomMaterial": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "CustomMesh": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "DAMPING": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "DEFAULT_HEAT_OPTIONS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "DEFAULT_LADDER": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "DQ_FLOATS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "DRAPE_DEFAULTS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "DataDrive": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "EASES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "EASE_PRESETS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "EarthSky": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Element": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Entities": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Entity": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "EntityElement": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "EntityKind": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "EntitySet": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Extrusion": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "FeatureMark": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Flight": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Follower": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "GATES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "GROUND_WITHIN": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Gates": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "GeoJSON": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Governor": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "GraphicsUnavailable": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Groups": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "GroupsSource": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HALF_LIFE_K": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HEAT_DIFF_RAMP": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HEAT_METRICS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HEAT_OPTION_INFO": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HEAT_RAMP": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HOOK_POINTS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HOT_HOUR": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "HOUSE": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Heat": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "INSTANCE_FLOATS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Icon": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "IconAtlas": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ImageRaster": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Join": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Joined": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "KIND_ORDER": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "LAMP_CODES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "LEAF_FILL": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "LINE_CODE": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "LOT": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Layer": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Levels": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Line": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Loader": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "LoaderMiss": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Log": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "MATERIALS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "MATERIALS_LOOK": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "MATERIAL_CODES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "MESH_FLOATS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "MODES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "MeshBuilder": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "NO_OBSERVATION": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Network": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "PATHS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "PLAN": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "PMTiles": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "PMTilesReader": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "PMTilesWriter": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "POLES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "PRESET_NOTES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Placement": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Points": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Query": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "RAMPS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ROAD_CLASS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ROOF_FORMS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Rain": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Raster": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "RasterField": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "RegionTree": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Relations": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "RemoteLog": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Renderer": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Roads": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Rows": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SEA_LOOK": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SHAPE_FLOATS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SHORE": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SKIN_FLOATS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SKIN_INSTANCE_FLOATS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SKIN_SLOTS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SPECIES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "STATE_SCHEMA": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "STREET": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "STREETS_LOOK": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Scenarios": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Scope": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SeaSurface": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ShaderError": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Shape": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ShapePackage": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ShapeShelf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Shot": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Skeleton": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "SkinDraw": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Sky": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Solids": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Source": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Stats": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Stream": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "StreetDetail": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Streets": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Surface": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "THEMES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "TILT_LIMIT": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "TILT_MAX": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "TREES": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Text": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Tiled": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Trail": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "VIC_STREETS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Vegetation": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "WALL": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "WATER": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "WEATHERS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "WFS": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Water": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Wires": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "World": {
+      "kind": "component",
+      "entry": "runtime/world.bundle.mjs",
+      "description": "Zebflow's Zeb React wrapper, with aslnut/react's interface: <World options elements onReady viewChange headless className style>{overlays}</World>. Makes a world on its own canvas on mount, keeps `elements` in step by id, disposes on unmount (aslnut's shell(w) keeps it in step)."
+    },
+    "anchorOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "arc": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "area": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "areaKm2": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "asKind": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "asksLevel": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "avatars": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "bakeClip": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "bakedMesh": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "bakedRoads": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "bakedRoadsWorker": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "bboxOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "bins": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "blackbody": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "branching": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "buildings": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "cards": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "catalogues": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "centreOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "channels": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "charger": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "chargers": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "checkDamping": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "checkView": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "choice": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "cityHeat": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "cityRasters": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "cityTile": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "clampTerrain": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "coastField": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "coastSegments": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "codeOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "collision": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "color": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "colours": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "composeHeights": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "constants": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "contains": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "control": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "controllers": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "convection": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "cubicBezier": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "custom": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "data": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "dataDrive": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "decodeHeight": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "decodeMVT": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "distForZoom": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "drapeOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "drive": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "driveway": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "earcut": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "earth": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "earthLite": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ease": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "easing": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "encodeMVT": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "entities": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "entity": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "entityElement": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "epsgOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "exceptionOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "extrusion": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "fence": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "field": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "figure": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "flag": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "followEntity": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "footprint": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "footprintOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "form": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "geo": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "gmst": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "grammar": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "greatCircle": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "gridSampler": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "groundSun": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "groups": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "groupsJob": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "heat": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "heatModel": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "heatRaster": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "hex": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "history": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "house": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "housePlan": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "icon": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "icons": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "icosphere": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "imagery": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "importShape": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "impostor": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "inLevels": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "int": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "isHouse": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "isImpostor": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "isMiss": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "isScale": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "isTheme": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "jenksBreaks": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "junctionMesh": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "kernel": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "keys": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "kind": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "kinds": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "kitbash": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ladderOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "layer": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "layers": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "leg": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "legCost": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "legend": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "line": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "linesOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "liveGraphics": {
+      "kind": "function",
+      "entry": "runtime/world.bundle.mjs",
+      "description": "What graphics memory aslnut holds now: graphics, buffers, textures, targets, programs, bytes."
+    },
+    "loader": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "localFrame": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "localTime": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "locomotion": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "lookAt": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "makeState": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "material": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "meshCode": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "moonAt": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "motionFrames": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "motions": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "move": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "moves": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "network": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "normalize": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "num": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "openGraphics": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "openMeteo": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "packNormal": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "parseCSV": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "parseStars": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "partOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "phaseName": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "pitchFloor": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "placement": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "plane": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "planeAt": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "planeXY": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "points": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "pointsOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "poles": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "polygonsOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "poseOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "preset": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "presetCurve": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "prettyBreaks": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "preview": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "profileFor": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "profileOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "propertyLine": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "qaxis": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "qmul": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rain": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ramp": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "raster": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "reachInto": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "readWFSCapabilities": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "readWFSDescribe": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "readWMSCapabilities": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "readXML": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "recipes": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rectInside": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "regions": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "replay": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "reveal": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rgbOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rgba": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rigFrom": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rigPose": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "roadSection": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "roads": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "roofFaces": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "roofMeasure": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "roofMesh": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "roofOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "roofRise": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rotateBone": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rowTexels": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "ruleOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "rules": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "saturationVapour": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "scale": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "scenarioApi": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sea": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sectionMesh": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "serve": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shadowBox": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shape": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shapeCode": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shapeOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shapePackage": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shapes": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shell": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "shown": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sidewalks": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sizePxAt": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sizeUnits": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sizeValue": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skeleton": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skinMesh": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skinPoint": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sky": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skyDir": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skyLongwave": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skyNow": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skyTurn": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "skyViewFactor": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "smallest": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "smoothNormals": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "solids": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "solveSteady": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sortElements": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "speciesOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "splitParts": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "spring": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "springStep": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "starData": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "states": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "stats": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "stepSurface": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "still": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "stream": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "streetBands": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "streetDetail": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "streets": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "streetsWorker": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sunAt": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sunFrames": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sunTest": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "sunTimes": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "supported": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "surfaceCapacity": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "terrain": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "text": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "textParam": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "theme": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "tileHeights": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "tilesWorkerUrl": {
+      "kind": "value",
+      "entry": "runtime/world.bundle.mjs",
+      "description": "URL of the tile worker next to this bundle: worker(tilesWorkerUrl) runs aslnut's street and road meshing off the main thread."
+    },
+    "tiltMaxAt": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "track": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "trail": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "traits": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "translateModule": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "translateStatements": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "treeCrown": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "treeInstances": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "treeShapes": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "triangulate": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "typology": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "useElement": {
+      "kind": "hook",
+      "entry": "runtime/world.bundle.mjs",
+      "description": "An element of the world by id (null until added, and after removed)."
+    },
+    "useWorld": {
+      "kind": "hook",
+      "entry": "runtime/world.bundle.mjs",
+      "description": "The aslnut world of the <World> round it (null until ready, and after it is gone)."
+    },
+    "useWorldEvent": {
+      "kind": "hook",
+      "entry": "runtime/world.bundle.mjs",
+      "description": "Hear a world's event (tap, hover, select, elements, level, frame, error, long, governor) while mounted."
+    },
+    "utci": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "utciStress": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "valueOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "vapourPressure": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "vary": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "vegetation": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "viewOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "visibilityOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "water": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "waterArea": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "waveSet": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "whereOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "widthOf": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "windProfile": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "windowRows": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "wires": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "worker": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "workers": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "world": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "writeRow": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "zoneLookups": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "zonedTime": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "zoomForDist": {
+      "entry": "runtime/world.bundle.mjs"
+    }
+  },
+  "wrappers": {}
+}

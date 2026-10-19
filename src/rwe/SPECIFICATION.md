@@ -255,8 +255,9 @@ CompiledTemplate + vars (JSON)
         │    │     useImperativeHandle, forwardRef, memo, createContext,
         │    │     usePageState, useNavigate, Link, cx
         │    │     __rweRenderToString, __rweWrapWithPageState
+        │    ├── zeb_ssr_libs.js loaded ONCE after it — files the server stand-in
+        │    │     of each runtime `zeb/*` library under globalThis.__zebLibs
         │    ├── transpile_tsx() — OXC strips TS/JSX → plain JS (h() calls)
-        │    ├── strip_rwe_imports() — remove any remaining "rwe" import lines
         │    ├── inject_page_globals() — expose default export on globalThis
         │    │     globalThis.__rwe_page = <default export name>
         │    │     globalThis.__rwe_page_config = page config (if defined)

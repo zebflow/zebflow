@@ -3,7 +3,10 @@
 Zebflow owns the UI runtime used by RWE. `zeb_react.js` contains original,
 dependency-free JavaScript shared by embedded V8 SSR workers and the browser.
 `zeb_react.mjs` exposes the browser module API. `zeb_ssr_init.js` supplies
-Zebflow page state, navigation stubs, island metadata and library placeholders.
+Zebflow page state, navigation stubs and island metadata. `zeb_ssr_libs.js`
+files the server stand-in of each runtime `zeb/*` library under
+`globalThis.__zebLibs["zeb/<name>"]`, where an import of that library is bound
+(`src/rwe/core/zeb_lib.rs`); the browser files the real bundle under the same key.
 There is no Preact bundle, npm install, CDN request or build step for this engine.
 
 The Rust compiler transforms TSX into `h` / `Fragment` calls using OXC. Template

@@ -55,8 +55,14 @@ export const COMPONENTS = [
 "#;
 
 fn page(doc: &str, body: &str) -> String {
+    // A body that draws a library component imports it, like any page would.
+    let player_import = if body.contains("<PotoPlayer") {
+        "import { PotoPlayer } from \"zeb/potoru\";\n"
+    } else {
+        ""
+    };
     format!(
-        r#"import {{ DocumentView, renderDocumentHtml, documentText }} from "zeb/ui/editor-render";
+        r#"{player_import}import {{ DocumentView, renderDocumentHtml, documentText }} from "zeb/ui/editor-render";
 import {{ COMPONENTS }} from "@/shared/editor/extensions/components";
 const DOC = {doc};
 export default function Page() {{

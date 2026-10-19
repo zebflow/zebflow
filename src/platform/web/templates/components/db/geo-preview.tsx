@@ -1,5 +1,5 @@
 import { geoLabel, geoViewState } from "@/components/db/geo-shape";
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 
 /**
  * Spatial preview for any engine that stores geometry.

@@ -2,7 +2,7 @@
  * zeb/markdown — Markdown component (SSR + client-aware).
  *
  * Usage:
- *   import Markdown from "zeb/markdown";
+ *   import { Markdown } from "zeb/markdown";
  *   <Markdown content={post.body} class="prose prose-invert max-w-none" />
  *
  *   // Inline children

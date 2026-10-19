@@ -45,7 +45,7 @@ const realErrors = (errors: string[]) => errors.filter((e) => !/GL Driver Messag
 test("a deck.gl GeoJSON polygon paints its fill", async ({ page, request, consoleErrors }) => {
   const project = `e2e-deckpx-${Date.now()}`;
   const source = `
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 export default function Page() {
   const square = { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [[[120, -30], [140, -30], [140, -20], [120, -20], [120, -30]]] } }] };
   const layers = [{ type: "GeoJsonLayer", id: "geo", data: square, filled: true, stroked: false, getFillColor: [0, 0, 255, 255] }];
@@ -97,7 +97,7 @@ export default function Page() {
 test("zeb/threejs-vrm mounts its viewer without a model", async ({ page, request, consoleErrors }) => {
   const project = `e2e-vrm-${Date.now()}`;
   const source = `
-import VrmViewer from "zeb/threejs-vrm";
+import { VrmViewer } from "zeb/threejs-vrm";
 export default function Page() {
   return <main><VrmViewer id="vrm" height="240px" background="#ff00ff" /></main>;
 }`;

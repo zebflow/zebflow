@@ -39,6 +39,8 @@ const ZEB_SSR_INIT: &str = concat!(
     include_str!("../runtime/zeb_react.js"),
     "\n",
     include_str!("../runtime/zeb_ssr_init.js"),
+    "\n",
+    include_str!("../runtime/zeb_ssr_libs.js"),
 );
 const TOOL_INIT: &str = include_str!("../../language/runtime/tool_init.js");
 
@@ -413,14 +415,11 @@ async fn load_page_module(
     // 1. Transpile TSX → plain JS (strip TypeScript, JSX → h() calls).
     let js = transpile_tsx(tsx_source)?;
 
-    // 1b. Strip "rwe" and "rwe-*" runtime import lines.
-    //     The compiler's rewrite_imports() leaves `import { ... } from 'rwe'` (and
-    //     convention aliases like 'rwe-sky') verbatim because they are valid in the
-    //     source. But our deno_core module loader only handles file:// URLs — it would
-    //     try to resolve "rwe" as a relative path and fail with "no such file".
-    //     All symbols from those imports are already on globalThis via zeb_ssr_init.js,
-    //     so stripping the lines is safe and correct.
-    let js = strip_rwe_imports(&js);
+    // The compiler has already lowered every `zeb/*` import to declarations
+    // that read the library registry (`globalThis.__zebLibs`), which
+    // `zeb_ssr_libs.js` fills at startup. No import line reaches this point:
+    // the module loader only handles file:// URLs, so one that did would fail
+    // loudly rather than be dropped.
 
     // 2. Inject render vars as globalThis.ctx (primary) and globalThis.input (compat).
     //     `ctx` is the canonical name — used in `export const page` config and top-level code.
@@ -785,28 +784,6 @@ fn transpile_source(source: &str, jsx: bool) -> Result<String, EngineError> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Strip `import { … } from "rwe"`, `import { … } from "rwe-*"`, and
-/// `import { … } from "zeb/*"` lines before SSR.
-///
-/// SSR stubs for all `zeb/*` library symbols are installed once at JsRuntime
-/// startup via `zeb_ssr_init.js` as `globalThis.*` assignments — no
-/// per-render injection needed here.
-fn strip_rwe_imports(js: &str) -> String {
-    js.lines()
-        .filter(|line| {
-            let t = line.trim();
-            if !t.starts_with("import ") {
-                return true;
-            }
-            !(t.contains("from \"zeb/react\"")
-                || t.contains("from 'zeb'")
-                || t.contains("from \"zeb/")
-                || t.contains("from 'zeb/"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 fn reset_render_globals(js_rt: &mut JsRuntime) -> Result<(), EngineError> {
     js_rt

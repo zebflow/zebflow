@@ -723,10 +723,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/manifest.json"),
     },
     EmbeddedAsset {
-        path: "zeb/livegeo/manifest.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/manifest.json"),
-    },
-    EmbeddedAsset {
         path: "zeb/threejs/r183/bundle.min.mjs",
         bytes: include_bytes!("../../../blessed/rwe-libraries/threejs/r183/bundle.min.mjs"),
     },
@@ -833,24 +829,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/rooms/README.md",
         bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/README.md"),
-    },
-    EmbeddedAsset {
-        path: "zeb/livegeo/0.1/library.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/0.1/library.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/livegeo/0.1/exports.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/0.1/exports.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/livegeo/0.1/keywords.json",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/0.1/keywords.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/livegeo/0.1/runtime/livegeo.bundle.mjs",
-        bytes: include_bytes!(
-            "../../../blessed/rwe-libraries/livegeo/0.1/runtime/livegeo.bundle.mjs"
-        ),
     },
     EmbeddedAsset {
         path: "zeb/prosemirror/manifest.json",
@@ -1198,6 +1176,73 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         path: "zeb/potoru/package.yaml",
         bytes: include_bytes!("../../../blessed/rwe-libraries/potoru/package.yaml"),
     },
+    // zeb/world: every file of the package. The entry finds its lazy chunks and the tile
+    // worker with `new URL(…, import.meta.url)`, so each one has to answer next to it under
+    // `0.1/runtime/`. Chunk names carry content hashes: a rebuild of the library rewrites this list.
+    EmbeddedAsset {
+        path: "zeb/world/0.1/exports.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/keywords.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/library.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/forms-7rJCXouj.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/forms-7rJCXouj.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/solids-BIyFOe5L.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/solids-BIyFOe5L.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/tiles.worker.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/tiles.worker.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/world.bundle.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/world.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/zone-places-B7wsdUjy.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/zone-places-B7wsdUjy.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/DATA-LICENCES.md",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/DATA-LICENCES.md"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/FILES-SHA256.txt",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/FILES-SHA256.txt"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/LICENSE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/NOTICE",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/NOTICE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/README.md",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/README.md"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/THIRD-PARTY-NOTICES.txt",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/THIRD-PARTY-NOTICES.txt"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/manifest.json",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/package.yaml",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/package.yaml"),
+    },
     // No library.json for zeb/react. The other entries here describe packages a
     // project installs; the engine is not one, and a manifest beside these would
     // read as though it were.
@@ -1236,10 +1281,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/graphui/package.yaml",
         bytes: include_bytes!("../../../blessed/rwe-libraries/graphui/package.yaml"),
-    },
-    EmbeddedAsset {
-        path: "zeb/livegeo/package.yaml",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/package.yaml"),
     },
     EmbeddedAsset {
         path: "zeb/markdown/package.yaml",
@@ -1290,10 +1331,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/graphui/LICENSE",
         bytes: include_bytes!("../../../blessed/rwe-libraries/graphui/LICENSE"),
-    },
-    EmbeddedAsset {
-        path: "zeb/livegeo/LICENSE",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/livegeo/LICENSE"),
     },
     EmbeddedAsset {
         path: "zeb/markdown/LICENSE.marked",

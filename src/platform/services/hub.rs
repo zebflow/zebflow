@@ -12438,7 +12438,7 @@ mod tests {
         // The libraries that shipped an unlicensed 0.1.1; a library first
         // published later (zeb/potoru) never had that release to collide with.
         const PRE_LICENSE: &[&str] = &[
-            "codemirror", "d3", "deckgl", "graphui", "livegeo", "markdown",
+            "codemirror", "d3", "deckgl", "graphui", "markdown",
             "pdf", "prosemirror", "threejs", "threejs-vrm", "use",
         ];
         for package in carried.iter().filter(|package| {

@@ -8,7 +8,7 @@ Fully offline — `@deck.gl/core`, `@deck.gl/layers`, `@deck.gl/aggregation-laye
 ## Import
 
 ```tsx
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 ```
 
 Named exports:
@@ -27,7 +27,7 @@ import {
   colorRamp,             // interpolate color stops at position t
   interpolateAlongPath,  // [lon, lat, heading] at progress along a path
   createAnimationLoop,   // requestAnimationFrame loop with play/pause/speed
-  DeckMap,               // Zeb React component (same as default export)
+  DeckMap,               // Zeb React component
 } from "zeb/deckgl";
 ```
 
@@ -341,7 +341,7 @@ Use `createAnimationLoop` for smooth vehicle tracking, temporal simulations, and
 
 ```tsx
 import { useEffect, useRef, useState, usePageState } from "zeb/react";
-import DeckMap, { createAnimationLoop, interpolateAlongPath } from "zeb/deckgl";
+import { DeckMap, createAnimationLoop, interpolateAlongPath } from "zeb/deckgl";
 
 export default function FleetPlayback(input) {
   const [vehicles, setVehicles] = usePageState("vehicles", []);
@@ -413,7 +413,7 @@ Then read `input.script.ws` in the page:
 
 ```tsx
 import { useEffect, useState, usePageState } from "zeb/react";
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 
 export default function LiveFleet(input) {
   const [vehicles, setVehicles] = usePageState("vehicles", []);
@@ -662,7 +662,7 @@ inst.setViewState({
 
 ```tsx
 import { useEffect, useRef, useState, usePageState } from "zeb/react";
-import DeckMap, { haversine, colorRamp, createAnimationLoop } from "zeb/deckgl";
+import { DeckMap, haversine, colorRamp, createAnimationLoop } from "zeb/deckgl";
 
 export default function FleetDashboard(input) {
   const [vehicles, setVehicles] = usePageState("vehicles", input.vehicles || []);

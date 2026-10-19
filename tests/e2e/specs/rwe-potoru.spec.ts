@@ -28,9 +28,12 @@ const SCRIPT = [
 
 const PAGES: Record<string, string> = {
   "yaml.tsx": `
-import { PotoEditor } from "zeb/potoru";
+import { useEffect } from "zeb/react";
+import { PotoEditor, compile } from "zeb/potoru";
 const FILES = ${JSON.stringify(STORY)};
 export default function Page() {
+  // The spec compiles a broken source with the same library the page imported.
+  useEffect(() => { (window as any).__potoruCompile = compile; }, []);
   return <main><PotoEditor id="lab" yaml={FILES} height="420px" /></main>;
 }`,
   "script.tsx": `
@@ -149,11 +152,11 @@ test.describe.serial("zeb/potoru", () => {
     await expect.poll(() => lastResult(page, "lab"), { timeout: 20_000 }).toMatchObject({ ok: true });
 
     const result = await page.evaluate(async () => {
-      const potoru = (window as any).potoru;
+      const compile = (window as any).__potoruCompile;
       const editor = (window as any).__zebPotoEditor.get("lab");
       const yaml = { ...editor.getFiles() };
       yaml["scenes/scene-main/scene.yml"] += "\n  : not: [valid\n";
-      const r = await potoru.compile({ yaml });
+      const r = await compile({ yaml });
       return { ok: r.ok, diagnostics: r.diagnostics.map((d: any) => ({ file: d.file, line: d.line, code: d.code })) };
     });
     expect(result.ok).toBe(false);

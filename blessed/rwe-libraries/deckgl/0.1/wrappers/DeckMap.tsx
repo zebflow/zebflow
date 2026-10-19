@@ -2,7 +2,7 @@
  * DeckMap — RWE wrapper for Deck.gl geospatial / data visualisation maps.
  *
  * IMPORT in TSX page:
- *   import DeckMap from "zeb/deckgl";
+ *   import { DeckMap } from "zeb/deckgl";
  *
  * ─── Simple points map ────────────────────────────────────────────────────
  *   <DeckMap

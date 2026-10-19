@@ -25,7 +25,7 @@ Two surfaces need no install: `zeb/react` (hooks, in every file) and `zeb/ui`
 
 - `zeb/d3`, `zeb/deckgl`, `zeb/codemirror`, `zeb/markdown`, `zeb/pdf`,
   `zeb/potoru`, `zeb/prosemirror`, `zeb/threejs`, `zeb/threejs-vrm`,
-  `zeb/graphui`, `zeb/livegeo`, `zeb/rooms`, `zeb/use`
+  `zeb/graphui`, `zeb/rooms`, `zeb/use`, `zeb/world`
 
 Each is imported as a static `import { … } from "zeb/<lib>"` after it is
 enabled for the project; a dynamic `import()` of one is refused by default.

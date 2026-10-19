@@ -6,7 +6,7 @@ Fully offline — Three.js + `@pixiv/three-vrm` bundled inline, no CDN.
 ## Import
 
 ```tsx
-import VrmViewer from "zeb/threejs-vrm";
+import { VrmViewer } from "zeb/threejs-vrm";
 // or helpers:
 import { mountVrmViewer, vrm } from "zeb/threejs-vrm";
 ```

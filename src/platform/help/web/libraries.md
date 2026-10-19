@@ -2,22 +2,27 @@
 
 Browser libraries the platform ships with the binary and serves from
 `/assets/libraries/zeb/<lib>/0.1/runtime/…`. A page uses one with a **static
-import**; the compiler recognises the specifier, the page loads the bundle
-before hydrating, and the names arrive as globals in the browser. Nothing to
-install, nothing to configure:
+import**; the page loads the bundle before hydrating and each import binds to
+the library it names. Nothing to install, nothing to configure:
 
 ```tsx
 import { d3 } from "zeb/d3";
-import { DeckMap, ScatterplotLayer } from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 import { renderMarkdown } from "zeb/markdown";
 ```
+
+Imports work as in any module: `import { Camera as ThreeCamera } from
+"zeb/threejs"` renames, and `import * as potoru from "zeb/potoru"` takes the
+whole library. A library's names are never globals: two libraries can export
+the same name, and a name the page did not import is not in scope. Import what
+you use, in every file that uses it.
 
 Dynamic `import()` is refused by the default security policy
 (`RWE_SECURITY_DYNAMIC_IMPORT`), and importing a bundle URL directly is not
 supported — always the `zeb/<lib>` specifier. The libraries are browser code:
 call them from `useEffect`, event handlers or `useD3`-style hooks, not during
 render. Components the libraries provide (`DeckMap`, `ThreeScene`, `CodeEditor`,
-`Markdown`, `VrmViewer`, `PotoPlayer`, `PotoSnapshot`, `PotoEditor`) render a placeholder on the server and mount in the
+`Markdown`, `VrmViewer`, `PotoPlayer`, `PotoSnapshot`, `PotoEditor`, `World`) render a placeholder on the server and mount in the
 browser, so they may appear in JSX directly.
 
 A project can restrict which libraries its pages may load under
@@ -27,7 +32,6 @@ with no list, any of them loads on demand.
 | Library | Import | For |
 |---|---|---|
 | `zeb/use` | hooks | debounce, clipboard, localStorage, intervals, trees… |
-| `zeb/livegeo` | hooks | playback and smoothing for moving things on a map |
 | `zeb/rooms` | `useRoom`, `joinRoom` | live rooms: chat, presence, dashboards, multiplayer games |
 | `zeb/markdown` | `renderMarkdown`, `marked`, `DOMPurify`, `<Markdown>` | Markdown → sanitised HTML |
 | `zeb/codemirror` | `codemirror`, `presets`, `createZebflowEditorExtensions`, `<CodeEditor>` | a code editor (CodeMirror 6) |
@@ -38,6 +42,7 @@ with no list, any of them loads on demand.
 | `zeb/graphui` | `createGraphUI`, `GraphStore`, … | node-graph editors |
 | `zeb/pdf` | `createDocument`, `createTable`, `render`, `PAGE_SIZES`, … | PDF generation in the browser |
 | `zeb/potoru` | `<PotoPlayer>`, `<PotoSnapshot>`, `<PotoEditor>`, `potoru`, `usePotoPlayer`, `mountPotoPlayer`, `mountPotoSnapshot`, `mountPotoEditor`, `compile` | 2D animation: play `.poto` stories, still frames for thumbnails, compile Potoru source (YAML or Script) in the browser |
+| `zeb/world` | `<World>`, `useWorld`, `useElement`, `useWorldEvent`, and aslnut's whole API: `earth`, `plane`, `imagery`, `terrain`, `layer`, `data`, `scale`, `theme`, `shape`, … | worlds on WebGPU / WebGL2: the Earth or a flat floor, your data as layers; `help("web/world")` |
 
 There is no icons library; use inline SVG (the `zeb/ui` components do).
 
@@ -78,20 +83,10 @@ const page = Number(params.get("page") ?? "1");
 
 ---
 
-## zeb/livegeo — live map hooks
+## Moving things on a map
 
-Browser-only hooks for playback, smoothing and following a moving target.
-
-| Hook | Signature | Description |
-|------|-----------|-------------|
-| `usePlayback` | `({ start, end, initialTime, autoplay, speed, msPerSecond, loop })` | Timeline playback state with play, pause, reset, and seek. |
-| `useTrackPlayback` | `(tracks, options?)` | Produces interpolated moving entity snapshots from timed track points. |
-| `useTrackSmoothing` | `(target, options?)` | Smooths moving position and bearing updates. |
-| `useMapFollow` | `(target, options?)` | Keeps map view state centered on a moving target. |
-
-Use `Tool.geo` (`routeProgress`, `interpolateRoute`, `bearing`) for the maths
-that must also run on the server. Guard these hooks behind `useEffect` or a
-component rendered only in the browser — they have no server stubs.
+Playback, smoothing and map follow are `zeb/world`'s: history logs, `replay`,
+`drive.data` and the camera's `follow` (`help("web/world")`).
 
 ---
 
@@ -600,3 +595,25 @@ export default function PdfPage() {
 ```
 
 ---
+
+---
+
+## zeb/world
+
+```tsx
+import { World, useWorldEvent, earth, imagery, terrain, layer, data } from "zeb/world";
+
+<World className="h-[70vh] w-full" options={options}
+  elements={[layer({ id: "places", data: places, points: { size: 10 } })]} />
+```
+
+[aslnut](https://github.com/aslnut/aslnut), a world engine on WebGPU and WebGL2:
+`<World>` makes one world on its own canvas and keeps `elements` in step by id (a
+restyle is a `setProps`, never a rebuild); `useWorld`, `useElement` and
+`useWorldEvent` read it from overlays inside `<World>`; aslnut's whole API
+(`earth`, `plane`, `imagery`, `terrain`, `layer`, `data`, `scale`, …) comes with
+it. On the server `<World>` renders its box and every other name is an inert
+stand-in, so a page may build its options and elements while it renders. The rules
+(ids, `useMemo` for sources and scales, the camera is the person's, credits stay
+on screen, Esri and OpenStreetMap tiles are show-only) and a complete page:
+`help("web/world")`.

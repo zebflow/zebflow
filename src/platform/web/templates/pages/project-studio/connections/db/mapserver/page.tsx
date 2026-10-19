@@ -6,7 +6,7 @@ import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
 import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 import { useEffect, useState } from "zeb/react";
 
 export const page = {

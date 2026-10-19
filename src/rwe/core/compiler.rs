@@ -1368,7 +1368,11 @@ fn extract_zeb_lib_specifiers(source: &str) -> Vec<String> {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            if specifier.starts_with("zeb/") && specifier != super::zeb_react::SPECIFIER {
+            // A type-only import names nothing at runtime, so it loads nothing.
+            if specifier.starts_with("zeb/")
+                && specifier != super::zeb_react::SPECIFIER
+                && !import.import_kind.is_type()
+            {
                 let s = specifier.to_string();
                 if !libs.contains(&s) {
                     libs.push(s);
@@ -1565,12 +1569,15 @@ fn strip_local_imports(
                 if end < source.len() && source.as_bytes()[end] == b'\n' {
                     end += 1;
                 }
+                // `zeb/react` and every runtime `zeb/*` library bind their
+                // names through an import-time lowering; an inlined module
+                // keeps its names in the flat bundle.
                 let replacement = if specifier == super::zeb_react::SPECIFIER {
                     super::zeb_react::lower_import(import)?
                 } else if specifier.starts_with('/') {
                     bind_inlined_import(import, specifier, sources)?
                 } else {
-                    String::new()
+                    super::zeb_lib::lower_import(import)
                 };
                 remove_ranges.push((start, end, replacement));
             }
@@ -1636,6 +1643,116 @@ export default function DemoPage() {
                 .any(|lib| lib == "zeb/codemirror"),
             "expected zeb/codemirror to be detected, got {:?}",
             compiled.detected_zeb_libs
+        );
+    }
+
+    /// Every import form of a runtime library is lowered where it is written,
+    /// on the server module and the browser module alike. Nothing is left for
+    /// a global to supply.
+    #[test]
+    fn runtime_library_imports_lower_to_the_registry_on_both_sides() {
+        let source = r#"
+import { mountThreeScene, Camera as ThreeCamera } from "zeb/threejs";
+import type { Scene } from "zeb/threejs";
+import * as d3lib from "zeb/d3";
+import Whole from "zeb/pdf";
+export default function Page() {
+  return <div>{typeof mountThreeScene}{typeof ThreeCamera}{typeof d3lib}{typeof Whole}</div>;
+}
+"#;
+        let compiled = compile(source, CompileOptions::default()).expect("compile should succeed");
+
+        for (side, module) in [
+            ("server", &compiled.server_module_source),
+            ("client", &compiled.client_module_source),
+        ] {
+            for expected in [
+                r#"const mountThreeScene = globalThis.__zebLibs["zeb/threejs"]["mountThreeScene"];"#,
+                r#"const ThreeCamera = globalThis.__zebLibs["zeb/threejs"]["Camera"];"#,
+                r#"const d3lib = globalThis.__zebLibs["zeb/d3"];"#,
+                r#"const Whole = globalThis.__zebLibs["zeb/pdf"]["default"];"#,
+            ] {
+                assert!(module.contains(expected), "{side} module lacks {expected}: {module}");
+            }
+            assert!(!module.contains("from \"zeb/"), "{side} module keeps an import: {module}");
+            assert!(!module.contains("const Scene"), "{side}: a type-only import binds nothing: {module}");
+        }
+        assert_eq!(
+            compiled.detected_zeb_libs,
+            vec!["zeb/d3".to_string(), "zeb/pdf".to_string(), "zeb/threejs".to_string()]
+        );
+    }
+
+    /// A library named only in a type position names nothing at runtime, so
+    /// the browser is not asked to load it.
+    #[test]
+    fn a_type_only_library_import_loads_no_library() {
+        let source = r#"
+import type { Scene } from "zeb/threejs";
+export default function Page() { return <div />; }
+"#;
+        let compiled = compile(source, CompileOptions::default()).expect("compile should succeed");
+        assert!(compiled.detected_zeb_libs.is_empty(), "{:?}", compiled.detected_zeb_libs);
+    }
+
+    /// The same text inside a template literal — a code sample — is not an
+    /// import and stays as written.
+    #[test]
+    fn a_library_import_inside_a_code_sample_is_left_alone() {
+        let source = "import { useDebounce } from \"zeb/use\";\nconst sample = `\nimport { Button } from \"zeb/ui/button\";\n`;\nexport default function P() { return <pre>{sample}{typeof useDebounce}</pre>; }\n";
+        let compiled = compile(source, CompileOptions::default()).expect("compile should succeed");
+        let module = &compiled.client_module_source;
+        assert!(module.contains("import { Button } from \"zeb/ui/button\";"), "{module}");
+        assert!(
+            module.contains(r#"const useDebounce = globalThis.__zebLibs["zeb/use"]["useDebounce"];"#),
+            "{module}"
+        );
+    }
+
+    /// A component file binds a library's names for itself. The page and the
+    /// component may import the same name from different libraries, or an
+    /// alias that the page also uses, without one replacing the other.
+    #[test]
+    fn a_component_binds_its_library_names_apart_from_the_page() {
+        let (_tmp, root) = temp_root("rwe-zeb-lib-component");
+        fs::create_dir_all(root.join("components")).expect("create components dir");
+        fs::write(
+            root.join("components/chart.tsx"),
+            "import { Camera } from \"zeb/threejs\";\nexport default function Chart() { return <i>{typeof Camera}</i>; }\n",
+        )
+        .expect("write component");
+        let file = root.join("page.tsx");
+        fs::write(
+            &file,
+            "import { Camera } from \"zeb/world\";\nimport Chart from \"@/components/chart\";\nexport default function Page() { return <div><Chart />{typeof Camera}</div>; }\n",
+        )
+        .expect("write page");
+
+        let compiled = compile(
+            &fs::read_to_string(&file).expect("read page"),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("compile should succeed");
+
+        for module in [&compiled.server_module_source, &compiled.client_module_source] {
+            // The page's own name stays; the component's is prefixed, so both
+            // can bind `Camera` in one flat module.
+            assert!(
+                module.contains(r#"const Camera = globalThis.__zebLibs["zeb/world"]["Camera"];"#),
+                "{module}"
+            );
+            assert!(
+                module.contains(r#"_Camera = globalThis.__zebLibs["zeb/threejs"]["Camera"];"#),
+                "{module}"
+            );
+        }
+        assert_eq!(
+            compiled.detected_zeb_libs,
+            vec!["zeb/threejs".to_string(), "zeb/world".to_string()]
         );
     }
 

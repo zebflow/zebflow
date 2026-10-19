@@ -12,7 +12,7 @@ test("a deck.gl layer built from page state reaches the deck after hydration", a
   const route = `/wh/${OWNER}/${project}/deck`;
   const source = `
 import { useState, useEffect } from "zeb/react";
-import DeckMap from "zeb/deckgl";
+import { DeckMap } from "zeb/deckgl";
 export default function Page() {
   const [pts, setPts] = useState([]);
   useEffect(() => { const t = setTimeout(() => setPts([{ p: [151.2, -33.9] }, { p: [115.9, -31.9] }]), 200); return () => clearTimeout(t); }, []);
