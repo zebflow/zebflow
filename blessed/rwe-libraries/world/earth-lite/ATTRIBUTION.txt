@@ -1,0 +1,1 @@
+Sentinel-2 cloudless 2020 - https://s2maps.eu by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2020). Licence: CC BY 4.0.

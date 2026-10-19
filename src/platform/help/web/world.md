@@ -93,12 +93,16 @@ it unmounts. `w.api` is `"webgpu"` or `"webgl2"`; `w.reason` says why.
 6. **Data credits stay on screen.** Every world draws the credits of what it shows in
    a corner of the canvas. Do not hide or crop them (`attribution: false` is only for
    an app that shows `w.attribution()` itself, always).
-7. **Esri and OpenStreetMap tiles are show-only:** drawn while looked at, never
+7. **earth-lite ships with Zebflow:** an offline basemap (Sentinel-2 cloudless 2020 by EOX,
+   CC BY 4.0, levels 0 to 4) served at `/assets/libraries/zeb/world/earth-lite/{z}/{x}/{y}.jpg`:
+   `earthLite({ url: "/assets/libraries/zeb/world/earth-lite", maxZoom: 4 })` draws a globe with
+   no internet at all, as the Studio's own maps do.
+8. **Esri and OpenStreetMap tiles are show-only:** drawn while looked at, never
    prefetched, never kept, never exported or recorded for publication. `imagery.sentinel()`
    (EOX, CC BY 4.0) and `terrain.mapzen()` may be kept, with their credits. A basemap you
    host yourself carries your own terms. The full table is `DATA-LICENCES.md` inside the
    package.
-8. **Never gate what is shown by the camera.** `when: { zoom }`, `{ dist }`, `{ tilt }`
+9. **Never gate what is shown by the camera.** `when: { zoom }`, `{ dist }`, `{ tilt }`
    throw. A digital twin is looked at through levels (`observation: { levels: "default" }`
    and `when: { level: { from: "district" } }`).
 

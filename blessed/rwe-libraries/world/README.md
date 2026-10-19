@@ -48,12 +48,40 @@ with aslnut's default look, so `worker(tilesWorkerUrl)` is a lane for street-lev
 baked roads made with that look. A street level with its own `look` needs a worker module
 that serves `streetsWorker(look)`; without any worker aslnut builds on the main thread.
 
+## earth-lite
+
+`earth-lite/` is an offline basemap that ships inside the package and the Zebflow binary:
+Sentinel-2 cloudless 2020 by EOX IT Services GmbH (contains modified Copernicus Sentinel data
+2020), CC BY 4.0, levels 0 to 4 as 341 tiles of 256 px (about 1.8 MB; EOX answers a tile of one
+colour, Antarctica's ice, with a small PNG under the same `.jpg` name). It is served at
+`/assets/libraries/zeb/world/earth-lite/{z}/{x}/{y}.jpg` (`image/jpeg`), so a world on an office
+with no internet still has a globe:
+
+```tsx
+earth({ imagery: [earthLite({ url: "/assets/libraries/zeb/world/earth-lite", maxZoom: 4,
+  attribution: "Sentinel-2 cloudless 2020 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2020), CC BY 4.0" })], terrain: [] })
+```
+
+`earth-lite/ATTRIBUTION.txt` is the credit aslnut's tool writes; `earth-lite/LICENCE.txt` the
+licence note. The world draws the credit on screen; keep it there.
+
 ## Build
 
 ```sh
 cd <aslnut checkout> && npm ci --ignore-scripts
-ASLNUT_SRC=<aslnut checkout> node blessed/rwe-libraries/world/build/build.mjs
+ASLNUT_SRC=<aslnut checkout> node blessed/rwe-libraries/world/build/build.mjs [--earth-lite <pack>] [--vendor]
 ```
+
+- `--earth-lite <pack>`: copy a prepared pack into `earth-lite/`, after checking every tile of
+  every level is there and is an image. Make the pack once with aslnut's
+  `node <aslnut checkout>/packages/aslnut/tools/earth-lite.mjs <pack> 4` (it downloads the 341
+  public tiles from EOX). A rebuild without the flag keeps the pack already there.
+- `--vendor`: copy the finished package, without `earth-lite/`, into the Studio's pinned copy,
+  `src/platform/web/vendor/zeb/world/`, and rewrite its block of `PLATFORM_VENDOR_ASSETS`. The
+  Studio's own maps (the database geo preview, the MapServer layer preview) load the library from
+  there; earth-lite is data, kept once, and the Studio's lookup finds it in the hub's copy.
+- Without `ASLNUT_SRC`, only these two steps run, with the checksums and the embedded list:
+  the bundle in `0.1/runtime/` is kept as it is.
 
 aslnut does not depend on esbuild; it builds with Rolldown (through Vite), so the build takes
 Rolldown from `ASLNUT_SRC/node_modules` and bundles aslnut's sources directly:
@@ -65,7 +93,7 @@ Rolldown from `ASLNUT_SRC/node_modules` and bundles aslnut's sources directly:
 | `build/zeb-react.mjs` | `"zeb/react"` as Zeb React's global |
 | `build/interface.mjs`, `build/interface-check.ts` | the interface guard: the wrapper's types must equal `aslnut/react`'s, checked with aslnut's TypeScript before bundling |
 | `build/tiles.worker.ts` | the tile worker's entry |
-| `build/build.mjs` | the two bundles, notices, `exports.json`, `keywords.json`, `manifest.json`, `FILES-SHA256.txt` and the `zeb/world` block of `PLATFORM_LIBRARY_ASSETS` |
+| `build/build.mjs` | the two bundles, notices, `exports.json`, `keywords.json`, `manifest.json`, `FILES-SHA256.txt`, the `zeb/world` block of `PLATFORM_LIBRARY_ASSETS`, the earth-lite copy (`--earth-lite`) and the Studio's pinned copy (`--vendor`) |
 
 The output is one ES module (`--splitting`, minified, es2022, browser) with its lazy chunks
 beside it, `node:*` left external (aslnut reaches it only in Node), no source maps. Before it
@@ -82,6 +110,7 @@ any built file that names a local path.
 | `0.1/library.json`, `exports.json`, `keywords.json` | editor metadata; `exports.json` is generated |
 | `manifest.json`, `package.yaml` | the library contract and the hub seed (`zebflow.world`) |
 | `LICENSE`, `NOTICE`, `DATA-LICENCES.md` | aslnut's own, copied unchanged from its package |
+| `earth-lite/{z}/{x}/{y}.jpg`, `earth-lite/ATTRIBUTION.txt`, `earth-lite/LICENCE.txt` | the offline basemap (Sentinel-2 cloudless 2020 by EOX, CC BY 4.0) |
 | `THIRD-PARTY-NOTICES.txt` | the npm packages inside the bundle, from the module graph |
 | `FILES-SHA256.txt` | digest of every file listed above |
 

@@ -1,4 +1,4 @@
-import { parseGeoJsonGeometry } from "@/components/db/geo-preview";
+import { parseGeoJsonGeometry } from "@/components/db/geo-shape";
 
 /**
  * Reading a table's shape and its cells, for every engine.

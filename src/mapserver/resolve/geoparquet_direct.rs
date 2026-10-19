@@ -1286,7 +1286,6 @@ fn mvt_encode_batches(
 
     let mut tags = super::mvt::TagTable::new();
     let mut cursor = (0i32, 0i32);
-    let mut feature_id = 1u64;
     let mut encoded_features = Vec::new();
     let mut count = 0usize;
 
@@ -1411,7 +1410,6 @@ fn mvt_encode_batches(
                 4096,
                 &mut tags,
                 &mut cursor,
-                &mut feature_id,
             ) {
                 encoded_features.push(feat_bytes);
             }

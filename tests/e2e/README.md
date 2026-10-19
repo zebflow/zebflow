@@ -38,6 +38,12 @@ Credentials default to `superadmin` / `admin123` and can be overridden with
   and maintenance each draw real content; a table created in the UI takes a
   row added in the grid; a query shows its rows; the relations graph draws the
   edge and selects it.
+- `specs/studio-maps.spec.ts` — the Studio's own maps (zeb/world over the
+  earth-lite basemap) in a throwaway project: a table's geometry cell opens the
+  geo preview, a published MapServer layer opens its preview drawn from its own
+  MVT tiles; each world runs on WebGPU or WebGL2, holds its data layers and
+  settles, the layer's tooltip shows a feature's properties, and no request
+  leaves the dev server.
 
 - `specs/editor-extensions.spec.ts` — the composable editor in a throwaway
   project with `shared/editor/extensions/`: type, insert a figure (upload,

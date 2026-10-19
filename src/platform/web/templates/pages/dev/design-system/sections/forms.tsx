@@ -1,4 +1,5 @@
-import { useState } from "zeb/react";
+import { useMemo, useState } from "zeb/react";
+import { data } from "zeb/world";
 import Input from "@/components/ui/input";
 import Textarea from "@/components/ui/textarea";
 import { Select, SelectOption } from "@/components/ui/select";
@@ -8,9 +9,13 @@ import Label from "@/components/ui/label";
 import Field from "@/components/ui/field";
 import FolderPicker from "@/components/ui/folder-picker";
 import MapPicker from "@/components/ui/map-picker";
+import StudioMap, { geometryLayers } from "@/components/ui/studio-map";
 import TraceCaptureFields from "@/components/ui/trace-capture-fields";
 import Button from "@/components/ui/button";
 import { SectionHeading, Entry } from "@/pages/dev/design-system/components/gallery";
+
+const DEMO_AREA = { type: "Feature", properties: { id: 1 }, geometry: { type: "Polygon", coordinates: [[[144.95, -37.82], [144.98, -37.82], [144.98, -37.8], [144.95, -37.8], [144.95, -37.82]]] } };
+const DEMO_BOX = [144.95, -37.82, 144.98, -37.8];
 
 export default function FormsSection({ owner, project }) {
   const [region, setRegion] = useState("apac");
@@ -19,6 +24,9 @@ export default function FormsSection({ owner, project }) {
   const [mapOpen, setMapOpen] = useState(false);
   const [geometry, setGeometry] = useState("");
   const [trace, setTrace] = useState({});
+  const demoArea = useMemo(() => geometryLayers("demo", data.geojson({ type: "FeatureCollection", features: [DEMO_AREA] }, { id: "id" }), {
+    area: { color: "#ff6a00", opacity: 0.4, outline: { color: "#ff6a00", width: 2 } },
+  }), []);
 
   return (
     <div>
@@ -177,6 +185,15 @@ export default function FormsSection({ owner, project }) {
             onClear={() => setGeometry("")}
           />
         </div>
+      </Entry>
+
+      <Entry
+        name="StudioMap"
+        file="studio-map.tsx"
+        description="The Studio's own map: zeb/world over the earth-lite basemap shipped with Zebflow, nothing fetched from outside. elements are aslnut layers made once (geometryLayers draws one source as areas, lines and points); fit is a [west, south, east, north] box."
+        code={`<StudioMap className="h-[180px] w-full" elements={geometryLayers("geo", source, { area, line, points, tooltip })} fit={[w, s, e, n]} />`}
+      >
+        <StudioMap className="h-[180px] w-full max-w-md rounded-md border border-border/70" elements={demoArea} fit={DEMO_BOX} />
       </Entry>
     </div>
   );

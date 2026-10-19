@@ -1,4 +1,3 @@
-import { geoLabel, geoViewState } from "@/components/db/geo-shape";
 import { useState, useEffect, useRef, cx } from "zeb/react";
 import {
   prettyValue,

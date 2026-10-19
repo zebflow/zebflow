@@ -1,0 +1,11 @@
+earth-lite: an offline basemap for zeb/world, levels 0 to 4 (341 tiles of 256 x 256 px; JPEG, and a
+small PNG under the same name where a tile is one colour, as EOX serves them),
+served at /assets/libraries/zeb/world/earth-lite/{z}/{x}/{y}.jpg and read with
+earthLite({ url: "/assets/libraries/zeb/world/earth-lite", maxZoom: 4 }).
+
+Sentinel-2 cloudless 2020 (https://s2maps.eu) by EOX IT Services GmbH, contains modified Copernicus Sentinel
+data 2020. Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0,
+https://creativecommons.org/licenses/by/4.0/). The tiles are EOX's own, unchanged. A world that shows them
+keeps this credit on screen.
+
+Made with aslnut's tools/earth-lite.mjs; copied in by build/build.mjs --earth-lite <pack>.

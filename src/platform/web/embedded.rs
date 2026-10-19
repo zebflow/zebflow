@@ -96,38 +96,6 @@ pub const PLATFORM_VENDOR_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("vendor/zeb/codemirror/package.yaml"),
     },
     EmbeddedAsset {
-        path: "zeb/deckgl/0.1/exports.json",
-        bytes: include_bytes!("vendor/zeb/deckgl/0.1/exports.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/deckgl/0.1/keywords.json",
-        bytes: include_bytes!("vendor/zeb/deckgl/0.1/keywords.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/deckgl/0.1/library.json",
-        bytes: include_bytes!("vendor/zeb/deckgl/0.1/library.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/deckgl/0.1/runtime/deckgl.bundle.mjs",
-        bytes: include_bytes!("vendor/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
-    },
-    EmbeddedAsset {
-        path: "zeb/deckgl/0.1/runtime/deckgl.patched.mjs",
-        bytes: include_bytes!("vendor/zeb/deckgl/0.1/runtime/deckgl.patched.mjs"),
-    },
-    EmbeddedAsset {
-        path: "zeb/deckgl/0.1/wrappers/DeckMap.tsx",
-        bytes: include_bytes!("vendor/zeb/deckgl/0.1/wrappers/DeckMap.tsx"),
-    },
-    EmbeddedAsset {
-        path: "zeb/deckgl/manifest.json",
-        bytes: include_bytes!("vendor/zeb/deckgl/manifest.json"),
-    },
-    EmbeddedAsset {
-        path: "zeb/deckgl/package.yaml",
-        bytes: include_bytes!("vendor/zeb/deckgl/package.yaml"),
-    },
-    EmbeddedAsset {
         path: "zeb/markdown/0.1/exports.json",
         bytes: include_bytes!("vendor/zeb/markdown/0.1/exports.json"),
     },
@@ -194,6 +162,72 @@ pub const PLATFORM_VENDOR_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/use/package.yaml",
         bytes: include_bytes!("vendor/zeb/use/package.yaml"),
+    },
+    // zeb/world, pinned for the Studio's own maps (build/build.mjs --vendor rewrites this list): the
+    // package, its lazy chunks and tile worker next to the entry. earth-lite is served from the hub's copy.
+    EmbeddedAsset {
+        path: "zeb/world/0.1/exports.json",
+        bytes: include_bytes!("vendor/zeb/world/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/keywords.json",
+        bytes: include_bytes!("vendor/zeb/world/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/library.json",
+        bytes: include_bytes!("vendor/zeb/world/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/forms-7rJCXouj.mjs",
+        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/forms-7rJCXouj.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/solids-BIyFOe5L.mjs",
+        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/solids-BIyFOe5L.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/tiles.worker.mjs",
+        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/tiles.worker.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/world.bundle.mjs",
+        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/world.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/0.1/runtime/zone-places-B7wsdUjy.mjs",
+        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/zone-places-B7wsdUjy.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/DATA-LICENCES.md",
+        bytes: include_bytes!("vendor/zeb/world/DATA-LICENCES.md"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/FILES-SHA256.txt",
+        bytes: include_bytes!("vendor/zeb/world/FILES-SHA256.txt"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/LICENSE",
+        bytes: include_bytes!("vendor/zeb/world/LICENSE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/NOTICE",
+        bytes: include_bytes!("vendor/zeb/world/NOTICE"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/README.md",
+        bytes: include_bytes!("vendor/zeb/world/README.md"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/THIRD-PARTY-NOTICES.txt",
+        bytes: include_bytes!("vendor/zeb/world/THIRD-PARTY-NOTICES.txt"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/manifest.json",
+        bytes: include_bytes!("vendor/zeb/world/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/package.yaml",
+        bytes: include_bytes!("vendor/zeb/world/package.yaml"),
     },
 ];
 
@@ -1236,6 +1270,1378 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/world/THIRD-PARTY-NOTICES.txt"),
     },
     EmbeddedAsset {
+        path: "zeb/world/earth-lite/0/0/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/0/0/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/1/0/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/1/0/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/1/0/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/1/0/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/1/1/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/1/1/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/1/1/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/1/1/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/0/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/0/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/0/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/0/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/0/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/0/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/0/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/0/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/1/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/1/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/1/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/1/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/1/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/1/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/1/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/1/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/2/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/2/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/2/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/2/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/2/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/2/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/2/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/2/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/3/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/3/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/3/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/3/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/3/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/3/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/2/3/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/2/3/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/0/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/0/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/1/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/1/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/2/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/2/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/3/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/3/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/4/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/4/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/5/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/5/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/6/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/6/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/3/7/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/3/7/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/0/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/0/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/1/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/1/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/10/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/10/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/11/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/11/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/12/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/12/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/13/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/13/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/14/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/14/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/15/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/15/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/2/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/2/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/3/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/3/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/4/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/4/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/5/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/5/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/6/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/6/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/7/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/7/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/8/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/8/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/0.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/0.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/1.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/1.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/10.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/10.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/11.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/11.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/12.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/12.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/13.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/13.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/14.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/14.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/15.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/15.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/2.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/2.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/3.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/3.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/4.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/4.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/5.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/5.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/6.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/6.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/7.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/7.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/8.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/8.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/4/9/9.jpg",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/4/9/9.jpg"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/ATTRIBUTION.txt",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/ATTRIBUTION.txt"),
+    },
+    EmbeddedAsset {
+        path: "zeb/world/earth-lite/LICENCE.txt",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/earth-lite/LICENCE.txt"),
+    },
+    EmbeddedAsset {
         path: "zeb/world/manifest.json",
         bytes: include_bytes!("../../../blessed/rwe-libraries/world/manifest.json"),
     },
@@ -1370,7 +2776,7 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
 ///
 /// Reads the platform's vendored copies first, and only falls back to the hub
 /// catalogue for a library the platform does not vendor. The fallback exists so
-/// a page reaching for something outside the vendored five still answers rather
+/// a page reaching for something outside the vendored set still answers rather
 /// than 404ing; it is not the path the Studio is expected to take.
 pub fn platform_library_asset(path: &str) -> Option<&'static [u8]> {
     let normalized = path.trim_start_matches('/').replace('\\', "/");

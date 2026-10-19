@@ -6,6 +6,13 @@
 //! Two encoding paths:
 //! - `features_to_mvt` — from resolved GeoJSON features (`Vec<Value>`)
 //! - `encode_wkb_feature` — from raw WKB bytes (for direct GeoParquet path)
+//!
+//! A feature's `id` is written only when it is the feature's own: a GeoJSON
+//! feature's non-negative integer `id`. Nothing else is numbered. A client
+//! reads one id in two tiles as one feature cut at the tiles' edge and joins
+//! the pieces (aslnut does, and a client keeping feature state by id relies on
+//! it), so a number counted afresh in each tile would glue unrelated features
+//! of neighbouring tiles together, and drop all but one of the points.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -195,15 +202,27 @@ fn encode_polygon_geom(rings: &[Vec<(i32, i32)>], cursor: &mut (i32, i32)) -> Ve
 /// Default MVT extent (coordinate space per tile).
 const MVT_EXTENT: u32 = 4096;
 
+/// Web Mercator's y of a latitude (radians of the projected plane).
+fn mercator_y(lat: f64) -> f64 {
+    let lat = lat.clamp(-85.051_128_78, 85.051_128_78).to_radians();
+    (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln()
+}
+
 /// Project WGS84 lon/lat to MVT tile coordinates [0..extent].
+///
+/// A tile is a square of Web Mercator, so y follows the projection between
+/// the tile's north and south edges, not latitude: read linearly, a shape is
+/// drawn off its place by up to a degree at level 3 and bends where it
+/// crosses from one tile into the next.
 fn geo_to_mvt(lon: f64, lat: f64, bbox: &[f64; 4], extent: u32) -> (i32, i32) {
     let dx = bbox[2] - bbox[0];
-    let dy = bbox[3] - bbox[1];
+    let (north, south) = (mercator_y(bbox[3]), mercator_y(bbox[1]));
+    let dy = north - south;
     if dx.abs() < 1e-12 || dy.abs() < 1e-12 {
         return (0, 0);
     }
     let x = ((lon - bbox[0]) / dx * extent as f64).round() as i32;
-    let y = ((bbox[3] - lat) / dy * extent as f64).round() as i32; // Y flipped
+    let y = ((north - mercator_y(lat)) / dy * extent as f64).round() as i32; // Y flipped
     (x, y)
 }
 
@@ -329,6 +348,17 @@ fn json_ring(coords: &serde_json::Value, bbox: &[f64; 4], extent: u32) -> Vec<(i
 
 // ── GeoJSON feature → MVT feature ──────────────────────────────────────────
 
+/// A GeoJSON feature's own id as an MVT id: a non-negative integer, or a
+/// string of one. Anything else (no id, a name, a negative number) has no MVT
+/// form and is left out.
+fn own_feature_id(feature: &serde_json::Value) -> Option<u64> {
+    match feature.get("id")? {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
 /// Encode a GeoJSON feature into MVT feature protobuf bytes.
 /// Returns None if the feature has no valid geometry.
 fn encode_geojson_feature(
@@ -337,9 +367,11 @@ fn encode_geojson_feature(
     extent: u32,
     tags: &mut TagTable,
     cursor: &mut (i32, i32),
-    feature_id: &mut u64,
     allowed_properties: &[String],
 ) -> Option<Vec<u8>> {
+    // Each feature's geometry starts from (0, 0) (MVT 2.1, 4.3): carried over
+    // from the feature before, every feature after the first lands off its place.
+    *cursor = (0, 0);
     let geometry = feature.get("geometry")?;
     let geom_type = geometry.get("type")?.as_str()?;
     let coordinates = geometry.get("coordinates")?;
@@ -432,11 +464,9 @@ fn encode_geojson_feature(
     }
 
     // Encode Feature message
-    let id = *feature_id;
-    *feature_id += 1;
     let mut feat_buf = Vec::new();
-    // optional uint64 id = 1
-    if id > 0 {
+    // optional uint64 id = 1: the feature's own id, never a count
+    if let Some(id) = own_feature_id(feature) {
         encode_varint_field(&mut feat_buf, 1, id);
     }
     // repeated uint32 tags = 2 (packed)
@@ -477,8 +507,9 @@ pub(crate) fn encode_wkb_feature(
     extent: u32,
     tags: &mut TagTable,
     cursor: &mut (i32, i32),
-    feature_id: &mut u64,
 ) -> Option<Vec<u8>> {
+    // Each feature's geometry starts from (0, 0) (MVT 2.1, 4.3).
+    *cursor = (0, 0);
     if wkb.len() < 5 {
         return None;
     }
@@ -625,12 +656,8 @@ pub(crate) fn encode_wkb_feature(
         tag_pairs.push(vi);
     }
 
-    let id = *feature_id;
-    *feature_id += 1;
+    // No id: a row has none of its own to give (see the module note).
     let mut feat_buf = Vec::new();
-    if id > 0 {
-        encode_varint_field(&mut feat_buf, 1, id);
-    }
     encode_packed_uint32(&mut feat_buf, 2, &tag_pairs);
     encode_varint_field(&mut feat_buf, 3, mvt_type as u64);
     encode_packed_uint32(&mut feat_buf, 4, &commands);
@@ -691,7 +718,6 @@ pub fn features_to_mvt(
 ) -> Vec<u8> {
     let mut tags = TagTable::new();
     let mut cursor = (0i32, 0i32);
-    let mut feature_id = 1u64;
     let mut encoded_features = Vec::new();
 
     for feature in features {
@@ -701,7 +727,6 @@ pub fn features_to_mvt(
             MVT_EXTENT,
             &mut tags,
             &mut cursor,
-            &mut feature_id,
             allowed_properties,
         ) {
             encoded_features.push(feat_bytes);
@@ -768,6 +793,59 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A level-3 tile spans 40 degrees of latitude: the equator-ward edge of
+    /// the Mercator square is far from the linear middle.
+    #[test]
+    fn tile_y_follows_web_mercator() {
+        let bbox = crate::mapserver::resolve::tile::tile_to_bbox(3, 7, 2);
+        let (_, top) = geo_to_mvt(bbox[0], bbox[3], &bbox, 4096);
+        let (_, bottom) = geo_to_mvt(bbox[0], bbox[1], &bbox, 4096);
+        assert_eq!((top, bottom), (0, 4096));
+        let linear_middle = (bbox[1] + bbox[3]) / 2.0;
+        let (_, y) = geo_to_mvt(bbox[0], linear_middle, &bbox, 4096);
+        assert!((y - 2048).abs() > 100, "a linear middle is not the tile's middle: {y}");
+    }
+
+    /// Every feature's geometry starts from (0, 0), so the second feature of a
+    /// tile is placed where it is, not offset by where the first one ended.
+    #[test]
+    fn each_feature_starts_from_the_origin() {
+        let point = |lon: f64, lat: f64| {
+            json!({"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [lon, lat]}})
+        };
+        let bbox = [0.0, 0.0, 1.0, 1.0];
+        let mut tags = TagTable::new();
+        let mut cursor = (0, 0);
+        let first = encode_geojson_feature(&point(0.25, 0.75), &bbox, 4096, &mut tags, &mut cursor, &[]).unwrap();
+        let second = encode_geojson_feature(&point(0.25, 0.75), &bbox, 4096, &mut tags, &mut cursor, &[]).unwrap();
+        assert_eq!(first, second, "the same point encodes the same wherever it comes in the tile");
+    }
+
+    /// An id is the feature's own or none: never a count that starts again in
+    /// every tile, which a client would read as one feature across tiles.
+    #[test]
+    fn a_feature_carries_its_own_id_or_none() {
+        let encode = |feature: serde_json::Value| {
+            let mut tags = TagTable::new();
+            let mut cursor = (0, 0);
+            encode_geojson_feature(&feature, &[0.0, 0.0, 1.0, 1.0], 4096, &mut tags, &mut cursor, &[])
+                .expect("a point encodes")
+        };
+        let point = json!({"type": "Point", "coordinates": [0.5, 0.5]});
+        // field 1 (id, varint) is tag 0x08, and the first field of the message when it is written
+        let own = encode(json!({"type": "Feature", "id": 7, "properties": {}, "geometry": point}));
+        assert_eq!(&own[..2], &[0x08, 7]);
+        let named = encode(json!({"type": "Feature", "id": "41", "properties": {}, "geometry": point}));
+        assert_eq!(&named[..2], &[0x08, 41]);
+        for feature in [
+            json!({"type": "Feature", "properties": {}, "geometry": point}),
+            json!({"type": "Feature", "id": "site-a", "properties": {}, "geometry": point}),
+            json!({"type": "Feature", "id": -3, "properties": {}, "geometry": point}),
+        ] {
+            assert_ne!(encode(feature)[0], 0x08, "no id is written");
+        }
+    }
+
     #[test]
     fn varint_encoding() {
         let mut buf = Vec::new();
@@ -810,8 +888,11 @@ mod tests {
     #[test]
     fn geo_to_mvt_projection() {
         let bbox = [144.0, -38.0, 145.0, -37.0];
-        // Center of tile
-        let (x, y) = geo_to_mvt(144.5, -37.5, &bbox, 4096);
+        // The middle of the tile in Mercator, not the middle latitude
+        let middle = (2.0 * ((mercator_y(-37.0) + mercator_y(-38.0)) / 2.0).exp().atan()
+            - std::f64::consts::FRAC_PI_2)
+            .to_degrees();
+        let (x, y) = geo_to_mvt(144.5, middle, &bbox, 4096);
         assert_eq!(x, 2048);
         assert_eq!(y, 2048);
         // Top-left
@@ -1001,10 +1082,8 @@ mod tests {
         let bbox = [0.0, 0.0, 1.0, 1.0];
         let mut tags = TagTable::new();
         let mut cursor = (0, 0);
-        let mut fid = 1u64;
         let props = vec![("name", MvtValue::Str("test".into()))];
-        let result =
-            encode_wkb_feature(&wkb, &props, &bbox, 4096, &mut tags, &mut cursor, &mut fid);
+        let result = encode_wkb_feature(&wkb, &props, &bbox, 4096, &mut tags, &mut cursor);
         assert!(result.is_some());
     }
 

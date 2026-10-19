@@ -2,7 +2,17 @@
 /**
  * Builds zeb/world 0.1 (`0.1/runtime/`) from an aslnut source checkout.
  *
- *   ASLNUT_SRC=<aslnut checkout> node blessed/rwe-libraries/world/build/build.mjs
+ *   ASLNUT_SRC=<aslnut checkout> node blessed/rwe-libraries/world/build/build.mjs [--earth-lite <pack>] [--vendor]
+ *   node blessed/rwe-libraries/world/build/build.mjs --earth-lite <pack> [--vendor]   (no rebuild of the bundle)
+ *   node blessed/rwe-libraries/world/build/build.mjs --vendor                          (no rebuild of the bundle)
+ *
+ * `--earth-lite <pack>` copies a prepared earth-lite pack (aslnut's `tools/earth-lite.mjs <pack> 4`: Sentinel-2
+ * cloudless 2020 by EOX, CC BY 4.0, levels 0..4, 341 JPEG tiles and ATTRIBUTION.txt) into `earth-lite/`, after
+ * checking that every tile of every level is there and is a JPEG. A rebuild without the flag keeps the pack already
+ * in `earth-lite/`. `--vendor` copies the finished package, without `earth-lite/` (data, kept once in the hub's
+ * copy), into the Studio's pinned copy under `src/platform/web/vendor/zeb/world/` and rewrites its block of
+ * `PLATFORM_VENDOR_ASSETS`. Without ASLNUT_SRC only
+ * these steps and step 4's checksums and embedded list run.
  *
  * ASLNUT_SRC must have its dependencies installed (`npm ci --ignore-scripts`). aslnut does not
  * depend on esbuild; it builds with Rolldown (through Vite), so the bundler is taken from
@@ -22,7 +32,7 @@
  * 3. LICENSE, NOTICE and DATA-LICENCES.md copied unchanged from aslnut's package, and
  *    THIRD-PARTY-NOTICES.txt written from the npm packages the bundle really contains.
  * 4. exports.json and keywords.json, the manifest (exports, size, integrity, licence),
- *    FILES-SHA256.txt, and the embedded file list in src/platform/web/embedded.rs.
+ *    FILES-SHA256.txt, and the embedded file list in src/platform/web/embedded.rs (earth-lite's tiles included).
  * It refuses to finish when a built file names a local path.
  */
 import { createHash } from "node:crypto";
@@ -38,12 +48,42 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const LIBRARY = resolve(HERE, "..");
 const RUNTIME = join(LIBRARY, "0.1", "runtime");
 const ZEBFLOW = resolve(LIBRARY, "../../..");
+const EARTH_LITE = join(LIBRARY, "earth-lite");
+const VENDOR = join(ZEBFLOW, "src/platform/web/vendor/zeb/world");
+const argv = process.argv.slice(2);
+const at = argv.indexOf("--earth-lite");
+const earthLiteFrom = at < 0 ? null : argv[at + 1] && !argv[at + 1].startsWith("--") ? resolve(argv[at + 1]) : "";
+const vendor = argv.includes("--vendor");
+if (earthLiteFrom === "") { console.error("--earth-lite needs the folder of a prepared pack."); process.exit(1); }
 const SOURCE = process.env.ASLNUT_SRC && resolve(process.env.ASLNUT_SRC);
 const PACKAGE = SOURCE && join(SOURCE, "packages/aslnut");
-if (!SOURCE || !existsSync(join(PACKAGE, "src/index.ts"))) {
-  console.error("Set ASLNUT_SRC to an aslnut checkout (dependencies installed with `npm ci --ignore-scripts`).");
+if (SOURCE && !existsSync(join(PACKAGE, "src/index.ts"))) {
+  console.error("ASLNUT_SRC is not an aslnut checkout (packages/aslnut/src/index.ts is missing).");
   process.exit(1);
 }
+if (!SOURCE && !earthLiteFrom && !vendor) {
+  console.error("Set ASLNUT_SRC to an aslnut checkout (dependencies installed with `npm ci --ignore-scripts`), or pass --earth-lite <pack> or --vendor.");
+  process.exit(1);
+}
+
+// Shared by every step: the files of a folder, a digest, and the refusal of any file that names a local path
+// (home folders, temp folders, toolchains, this machine's checkouts).
+const files = (folder) => readdirSync(folder).flatMap((name) => { const path = join(folder, name); return statSync(path).isDirectory() ? files(path) : [path]; });
+const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+const forbidden = [/\/Users\/[^/\s"']+/, /\/home\/[a-z][^/\s"']*/, /[A-Z]:\\Users\\/, /\/private\/(?:tmp|var)\//, /\/var\/folders\//, /\.cargo\/registry/, /rustup\/toolchains/];
+const machine = [SOURCE, ZEBFLOW, homedir()].filter((path) => path && path.length > 3);
+const scan = (paths) => {
+  for (const path of paths) {
+    const text = readFileSync(path, "latin1");
+    if (machine.some((local) => text.includes(local)) || forbidden.some((pattern) => pattern.test(text))) {
+      console.error(`A built file names a local path: ${relative(LIBRARY, path)}`);
+      process.exit(1);
+    }
+  }
+};
+
+// Steps 0 to 4 rebuild the bundle from ASLNUT_SRC; without it the bundle already in 0.1/runtime stays.
+if (SOURCE) {
 let rolldownPath;
 try { rolldownPath = createRequire(join(SOURCE, "package.json")).resolve("rolldown"); } catch {
   console.error("rolldown was not found in ASLNUT_SRC/node_modules; run `npm ci --ignore-scripts` there.");
@@ -143,19 +183,7 @@ writeFileSync(join(LIBRARY, "THIRD-PARTY-NOTICES.txt"), [
   ...third.flatMap((pkg) => ["=".repeat(78), `${pkg.name} ${pkg.version} (${pkg.spdx})`, "=".repeat(78), "", pkg.text || `(${pkg.name} ships no licence file; its package.json declares ${pkg.spdx})`, ""])
 ].join("\n"));
 
-// A local path may not ship: home folders, temp folders, toolchains, this machine's checkouts.
-const files = (folder) => readdirSync(folder).flatMap((name) => { const path = join(folder, name); return statSync(path).isDirectory() ? files(path) : [path]; });
-const forbidden = [/\/Users\/[^/\s"']+/, /\/home\/[a-z][^/\s"']*/, /[A-Z]:\\Users\\/, /\/private\/(?:tmp|var)\//, /\/var\/folders\//, /\.cargo\/registry/, /rustup\/toolchains/];
-const machine = [SOURCE, ZEBFLOW, homedir()].filter((path) => path.length > 3);
-const scan = (paths) => {
-  for (const path of paths) {
-    const text = readFileSync(path, "latin1");
-    if (machine.some((local) => text.includes(local)) || forbidden.some((pattern) => pattern.test(text))) {
-      console.error(`A built file names a local path: ${relative(LIBRARY, path)}`);
-      process.exit(1);
-    }
-  }
-};
+// A local path may not ship.
 scan(files(RUNTIME));
 scan([join(LIBRARY, "THIRD-PARTY-NOTICES.txt")]);
 
@@ -175,7 +203,6 @@ if (!loaded.tilesWorkerUrl.endsWith("/tiles.worker.mjs")) { console.error(`tiles
 if (JSON.stringify(Object.keys(loaded).sort()) !== JSON.stringify(exportNames)) { console.error("The bundle's exports differ from the entry chunk's."); process.exit(1); }
 
 // 4. exports.json, keywords.json.
-const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const ENTRY = "runtime/world.bundle.mjs";
 const described = {
   World: ["component", "Zebflow's Zeb React wrapper, with aslnut/react's interface: <World options elements onReady viewChange headless className style>{overlays}</World>. Makes a world on its own canvas on mount, keeps `elements` in step by id, disposes on unmount (aslnut's shell(w) keeps it in step)."],
@@ -227,6 +254,51 @@ manifest.spec.license = {
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 scan([manifestPath, join(LIBRARY, "0.1/exports.json")]);
 
+const chunks = runtimeFiles.filter((path) => /\.mjs$/.test(path) && path !== bundle && basename(path) !== "tiles.worker.mjs");
+console.log(`zeb/world built from aslnut ${aslnut.version} (${commit}): ${exportNames.length} exports, entry ${statSync(bundle).size} bytes, ${chunks.length} chunk(s), tile worker ${statSync(join(RUNTIME, "tiles.worker.mjs")).size} bytes, runtime ${runtimeBytes} bytes in ${runtimeFiles.length} files, ${manifest.spec.versions["0.1"].integrity}`);
+}
+
+// earth-lite: a prepared pack, checked tile by tile, replaces `earth-lite/` (without the flag the pack there stays).
+if (earthLiteFrom) {
+  if (!existsSync(earthLiteFrom)) { console.error(`No earth-lite pack at ${earthLiteFrom}.`); process.exit(1); }
+  const attribution = join(earthLiteFrom, "ATTRIBUTION.txt");
+  if (!existsSync(attribution) || !/CC BY 4\.0/.test(readFileSync(attribution, "utf8"))) { console.error("The earth-lite pack has no ATTRIBUTION.txt naming its licence (CC BY 4.0)."); process.exit(1); }
+  const tiles = files(earthLiteFrom).map((path) => relative(earthLiteFrom, path).split(sep).join("/")).filter((path) => path !== "ATTRIBUTION.txt");
+  const stray = tiles.filter((path) => !/^\d+\/\d+\/\d+\.jpg$/.test(path));
+  if (stray.length) { console.error(`The earth-lite pack holds files that are not z/x/y.jpg tiles: ${stray.slice(0, 5).join(", ")}`); process.exit(1); }
+  const maxZoom = Math.max(...tiles.map((path) => Number(path.split("/")[0])));
+  const missing = [];
+  for (let z = 0; z <= maxZoom; z++) for (let x = 0; x < 2 ** z; x++) for (let y = 0; y < 2 ** z; y++) if (!tiles.includes(`${z}/${x}/${y}.jpg`)) missing.push(`${z}/${x}/${y}.jpg`);
+  if (missing.length) { console.error(`The earth-lite pack misses ${missing.length} tile(s): ${missing.slice(0, 5).join(", ")}`); process.exit(1); }
+  for (const tile of tiles) {
+    const head = readFileSync(join(earthLiteFrom, tile)).subarray(0, 3);
+    // EOX answers a tile of one colour (Antarctica's ice) with a small PNG under the same .jpg name; an image
+    // decoder reads either by its bytes.
+    const jpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff, png = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e;
+    if (!jpeg && !png) { console.error(`earth-lite ${tile} is neither a JPEG nor a PNG.`); process.exit(1); }
+  }
+  rmSync(EARTH_LITE, { recursive: true, force: true });
+  for (const tile of tiles) { mkdirSync(dirname(join(EARTH_LITE, tile)), { recursive: true }); copyFileSync(join(earthLiteFrom, tile), join(EARTH_LITE, tile)); }
+  copyFileSync(attribution, join(EARTH_LITE, "ATTRIBUTION.txt"));
+  writeFileSync(join(EARTH_LITE, "LICENCE.txt"), [
+    "earth-lite: an offline basemap for zeb/world, levels 0 to " + maxZoom + " (" + tiles.length + " tiles of 256 x 256 px; JPEG, and a",
+    "small PNG under the same name where a tile is one colour, as EOX serves them),",
+    "served at /assets/libraries/zeb/world/earth-lite/{z}/{x}/{y}.jpg and read with",
+    "earthLite({ url: \"/assets/libraries/zeb/world/earth-lite\", maxZoom: " + maxZoom + " }).",
+    "",
+    "Sentinel-2 cloudless 2020 (https://s2maps.eu) by EOX IT Services GmbH, contains modified Copernicus Sentinel",
+    "data 2020. Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0,",
+    "https://creativecommons.org/licenses/by/4.0/). The tiles are EOX's own, unchanged. A world that shows them",
+    "keeps this credit on screen.",
+    "",
+    "Made with aslnut's tools/earth-lite.mjs; copied in by build/build.mjs --earth-lite <pack>.",
+    ""
+  ].join("\n"));
+  scan([join(EARTH_LITE, "ATTRIBUTION.txt"), join(EARTH_LITE, "LICENCE.txt")]);
+  const bytes = tiles.reduce((sum, tile) => sum + statSync(join(EARTH_LITE, tile)).size, 0);
+  console.log(`earth-lite: ${tiles.length} tiles, levels 0..${maxZoom}, ${bytes} bytes`);
+}
+
 // 5. Checksums, then the embedded list.
 const listed = files(LIBRARY).map((path) => relative(LIBRARY, path).split(sep).join("/")).filter((path) => path !== "FILES-SHA256.txt" && !path.startsWith("build/") && !path.startsWith("src/")).sort();
 writeFileSync(join(LIBRARY, "FILES-SHA256.txt"), listed.map((path) => `${sha256(join(LIBRARY, path))}  ${path}`).join("\n") + "\n");
@@ -245,5 +317,28 @@ else if (embedded.includes(anchor)) rewritten = embedded.replace(anchor, () => c
 else { console.error("Neither the zeb/world block nor its anchor was found in embedded.rs; update it by hand."); process.exit(1); }
 writeFileSync(embeddedPath, rewritten);
 
-const chunks = runtimeFiles.filter((path) => /\.mjs$/.test(path) && path !== bundle && basename(path) !== "tiles.worker.mjs");
-console.log(`zeb/world built from aslnut ${aslnut.version} (${commit}): ${exportNames.length} exports, entry ${statSync(bundle).size} bytes, ${chunks.length} chunk(s), tile worker ${statSync(join(RUNTIME, "tiles.worker.mjs")).size} bytes, runtime ${runtimeBytes} bytes in ${runtimeFiles.length} files, ${served.length} served files, ${manifest.spec.versions["0.1"].integrity}`);
+console.log(`zeb/world: ${served.length} served files, FILES-SHA256.txt and the embedded list rewritten`);
+
+// 6. The Studio's pinned copy: the finished package under src/platform/web/vendor/zeb/world/ and its block of
+// PLATFORM_VENDOR_ASSETS (the Studio never reads the blessed tree; see embedded.rs).
+if (vendor) {
+  // earth-lite is data, not library code: it stays only in the hub's copy, which the Studio's lookup falls back to
+  // (platform_library_asset reads the vendored copies first, then PLATFORM_LIBRARY_ASSETS). Kept once, not twice.
+  const pinned = served.filter((path) => !path.startsWith("earth-lite/"));
+  rmSync(VENDOR, { recursive: true, force: true });
+  for (const path of pinned) { mkdirSync(dirname(join(VENDOR, path)), { recursive: true }); copyFileSync(join(LIBRARY, path), join(VENDOR, path)); }
+  const source = readFileSync(embeddedPath, "utf8");
+  const vendored = pinned.map((path) => `    EmbeddedAsset {\n        path: "zeb/world/${path}",\n        bytes: include_bytes!("vendor/zeb/world/${path}"),\n    },\n`).join("");
+  const head = "    // zeb/world, pinned for the Studio's own maps (build/build.mjs --vendor rewrites this list): the\n    // package, its lazy chunks and tile worker next to the entry. earth-lite is served from the hub's copy.\n";
+  const vendorBlock = /(    \/\/ zeb\/world, pinned for the Studio[^\n]*\n(?:    \/\/[^\n]*\n)*)((?:    EmbeddedAsset \{\n        path: "zeb\/world\/[^"]+",\n        bytes: include_bytes!\("vendor\/zeb\/world\/[^"]+"\),\n    \},\n)+)/;
+  let next;
+  if (vendorBlock.test(source)) next = source.replace(vendorBlock, (_all, kept) => kept + vendored);
+  else {
+    const start = source.indexOf("pub const PLATFORM_VENDOR_ASSETS");
+    const end = start < 0 ? -1 : source.indexOf("\n];", start);
+    if (end < 0) { console.error("PLATFORM_VENDOR_ASSETS was not found in embedded.rs; update it by hand."); process.exit(1); }
+    next = source.slice(0, end + 1) + head + vendored + source.slice(end + 1);
+  }
+  writeFileSync(embeddedPath, next);
+  console.log(`zeb/world vendored for the Studio: ${pinned.length} files (earth-lite left to the hub's copy)`);
+}

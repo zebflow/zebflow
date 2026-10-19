@@ -14,7 +14,8 @@ Its job is not only storing geodata. Its job is:
 - chunked, published artifacts — a fast spatial index built from a large
   GeoJSON source, cached under `data/cache/mapserver-artifacts/{instance}/{layer}/`
   and rebuilt from the uploaded source when missing
-- TSX pages using `zeb/deckgl`
+- TSX pages using `zeb/world` (`data.mvt("/ms/{owner}/{project}/{route}/{z}/{x}/{y}.mvt")`)
+  or `zeb/deckgl`
 
 ## Publishing and serving
 
@@ -41,6 +42,10 @@ while the project's `ms` surface is on (Settings → Addressing).
   `5m`; default 60s).
 - Each `--field` is a property the public may see; none serves geometry only.
   `--max-items` caps the features one query answers (default 1000).
+- Vector tiles answer at `{route}/{z}/{x}/{y}.mvt` (or `.pbf`), one MVT layer named after the
+  layer. A tile's feature carries an id only when the source feature has a non-negative integer
+  `id` of its own; nothing is numbered per tile, so a client never mistakes two features of
+  neighbouring tiles for one.
 - Every node answers `layer`: publish `{ name, route, store, source,
   source_kind, …, serving }`, get `{ found, … }`, unpublish `{ name, removed
   }`, list `{ items, count }`.
@@ -53,6 +58,16 @@ Typical flow:
 
 1. publish a layer with `mapserver.layer.publish` (or the mapserver API)
 2. query it by viewport / filters at `/ms/{owner}/{project}/{path}`
-3. render it in a page or map experience with `zeb/deckgl`
+3. render it in a page or map experience with `zeb/world` or `zeb/deckgl`
+
+## In the Studio
+
+Databases → the mapserver connection → Layers lists the published layers; a layer opens its
+stats, its attribute columns and a preview map. The map draws the layer from its own vector
+tiles (`{route}/{z}/{x}/{y}.mvt`, within the layer's zoom range) with `zeb/world`, over the
+earth-lite basemap that ships with Zebflow, so it asks nothing from outside: areas blue, lines
+yellow, points green, and a feature's public properties on hover. The view is fitted to a
+sample of up to 500 of the layer's features. The tiles answer only while the project's `ms`
+surface is on.
 
 MapServer is treated as a first-class capability in Zebflow, not as a plugin.
