@@ -561,6 +561,13 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_FS_IMAGE_THUMBNAIL", ErrorClass::Failed),
     ("FW_NODE_FS_IMAGE_THUMBNAIL_CONFIG", ErrorClass::Refused),
     ("FW_NODE_FS_IMAGE_THUMBNAIL_SOURCE", ErrorClass::Refused),
+    // `world.roads.bake`: the flags, the seed files and the data the baker is
+    // given are the author's; the bake task and the store write can fail on
+    // their own.
+    ("FW_NODE_WORLD_ROADS_BAKE", ErrorClass::Failed),
+    ("FW_NODE_WORLD_ROADS_BAKE_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_WORLD_ROADS_BAKE_SEED", ErrorClass::Refused),
+    ("FW_NODE_WORLD_ROADS_BAKE_SOURCE", ErrorClass::Refused),
     // `web.response.send`: what it answers is the author's; reading the file
     // and the template's compile and render can fail on their own.
     ("FW_NODE_WEB_RESPONSE_SEND_COMPILE", ErrorClass::Failed),

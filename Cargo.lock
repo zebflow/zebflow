@@ -564,6 +564,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be5eb007b7cacc6c660343e96f650fedf4b5a77512399eb952ca6642cf8d13f7"
 
 [[package]]
+name = "baker"
+version = "0.1.0"
+source = "git+https://github.com/aslnut/aslnut?rev=0dc2096e72fc6a1b2388f67efed023526a8dad92#0dc2096e72fc6a1b2388f67efed023526a8dad92"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9516,13 +9527,14 @@ dependencies = [
 
 [[package]]
 name = "zebflow"
-version = "0.11.14"
+version = "0.11.15"
 dependencies = [
  "arc-swap",
  "argon2",
  "async-stream",
  "async-trait",
  "axum",
+ "baker",
  "base64 0.22.1",
  "bcrypt",
  "chrono",

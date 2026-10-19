@@ -56,6 +56,7 @@ pub mod table;
 pub mod trigger;
 pub mod typescript;
 pub mod web;
+pub mod world;
 pub mod ws;
 
 /// The nodes that answer the caller (`node-conventions.md` §4): the first
@@ -93,6 +94,7 @@ fn family_definitions() -> Vec<NodeDefinition> {
     items.extend(trigger::definitions());
     items.extend(typescript::definitions());
     items.extend(web::definitions());
+    items.extend(world::definitions());
     items.extend(ws::definitions());
     items
 }
@@ -190,6 +192,9 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     }
     if kind.starts_with("fs.") {
         return ("files.fs", "File System");
+    }
+    if kind.starts_with("world.") {
+        return ("files.world", "World");
     }
     if kind.starts_with(crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX) {
         return ("installed", "Installed");
