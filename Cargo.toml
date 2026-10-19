@@ -1,6 +1,6 @@
 [package]
 name = "zebflow"
-version = "0.11.16"
+version = "0.11.17"
 edition = "2024"
 description = "Reactive web automation platform — pipelines, templates, and real-time collaboration in a single binary."
 license = "MIT"
@@ -100,7 +100,7 @@ pdfwrangler = "0.1.5"
 # The exact version zeb/world is built from, without its `native` feature: no
 # rayon, so a bake uses the one core it is given (the 1 GB devices the rest of
 # the platform runs on).
-aslnut_baker = { package = "aslnut-baker", version = "=0.1.3", default-features = false }
+aslnut_baker = { package = "aslnut-baker", version = "=0.1.4", default-features = false }
 hound = "3.5"
 geonative-core = "0.4.0"
 geonative-convert = "0.4.0"

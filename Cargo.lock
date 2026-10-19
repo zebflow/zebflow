@@ -426,9 +426,9 @@ dependencies = [
 
 [[package]]
 name = "aslnut-baker"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e7e5af93a13d77737c07058efbacc9f82efc15e82ec4416dbc91dc12b444ead"
+checksum = "3af580b614735e971714af132ce7a0435c0757a6c4d016cea81b9d0856bb0ddc"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -9528,7 +9528,7 @@ dependencies = [
 
 [[package]]
 name = "zebflow"
-version = "0.11.16"
+version = "0.11.17"
 dependencies = [
  "arc-swap",
  "argon2",
