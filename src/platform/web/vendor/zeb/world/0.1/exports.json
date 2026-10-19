@@ -53,6 +53,9 @@
     "Cards": {
       "entry": "runtime/world.bundle.mjs"
     },
+    "Constants": {
+      "entry": "runtime/world.bundle.mjs"
+    },
     "Custom": {
       "entry": "runtime/world.bundle.mjs"
     },
@@ -105,6 +108,9 @@
       "entry": "runtime/world.bundle.mjs"
     },
     "EntitySet": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "Epochs": {
       "entry": "runtime/world.bundle.mjs"
     },
     "Extrusion": {
@@ -395,6 +401,9 @@
     "Surface": {
       "entry": "runtime/world.bundle.mjs"
     },
+    "SurfaceField": {
+      "entry": "runtime/world.bundle.mjs"
+    },
     "THEMES": {
       "entry": "runtime/world.bundle.mjs"
     },
@@ -625,6 +634,9 @@
     "entityElement": {
       "entry": "runtime/world.bundle.mjs"
     },
+    "epochs": {
+      "entry": "runtime/world.bundle.mjs"
+    },
     "epsgOf": {
       "entry": "runtime/world.bundle.mjs"
     },
@@ -638,6 +650,9 @@
       "entry": "runtime/world.bundle.mjs"
     },
     "field": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "fieldLegend": {
       "entry": "runtime/world.bundle.mjs"
     },
     "figure": {
@@ -727,6 +742,9 @@
     "int": {
       "entry": "runtime/world.bundle.mjs"
     },
+    "isByLevel": {
+      "entry": "runtime/world.bundle.mjs"
+    },
     "isHouse": {
       "entry": "runtime/world.bundle.mjs"
     },
@@ -779,6 +797,9 @@
       "entry": "runtime/world.bundle.mjs"
     },
     "legend": {
+      "entry": "runtime/world.bundle.mjs"
+    },
+    "levelValue": {
       "entry": "runtime/world.bundle.mjs"
     },
     "line": {

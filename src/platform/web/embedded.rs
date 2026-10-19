@@ -178,12 +178,12 @@ pub const PLATFORM_VENDOR_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("vendor/zeb/world/0.1/library.json"),
     },
     EmbeddedAsset {
-        path: "zeb/world/0.1/runtime/forms-7rJCXouj.mjs",
-        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/forms-7rJCXouj.mjs"),
+        path: "zeb/world/0.1/runtime/forms-C2ndwxdv.mjs",
+        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/forms-C2ndwxdv.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/world/0.1/runtime/solids-BIyFOe5L.mjs",
-        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/solids-BIyFOe5L.mjs"),
+        path: "zeb/world/0.1/runtime/solids-D6Xp6ksx.mjs",
+        bytes: include_bytes!("vendor/zeb/world/0.1/runtime/solids-D6Xp6ksx.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/world/0.1/runtime/tiles.worker.mjs",
@@ -1226,12 +1226,12 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/library.json"),
     },
     EmbeddedAsset {
-        path: "zeb/world/0.1/runtime/forms-7rJCXouj.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/forms-7rJCXouj.mjs"),
+        path: "zeb/world/0.1/runtime/forms-C2ndwxdv.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/forms-C2ndwxdv.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/world/0.1/runtime/solids-BIyFOe5L.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/solids-BIyFOe5L.mjs"),
+        path: "zeb/world/0.1/runtime/solids-D6Xp6ksx.mjs",
+        bytes: include_bytes!("../../../blessed/rwe-libraries/world/0.1/runtime/solids-D6Xp6ksx.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/world/0.1/runtime/tiles.worker.mjs",
