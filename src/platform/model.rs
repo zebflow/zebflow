@@ -3978,6 +3978,10 @@ pub struct PipelineInvocationLogPipelineStats {
     pub trace_bytes: u64,
     pub largest_trace_bytes: u64,
     pub latest_at: i64,
+    /// Runs since start whose record was not kept: the records waiting to
+    /// be written had filled the instance's limit (`runs.record_queue`).
+    #[serde(default)]
+    pub unrecorded: u64,
 }
 
 /// Project-scoped invocation log storage summary.

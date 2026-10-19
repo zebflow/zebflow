@@ -3,10 +3,15 @@ import { formatBytes } from "@/components/lib/format";
 import { formatOperationTimestamp } from "@/pages/project-studio/settings/components/settings-lib";
 
 const ROW_GRID =
-  "grid grid-cols-[minmax(0,1fr)_5.5rem_7rem_7rem_10rem_5rem] gap-2 border-b border-border px-3 py-2";
+  "grid grid-cols-[minmax(0,1fr)_5.5rem_7rem_7rem_7rem_10rem_5rem] gap-2 border-b border-border px-3 py-2";
+
+/** What a row's "Not recorded" count means, on its header and its cells. */
+const UNRECORDED_HELP =
+  "Runs since the server started whose record was not kept: the records waiting to be written had filled this office's run-record queue (Settings).";
 
 /**
- * One row per pipeline that has stored invocations.
+ * One row per pipeline that has stored invocations, or runs whose record
+ * was not kept.
  *
  * Clearing is handed up rather than done here: the confirmation and the
  * reload after it belong to whoever owns the stats.
@@ -19,6 +24,7 @@ export default function InvocationLogTable({ pipelines, loadingStats, clearing, 
       <div className={`${ROW_GRID} bg-dark-panel text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground`}>
         <span>Pipeline</span>
         <span className="text-right">Rows</span>
+        <span className="text-right" title={UNRECORDED_HELP}>Not recorded</span>
         <span className="text-right">Trace</span>
         <span className="text-right">Largest</span>
         <span>Latest</span>
@@ -29,6 +35,12 @@ export default function InvocationLogTable({ pipelines, loadingStats, clearing, 
           <div key={item.file_rel_path} className={`${ROW_GRID} text-[0.74rem] last:border-b-0`}>
             <span className="truncate font-mono text-foreground" title={item.file_rel_path}>{item.file_rel_path}</span>
             <span className="text-right text-muted-foreground">{item.count}</span>
+            <span
+              className={`text-right ${item.unrecorded ? "font-medium text-amber-600" : "text-muted-foreground"}`}
+              title={UNRECORDED_HELP}
+            >
+              {item.unrecorded ?? 0}
+            </span>
             <span className="text-right text-muted-foreground">{formatBytes(item.trace_bytes)}</span>
             <span className="text-right text-muted-foreground">{formatBytes(item.largest_trace_bytes)}</span>
             <span className="truncate text-muted-foreground">{formatOperationTimestamp(item.latest_at)}</span>

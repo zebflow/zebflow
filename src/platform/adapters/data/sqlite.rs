@@ -627,6 +627,16 @@ impl InvocationWriter {
         unrecorded.get(&(path.to_path_buf(), file_rel_path.to_string())).copied().unwrap_or(0)
     }
 
+    /// Every pipeline of one log with runs not recorded since start.
+    fn unrecorded_in(&self, path: &Path) -> Vec<(String, u64)> {
+        let unrecorded = self.unrecorded.lock().unwrap_or_else(|e| e.into_inner());
+        unrecorded
+            .iter()
+            .filter(|((log, _), _)| log == path)
+            .map(|((_, file), runs)| (file.clone(), *runs))
+            .collect()
+    }
+
     /// Returns once every record handed over before the call is written.
     /// The writer is woken for it, so a reader waits only for the writes
     /// before it.
@@ -1058,6 +1068,21 @@ impl SqliteDataAdapter {
 
     fn json_error(e: serde_json::Error) -> PlatformError {
         PlatformError::new("PLATFORM_SQLITE_JSON", e.to_string())
+    }
+
+    /// Puts each pipeline's runs not recorded since start on its row, and
+    /// gives a pipeline with none stored but some not recorded a row too.
+    fn add_unrecorded(&self, path: &Path, pipelines: &mut Vec<PipelineInvocationLogPipelineStats>) {
+        for (file_rel_path, runs) in self.invocation_writer.unrecorded_in(path) {
+            match pipelines.iter_mut().find(|item| item.file_rel_path == file_rel_path) {
+                Some(item) => item.unrecorded = runs,
+                None => pipelines.push(PipelineInvocationLogPipelineStats {
+                    file_rel_path,
+                    unrecorded: runs,
+                    ..Default::default()
+                }),
+            }
+        }
     }
 
     fn project_invocations_db_path(
@@ -7990,7 +8015,9 @@ impl DataAdapter for SqliteDataAdapter {
             return Ok(PipelineInvocationLogStats::default());
         };
         if !path.exists() {
-            return Ok(PipelineInvocationLogStats::default());
+            let mut stats = PipelineInvocationLogStats::default();
+            self.add_unrecorded(&path, &mut stats.pipelines);
+            return Ok(stats);
         }
         let conn = self
             .open_project_invocations_conn(owner, project)?
@@ -8019,7 +8046,7 @@ impl DataAdapter for SqliteDataAdapter {
                  ORDER BY trace_bytes DESC, count DESC, file_rel_path ASC",
             )
             .map_err(Self::qe)?;
-        let pipelines = stmt
+        let mut pipelines = stmt
             .query_map([], |row| {
                 Ok(PipelineInvocationLogPipelineStats {
                     file_rel_path: row.get(0)?,
@@ -8027,11 +8054,13 @@ impl DataAdapter for SqliteDataAdapter {
                     trace_bytes: row.get::<_, i64>(2)? as u64,
                     largest_trace_bytes: row.get::<_, i64>(3)? as u64,
                     latest_at: row.get(4)?,
+                    unrecorded: 0,
                 })
             })
             .map_err(Self::qe)?
             .filter_map(|row| row.ok())
             .collect::<Vec<_>>();
+        self.add_unrecorded(&path, &mut pipelines);
         let file_size =
             |path: &Path| -> u64 { std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) };
         Ok(PipelineInvocationLogStats {
@@ -8746,6 +8775,9 @@ mod tests {
         assert_eq!(stored.len(), 2, "{stored:?}");
         assert!(stored.contains(&"error-long".to_string()) && stored.contains(&"ok-short".to_string()));
         assert_eq!(adapter.unrecorded_runs("superadmin", "default", file).expect("count"), 1);
+        let stats = adapter.get_pipeline_invocation_log_stats("superadmin", "default").expect("stats");
+        let row = stats.pipelines.iter().find(|item| item.file_rel_path == file).expect("row");
+        assert_eq!((row.count, row.unrecorded), (2, 1));
         assert_eq!(adapter.unrecorded_runs("superadmin", "default", "pipelines/other.zf.json").expect("count"), 0);
         // Once written, nothing is waiting: the limit is room again.
         assert_eq!(adapter.invocation_writer.queued.load(std::sync::atomic::Ordering::Relaxed), 0);
