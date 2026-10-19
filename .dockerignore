@@ -34,6 +34,7 @@ tests/
 !blessed/skills/**/*.md
 !blessed/skill-extras/**/*.md
 !blessed/rwe-libraries/**/*.md
+!src/platform/web/vendor/**/*.md
 
 # Library READMEs / notes — not referenced by include_bytes!
 libraries/**/*.md
