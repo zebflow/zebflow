@@ -133,15 +133,12 @@ without a worker aslnut builds the tiles on the main thread.
 
 `bakedRoads({ url: ".../index.json" })` reads a road pack: `index.json`, a tile per 500 m,
 `clamp.json` (read it with `clampTerrain(terrain, ".../clamp.json")`), `terrain.json` and
-`walk.json`. A pipeline makes one on the server with the `world.roads.bake` node
-(`help("pipeline/nodes/world.roads.bake")`): it bakes a seed folder from the project's store
-with aslnut's Rust road baker and writes the plain `.json` files under `--folder`.
+`walk.json`. Zebflow does not bake them: aslnut's baker makes a pack outside Zebflow, as a
+container job, and writes it to the project store. A page reads it from the store's public
+`/_files/...` path, for example `bakedRoads({ url: "/_files/world/packs/roads/site-a/index.json" })`.
 
-`world.roads.bake --from world/seed --place site-a --folder world/packs/roads/site-a`
-
-The seed is OpenStreetMap road lines and a ground grid (aslnut's `roads/extract.py` and
-`roads/dem.py` make them today). The pack is built from OpenStreetMap data (ODbL) and
-records its sources and credits in `index.json`; the world draws them, so do not hide them.
+The pack is built from OpenStreetMap data (ODbL) and records its sources and credits in
+`index.json`; the world draws them, so do not hide them.
 
 ## Testing a page
 

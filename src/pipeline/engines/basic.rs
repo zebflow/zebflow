@@ -41,7 +41,7 @@ use crate::pipeline::nodes::basic::{
         function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
         webhook, ws_client as trigger_ws_client,
     },
-    web, world, ws,
+    web, ws,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::pipeline::trace_capture::{TraceCapture, redact_literal_secrets};
@@ -1269,9 +1269,6 @@ impl BasicPipelineEngine {
         }
         if let Some(handler) = ws::build(&node.kind, &node.config, self.ws_hub.clone())? {
             return Ok(NodeDispatch::WsRoom(handler));
-        }
-        if let Some(handler) = world::build(&node.kind, &node.config, self.platform.clone())? {
-            return Ok(NodeDispatch::World(handler));
         }
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
@@ -2636,7 +2633,6 @@ impl BasicPipelineEngine {
                     NodeDispatch::Crypto(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Kv(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WsRoom(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::World(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::TriggerFunction(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -5937,8 +5933,6 @@ enum NodeDispatch {
     Kv(Box<dyn crate::pipeline::nodes::NodeHandler>),
     /// The room-management `ws.*` kinds (`ws/mod.rs`).
     WsRoom(Box<dyn crate::pipeline::nodes::NodeHandler>),
-    /// The `world.*` kinds (`world/mod.rs`).
-    World(Box<dyn crate::pipeline::nodes::NodeHandler>),
     TriggerFunction(trigger_function::Node),
     FunctionCall(function::call::Node),
     FilePut(fs::put::Node),

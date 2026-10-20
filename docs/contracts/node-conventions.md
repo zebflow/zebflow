@@ -71,7 +71,7 @@ logic.<verb>          control node   logic.if              logic.foreach
 
 | Families | |
 | --- | --- |
-| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `javascript` `mail` `mapserver` `mcp` `pipeline` `postgres` `sekejap` `sqlite` `table` `trigger` `typescript` `web` `world` `ws` |
+| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `javascript` `mail` `mapserver` `mcp` `pipeline` `postgres` `sekejap` `sqlite` `table` `trigger` `typescript` `web` `ws` |
 | Brands | `telegram` (now, from the curated bundle) · `whatsapp` `slack` `discord` (when built) |
 | Reserved | `cloud` (provider-neutral resources: queue, function, bucket — `--provider aws\|gcp\|azure`) · `job` (external commands) · `sec` (scanning, detection) |
 
