@@ -14,7 +14,7 @@
  *     node: { group: "block", content: "inline*", attrs: { tone: { default: "info" } } },
  *     render: (node, r) => r.h("p", { class: "my-2 border-l-2 pl-3", "data-note": node.attrs.tone }, r.content),
  *     parse: [{ tag: "p[data-note]", getAttrs: (dom) => ({ tone: dom.getAttribute("data-note") }) }],
- *     insert: [{ label: "Note", hint: "A short aside", keys: "note", run: (api) => api.insert("note") }],
+ *     insert: [{ label: "Note", hint: "A short aside", icon: "✎", keys: "note", run: (api) => api.insert("note") }],
  *   })
  *
  * A node may be drawn by a Zeb React component instead of `render` — see
@@ -173,7 +173,7 @@ const EDIT_CONTEXT = { h: specH, content: 0, edit: true, safeHref, collect: () =
  *   text(node),                 the node's plain-text form (atoms)
  *   nodes / marks,              more than one type: { type: { spec, render, parse, text } }
  *   footer(r),                  rendered once after the document (references…)
- *   insert,                     slash-menu items: [{ label, hint, keys, run(api) }]
+ *   insert,                     slash-menu items: [{ label, hint, icon, keys, run(api) }] (icon: a short glyph; else the label's first letter)
  *   trigger, picker,            "@" and { search(query) → items, toAttrs(item), type? }
  *   fields, actions,            the panel for a node under the caret
  *   inputRules, keymap, plugins, commands   (schema, pm) → engine pieces

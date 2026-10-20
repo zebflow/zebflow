@@ -42,7 +42,7 @@ export function mentionExtension({ name = "mention", trigger = "@", route, searc
     text: (node) => `${prefix}${node.attrs.label || node.attrs.id}`,
     trigger: trigger || undefined,
     picker: { search: search || routeSearch(route), toAttrs: (item) => ({ id: String(item.id), label: item.label || String(item.id), href: item.href || null, snapshot: item.snapshot || null }) },
-    insert: [{ id: name, label, hint, keys: `mention ${name} ${prefix}`, run: (api) => api.pick() }],
+    insert: [{ id: name, label, hint, icon: prefix || "@", keys: `mention ${name} ${prefix}`, run: (api) => api.pick() }],
   });
 }
 

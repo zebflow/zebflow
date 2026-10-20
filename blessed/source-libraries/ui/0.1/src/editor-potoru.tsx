@@ -109,7 +109,7 @@ export function potoruExtension({ name = "potoru", route, search, label = "Potor
         return { key: String(item.id), src: item.href || s.src || "", mode: s.mode || "", still: false, time: 0, libraries: own, snapshot: { title: item.label || "", poster: s.poster || "" } };
       },
     } : null,
-    insert: [{ id: name, label, hint, keys: `potoru story animation poto ${name}`, run: (api) => (route || search ? api.pick() : api.insert(name)) }],
+    insert: [{ id: name, label, hint, icon: "▶", keys: `potoru story animation poto ${name}`, run: (api) => (route || search ? api.pick() : api.insert(name)) }],
     fields: [
       { name: "src", label: ".poto address", type: "url", placeholder: "/_files/stories/intro.poto" },
       { name: "mode", label: "Mode", type: "select", options: ["", ...POTORU_MODES] },

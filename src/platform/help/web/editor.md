@@ -255,7 +255,7 @@ What a declaration may hold:
 | `parse` | ProseMirror `parseDOM` rules, for pasted HTML |
 | `text(node)` | the plain-text form of an atom (`documentText`) |
 | `footer(r)` | rendered once after the document — the citation list uses it |
-| `insert` | slash-menu items: `{ label, hint, keys, run(api) }` |
+| `insert` | slash-menu items: `{ label, hint, icon, keys, run(api) }`; `icon` is a short glyph for the item's tile (`"✎"`, `"@"`), else its label's first letter |
 | `trigger`, `picker` | a character that opens the picker, and `{ search(query), toAttrs(item), type? }` |
 | `fields`, `actions` | the panel for a node under the caret: attrs to edit (`snapshot.title` paths work; `type` is text, `url`, `number`, `checkbox` or `select` with `options`) and buttons `{ label, run(editor, node) }` |
 | `commands`, `keymap`, `inputRules`, `plugins` | `(schema, pm) =>` engine pieces; `pm` is ProseMirror (`help("web/libraries")`) |

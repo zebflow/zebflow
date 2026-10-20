@@ -27,7 +27,7 @@ export function calloutExtension() {
       r.h("div", { class: "min-w-0 flex-1" }, r.content),
     ),
     parse: [{ tag: "aside[data-callout]", getAttrs: (dom) => ({ icon: dom.getAttribute("data-icon") || "💡", tone: dom.getAttribute("data-callout") || "note" }) }],
-    insert: [{ id: "callout", label: "Callout", hint: "A box with an icon", keys: "callout note tip warning", run: (api) => api.wrap("callout") }],
+    insert: [{ id: "callout", label: "Callout", hint: "A box with an icon", icon: "!", keys: "callout note tip warning", run: (api) => api.wrap("callout") }],
     fields: [
       { name: "icon", label: "Icon" },
       { name: "tone", label: "Tone", type: "select", options: Object.keys(TONES) },

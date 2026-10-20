@@ -35,18 +35,20 @@ import { Toggle } from "zeb/ui/toggle";
  *   <Editor value={doc} onChange={setDoc} extensions={EXTENSIONS} />
  */
 
+// `icon`: the glyph in the item's tile (an extension's item may give its own;
+// without one the tile shows its label's first letter).
 const SLASH_ITEMS = [
-  { id: "paragraph", label: "Text", hint: "Plain paragraph", keys: "text p", run: (ed) => ed.exec("paragraph") },
-  { id: "h1", label: "Heading 1", hint: "Section title", keys: "h1 title", run: (ed) => ed.exec("heading", 1) },
-  { id: "h2", label: "Heading 2", hint: "Subsection", keys: "h2", run: (ed) => ed.exec("heading", 2) },
-  { id: "h3", label: "Heading 3", hint: "Small heading", keys: "h3", run: (ed) => ed.exec("heading", 3) },
-  { id: "bullet", label: "Bulleted list", hint: "• item", keys: "ul bullet list", run: (ed) => ed.exec("list", "bullet") },
-  { id: "ordered", label: "Numbered list", hint: "1. item", keys: "ol number", run: (ed) => ed.exec("list", "ordered") },
-  { id: "todo", label: "To-do list", hint: "☐ task", keys: "todo task check", run: (ed) => ed.exec("list", "todo") },
-  { id: "quote", label: "Quote", hint: "A pulled line", keys: "quote blockquote", run: (ed) => ed.exec("blockquote") },
-  { id: "code", label: "Code", hint: "A code block", keys: "code pre", run: (ed) => ed.exec("codeBlock") },
-  { id: "divider", label: "Divider", hint: "A horizontal rule", keys: "hr divider rule", run: (ed) => ed.exec("horizontalRule") },
-  { id: "image", label: "Image", hint: "Upload a picture", keys: "image photo picture", needsUpload: true, run: null },
+  { id: "paragraph", label: "Text", hint: "Plain paragraph", icon: "¶", keys: "text p", run: (ed) => ed.exec("paragraph") },
+  { id: "h1", label: "Heading 1", hint: "Section title", icon: "H1", keys: "h1 title", run: (ed) => ed.exec("heading", 1) },
+  { id: "h2", label: "Heading 2", hint: "Subsection", icon: "H2", keys: "h2", run: (ed) => ed.exec("heading", 2) },
+  { id: "h3", label: "Heading 3", hint: "Small heading", icon: "H3", keys: "h3", run: (ed) => ed.exec("heading", 3) },
+  { id: "bullet", label: "Bulleted list", hint: "• item", icon: "•", keys: "ul bullet list", run: (ed) => ed.exec("list", "bullet") },
+  { id: "ordered", label: "Numbered list", hint: "1. item", icon: "1.", keys: "ol number", run: (ed) => ed.exec("list", "ordered") },
+  { id: "todo", label: "To-do list", hint: "☐ task", icon: "☐", keys: "todo task check", run: (ed) => ed.exec("list", "todo") },
+  { id: "quote", label: "Quote", hint: "A pulled line", icon: "❝", keys: "quote blockquote", run: (ed) => ed.exec("blockquote") },
+  { id: "code", label: "Code", hint: "A code block", icon: "{ }", keys: "code pre", run: (ed) => ed.exec("codeBlock") },
+  { id: "divider", label: "Divider", hint: "A horizontal rule", icon: "—", keys: "hr divider rule", run: (ed) => ed.exec("horizontalRule") },
+  { id: "image", label: "Image", hint: "Upload a picture", icon: "▣", keys: "image photo picture", needsUpload: true, run: null },
 ];
 
 const MARK_BUTTONS = [
@@ -193,6 +195,22 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
     return () => mount.removeEventListener("keydown", onKey, true);
   }, [slash, slashItems.length, slashIndex]);
 
+  // A menu is placed at the caret as it opens; while the page scrolls or
+  // resizes it follows the caret instead of staying where it was drawn.
+  useEffect(() => {
+    if (!slash && !picker) return;
+    const follow = () => {
+      const view = editorRef.current && editorRef.current.view;
+      if (!view) return;
+      const at = (pos) => { try { const c = view.coordsAtPos(pos); return { left: c.left, top: c.top, bottom: c.bottom }; } catch (_err) { return null; } };
+      setSlash((open) => { const c = open && at(open.from); return c ? { ...open, ...c } : open; });
+      setPicker((open) => { const c = open && at(open.from ?? view.state.selection.from); return c ? { ...open, ...c } : open; });
+    };
+    window.addEventListener("scroll", follow, true);
+    window.addEventListener("resize", follow);
+    return () => { window.removeEventListener("scroll", follow, true); window.removeEventListener("resize", follow); };
+  }, [!!slash, !!picker]);
+
   async function onFilePicked(event) {
     const file = event.target.files && event.target.files[0];
     event.target.value = "";
@@ -205,10 +223,12 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
     else if (attrs) editor.exec("image", attrs);
   }
 
+  // (384: the slash menu's own max-h-96)
+  const slashPlace = slash && slashItems.length > 0 ? editorMenuPlacement(slash, slashItems.length * 44 + 8, 384) : null;
   const overlays = mounted && typeof document !== "undefined" ? createPortal(
     <>
-      {slash && slashItems.length > 0 ? (
-        <div role="listbox" data-slot="editor-slash" className={cx("fixed z-50 max-h-96 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md", editorMenuPlacement(slash, slashItems.length * 44 + 8).up ? "-translate-y-full" : "")} style={editorMenuPlacement(slash, slashItems.length * 44 + 8).style}>
+      {slashPlace ? (
+        <div role="listbox" data-slot="editor-slash" className={cx("fixed z-50 max-h-96 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md", slashPlace.up ? "-translate-y-full" : "")} style={slashPlace.style}>
           {slashItems.map((item, i) => (
             <button
               key={item.id}
@@ -219,7 +239,7 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
               onMouseEnter={() => setSlashIndex(i)}
               className={cx("flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm", i === slashIndex ? "bg-accent text-accent-foreground" : "")}
             >
-              <span className="w-8 shrink-0 text-center font-mono text-[0.65rem] text-muted-foreground">{item.hint.slice(0, 2)}</span>
+              <span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-xs font-semibold text-muted-foreground">{item.icon || String(item.label || "?").slice(0, 1).toUpperCase()}</span>
               <span className="min-w-0 flex-1"><span className="block font-medium">{item.label}</span><span className="block truncate text-xs text-muted-foreground">{item.hint}</span></span>
             </button>
           ))}

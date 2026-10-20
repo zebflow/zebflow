@@ -10,11 +10,19 @@ import { cx, useEffect, useRef, useState } from "zeb/react";
  * Escape closes — wherever the focus is.
  */
 
-/** Fixed placement for a menu at a caret: below it, or above when the viewport ends. */
-export function editorMenuPlacement(anchor, height, width = 264) {
+/**
+ * Fixed placement for a menu at a caret: below it, or above when it does not
+ * fit below and there is more room above. `height` is the list's full height,
+ * `cap` the most the menu itself grows to (its max-h); it is never taller than
+ * the room on its side, so it never opens off screen.
+ */
+export function editorMenuPlacement(anchor, height, cap = 320, width = 264) {
   const vw = typeof window === "undefined" ? 1280 : window.innerWidth;
-  const up = typeof window !== "undefined" && anchor.bottom + 6 + height > window.innerHeight && anchor.bottom > height;
-  return { up, style: { left: `${Math.max(8, Math.min(anchor.left, vw - width))}px`, top: `${up ? anchor.top - 6 : anchor.bottom + 6}px` } };
+  const vh = typeof window === "undefined" ? 800 : window.innerHeight;
+  const want = Math.min(height, cap), below = vh - anchor.bottom - 14, above = anchor.top - 14;
+  const up = want > below && above > below;
+  const room = Math.max(96, up ? above : below);
+  return { up, style: { left: `${Math.max(8, Math.min(anchor.left, vw - width))}px`, top: `${up ? anchor.top - 6 : anchor.bottom + 6}px`, maxHeight: `${Math.min(want, room)}px` } };
 }
 
 export function EditorPicker({ picker, query, anchor, searchable, onPick, onClose }) {
@@ -52,7 +60,7 @@ export function EditorPicker({ picker, query, anchor, searchable, onPick, onClos
     return () => document.removeEventListener("keydown", onKey, true);
   }, [items, index]);
 
-  const place = editorMenuPlacement(anchor, Math.min(items.length, 6) * 44 + (searchable ? 52 : 8));
+  const place = editorMenuPlacement(anchor, Math.min(items.length, 6) * 44 + (searchable ? 52 : 8), 320);
   return (
     <div role="listbox" data-slot="editor-picker" className={cx("fixed z-50 max-h-80 w-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md", place.up ? "-translate-y-full" : "")} style={place.style} onMouseDown={(e) => { if (e.target.tagName !== "INPUT") e.preventDefault(); }}>
       {searchable ? (

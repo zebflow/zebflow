@@ -63,7 +63,7 @@ export function citationExtension({ name = "citation", route, search, label = "C
       );
     },
     picker: { search: search || routeSearch(route), toAttrs: (item) => ({ id: String(item.id), label: item.label || String(item.id), href: item.href || null, snapshot: item.snapshot || null }) },
-    insert: [{ id: name, label, hint, keys: `cite citation doi reference ${name}`, run: (api) => api.pick() }],
+    insert: [{ id: name, label, hint, icon: "❞", keys: `cite citation doi reference ${name}`, run: (api) => api.pick() }],
   });
 }
 

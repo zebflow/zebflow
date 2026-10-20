@@ -33,7 +33,7 @@ export function embedExtension({ name = "embed", label = "Embed", hint = "A card
     },
     text: (node) => (node.attrs.snapshot && node.attrs.snapshot.title) || node.attrs.key,
     picker: route || search ? { search: search || routeSearch(route), toAttrs: (item) => ({ key: String(item.id), snapshot: { title: item.label, href: item.href || "", ...(item.snapshot || {}) } }) } : null,
-    insert: [{ id: name, label, hint, keys: `embed card ${name}`, run: (api) => (route || search ? api.pick() : api.insert(name)) }],
+    insert: [{ id: name, label, hint, icon: "◳", keys: `embed card ${name}`, run: (api) => (route || search ? api.pick() : api.insert(name)) }],
     fields: [
       { name: "key", label: "Key" },
       { name: "snapshot.title", label: "Title" },

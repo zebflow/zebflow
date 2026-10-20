@@ -7,7 +7,7 @@
   "source": {
     "provider": "zebflow",
     "package": "aslnut (built from its sources; not on npm yet)",
-    "package_version": "0.1.5",
+    "package_version": "0.1.6",
     "packed_version": "0.1",
     "packed_kind": "full",
     "entry": "runtime/world.bundle.mjs"

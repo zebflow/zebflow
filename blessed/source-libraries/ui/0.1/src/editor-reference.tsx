@@ -51,7 +51,7 @@ export function referenceExtension({ name = "reference", variant = "link", trigg
     text: (node) => node.attrs.label || node.attrs.key,
     trigger: trigger || undefined,
     picker: { search: search || routeSearch(route), toAttrs: (item) => ({ key: String(item.id), label: item.label || String(item.id), href: item.href || null, snapshot: item.snapshot || null }) },
-    insert: [{ id: name, label, hint, keys: `link reference ${name} ${variant}`, run: (api) => api.pick() }],
+    insert: [{ id: name, label, hint, icon: "↗", keys: `link reference ${name} ${variant}`, run: (api) => api.pick() }],
   });
 }
 

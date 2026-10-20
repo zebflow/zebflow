@@ -256,4 +256,34 @@ test.describe("editor extensions", () => {
       expect(server.toLowerCase(), banned).not.toContain(banned);
     }
   });
+
+  test("the slash menu opens on screen at the window's last line, and follows the caret while the page scrolls", async ({ page, consoleErrors }) => {
+    // 18 items here, some 800 px tall in full: the menu must still fit a short window.
+    const height = 420;
+    await page.setViewportSize({ width: 1000, height });
+    await page.goto(`${wh}/write`);
+    const editor = page.locator("[data-slot=editor] .ProseMirror");
+    await clickUntil(page, "[data-slot=editor] .ProseMirror", async () => {
+      await expect(editor).toBeFocused({ timeout: 2000 });
+    });
+    // Lines down past the window's bottom edge: the page scrolls to keep the caret in view.
+    for (let i = 0; i < 16; i++) { await page.keyboard.type(`line ${i}`); await page.keyboard.press("Enter"); }
+    await page.keyboard.type("/");
+    const menu = page.locator("[data-slot=editor-slash]");
+    await expect(menu).toBeVisible();
+    const box = (await menu.boundingBox())!;
+    expect(box.y, "the menu's top is on screen").toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height, "the menu's bottom is on screen").toBeLessThanOrEqual(height);
+    // The gap between the caret and the menu's edge nearest it stays put while the page scrolls.
+    const gap = async () => {
+      const b = (await menu.boundingBox())!;
+      const caret = await page.evaluate(() => { const r = window.getSelection()!.getRangeAt(0).getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; });
+      return b.y + b.height <= caret.top + 1 ? Math.round(caret.top - (b.y + b.height)) : Math.round(b.y - caret.bottom);
+    };
+    const before = await gap();
+    expect(await page.evaluate(() => window.scrollY), "the page has scrolled").toBeGreaterThan(80);
+    await page.evaluate(() => window.scrollBy(0, -80));
+    await expect.poll(gap).toBe(before);
+    expect(consoleErrors).toEqual([]);
+  });
 });

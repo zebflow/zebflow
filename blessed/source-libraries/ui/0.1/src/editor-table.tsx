@@ -154,7 +154,7 @@ export function tableExtension() {
       const c = commands(schema, pm);
       return { Tab: c.tableNextCell, "Shift-Tab": c.tablePreviousCell, Enter: c.tableCellBelow };
     },
-    insert: [{ id: "table", label: "Table", hint: "Rows and columns", keys: "table spreadsheet rows columns", run: (api) => api.exec("insertTable", 3, 3) }],
+    insert: [{ id: "table", label: "Table", hint: "Rows and columns", icon: "▦", keys: "table spreadsheet rows columns", run: (api) => api.exec("insertTable", 3, 3) }],
     actions: [
       { label: "Add row", run: (editor) => editor.exec("tableAddRow") },
       { label: "Add column", run: (editor) => editor.exec("tableAddColumn") },

@@ -447,10 +447,10 @@
       "0.1": {
         "entry": "0.1/runtime/world.bundle.mjs",
         "source": "offline",
-        "package_version": "0.1.5",
-        "size_bytes": 1069897,
-        "integrity": "sha256:a72bdd52304e9ce852c1c2f678ec0e5303457f20e82f6fc93973434d8e480e2c",
-        "note": "aslnut 0.1.5 (commit 37da492, https://github.com/aslnut/aslnut), unmodified, via Rolldown 1.2.13: one ES module with lazy chunks, minified, es2022. World, useWorld, useElement and useWorldEvent are Zebflow's own Zeb React wrapper (src/react.ts, MIT) with aslnut/react's interface, built on aslnut's shell(w); its World wins over the root's World class. Chunks and tiles.worker.mjs sit next to the entry (new URL(..., import.meta.url)). Build: ASLNUT_SRC=<aslnut checkout> node blessed/rwe-libraries/world/build/build.mjs. Every file: FILES-SHA256.txt."
+        "package_version": "0.1.6",
+        "size_bytes": 1070149,
+        "integrity": "sha256:be8329c68534c72624ff8cbc8535d504edd6678ff884a5f5217ba60215cb2b78",
+        "note": "aslnut 0.1.6 (commit 3f93aa0, https://github.com/aslnut/aslnut), unmodified, via Rolldown 1.2.13: one ES module with lazy chunks, minified, es2022. World, useWorld, useElement and useWorldEvent are Zebflow's own Zeb React wrapper (src/react.ts, MIT) with aslnut/react's interface, built on aslnut's shell(w); its World wins over the root's World class. Chunks and tiles.worker.mjs sit next to the entry (new URL(..., import.meta.url)). Build: ASLNUT_SRC=<aslnut checkout> node blessed/rwe-libraries/world/build/build.mjs. Every file: FILES-SHA256.txt."
       }
     },
     "license": {

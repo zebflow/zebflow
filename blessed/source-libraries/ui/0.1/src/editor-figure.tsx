@@ -49,7 +49,7 @@ export function figureExtension() {
       },
     }),
     insert: [{
-      id: "figure", label: "Figure", hint: "Image, caption and credit", keys: "figure image photo caption credit",
+      id: "figure", label: "Figure", hint: "Image, caption and credit", icon: "▨", keys: "figure image photo caption credit",
       run: async (api) => {
         const image = api.canUpload ? await api.upload() : null;
         api.insert("figure", image ? { src: image.src, alt: image.alt || "", ref: image.ref || null } : null);
