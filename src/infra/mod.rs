@@ -16,6 +16,7 @@
 //! | [`scheduler`] | Background cron scheduling for active pipelines |
 //! | [`secrets`] | Encryption of stored secrets: the AEAD envelopes and the instance keyring |
 //! | [`storage`] | Older storage placeholder area; retained until the new `io/` split fully absorbs it |
+//! | [`table_engine`] | The one bounded DataFusion runtime for SQL over files: shared memory pool, capped partitions, queries at once |
 //!
 //! # Design principles
 //!
@@ -47,5 +48,6 @@ pub mod mem;
 pub mod scheduler;
 pub mod secrets;
 pub mod storage;
+pub mod table_engine;
 pub mod transport;
 pub mod ws_client;

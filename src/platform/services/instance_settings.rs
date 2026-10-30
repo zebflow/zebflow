@@ -26,6 +26,10 @@ const AUTO: &str = "auto";
 const JAVASCRIPT_SHARE: u64 = 4;
 /// The waiting run records' share of memory when `"auto"`: one hundredth.
 const RECORD_QUEUE_SHARE: u64 = 100;
+/// The share every SQL query over a file holds together: a quarter, the pool
+/// of `infra::table_engine`. Not a setting: a query that needs more spills to
+/// disk or fails on its own, and the process stays up.
+const TABLE_QUERY_SHARE: u64 = 4;
 /// The least heap a runtime is made with. The heaviest Studio page in the
 /// browser suite renders within 24 MiB on a fresh runtime and not within
 /// 16 MiB; this leaves it a third more. Neither `"auto"` on a small device
@@ -177,6 +181,12 @@ pub fn memory_limit() -> MemoryLimit {
         }
         _ => MemoryLimit { bytes: machine, source: "machine" },
     }
+}
+
+/// What every SQL query over a file may hold together: a quarter of the
+/// memory limit.
+pub fn table_query_memory() -> u64 {
+    memory_limit().bytes / TABLE_QUERY_SHARE
 }
 
 fn effective(settings: &InstanceSettings, memory: MemoryLimit) -> Result<EffectiveSettings, PlatformError> {

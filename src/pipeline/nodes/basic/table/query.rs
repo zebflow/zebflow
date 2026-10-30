@@ -12,6 +12,10 @@
 //! `--format`, and `query` holds the file's FileRef fields with `row_count`
 //! (rows written), `columns` and `format`; `--rows` adds the first `--limit`
 //! rows and `truncated`.
+//!
+//! Every query runs on the shared, bounded runtime (`infra::table_engine`):
+//! it takes a turn first, and one that needs more memory than the pool holds
+//! fails with `FW_NODE_TABLE_QUERY_RUN_MEMORY` instead of taking the process down.
 
 use std::fs;
 use std::io::Write;
@@ -21,10 +25,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::options::JsonReadOptions;
-use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionContext};
+use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::infra::table_engine;
 use crate::language::LanguageEngine;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFieldDef, NodeFieldType};
 use crate::pipeline::nodes::shared::file_ref::zebfs_rel_path;
@@ -62,6 +67,10 @@ const REGISTER_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_REGISTER";
 /// The SQL was refused or failed.
 const SQL_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_SQL";
 const EXECUTE_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_EXECUTE";
+/// The query needed more memory than table queries may hold together.
+const MEMORY_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_MEMORY";
+/// Every turn for a table query stayed taken while this one waited.
+const BUSY_CODE: &str = "FW_NODE_TABLE_QUERY_RUN_BUSY";
 
 /// The most rows one run writes to a file; a larger result is refused.
 pub const MAX_FILE_ROWS: usize = 10_000;
@@ -79,6 +88,10 @@ pub fn definition() -> NodeDefinition {
             Without a destination it adds `query: { rows, columns, row_count, truncated }`, as the db nodes do — `--limit` caps the rows (default 200, \
             at most 5000). With `--folder` / `--filename` / `--path` the whole result (at most 10000 rows) is written as `--format` and `query` holds \
             the file's FileRef fields with `row_count` (rows written), `columns` and `format`; `--rows` adds the first `--limit` rows and `truncated`. \
+            `--limit` caps the rows answered, not the work: every table query shares one memory pool, a quarter of this office's memory, \
+            and at most 2 run at once. A query past the pool fails with `FW_NODE_TABLE_QUERY_RUN_MEMORY` (exact COUNT(DISTINCT) and GROUP BY \
+            over columns with many distinct values are the usual cause: aggregate fewer columns per query, or use approx_distinct), and one \
+            that waits over 10 s for its turn fails with `FW_NODE_TABLE_QUERY_RUN_BUSY`. \
             For database tables use `postgres.query.run`, `sqlite.query.run` or `sekejap.query.run`."
             .to_string(),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -372,7 +385,19 @@ async fn execute_geodatafusion_engine(
     language: &dyn LanguageEngine,
     fetch: usize,
 ) -> Result<Vec<Value>, PipelineError> {
-    let ctx = SessionContext::new();
+    // Held until the result is collected: at most a few table queries run
+    // at once, each on the shared, bounded runtime.
+    let _turn = table_engine::admit().await.ok_or_else(|| {
+        PipelineError::new(
+            BUSY_CODE,
+            format!(
+                "{} table queries were already running for {} s; try again shortly",
+                table_engine::MAX_CONCURRENT_QUERIES,
+                table_engine::QUEUE_WAIT.as_secs()
+            ),
+        )
+    })?;
+    let ctx = table_engine::session(SessionConfig::new());
     geodatafusion::register(&ctx);
     let mut temps = Vec::new();
     for source_config in sources.iter().filter(|source| !source.is_empty()) {
@@ -607,7 +632,24 @@ async fn execute_geodatafusion_query(
         .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))?
         .collect()
         .await
-        .map_err(|err| PipelineError::new(SQL_CODE, err.to_string()))
+        .map_err(query_error)
+}
+
+/// A failed query, with one that ran out of memory told apart: retrying it
+/// unchanged fails the same way.
+fn query_error(err: datafusion::error::DataFusionError) -> PipelineError {
+    if table_engine::is_out_of_memory(&err) {
+        return PipelineError::new(
+            MEMORY_CODE,
+            format!(
+                "the query needs more memory than table queries may hold together here ({} MiB); \
+                 aggregate fewer columns per query, use approx_distinct instead of COUNT(DISTINCT), \
+                 or group by columns with fewer distinct values: {err}",
+                table_engine::pool_mib()
+            ),
+        );
+    }
+    PipelineError::new(SQL_CODE, err.to_string())
 }
 
 fn normalize_select_sql(sql: &str) -> Result<String, PipelineError> {
@@ -800,5 +842,17 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["echoed"], json!(payload));
+    }
+
+    #[test]
+    fn a_query_out_of_memory_is_its_own_refusal_and_any_other_failure_stays_sql() {
+        let wrapped = datafusion::error::DataFusionError::Context(
+            "aggregate".to_string(),
+            Box::new(datafusion::error::DataFusionError::ResourcesExhausted("pool full".to_string())),
+        );
+        let err = query_error(wrapped);
+        assert_eq!(err.code, MEMORY_CODE);
+        assert!(err.message.contains("approx_distinct"), "{}", err.message);
+        assert_eq!(query_error(datafusion::error::DataFusionError::Plan("no such column".to_string())).code, SQL_CODE);
     }
 }

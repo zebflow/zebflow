@@ -31,7 +31,7 @@ use datafusion::arrow::{
     util::display::array_value_to_string,
 };
 use datafusion::dataframe::DataFrameWriteOptions;
-use datafusion::prelude::{CsvReadOptions, SessionContext};
+use datafusion::prelude::{CsvReadOptions, SessionConfig};
 use parquet::{
     arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
     basic::Compression,
@@ -69,6 +69,8 @@ const CSV_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_CSV";
 const LIMIT_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_LIMIT";
 /// The streamed Parquet could not be written.
 const PARQUET_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_PARQUET";
+/// Every turn for a table query stayed taken while this one waited.
+const BUSY_CODE: &str = "FW_NODE_TABLE_DATA_CONVERT_BUSY";
 
 const MAX_MATERIALIZED_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -525,7 +527,19 @@ async fn stream_csv_to_parquet(
             .map_err(|err| PipelineError::new(CODE, err.to_string()))?;
     }
 
-    let ctx = SessionContext::new();
+    // A conversion is a table query: it takes a turn and runs on the shared,
+    // bounded runtime (`infra::table_engine`).
+    let _turn = crate::infra::table_engine::admit().await.ok_or_else(|| {
+        PipelineError::new(
+            BUSY_CODE,
+            format!(
+                "{} table queries were already running for {} s; try again shortly",
+                crate::infra::table_engine::MAX_CONCURRENT_QUERIES,
+                crate::infra::table_engine::QUEUE_WAIT.as_secs()
+            ),
+        )
+    })?;
+    let ctx = crate::infra::table_engine::session(SessionConfig::new());
     let from_path = from_abs.to_string_lossy().into_owned();
     let mut df = ctx
         .read_csv(from_path.as_str(), CsvReadOptions::new().has_header(true))

@@ -175,6 +175,9 @@ impl PlatformService {
             data.clone(),
         )?);
         instance_settings.apply()?;
+        // Map layers query their files on the same bounded runtime as the
+        // table nodes, never on DataFusion's unlimited default.
+        crate::mapserver::resolve::geoparquet::set_session_maker(crate::infra::table_engine::session);
         // The configuration service is built first: the file adapter resolves
         // every project directory through the layout that service reads.
         let zebflow_cfg = Arc::new(ProjectConfigurationService::new(

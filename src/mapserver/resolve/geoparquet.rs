@@ -39,6 +39,23 @@ struct ContextEntry {
     file_size: u64,
 }
 
+/// How a layer's session is made. The process that embeds the map server
+/// sets its own at start (Zebflow: one bounded runtime for every SQL query
+/// over a file); without one, DataFusion's default, which has no memory limit.
+static SESSION_MAKER: OnceLock<fn(SessionConfig) -> SessionContext> = OnceLock::new();
+
+/// Sets how layer sessions are made. The first call wins.
+pub fn set_session_maker(maker: fn(SessionConfig) -> SessionContext) {
+    let _ = SESSION_MAKER.set(maker);
+}
+
+fn new_session(config: SessionConfig) -> SessionContext {
+    match SESSION_MAKER.get() {
+        Some(maker) => maker(config),
+        None => SessionContext::new_with_config(config),
+    }
+}
+
 fn context_pool() -> &'static tokio::sync::Mutex<HashMap<String, ContextEntry>> {
     static POOL: OnceLock<tokio::sync::Mutex<HashMap<String, ContextEntry>>> = OnceLock::new();
     POOL.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
@@ -104,7 +121,7 @@ async fn resolve_async(
             let config = SessionConfig::new()
                 .set_bool("datafusion.execution.parquet.pushdown_filters", true)
                 .set_bool("datafusion.execution.parquet.reorder_filters", true);
-            let ctx = SessionContext::new_with_config(config);
+            let ctx = new_session(config);
             geodatafusion::register(&ctx);
 
             let path_str = source_path.to_string_lossy();
