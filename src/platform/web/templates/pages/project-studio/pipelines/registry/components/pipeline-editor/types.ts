@@ -92,8 +92,6 @@ export interface EditorApi {
   nodes: string;
   credentials: string;
   templatesWorkspace: string;
-  templateFile: string;
-  templateSave: string;
   templateOutline: string;
 }
 

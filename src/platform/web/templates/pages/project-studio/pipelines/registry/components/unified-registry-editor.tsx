@@ -531,15 +531,18 @@ export default function UnifiedRegistryEditor(input) {
     setTemplateSaveState("Saving…");
     try {
       const content = templateEditorViewRef.current.state.doc.toString();
-      await requestJson(template?.api?.save ?? "", {
+      // The repository API names the file in the query and stores the body as
+      // it is, the same request "New file" sends.
+      await requestJson(`${template?.api?.save ?? ""}?path=${encodeURIComponent(template?.rel_path ?? "")}`, {
         method: "PUT",
-        body: JSON.stringify({ rel_path: template?.rel_path ?? "", content }),
+        headers: { "Content-Type": "text/plain" },
+        body: content,
       });
       setTemplateSaveState("Saved");
       void refreshEditorCompletionCatalog(projectApiBase);
       notifyStudioRepoChanged();
-    } catch (err) {
-      setTemplateSaveState("Error");
+    } catch (err: any) {
+      setTemplateSaveState(err?.message ? `Error: ${err.message}` : "Error");
     }
   }
 
@@ -1323,8 +1326,6 @@ export default function UnifiedRegistryEditor(input) {
                   nodes: editorApi?.nodes ?? "",
                   credentials: editorApi?.credentials ?? "",
                   templatesWorkspace: editorApi?.templates_workspace ?? "",
-                  templateFile: editorApi?.template_file ?? "",
-                  templateSave: editorApi?.template_save ?? "",
                   templateOutline: editorApi?.template_outline ?? "",
                 }}
                 selectedId={pipeline?.selected_id ?? ""}

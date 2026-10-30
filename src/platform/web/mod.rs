@@ -5469,7 +5469,9 @@ async fn render_project_pipelines_with_tab(
                             "has_files": has_files,
                             "api": {
                                 "delete": format!("/api/projects/{owner}/{project}/pipelines/definition"),
-                                "delete_template": format!("/api/projects/{owner}/{project}/templates/file"),
+                                // `/templates/file` was removed and this kept pointing at it, so
+                                // deleting a page or script here answered 404.
+                                "delete_template": format!("/api/projects/{owner}/{project}/repo/file"),
                                 "git_status": format!("/api/projects/{owner}/{project}/templates/git-status"),
                                 "git_commit": format!("/api/projects/{owner}/{project}/git/commit"),
                             }
@@ -5947,8 +5949,6 @@ async fn render_project_editor(
                 // The repository tree. `/templates/workspace` was removed and this kept
                 // pointing at it, so both readers 404'd and silently showed nothing.
                 "templates_workspace": format!("/api/projects/{owner}/{project}/repo"),
-                "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
-                "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
                 "template_outline": format!("/api/projects/{owner}/{project}/templates/outline"),
             },
             "graphui": {
