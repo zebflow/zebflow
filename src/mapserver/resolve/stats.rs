@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{Value, json};
 
@@ -29,13 +30,28 @@ pub enum StatsAudience {
 }
 
 /// Compute layer statistics and capabilities from a published manifest.
+///
+/// Only the columns the audience is shown are computed: a public call on a
+/// layer that publishes no column reads the file's footer and nothing else.
+/// The answer is kept until the source file changes, so asking again costs
+/// nothing.
 pub fn compute_layer_stats(
     manifest: &PublishedLayerManifest,
     audience: StatsAudience,
 ) -> Result<Value, String> {
+    let key = cache_key(manifest, audience);
+    if let Some(hit) = key.as_deref().and_then(cached) {
+        return Ok(hit);
+    }
+    let shown = |name: &str| match audience {
+        StatsAudience::Operator => true,
+        StatsAudience::Public => {
+            crate::mapserver::resolve::property_is_public(&manifest.allowed_properties, name)
+        }
+    };
     let (row_count, columns) = match manifest.source_kind {
-        SourceKind::GeoParquet => stats_from_geoparquet(Path::new(&manifest.source_ref))?,
-        SourceKind::GeoJsonFile => stats_from_geojson_file(Path::new(&manifest.source_ref))?,
+        SourceKind::GeoParquet => stats_from_geoparquet(Path::new(&manifest.source_ref), &shown)?,
+        SourceKind::GeoJsonFile => stats_from_geojson_file(Path::new(&manifest.source_ref), &shown)?,
         SourceKind::GeoJsonArtifact => {
             // Artifact manifests don't have a single file to scan — return empty stats
             (0, Vec::new())
@@ -44,19 +60,6 @@ pub fn compute_layer_stats(
             // Function-backed layers have no static source — return empty stats
             (0, Vec::new())
         }
-    };
-
-    let columns: Vec<ColumnStats> = match audience {
-        StatsAudience::Operator => columns,
-        StatsAudience::Public => columns
-            .into_iter()
-            .filter(|column| {
-                crate::mapserver::resolve::property_is_public(
-                    &manifest.allowed_properties,
-                    &column.name,
-                )
-            })
-            .collect(),
     };
 
     let columns_json: Vec<Value> = columns
@@ -106,11 +109,68 @@ pub fn compute_layer_stats(
         // before ticking another one.
         out["allowed_properties"] = json!(manifest.allowed_properties);
     }
+    if let Some(key) = key {
+        remember(key, out.clone());
+    }
     Ok(out)
 }
 
-/// Read statistics from parquet footer metadata — zero data scan.
-fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>), String> {
+/// How many layers' statistics are kept; past it the cache starts over.
+const STATS_CACHE_ENTRIES: usize = 256;
+
+fn stats_cache() -> &'static Mutex<HashMap<String, Value>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One answer's identity: the layer, the audience and what it is shown, and
+/// the source file's size and modification time. A file-backed layer only;
+/// the others cost nothing to answer.
+fn cache_key(manifest: &PublishedLayerManifest, audience: StatsAudience) -> Option<String> {
+    if !matches!(manifest.source_kind, SourceKind::GeoParquet | SourceKind::GeoJsonFile) {
+        return None;
+    }
+    let meta = std::fs::metadata(&manifest.source_ref).ok()?;
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some(format!(
+        "{}\n{}\n{audience:?}\n{}\n{modified}\n{}",
+        manifest.layer_id,
+        manifest.source_ref,
+        manifest.allowed_properties.join("\u{1f}"),
+        meta.len()
+    ))
+}
+
+fn cached(key: &str) -> Option<Value> {
+    stats_cache().lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned()
+}
+
+fn remember(key: String, value: Value) {
+    let mut cache = stats_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= STATS_CACHE_ENTRIES {
+        cache.clear();
+    }
+    cache.insert(key, value);
+}
+
+#[cfg(test)]
+thread_local! {
+    static COLUMN_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a column whose data is read, for the tests that prove a public
+/// call reads none.
+fn note_column_read() {
+    #[cfg(test)]
+    COLUMN_READS.with(|reads| reads.set(reads.get() + 1));
+}
+
+/// Row count, null counts and min/max from the parquet footer; cardinality and
+/// top values by reading each `shown` column from a few row groups.
+fn stats_from_geoparquet(
+    source_path: &Path,
+    shown: &dyn Fn(&str) -> bool,
+) -> Result<(usize, Vec<ColumnStats>), String> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     let file =
@@ -142,6 +202,9 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
         }
         use datafusion::arrow::datatypes::DataType;
         if matches!(field.data_type(), DataType::Binary | DataType::LargeBinary) {
+            continue;
+        }
+        if !shown(name) {
             continue;
         }
 
@@ -204,6 +267,7 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
         }
 
         // Cardinality: sample via get_field_distinct for string/int columns
+        note_column_read();
         let cardinality = crate::mapserver::resolve::geoparquet_direct::get_field_distinct(
             source_path,
             name,
@@ -239,8 +303,11 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
     Ok((row_count, columns))
 }
 
-/// Scan a GeoJSON file for stats. Skips files >50MB.
-fn stats_from_geojson_file(source_path: &Path) -> Result<(usize, Vec<ColumnStats>), String> {
+/// Scan a GeoJSON file for stats, the `shown` properties only. Skips files >50MB.
+fn stats_from_geojson_file(
+    source_path: &Path,
+    shown: &dyn Fn(&str) -> bool,
+) -> Result<(usize, Vec<ColumnStats>), String> {
     const MAX_SCAN_SIZE: u64 = 50 * 1024 * 1024;
 
     let file_size = std::fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
@@ -282,6 +349,9 @@ fn stats_from_geojson_file(source_path: &Path) -> Result<(usize, Vec<ColumnStats
             continue;
         };
         for (key, val) in props {
+            if !shown(key) {
+                continue;
+            }
             if !col_seen.contains(key) {
                 col_order.push(key.clone());
                 col_seen.insert(key.clone());
@@ -436,6 +506,86 @@ mod tests {
             .iter()
             .map(|column| column["name"].as_str().unwrap_or_default().to_string())
             .collect()
+    }
+
+    /// A GeoParquet layer: a geometry column, `name`, and one `suburb` per row.
+    fn geoparquet_layer(dir: &Path, allowed: Vec<String>, suburbs: &[&str]) -> PublishedLayerManifest {
+        use std::sync::Arc;
+
+        use datafusion::arrow::array::{BinaryArray, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("geometry", DataType::Binary, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("suburb", DataType::Utf8, false),
+        ]));
+        let geometry: Vec<&[u8]> = suburbs.iter().map(|_| b"\x01".as_slice()).collect();
+        let names: Vec<String> = (0..suburbs.len()).map(|i| format!("site {i}")).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(BinaryArray::from_vec(geometry)),
+                Arc::new(StringArray::from(names)),
+                Arc::new(StringArray::from(suburbs.to_vec())),
+            ],
+        )
+        .expect("batch");
+        let source = dir.join("layer.parquet");
+        let mut writer = parquet::arrow::ArrowWriter::try_new(fs::File::create(&source).expect("create"), schema, None)
+            .expect("writer");
+        writer.write(&batch).expect("write");
+        writer.close().expect("close");
+        let mut manifest = geojson_layer(dir, allowed);
+        manifest.layer_id = "sites".to_string();
+        manifest.source_kind = SourceKind::GeoParquet;
+        manifest.source_ref = source.display().to_string();
+        manifest
+    }
+
+    fn column_reads() -> usize {
+        COLUMN_READS.with(|reads| reads.get())
+    }
+
+    #[test]
+    fn a_public_call_on_a_layer_that_publishes_nothing_reads_no_column() {
+        // Anyone may ask a published layer for its statistics. A layer that
+        // publishes no column shows them nothing, so it must cost them
+        // nothing beyond the footer.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let closed = geoparquet_layer(tmp.path(), Vec::new(), &["north", "north", "south"]);
+        let before = column_reads();
+        let public = compute_layer_stats(&closed, StatsAudience::Public).expect("public stats");
+        assert_eq!(column_reads(), before, "no column was read");
+        assert!(column_names(&public).is_empty());
+        assert_eq!(public["row_count"], json!(3));
+    }
+
+    #[test]
+    fn statistics_are_computed_once_until_the_source_file_changes() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let layer = geoparquet_layer(tmp.path(), vec!["suburb".to_string()], &["north", "north", "south"]);
+        let before = column_reads();
+        let first = compute_layer_stats(&layer, StatsAudience::Public).expect("public stats");
+        assert_eq!(column_names(&first), vec!["suburb".to_string()]);
+        assert_eq!(column_reads() - before, 1, "only the published column is read");
+
+        let again = compute_layer_stats(&layer, StatsAudience::Public).expect("public stats");
+        assert_eq!(again, first);
+        assert_eq!(column_reads() - before, 1, "asking again reads nothing");
+
+        let mut operator_columns =
+            column_names(&compute_layer_stats(&layer, StatsAudience::Operator).expect("operator stats"));
+        operator_columns.sort();
+        assert_eq!(operator_columns, vec!["name".to_string(), "suburb".to_string()]);
+        assert_eq!(column_reads() - before, 3, "the operator view reads every column, once");
+
+        // A republished file is a new answer.
+        let changed = geoparquet_layer(tmp.path(), vec!["suburb".to_string()], &["north", "south", "east", "west"]);
+        let fresh = compute_layer_stats(&changed, StatsAudience::Public).expect("public stats");
+        assert_eq!(fresh["row_count"], json!(4));
+        assert_eq!(column_reads() - before, 4);
     }
 
     #[test]
