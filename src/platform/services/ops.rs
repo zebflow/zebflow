@@ -1177,21 +1177,107 @@ impl PlatformOps {
                         out.push_str(&format!("    ERROR: {}\n", err));
                     }
                     for entry in &inv.trace {
-                        let marker = if entry.error.is_none() { "✓" } else { "✗" };
-                        let err_part = entry
-                            .error
-                            .as_deref()
-                            .map(|e| format!("  → {}", e))
-                            .unwrap_or_default();
-                        out.push_str(&format!(
-                            "    {}  {}  ({})  {}ms{}\n",
-                            marker, entry.node_id, entry.node_kind, entry.duration_ms, err_part
-                        ));
+                        out.push_str(&invocation_trace_line(entry));
                     }
                 }
                 OpsResult::ok(out)
             }
             Err(e) => OpsResult::err(format!("Error: {}", e.message)),
+        }
+    }
+}
+
+/// One node of a recorded run, as `pipeline_get_invocations` lists it.
+fn invocation_trace_line(entry: &crate::pipeline::model::NodeTraceEntry) -> String {
+    format!("    {}\n", trace_entry_line(entry))
+}
+
+/// One node of a run as text: `✓  id  (kind)  3ms`. The mark follows the
+/// node's status word (`kinds/node-io`): a node on a branch the run did not
+/// take is `skipped` and never ran, so it is shown as skipped, not as a node
+/// that finished in 0 ms. The console's `execute pipeline` and `run` print
+/// their traces with it too.
+pub(crate) fn trace_entry_line(entry: &crate::pipeline::model::NodeTraceEntry) -> String {
+    let (marker, outcome) = match entry.status.as_str() {
+        "skipped" => ("-", "skipped".to_string()),
+        "empty" => ("✓", format!("{}ms, emitted nothing", entry.duration_ms)),
+        "retry" => ("↻", format!("{}ms, retried", entry.duration_ms)),
+        "error_routed" => ("✗", format!("{}ms, routed to :error", entry.duration_ms)),
+        "refused" | "failed" => ("✗", format!("{}ms", entry.duration_ms)),
+        _ if entry.error.is_some() => ("✗", format!("{}ms", entry.duration_ms)),
+        _ => ("✓", format!("{}ms", entry.duration_ms)),
+    };
+    let err_part = entry.error.as_deref().map(|e| format!("  → {e}")).unwrap_or_default();
+    format!("{marker}  {}  ({})  {outcome}{err_part}", entry.node_id, entry.node_kind)
+}
+
+#[cfg(test)]
+mod invocation_trace_tests {
+    use serde_json::json;
+
+    use crate::pipeline::{PipelineContext, PipelineEngine};
+
+    /// A run that took the `false` pin lists the nodes on the `true` pin as
+    /// skipped. They used to be listed as done in 0 ms, beside the node that
+    /// really answered.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_on_the_branch_not_taken_is_listed_as_skipped() {
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let graph = crate::platform::shell::parser::build_pipeline_graph(
+            "check",
+            "[t] trigger.manual\n[v] logic.if --when \"false\"\n[bad] web.response.send --status 400 --body \"no\"\n\
+             [yes] javascript.script.run -- \"return { fine: true }\"\n[ok] web.response.send --body \"yes\"\n\
+             [t] -> [v]\n[v]:false -> [bad]\n[v]:true -> [yes]\n[yes] -> [ok]\n",
+        )
+        .expect("graph");
+        let ctx = PipelineContext {
+            owner: "superadmin".into(),
+            project: "default".into(),
+            pipeline: "check".into(),
+            request_id: "run-1".into(),
+            route: String::new(),
+            input: json!({}),
+            trigger: None,
+            placeholder: None,
+        };
+        let output = crate::pipeline::BasicPipelineEngine::default()
+            .with_platform((*platform).clone())
+            .execute_async(&graph, &ctx)
+            .await
+            .expect("runs");
+        platform
+            .data
+            .log_pipeline_invocation(
+                "superadmin",
+                "default",
+                "branch/check.zf.json",
+                crate::platform::model::PipelineInvocationEntry {
+                    run_id: ctx.request_id.clone(),
+                    at: crate::platform::model::now_ts(),
+                    duration_ms: 1,
+                    status: "ok".to_string(),
+                    trigger: "manual".to_string(),
+                    error: None,
+                    trace: output.node_trace,
+                },
+                10,
+                None,
+            )
+            .expect("logged");
+        let listed = super::PlatformOps::new((*platform).clone(), "superadmin", "default")
+            .pipeline_get_invocations("branch/check.zf.json")
+            .text;
+        let line = |id: &str| {
+            listed
+                .lines()
+                .find(|l| l.split_whitespace().nth(1) == Some(id))
+                .unwrap_or_else(|| panic!("no line for {id}: {listed}"))
+                .trim()
+                .to_string()
+        };
+        assert!(line("bad").starts_with("✓  bad  (web.response.send)"), "{listed}");
+        for id in ["yes", "ok"] {
+            assert!(line(id).starts_with("-  ") && line(id).ends_with("skipped"), "{id} did not run: {listed}");
         }
     }
 }

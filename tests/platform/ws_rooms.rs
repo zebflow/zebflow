@@ -172,6 +172,23 @@ async fn a_socket_joins_only_an_open_room_its_rule_admits() {
     assert_eq!(gone["payload"], json!({ "reason": "left" }));
 }
 
+/// A client's close frame is answered with one (RFC 6455 §5.5.1), so a
+/// browser reports the code it sent. The server used to end the connection
+/// without one, which a browser reports as 1006.
+#[tokio::test]
+async fn a_client_close_is_answered_with_a_close_frame() {
+    use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+    let root = temp_dir("ws-rooms-close");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "lobby-hello", r#"| trigger.room --room lobby --event hello | ws.message.send --body 1"#).await;
+    let address = serve(app, &cookie).await;
+    let mut socket = connect(address, "lobby", &[]).await;
+    assert_eq!(next(&mut socket).await.expect("joined")["type"], "joined");
+    socket.close(Some(CloseFrame { code: CloseCode::Normal, reason: "bye".into() })).await.expect("close sent");
+    assert_eq!(next(&mut socket).await, Err(1000), "the server answers the client's close with its own");
+}
+
 #[tokio::test]
 async fn a_change_sends_each_session_one_small_patch_not_the_state() {
     let root = temp_dir("ws-rooms-patch");

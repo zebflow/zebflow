@@ -66,8 +66,10 @@ const RESERVED: &[&str] = &[
     "__script_n",
     "__script_ctx",
     "__zebflow_script_result",
+    "__zebflow_run_args",
     "__zfOps",
     "__zfScriptResult",
+    "__zfRunArgs",
     "__zfReadLocalFile",
     "__zfHostAllowed",
     "__zfResetRealm",
@@ -89,6 +91,10 @@ const RESERVED: &[&str] = &[
 /// why `n` was taken. Named here so the save-time message can.
 const WRAPPER_PARAMS: &[&str] = &["input", "n", "ctx"];
 
+/// The `$` scope [`WRAPPER_OPEN`] declares for every body, named for the
+/// same reason as [`WRAPPER_PARAMS`].
+const WRAPPER_SCOPE: &[&str] = &["$trigger", "$nodes", "$placeholder", "$run", "$item", "$index", "$count"];
+
 /// The header wrapped around an author's body to make it a parseable program.
 /// Kept on ONE line so a reported line number maps to the author's source by
 /// subtracting exactly one.
@@ -103,6 +109,12 @@ const WRAPPER_OPEN: &str = concat!(
     " var $nodes = (ctx && ctx.nodes) || {};",
     " var $placeholder = (ctx && ctx.placeholder) || {};",
     " var $run = { pipeline: (ctx && ctx.pipeline) || '', request_id: (ctx && ctx.request_id) || '' };",
+    // The `logic.foreach` frame the node runs in, as `{{ }}` reads it: the
+    // frame's fields, else the payload's own (`kinds/node-io` § Scope).
+    // Missing here, `$item` was undefined in a script inside a loop.
+    " var $item = ((ctx && ctx.foreach) || input || {}).item ?? null;",
+    " var $index = ((ctx && ctx.foreach) || input || {}).index ?? null;",
+    " var $count = ((ctx && ctx.foreach) || input || {}).count ?? null;",
 );
 
 /// What the resolved config permits. Mirrors the danger-zone switches that
@@ -164,12 +176,18 @@ pub fn compile_body(body: &str, policy: ScriptPolicy) -> Result<String, ScriptDi
         let collided = WRAPPER_PARAMS
             .iter()
             .find(|p| err.message.contains(&format!("`{p}`")));
-        let message = match collided {
-            Some(name) => format!(
+        let scope = WRAPPER_SCOPE.iter().find(|p| err.message.contains(&format!("`{p}`")));
+        let message = match (collided, scope) {
+            (Some(name), _) => format!(
                 "`{name}` is already defined: a script body receives `input`, `n` and `ctx` \
                  as its arguments, so it cannot declare them again. Rename your variable."
             ),
-            None => format!("script is not valid: {}", err.message),
+            (None, Some(name)) => format!(
+                "`{name}` is already defined: a script body has the `$` scope ($trigger, $nodes, \
+                 $item, $index, $count, $run, $placeholder) declared for it, so it cannot declare \
+                 one again. Rename your variable."
+            ),
+            (None, None) => format!("script is not valid: {}", err.message),
         };
         return Err(ScriptDiagnostic {
             code: "SCRIPT_SEMANTIC",

@@ -264,14 +264,7 @@ impl LanguageEngine for DenoSandboxEngine {
             script = self.compile_script(&script.original_source, Some(&run_patch))?;
         }
 
-        let ctx_json = json!({
-            "pipeline": ctx.pipeline,
-            "request_id": ctx.request_id,
-            "trigger": ctx.trigger,
-            "nodes": ctx.metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
-            "placeholder": ctx.metadata.get("placeholder").cloned().unwrap_or_else(|| json!({})),
-        });
-        let value = self.run_compiled(&script, &input, ctx_json)?;
+        let value = self.run_compiled(&script, &input, script_ctx(ctx))?;
 
         Ok(ExecutionOutput {
             value,
@@ -284,6 +277,20 @@ impl LanguageEngine for DenoSandboxEngine {
             ],
         })
     }
+}
+
+/// What a script sees as `ctx`.
+pub(super) fn script_ctx(ctx: &ExecutionContext) -> Value {
+    json!({
+        "pipeline": ctx.pipeline,
+        "request_id": ctx.request_id,
+        "trigger": ctx.trigger,
+        "nodes": ctx.metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
+        "placeholder": ctx.metadata.get("placeholder").cloned().unwrap_or_else(|| json!({})),
+        // `{ item, index, count }` of the `logic.foreach` frame, under the
+        // key the engine sets it (`expr::resolver::FOREACH_METADATA_KEY`).
+        "foreach": ctx.metadata.get("foreach").cloned().unwrap_or(Value::Null),
+    })
 }
 
 /// Extracts an optional per-run sandbox patch from execution metadata.

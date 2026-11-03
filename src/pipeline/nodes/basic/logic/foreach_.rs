@@ -471,4 +471,39 @@ mod tests {
         }
         assert!(node(json!({ "from": "input.rows", "dispatch": "sequential" })).is_ok());
     }
+
+    /// `$item`, `$index` and `$count` hold in a script inside the loop as they
+    /// do in a `{{ }}` (`kinds/node-io` § Scope). In a script they were not
+    /// defined, and the run failed on the first element.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_script_in_the_loop_reads_the_loop_scope() {
+        use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine};
+
+        let graph = crate::platform::shell::parser::build_pipeline_graph(
+            "loop-scope",
+            "[a] trigger.manual\n\
+             [b] logic.foreach --from \"$input.manual.rows\"\n\
+             [d] javascript.script.run -- \"return { id: $item.id, index: $index, count: $count }\"\n\
+             [e] logic.reduce --initial \"{ seen: [] }\" --step \"{ seen: $acc.seen.concat([$input.script]) }\"\n\
+             [a] -> [b]\n[b]:item -> [d]\n[d] -> [e]\n",
+        )
+        .expect("graph");
+        let ctx = PipelineContext {
+            owner: "test".to_string(),
+            project: "test".to_string(),
+            pipeline: "loop-scope".to_string(),
+            request_id: "req-loop-scope".to_string(),
+            route: String::new(),
+            input: json!({ "rows": [{ "id": "r1" }, { "id": "r2" }] }),
+            trigger: None,
+            placeholder: None,
+        };
+        let out = BasicPipelineEngine::default().execute_async(&graph, &ctx).await.expect("runs");
+        assert_eq!(
+            out.value["reduce"]["seen"],
+            json!([{ "id": "r1", "index": 0, "count": 2 }, { "id": "r2", "index": 1, "count": 2 }]),
+            "{}",
+            out.value
+        );
+    }
 }

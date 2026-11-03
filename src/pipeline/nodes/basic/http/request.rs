@@ -4,7 +4,7 @@
 //! FileRef IR and backend/lifecycle rules, read
 //! `src/pipeline/nodes/shared/file_ref.rs`.
 //!
-//! Binary responses (`--response-type bytes`) are stored as temporary FileRefs.
+//! Binary responses (`--parse bytes`) are stored as temporary FileRefs.
 //! Multipart request bodies can send FileRefs as file parts without re-encoding
 //! the bytes into JSON.
 
@@ -465,25 +465,8 @@ impl NodeHandler for Node {
             crate::pipeline::security::validate_outbound_http_url(&prepared.url, NODE_KIND)?;
         }
 
-        // ── Build reqwest client + request ───────────────────────────────────────
-        // No timeout of its own: the engine's `--timeout` bounds the node, and
-        // dropping this future closes the connection.
-        let mut client_builder = reqwest::Client::builder();
-        if let Some(egress) = self.bundle_egress.clone() {
-            // A checked URL that redirects is still a connection to wherever it
-            // lands, so every hop answers to the same declaration.
-            client_builder =
-                client_builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                    match egress.check_url(attempt.url().as_str(), NODE_KIND) {
-                        Ok(()) if attempt.previous().len() >= 10 => attempt.stop(),
-                        Ok(()) => attempt.follow(),
-                        Err(error) => attempt.error(error.message),
-                    }
-                }));
-        }
-        let client = client_builder
-            .build()
-            .map_err(|e| PipelineError::new("FW_NODE_HTTP_RESPONSE_FETCH_CLIENT", e.to_string()))?;
+        // ── The shared client + request ──────────────────────────────────────────
+        let client = shared_client(self.bundle_egress.as_ref())?;
 
         let method_parsed = reqwest::Method::from_bytes(prepared.method.as_bytes())
             .map_err(|e| PipelineError::new("FW_NODE_HTTP_RESPONSE_FETCH_METHOD", e.to_string()))?;
@@ -1083,6 +1066,54 @@ fn render_secure_request_template(template: &str, tokens: &BTreeMap<String, Stri
     out
 }
 
+/// The clients every `http.response.fetch` sends through: one for a
+/// project's own pipelines, and one per bundle policy, whose redirects answer
+/// to that bundle's declared hosts. A client owns its connection pool, and the
+/// node used to build one per run: each call opened a new connection, which
+/// under load can use up the machine's local ports (as the model client's
+/// did, `automaton/infra/http_client.rs`). Sharing the client changes
+/// no check: the URL is checked against the outbound policy (and a bundle's
+/// declaration) on every request before it is sent, and each request carries
+/// its own headers and credential.
+///
+/// No timeout of its own: the engine's `--timeout` bounds the node, and
+/// dropping the request's future closes its connection.
+fn shared_client(egress: Option<&Arc<BundleEgress>>) -> Result<reqwest::Client, PipelineError> {
+    static PROJECT: std::sync::LazyLock<Result<reqwest::Client, String>> =
+        std::sync::LazyLock::new(|| reqwest::Client::builder().build().map_err(|e| e.to_string()));
+    /// Bundle policies are few, one per installed bundle chain; the bound
+    /// only stops a long-lived process collecting old ones.
+    const MAX_BUNDLE_CLIENTS: usize = 64;
+    static BUNDLES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<BundleEgress, reqwest::Client>>> =
+        std::sync::LazyLock::new(Default::default);
+
+    let failed = |e: String| PipelineError::new("FW_NODE_HTTP_RESPONSE_FETCH_CLIENT", e);
+    let Some(egress) = egress else {
+        return PROJECT.clone().map_err(failed);
+    };
+    let mut clients = BUNDLES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(client) = clients.get(egress.as_ref()) {
+        return Ok(client.clone());
+    }
+    let policy = egress.clone();
+    // A checked URL that redirects is still a connection to wherever it
+    // lands, so every hop answers to the same declaration.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            match policy.check_url(attempt.url().as_str(), NODE_KIND) {
+                Ok(()) if attempt.previous().len() >= 10 => attempt.stop(),
+                Ok(()) => attempt.follow(),
+                Err(error) => attempt.error(error.message),
+            }
+        }))
+        .build()
+        .map_err(|e| failed(e.to_string()))?;
+    if clients.len() >= MAX_BUNDLE_CLIENTS {
+        clients.clear();
+    }
+    clients.insert(egress.as_ref().clone(), client.clone());
+    Ok(client)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1181,6 +1212,76 @@ mod tests {
         assert_eq!(response["body"], json!({ "USD": 0.65 }));
         assert_eq!(response["headers"]["x-tag"], "a");
         assert_eq!(response["request"]["secured"], true);
+    }
+
+    /// A node is built for every run, and the runs must share connections:
+    /// each node used to build its own client, so every call opened a new
+    /// TCP connection, the port exhaustion the model client had. The stand-in
+    /// server counts the connections it accepts, for a project's own pipeline
+    /// and for a bundle's, whose redirects answer to its declared hosts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nodes_built_per_run_share_one_connection_pool() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::serve::ListenerExt;
+        const CALLS: usize = 50;
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let listener = listener.tap_io(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let app = Router::new().route("/rates", get(|| async { Json(json!({ "USD": 0.65 })) }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        platform
+            .credentials
+            .upsert_project_credential(
+                "superadmin",
+                "default",
+                &crate::platform::model::UpsertProjectCredentialRequest {
+                    credential_id: "local".to_string(),
+                    title: "Local".to_string(),
+                    kind: "secure_request".to_string(),
+                    secret: json!({
+                        "request": { "method": "GET", "url": format!("http://{addr}/rates") },
+                        "egress": { "allow_private": true, "allowed_hosts": ["127.0.0.1"] }
+                    }),
+                    notes: String::new(),
+                },
+            )
+            .expect("credential");
+        let bundle = Arc::new(crate::pipeline::security::BundleEgress::extend(None, "example/rates", &["127.0.0.1".to_string()]));
+        for egress in [None, Some(bundle)] {
+            accepted.store(0, Ordering::SeqCst);
+            for _ in 0..CALLS {
+                let node = Node::new(
+                    serde_json::from_value(json!({ "credential_id": "local" })).unwrap(),
+                    Arc::new(NoopLanguageEngine),
+                    Some(platform.credentials.clone()),
+                    None,
+                    egress.clone(),
+                )
+                .expect("node");
+                let out = node
+                    .execute_async(NodeExecutionInput {
+                        node_id: "n1".to_string(),
+                        input_pin: INPUT_PIN_IN.to_string(),
+                        payload: json!({}),
+                        metadata: json!({ "owner": "superadmin", "project": "default", "pipeline": "t", "request_id": "r" }),
+                        bus: None,
+                    })
+                    .await
+                    .expect("fetches");
+                assert_eq!(out.payload["response"]["status"], 200);
+            }
+            let connections = accepted.load(Ordering::SeqCst);
+            eprintln!("{CALLS} calls (bundle: {}), each through a node built for it, opened {connections} connections", egress.is_some());
+            assert!(connections <= 2, "{CALLS} calls opened {connections} connections");
+        }
+        server.abort();
     }
 
     /// A header given twice is sent twice; `--argument` is pairs or one object.

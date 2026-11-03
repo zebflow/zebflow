@@ -14,6 +14,8 @@ mod zeb_libraries;
 mod zeb_react;
 #[path = "rwe/zeb_rooms.rs"]
 mod zeb_rooms;
+#[path = "rwe/worker_restart.rs"]
+mod worker_restart;
 #[path = "rwe/worker_wedge.rs"]
 mod worker_wedge;
 #[path = "rwe/theme_tokens.rs"]

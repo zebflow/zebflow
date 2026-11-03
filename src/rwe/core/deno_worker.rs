@@ -40,6 +40,8 @@ const ZEB_SSR_INIT: &str = concat!(
     "\n",
     include_str!("../runtime/zeb_ssr_init.js"),
     "\n",
+    include_str!("../runtime/cx.js"),
+    "\n",
     include_str!("../runtime/zeb_ssr_libs.js"),
 );
 const TOOL_INIT: &str = include_str!("../../language/runtime/tool_init.js");
@@ -49,6 +51,39 @@ const TOOL_INIT: &str = include_str!("../../language/runtime/tool_init.js");
 // ---------------------------------------------------------------------------
 thread_local! {
     static RENDER_RESULT: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The `ctx` of the render running on this thread, read by
+    /// `op_rwe_render_ctx`. Set by [`RenderCtx`], cleared when it drops.
+    static RENDER_CTX: RefCell<Option<Value>> = const { RefCell::new(None) };
+}
+
+/// Deno op: this render's `ctx`, as a fresh object on every call.
+///
+/// The ctx used to be written as JSON into the source of `<rwe_ctx_init>` and
+/// `<rwe_render>`, so every render compiled two scripts no other render
+/// shares, and the heap kept about three times the ctx per render until a
+/// collection forced by memory pressure (`deno_worker_tests.rs`). The script
+/// sandbox had the same fault (`op_run_args`). Through this op both scripts
+/// are the same text on every render.
+#[deno_core::op2]
+#[serde]
+fn op_rwe_render_ctx() -> serde_json::Value {
+    RENDER_CTX.with(|slot| slot.borrow().clone()).unwrap_or(Value::Null)
+}
+
+/// Holds a render's `ctx` for `op_rwe_render_ctx` while the render runs.
+struct RenderCtx;
+
+impl RenderCtx {
+    fn set(ctx: &Value) -> RenderCtx {
+        RENDER_CTX.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
+        RenderCtx
+    }
+}
+
+impl Drop for RenderCtx {
+    fn drop(&mut self) {
+        RENDER_CTX.with(|slot| *slot.borrow_mut() = None);
+    }
 }
 
 /// Deno op: called by the render script to deliver the JSON result.
@@ -82,7 +117,7 @@ fn op_rwe_search_params_snapshot(
 
 deno_core::extension!(
     rwe_ops,
-    ops = [op_rwe_store_result, op_rwe_search_params_snapshot],
+    ops = [op_rwe_store_result, op_rwe_search_params_snapshot, op_rwe_render_ctx],
 );
 
 // ---------------------------------------------------------------------------
@@ -210,7 +245,7 @@ fn spawn_js_thread(worker_id: usize) -> tokio::sync::mpsc::UnboundedSender<JsReq
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JsRequest>();
     std::thread::Builder::new()
         .name(format!("rwe-js-runtime-{worker_id}"))
-        .spawn(move || run_js_thread(worker_id, rx))
+        .spawn(move || run_js_thread(worker_id, rx, None))
         .expect("failed spawning rwe-js-runtime thread");
     tx
 }
@@ -227,7 +262,19 @@ fn get_channel() -> tokio::sync::mpsc::UnboundedSender<JsRequest> {
     guard.clone()
 }
 
-fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<JsRequest>) {
+/// A retiring runtime hands its queue on: the receiver, and the request it
+/// had taken but not served. Callers already waiting in the queue are served
+/// by the fresh runtime instead of losing their reply channel, which they
+/// did when the queue was dropped with the old one. Under load every
+/// scheduled restart (every 500 renders per runtime) failed the requests
+/// queued behind it.
+type Handoff = (tokio::sync::mpsc::UnboundedReceiver<JsRequest>, Option<JsRequest>);
+
+fn run_js_thread(
+    worker_id: usize,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<JsRequest>,
+    first: Option<JsRequest>,
+) {
     // Clean up leftover temp modules from previous runs.
     cleanup_temp_modules();
 
@@ -244,7 +291,7 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
         .build()
         .expect("rwe-js-runtime: failed building tokio runtime");
 
-    tokio_rt.block_on(async move {
+    let handoff: Option<Handoff> = tokio_rt.block_on(async move {
         let heap = heap::current();
         let (generation, limit) = (heap.generation, heap.limit);
         let mut js_rt = JsRuntime::new(RuntimeOptions {
@@ -264,11 +311,11 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             js_rt.execute_script("<zeb_ssr_init>", FastString::from_static(ZEB_SSR_INIT))
         {
             eprintln!("rwe-js-runtime[{worker_id}]: zeb_ssr_init failed: {e}");
-            return;
+            return None;
         }
         if let Err(e) = js_rt.execute_script("<tool_init>", FastString::from_static(TOOL_INIT)) {
             eprintln!("rwe-js-runtime[{worker_id}]: tool_init failed: {e}");
-            return;
+            return None;
         }
         // What the runtime holds before its first render: the floor its
         // heap returns to at best.
@@ -276,28 +323,32 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
 
         let mut render_count: u64 = 0;
 
-        // Process requests sequentially (one SSR at a time per worker).
-        while let Some(req) = rx.recv().await {
-            // Periodic restart: spawn a replacement worker to handle this request,
-            // then exit cleanly so the pool slot is refreshed on the next request.
-            // The user never sees a RWE_RESTART error.
+        // Process requests sequentially (one SSR at a time per worker),
+        // starting with the one a retired runtime handed on.
+        let mut pending = first;
+        loop {
+            let req = match pending.take() {
+                Some(req) => req,
+                None => match rx.recv().await {
+                    Some(req) => req,
+                    None => return None,
+                },
+            };
+            // Periodic restart: retire this runtime and hand its queue, this
+            // request first, to a fresh one. The user never sees a restart.
             // A changed heap limit retires the runtime the same way, so the
             // render runs on one made with the limit now in force.
             let heap_changed = heap::generation() != generation;
             if render_count >= RESTART_AFTER_RENDERS || heap_changed {
                 if heap_changed {
-                    eprintln!("rwe-js-runtime[{worker_id}]: heap limit changed — forwarding to fresh worker");
+                    eprintln!("rwe-js-runtime[{worker_id}]: heap limit changed — handing the queue to a fresh runtime");
                 } else {
                     eprintln!(
                         "rwe-js-runtime[{worker_id}]: scheduled restart after {render_count} renders \
-                         — forwarding to fresh worker"
+                         — handing the queue to a fresh runtime"
                     );
                 }
-                let one_shot_tx = spawn_js_thread(worker_id);
-                // Forward the request; one_shot_tx drop after this fn closes the channel
-                // once the one-shot worker has received and processed the message.
-                let _ = one_shot_tx.send(req);
-                return; // Exit current thread; pool slot respawns on next get_channel() call.
+                return Some((rx, Some(req)));
             }
 
             let budget = Duration::from_millis(req.timeout_ms.max(1));
@@ -331,10 +382,8 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
                     "SSR render exceeded its time allowance and was stopped",
                 )));
                 // A terminated isolate is not reusable and its realm may be
-                // half-evaluated. Exit so `get_channel` respawns this slot —
-                // the pool already knows how to replace a dead worker; nothing
-                // ever died before.
-                return;
+                // half-evaluated: retire it; the queue moves to a fresh one.
+                return Some((rx, None));
             }
 
             if heap_reached.get() {
@@ -349,7 +398,7 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
                 )));
                 // Its heap is near full and its script was cut off: replaced
                 // like a terminated one.
-                return;
+                return Some((rx, None));
             }
 
             let result = match result {
@@ -362,7 +411,7 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
                         "RWE_PANIC",
                         "SSR render panicked — runtime will respawn",
                     )));
-                    return; // Exit thread; get_channel() will respawn on next request.
+                    return Some((rx, None));
                 }
             };
             let _ = req.reply.send(result);
@@ -385,12 +434,18 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
                             used >> 20,
                             heap::describe(limit)
                         );
-                        return;
+                        return Some((rx, None));
                     }
                 }
             }
         }
     });
+    if let Some((rx, first)) = handoff {
+        std::thread::Builder::new()
+            .name(format!("rwe-js-runtime-{worker_id}"))
+            .spawn(move || run_js_thread(worker_id, rx, first))
+            .expect("failed spawning rwe-js-runtime thread");
+    }
 }
 
 fn used_heap(js_rt: &mut JsRuntime) -> usize {
@@ -403,11 +458,7 @@ fn used_heap(js_rt: &mut JsRuntime) -> usize {
 /// Steps 1–7 of a render, shared by SSR and a default-export call: transpile,
 /// strip the runtime imports, publish `ctx`, load the module as a side module,
 /// evaluate it and pin its namespace on `globalThis.__rwe_module_ns`.
-async fn load_page_module(
-    js_rt: &mut JsRuntime,
-    tsx_source: &str,
-    ctx: &Value,
-) -> Result<(), EngineError> {
+async fn load_page_module(js_rt: &mut JsRuntime, tsx_source: &str) -> Result<(), EngineError> {
     // Reset result slot from any previous render.
     RENDER_RESULT.with(|r| *r.borrow_mut() = None);
     reset_render_globals(js_rt)?;
@@ -425,13 +476,14 @@ async fn load_page_module(
     //     `ctx` is the canonical name — used in `export const page` config and top-level code.
     //     `input` is kept for backward compat (component function parameter convention).
     //     Must run before the module loads so variables are present during top-level eval.
-    let ctx_json =
-        serde_json::to_string(ctx).map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
-    let input_init_code = format!(
-        "globalThis.ctx = {ctx_json}; globalThis.input = globalThis.ctx; globalThis.__islandCounter = 0;",
-    );
+    //     The ctx arrives through `op_rwe_render_ctx`, so this source never changes.
     js_rt
-        .execute_script("<rwe_ctx_init>", input_init_code)
+        .execute_script(
+            "<rwe_ctx_init>",
+            FastString::from_static(
+                "globalThis.ctx = Deno.core.ops.op_rwe_render_ctx(); globalThis.input = globalThis.ctx; globalThis.__islandCounter = 0;",
+            ),
+        )
         .map_err(|e| EngineError::new("RWE_CTX_INIT", e.to_string()))?;
 
     // 3. Write to a temp file so deno_core can load it as a file:// module.
@@ -470,50 +522,53 @@ async fn load_page_module(
     Ok(())
 }
 
+/// Step 8: render the pinned module's default export with this render's ctx
+/// and store `{ html, page_config }` through `op_rwe_store_result`. The same
+/// text on every render, so V8 compiles it once.
+const RENDER_SCRIPT: &str = "(function(){ \
+   var __ns = globalThis.__rwe_module_ns || null; \
+   if (!__ns || typeof __ns.default !== 'function') { \
+     throw new Error('RWE render target missing default export'); \
+   } \
+   function __mergePageConfig(base, dynamic) { \
+     if (!base || typeof base !== 'object') return dynamic; \
+     if (!dynamic || typeof dynamic !== 'object') return base; \
+     var out = {}; \
+     var key; \
+     for (key in base) out[key] = base[key]; \
+     for (key in dynamic) out[key] = dynamic[key]; \
+     if (base.head || dynamic.head) out.head = Object.assign({}, base.head || {}, dynamic.head || {}); \
+     if (base.html || dynamic.html) out.html = Object.assign({}, base.html || {}, dynamic.html || {}); \
+     if (base.body || dynamic.body) out.body = Object.assign({}, base.body || {}, dynamic.body || {}); \
+     return out; \
+   } \
+   var __html = globalThis.__rweRenderToString(\
+     globalThis.__rweWrapWithPageState(__ns.default, Deno.core.ops.op_rwe_render_ctx())\
+   ); \
+   var __baseCfg = (typeof __ns.page !== 'undefined' && __ns.page !== null) \
+     ? __ns.page : null; \
+   var __dynCfg = (typeof __ns.getPage === 'function') \
+     ? __ns.getPage(globalThis.input) : null; \
+   var __cfg = __mergePageConfig(__baseCfg, __dynCfg); \
+   Deno.core.ops.op_rwe_store_result(JSON.stringify({html: __html, page_config: __cfg})); \
+ })()";
+
 async fn do_render_ssr(
     js_rt: &mut JsRuntime,
     tsx_source: &str,
     ctx: &Value,
 ) -> Result<JsResponse, EngineError> {
-    load_page_module(js_rt, tsx_source, ctx).await?;
+    // The render's ctx, for `op_rwe_render_ctx`, until this function returns.
+    let _ctx = RenderCtx::set(ctx);
+    load_page_module(js_rt, tsx_source).await?;
 
     // 8. Execute render script.
     //    It calls Deno.core.ops.op_rwe_store_result(json) synchronously,
-    //    which stores the HTML+config JSON in our thread-local slot.
-    let ctx_json =
-        serde_json::to_string(ctx).map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
-    let render_code = format!(
-        "(function(){{ \
-           var __ns = globalThis.__rwe_module_ns || null; \
-           if (!__ns || typeof __ns.default !== 'function') {{ \
-             throw new Error('RWE render target missing default export'); \
-           }} \
-           function __mergePageConfig(base, dynamic) {{ \
-             if (!base || typeof base !== 'object') return dynamic; \
-             if (!dynamic || typeof dynamic !== 'object') return base; \
-             var out = {{}}; \
-             var key; \
-             for (key in base) out[key] = base[key]; \
-             for (key in dynamic) out[key] = dynamic[key]; \
-             if (base.head || dynamic.head) out.head = Object.assign({{}}, base.head || {{}}, dynamic.head || {{}}); \
-             if (base.html || dynamic.html) out.html = Object.assign({{}}, base.html || {{}}, dynamic.html || {{}}); \
-             if (base.body || dynamic.body) out.body = Object.assign({{}}, base.body || {{}}, dynamic.body || {{}}); \
-             return out; \
-           }} \
-           var __html = globalThis.__rweRenderToString(\
-             globalThis.__rweWrapWithPageState(__ns.default, {ctx_json})\
-           ); \
-           var __baseCfg = (typeof __ns.page !== 'undefined' && __ns.page !== null) \
-             ? __ns.page : null; \
-           var __dynCfg = (typeof __ns.getPage === 'function') \
-             ? __ns.getPage(globalThis.input) : null; \
-           var __cfg = __mergePageConfig(__baseCfg, __dynCfg); \
-           Deno.core.ops.op_rwe_store_result(JSON.stringify({{html: __html, page_config: __cfg}})); \
-         }})()"
-    );
-
+    //    which stores the HTML+config JSON in our thread-local slot. The page
+    //    component gets its own copy of the ctx from `op_rwe_render_ctx`, as
+    //    it got its own object when the ctx was written into this source.
     let render_result = js_rt
-        .execute_script("<rwe_render>", render_code)
+        .execute_script("<rwe_render>", FastString::from_static(RENDER_SCRIPT))
         .map_err(|e| EngineError::new("RWE_RENDER_EXEC", e.to_string()));
     reset_render_globals(js_rt)?;
     render_result?;
@@ -1097,3 +1152,7 @@ mod tests {
         assert!(js.contains("\"--track-size\": \"12px\""));
     }
 }
+
+#[cfg(test)]
+#[path = "deno_worker_tests.rs"]
+mod heap_tests;

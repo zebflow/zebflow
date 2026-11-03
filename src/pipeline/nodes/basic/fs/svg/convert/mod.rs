@@ -16,7 +16,7 @@
 //!   (`sandbox/posters/photos/venue.jpg`, or the same behind `zebfs://`) or
 //!   a repository file under `static/` (`repo://static/brand/logo.svg`). A
 //!   URL or a `data:` URI is refused, naming the href — fetch with
-//!   `http.response.fetch --response-type bytes`, `fs.file.put` it, then name the path.
+//!   `http.response.fetch --parse bytes`, `fs.file.put` it, then name the path.
 //!   An `.svg` picture draws with the same fonts and may load no pictures of
 //!   its own. Caps: 10 MB a file, 40 MP a raster, 512 KB an SVG.
 //! - **Fonts the project has.** `font-family` resolves against the bundled

@@ -22,6 +22,8 @@ use super::heap;
 // ---------------------------------------------------------------------------
 thread_local! {
     static SCRIPT_RESULT: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// This run's `[input, ctx]` as JSON, taken once by the per-run setup.
+    static RUN_ARGS: RefCell<Option<String>> = const { RefCell::new(None) };
     static LOCAL_FETCH_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     /// External hosts this run may reach. Held in Rust, never in JS: a value
     /// on `globalThis` is writable by the script it is meant to constrain.
@@ -53,6 +55,18 @@ fn op_fetch_host_allowed(#[string] host: String, #[string] host_port: String) ->
 #[deno_core::op2(fast)]
 fn op_script_result(#[string] json: String) {
     SCRIPT_RESULT.with(|r| *r.borrow_mut() = Some(json));
+}
+
+/// Op: hands the per-run setup this run's `[input, ctx]` as JSON, once.
+///
+/// They used to be written into the setup script's source, which made every
+/// run a new script. V8 keeps each script it compiles in its compilation
+/// cache, so every run kept its own input and ctx in the heap: about 5 KiB
+/// per request, never freed.
+#[deno_core::op2]
+#[string]
+fn op_run_args() -> String {
+    RUN_ARGS.with(|args| args.borrow_mut().take()).unwrap_or_else(|| "null".to_string())
 }
 
 /// Op: synchronous file read used only by the embedded local-fetch wrapper.
@@ -156,7 +170,7 @@ fn denied(reason: String) -> JsErrorBox {
     JsErrorBox::generic(format!("{DENIED_PREFIX}{reason}"))
 }
 
-deno_core::extension!(script_ops, ops = [op_script_result, op_read_local_file, op_fetch_host_allowed],);
+deno_core::extension!(script_ops, ops = [op_script_result, op_run_args, op_read_local_file, op_fetch_host_allowed],);
 
 // ---------------------------------------------------------------------------
 // Embedded JS installed once per worker at startup.
@@ -173,15 +187,24 @@ const SANDBOX_INIT: &str = r#"
   "use strict";
   var __zfOps = globalThis.Deno && globalThis.Deno.core && globalThis.Deno.core.ops;
   var __zfScriptResult = __zfOps && __zfOps.op_script_result;
+  var __zfRunArgs       = __zfOps && __zfOps.op_run_args;
   var __zfReadLocalFile = __zfOps && __zfOps.op_read_local_file;
   var __zfHostAllowed   = __zfOps && __zfOps.op_fetch_host_allowed;
-  if (typeof __zfScriptResult !== "function" || typeof __zfReadLocalFile !== "function"
-      || typeof __zfHostAllowed !== "function") {
+  if (typeof __zfScriptResult !== "function" || typeof __zfRunArgs !== "function"
+      || typeof __zfReadLocalFile !== "function" || typeof __zfHostAllowed !== "function") {
     throw new Error("DenoSandboxError: host ops unavailable");
   }
   try {
     Object.defineProperty(globalThis, "__zebflow_script_result", {
       value: __zfScriptResult, writable: false, configurable: false
+    });
+  } catch (e) {}
+  // This run's [input, ctx], parsed with the JSON.parse of startup. The op
+  // hands them over once; a later call answers null.
+  var __zfParseJson = JSON.parse;
+  try {
+    Object.defineProperty(globalThis, "__zebflow_run_args", {
+      value: function () { return __zfParseJson(__zfRunArgs()); }, writable: false, configurable: false
     });
   } catch (e) {}
 
@@ -777,8 +800,9 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
 
     let cfg = &work.config;
 
-    let input_json = serde_json::to_string(&work.input)
-        .map_err(|e| format!("DenoSandboxError: serialize input: {e}"))?;
+    let args_json = serde_json::to_string(&(&work.input, &work.ctx))
+        .map_err(|e| format!("DenoSandboxError: serialize input and ctx: {e}"))?;
+    RUN_ARGS.with(|args| *args.borrow_mut() = Some(args_json));
 
     // An unset root stays unset: a local fetch is then refused by name rather
     // than resolved against whatever directory the server was started in.
@@ -812,10 +836,11 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
     let max_ops = cfg.max_ops;
     let caps_expr = build_capabilities_expr(cfg);
 
-    let ctx_json = serde_json::to_string(&work.ctx)
-        .map_err(|e| format!("DenoSandboxError: serialize ctx: {e}"))?;
-
     // Per-run setup: fresh budget, fetch policy, input, capabilities, ctx.
+    // Its source depends on the config alone, so V8 compiles it once per
+    // config. Input and ctx arrive as data through `op_run_args`; written
+    // into this source they made every run a new script, and each one stayed
+    // in V8's compilation cache.
     let setup = format!(
         r#"(function () {{
   "use strict";
@@ -826,9 +851,10 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
     if (__opsLeft < 0) throw new Error("DenoSandboxError: op budget exceeded");
     if (Date.now() > __deadline) throw new Error("DenoSandboxError: timeout exceeded");
   }};
-  globalThis.__script_input = {input_json};
+  var __args = globalThis.__zebflow_run_args();
+  globalThis.__script_input = __args[0];
   globalThis.__script_n     = {caps_expr};
-  globalThis.__script_ctx   = {ctx_json};
+  globalThis.__script_ctx   = __args[1];
 }})();"#
     );
 
@@ -964,3 +990,7 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
         }
     })?
 }
+
+#[cfg(test)]
+#[path = "pool_tests.rs"]
+mod tests;

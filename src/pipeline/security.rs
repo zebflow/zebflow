@@ -15,7 +15,7 @@ pub fn validate_outbound_http_url(url: &str, node_kind: &str) -> Result<(), Pipe
 /// `hosts` may be empty: a bundle that declared nothing still gets a layer,
 /// because being inside a bundle is itself the fact some guards need. Such a
 /// layer restricts no host — see [`BundleEgress::check_host`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeclaredHosts {
     /// `spec.package` of the bundle this declaration came from.
     pub package: String,
@@ -37,7 +37,7 @@ pub struct DeclaredHosts {
 /// Scope is deliberately bundle-provided nodes only. A project's own pipeline
 /// calling `http.response.fetch` carries no policy and is not restricted: the threat
 /// model is third-party code the user installed, not the user's own work.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct BundleEgress {
     layers: Vec<DeclaredHosts>,
 }

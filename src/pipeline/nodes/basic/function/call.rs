@@ -357,4 +357,66 @@ mod tests {
         assert_eq!(failed.code, "FW_FUNCTION_NOT_FOUND");
         assert_eq!(failed.node_id.as_deref(), Some("c"), "attributed to the call, not to a node of the function");
     }
+
+    /// A function that renders a page runs the same way called as executed:
+    /// with its project's templates. Called through `function.result.call`
+    /// (and so through an agent's tools and `--verify`) its engine had no
+    /// template root and failed with `FW_NODE_WEB_SITE_GENERATE_TEMPLATE_ROOT`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_called_function_renders_with_its_projects_templates() {
+        use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
+
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let layout = platform.projects.project_layout("superadmin", "default").expect("layout");
+        platform
+            .projects
+            .write_repo_file(
+                "superadmin",
+                "default",
+                &layout.repo_layout.source_rel("pages/one.tsx"),
+                "export default function One(input) { return <p data-n={input.function?.n}>page</p>; }",
+            )
+            .expect("template saved");
+        let function = json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "Pipeline",
+            "metadata": { "name": "render-one" },
+            "spec": {
+                "id": "render-one",
+                "nodes": [
+                    { "id": "trigger", "kind": "trigger.function",
+                      "config": { "description": "Render one page." },
+                      "input_pins": [], "output_pins": ["out"] },
+                    { "id": "page", "kind": "web.site.generate",
+                      "config": { "template": "pages/one.tsx", "path": "one/{{ input.function.n }}.html" },
+                      "input_pins": ["in"], "output_pins": ["out"] }
+                ],
+                "edges": [{ "from_node": "trigger", "from_pin": "out", "to_node": "page", "to_pin": "in" }]
+            }
+        });
+        let meta = platform
+            .projects
+            .upsert_pipeline_definition("superadmin", "default", "fn/render-one.zf.json", "Render one", "", "function", &function.to_string())
+            .expect("function saved");
+        platform.projects.activate_pipeline_definition("superadmin", "default", &meta.file_rel_path).expect("function activated");
+        platform.pipeline_runtime.refresh_project("superadmin", "default").expect("runtime");
+
+        let node = super::Node::new(
+            serde_json::from_value(json!({ "function": "render-one", "argument": { "n": "b" } })).unwrap(),
+            Some((*platform).clone()),
+        );
+        let out = node
+            .execute_async(NodeExecutionInput {
+                node_id: "n1".to_string(),
+                input_pin: "in".to_string(),
+                payload: json!({}),
+                metadata: json!({ "owner": "superadmin", "project": "default" }),
+                bus: None,
+            })
+            .await
+            .expect("the called function renders its page");
+        // `result` is the function's last answer: the `site` the page wrote.
+        assert_eq!(out.payload["result"]["status"], "written", "{}", out.payload);
+        assert!(out.payload["result"]["path"].as_str().unwrap_or_default().ends_with("one/b.html"), "{}", out.payload);
+    }
 }

@@ -214,6 +214,16 @@ pub fn evict_template_cache_by_path(cache: &TemplateCache, abs_path: &str) {
     map.retain(|_, entry| !entry.recipe.touches(&entry.dependencies, abs_path));
 }
 
+/// The files the compile of the page whose entry file is `entry` (canonical,
+/// as the compiler records paths) read: `None` while that page is not
+/// compiled. What the architecture view reports as the page's components.
+pub fn compiled_page_files(cache: &TemplateCache, entry: &str) -> Option<HashSet<String>> {
+    let map = cache.read().unwrap_or_else(|e| e.into_inner());
+    map.values()
+        .find(|page| page.recipe.entry_path.as_deref() == Some(entry))
+        .map(|page| page.dependencies.clone())
+}
+
 /// Saves recompile one at a time: each compile reads the files as they are
 /// when it starts, so the last refresh to run has read the last save.
 static REFRESH: Mutex<()> = Mutex::new(());

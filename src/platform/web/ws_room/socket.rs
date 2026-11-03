@@ -176,7 +176,15 @@ async fn pump(
                         return KICK_FLOOD.reason;
                     }
                 }
-                Some(Ok(Message::Close(_))) => return "left",
+                Some(Ok(Message::Close(_))) => {
+                    // The socket library queues the answering close frame
+                    // and sends it on the next write, flush or read. Returning
+                    // without one dropped it, so the client never got a close
+                    // frame back (RFC 6455 §5.5.1) and a browser reported
+                    // 1006 instead of the code it sent.
+                    let _ = futures::SinkExt::flush(socket).await;
+                    return "left";
+                }
                 // The socket ended without a close frame: a drop.
                 None | Some(Err(_)) => return "dropped",
                 _ => {}

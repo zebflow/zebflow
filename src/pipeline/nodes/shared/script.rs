@@ -1,5 +1,5 @@
 //! The script nodes' engine, shared by the families whose language runs in
-//! the Deno sandbox: `js.script.run` (JavaScript) and `ts.script.run`
+//! the Deno sandbox: `javascript.script.run` (JavaScript) and `typescript.script.run`
 //! (TypeScript). Each family folder holds only its [`Language`]; the
 //! definition, the build and the run are here, once.
 //!
@@ -33,7 +33,7 @@ pub const ANSWER_KEY: &str = "script";
 /// and its family's error codes.
 #[derive(Debug)]
 pub struct Language {
-    /// `js.script.run`, `ts.script.run`.
+    /// `javascript.script.run`, `typescript.script.run`.
     pub kind: &'static str,
     /// The canvas title.
     pub title: &'static str,

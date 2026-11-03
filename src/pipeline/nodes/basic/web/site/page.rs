@@ -746,4 +746,53 @@ export default function NotePage(input) {
         assert!(sample_after.contains("A second demo line, edited."));
         assert_eq!(demo_before, demo_after);
     }
+
+    /// An engine built for no one project (the scheduler's, a room's) renders
+    /// a project's page with that project's templates. It used to have no
+    /// template root, so a scheduled `web.site.generate --template` failed with
+    /// `FW_NODE_WEB_SITE_GENERATE_TEMPLATE_ROOT`.
+    #[tokio::test]
+    async fn a_shared_engine_renders_with_the_runs_project_templates() {
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let layout = platform.projects.project_layout("superadmin", "default").expect("layout");
+        platform
+            .projects
+            .write_repo_file(
+                "superadmin",
+                "default",
+                &layout.repo_layout.source_rel("pages/a.tsx"),
+                "export default function A() { return <p>scheduled page</p>; }",
+            )
+            .expect("template saved");
+        let graph = PipelineGraph {
+            id: "nightly".to_string(),
+            description: None,
+            metadata: None,
+            notes: Vec::new(),
+            entry_nodes: vec!["gen".to_string()],
+            nodes: vec![PipelineNode {
+                id: "gen".to_string(),
+                kind: NODE_KIND.to_string(),
+                input_pins: vec!["in".to_string()],
+                output_pins: vec!["out".to_string()],
+                config: json!({ "template": "pages/a.tsx", "path": "nightly.html" }),
+            }],
+            edges: vec![],
+        };
+        let ctx = PipelineContext {
+            owner: "superadmin".to_string(),
+            project: "default".to_string(),
+            pipeline: graph.id.clone(),
+            request_id: "schedule-1".to_string(),
+            route: String::new(),
+            input: json!({}),
+            trigger: None,
+            placeholder: None,
+        };
+        let shared = BasicPipelineEngine::new(Arc::new(DenoSandboxEngine::default()), resolve_engine_or_default(None), None)
+            .with_platform((*platform).clone())
+            .with_data_root(platform.config.data_root.clone());
+        let out = shared.execute_async(&graph, &ctx).await.expect("renders");
+        assert_eq!(out.value["site"]["status"], "written", "{}", out.value);
+    }
 }

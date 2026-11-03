@@ -72,8 +72,8 @@ mod flow;
 pub use compiled::CompiledLane;
 mod page_cache;
 pub use page_cache::{
-    CacheEntry, PageRecipe, TemplateCache, evict_template_cache_by_path, new_template_cache,
-    project_pages_root, refresh_template_cache_by_path, refresh_template_cache_by_paths,
+    CacheEntry, PageRecipe, TemplateCache, compiled_page_files, evict_template_cache_by_path,
+    new_template_cache, project_pages_root, refresh_template_cache_by_path, refresh_template_cache_by_paths,
 };
 mod scheduler;
 mod web_site;
@@ -1054,6 +1054,7 @@ fn sanitize_path_part(raw: &str) -> String {
 }
 
 /// Main framework engine used for real pipeline execution.
+#[derive(Clone)]
 pub struct BasicPipelineEngine {
     language: Arc<dyn LanguageEngine>,
     rwe: Arc<dyn ReactiveWebEngine>,
@@ -1139,6 +1140,24 @@ impl BasicPipelineEngine {
         self.template_root = layout.as_ref().map(|value| value.repo_source_dir());
         self.repo_layout = layout;
         self
+    }
+
+    /// This engine with the layout of the project `ctx` runs in, when it was
+    /// built without one; `None` when it already has one, is a bundle's, or
+    /// has no platform to read the layout from.
+    ///
+    /// Engines built for no single project (the scheduler's, a function
+    /// call's, a room's) used to run a project's pipeline with no template
+    /// root, so a `web.site.generate --template` that ran under `execute
+    /// pipeline` failed when the same pipeline was called through
+    /// `function.result.call` (`FW_NODE_WEB_SITE_GENERATE_TEMPLATE_ROOT`). A
+    /// bundle's function pipeline keeps the engine it was given.
+    fn scoped_to_run(&self, ctx: &PipelineContext) -> Option<Self> {
+        if self.repo_layout.is_some() || self.bundle_egress.is_some() {
+            return None;
+        }
+        let layout = self.platform.as_ref()?.projects.project_layout(&ctx.owner, &ctx.project).ok()?;
+        Some(self.clone().with_project_layout(Some(layout)))
     }
 
     /// Source libraries (`zeb/ui`, …) the compiler resolves by file. They ship
@@ -1809,7 +1828,8 @@ impl PipelineEngine for BasicPipelineEngine {
                 &started,
             );
         }
-        let result = self.run_graph(graph, ctx, options).await;
+        let scoped = self.scoped_to_run(ctx);
+        let result = scoped.as_ref().unwrap_or(self).run_graph(graph, ctx, options).await;
         let status = if result.is_ok() { "ok" } else { "error" };
         let duration_ms = started.elapsed().as_millis() as u64;
         if options.bus.is_some() {

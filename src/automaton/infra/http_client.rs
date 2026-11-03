@@ -6,7 +6,7 @@
 //!
 //! Anthropic is not a provider yet; its tool-use mapping is a separate decision.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -53,6 +53,18 @@ fn build_http_client() -> reqwest::Client {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// The one client every model call in the process goes through. A client
+/// owns its connection pool, and `ai.text.generate` builds an
+/// `OpenAiHttpClient` on every run: a client built per run opened a new
+/// connection per call, and under load the machine ran out of local ports.
+/// A clone shares the pool. Each request carries its own key, and the egress
+/// check runs on every request before it is sent.
+static SHARED_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(build_http_client);
+
+fn shared_http_client() -> reqwest::Client {
+    SHARED_HTTP_CLIENT.clone()
 }
 
 fn parse_llm_json(bytes: &[u8]) -> Result<Value, String> {
@@ -115,7 +127,7 @@ impl OpenAiHttpClient {
             response_path: "/responses".to_string(),
             api_key,
             model,
-            client: build_http_client(),
+            client: shared_http_client(),
             surface: OpenAiApiSurface::Responses,
             store: false,
             allow_private: false,
@@ -129,7 +141,7 @@ impl OpenAiHttpClient {
             response_path: "/chat/completions".to_string(),
             api_key,
             model,
-            client: build_http_client(),
+            client: shared_http_client(),
             surface: OpenAiApiSurface::ChatCompletions,
             store: false,
             allow_private: false,
@@ -235,7 +247,7 @@ impl OpenAiHttpClient {
             response_path,
             api_key: api_key.to_string(),
             model,
-            client: build_http_client(),
+            client: shared_http_client(),
             surface,
             store,
             allow_private,
@@ -737,6 +749,45 @@ mod tests {
         assert_eq!(listed_as_json.call(ask()).await.expect("json list"), "local answer");
         server.abort();
         assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    /// `ai.text.generate` builds a client on every run. Those clients must
+    /// share one connection pool: each used to open a connection of its own,
+    /// and under load the machine ran out of local ports (15,979 sockets in
+    /// TIME_WAIT after 15,763 calls in 5 s, then "error sending request").
+    /// The stand-in provider counts the TCP connections it accepts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clients_built_per_run_share_one_connection_pool() {
+        use axum::serve::ListenerExt;
+        const CALLS: usize = 50;
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let listener = listener.tap_io(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let app = Router::new().route(
+            "/chat/completions",
+            post(|| async { Json(json!({ "choices": [{ "message": { "content": "ok" } }] })) }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let secret = json!({
+            "api_key": uuid::Uuid::new_v4().to_string(),
+            "base_url": format!("http://{addr}"),
+            "allow_private": true,
+            "allowed_hosts": ["127.0.0.1"],
+        });
+        for _ in 0..CALLS {
+            let client = OpenAiHttpClient::from_provider_secret("openrouter", &secret, None).expect("client");
+            assert_eq!(client.call(ask()).await.expect("answers"), "ok");
+        }
+        server.abort();
+        let connections = accepted.load(Ordering::SeqCst);
+        eprintln!("{CALLS} calls, each through a client built for it, opened {connections} connections");
+        assert!(connections <= 2, "{CALLS} calls opened {connections} connections");
     }
 
     /// No total timeout of the client's own: a model may think for minutes and

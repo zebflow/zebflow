@@ -133,13 +133,27 @@ impl Ticker {
         // Handled: each session's inputs stop counting as waiting.
         drop(taken);
         room.end_tick(tick);
-        if start.elapsed() > spec.every() {
+        if self.finish(start, spec, Instant::now()) {
             room.count(Counter::TickOverruns);
-            self.next_at = Some(Instant::now());
-        } else {
-            self.next_at = Some(start + spec.every());
         }
         std::mem::take(&mut self.after_tick)
+    }
+
+    /// Times the next tick after the one that started at `started` and ended
+    /// at `now`; whether that tick outlasted `--every`.
+    ///
+    /// The next tick is due one `--every` after this one was due, so ticks
+    /// keep their period; when that time has already passed (the tick
+    /// outlasted it, or started that late), it is due now, and a late room
+    /// never runs ticks back to back to catch up. It used to be timed from
+    /// when this tick started. A timer fires a little after its deadline
+    /// (about 3 ms at `--every 50ms`), so each tick pushed the next one
+    /// back by that much: 18.9 ticks a second where 20 were asked for, and
+    /// no overrun counted.
+    fn finish(&mut self, started: Instant, spec: TickSpec, now: Instant) -> bool {
+        let due = self.next_at.unwrap_or(started);
+        self.next_at = Some((due + spec.every()).max(now));
+        now.duration_since(started) > spec.every()
     }
 }
 
@@ -148,5 +162,43 @@ pub(super) async fn until(at: Option<Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::Ticker;
+    use crate::infra::transport::ws::TickSpec;
+
+    const SPEC: TickSpec = TickSpec { every_ms: 50, max_inputs: 30 };
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// Ticks whose timer fires late keep the room's period: each is due one
+    /// `--every` after the last was due, not after it started.
+    #[test]
+    fn ticks_that_start_late_keep_the_period() {
+        let mut ticker = Ticker::new(Some(SPEC));
+        let first = ticker.due_at().expect("a tick room has a next tick");
+        for _ in 0..20 {
+            let due = ticker.due_at().expect("due");
+            let started = due + ms(3);
+            assert!(!ticker.finish(started, SPEC, started + ms(1)), "a 1 ms tick is no overrun");
+        }
+        assert_eq!(ticker.due_at(), Some(first + SPEC.every() * 20), "twenty periods, not twenty periods and 60 ms");
+    }
+
+    /// A tick that outlasts `--every` counts an overrun and delays the next
+    /// to when it ends; no tick runs early to make up for it.
+    #[test]
+    fn a_tick_that_outlasts_the_period_delays_the_next() {
+        let mut ticker = Ticker::new(Some(SPEC));
+        let due = ticker.due_at().expect("due");
+        assert!(ticker.finish(due, SPEC, due + ms(70)), "70 ms in a 50 ms period is an overrun");
+        assert_eq!(ticker.due_at(), Some(due + ms(70)));
     }
 }
