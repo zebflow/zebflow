@@ -2207,6 +2207,21 @@ fn externalize_rwe_scripts(
     // can serve those. When a deployment asset base is set the existing
     // `{base}/libraries/` rewrite already lands on that route, so this only
     // applies without one.
+    // Where this page addresses the project's static assets, for the address
+    // it was served on: the host's own `/_static/` on a project host, so a
+    // public page never names its owner or project (`addressing.md` §1); the
+    // platform form on the platform address.
+    let static_base = match (project_scope, arrival) {
+        (Some((owner, project)), arrival) => state
+            .platform
+            .addressing
+            .read(owner, project)
+            .ok()
+            .map(|addressing| addressing.static_base(owner, project, arrival.and_then(|a| a.page_host)))
+            .unwrap_or_else(|| format!("/static/{owner}/{project}/")),
+        (None, _) => String::new(),
+    };
+
     let hub_library_base = match (project_scope, &deployment_asset_base) {
         (Some((owner, project)), None) => state
             .platform
@@ -2214,7 +2229,7 @@ fn externalize_rwe_scripts(
             .read(owner, project)
             .ok()
             .filter(|lock| !lock.rwe.libraries.is_empty())
-            .map(|_| format!("/static/{owner}/{project}/_rwe/lib/")),
+            .map(|_| format!("{static_base}_rwe/lib/")),
         _ => None,
     };
 
@@ -2247,6 +2262,10 @@ fn externalize_rwe_scripts(
                 let from = format!("/assets/{}/{}/", owner, project);
                 let to = format!("{}/", base.trim_end_matches('/'));
                 s.replace(&from, &to)
+            }
+            (Some((owner, project)), None) => {
+                let platform = format!("/static/{owner}/{project}/");
+                if static_base == platform { s } else { s.replace(&platform, &static_base) }
             }
             _ => s,
         };
@@ -2317,12 +2336,7 @@ fn externalize_rwe_scripts(
             format!("{base}/_rwe/scripts/{}", script.content_hash)
         } else {
             match project_scope {
-                Some((owner, project)) => {
-                    format!(
-                        "/static/{owner}/{project}/_rwe/scripts/{}",
-                        script.content_hash
-                    )
-                }
+                Some(_) => format!("{static_base}_rwe/scripts/{}", script.content_hash),
                 None => format!("/assets/rwe/scripts/{}", script.content_hash),
             }
         };
