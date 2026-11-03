@@ -42,10 +42,27 @@ while the project's `ms` surface is on (Settings → Addressing).
   `5m`; default 60s).
 - Each `--field` is a property the public may see; none serves geometry only.
   `--max-items` caps the features one query answers (default 1000).
+- A viewport query is `/ms/{owner}/{project}/{route}?bbox=<west>,<south>,<east>,<north>`
+  (longitude, latitude). A layer published with `--min-zoom` or `--max-zoom`
+  also needs `&zoom=<n>` on it: without one the answer is `400` ("send ?zoom=
+  as a whole number"), and at a zoom outside the range it is an empty
+  feature list. A tile carries its zoom in its path.
 - Vector tiles answer at `{route}/{z}/{x}/{y}.mvt` (or `.pbf`), one MVT layer named after the
   layer. A tile's feature carries an id only when the source feature has a non-negative integer
   `id` of its own; nothing is numbered per tile, so a client never mistakes two features of
   neighbouring tiles for one.
+- `{route}/stats` answers the layer's statistics: row count, extent, and per
+  column the null count, distinct count, min and max, the 10 most frequent
+  values with their counts, and a 20-bin histogram for numbers. A GeoParquet
+  layer's statistics are computed once, in the background, when the layer is
+  published or its file changes, and saved; `/stats` only reads them. Until
+  they are saved it answers `"state": "computing"` with the row count; a
+  computation that failed answers `"failed"` until the layer is published
+  again or its file changes. A distinct count above 10,000 is an estimate
+  (`cardinality_exact: false`) and that column has no top values
+  (`top_values_skipped: "too_many_distinct"`); every other number is exact.
+  The public sees only the `--field` columns; the project API
+  `.../layers/{name}/stats` shows every column.
 - Every node answers `layer`: publish `{ name, route, store, source,
   source_kind, …, serving }`, get `{ found, … }`, unpublish `{ name, removed
   }`, list `{ items, count }`.

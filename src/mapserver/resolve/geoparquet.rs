@@ -39,17 +39,18 @@ struct ContextEntry {
     file_size: u64,
 }
 
-/// How a layer's session is made. The process that embeds the map server
-/// sets its own at start (Zebflow: one bounded runtime for every SQL query
-/// over a file); without one, DataFusion's default, which has no memory limit.
+/// How the map server's DataFusion sessions are made: a layer's box queries
+/// and its statistics. The process that embeds the map server sets its own at
+/// start (Zebflow: one bounded runtime for every SQL query over a file);
+/// without one, DataFusion's default, which has no memory limit.
 static SESSION_MAKER: OnceLock<fn(SessionConfig) -> SessionContext> = OnceLock::new();
 
-/// Sets how layer sessions are made. The first call wins.
+/// Sets how the map server's sessions are made. The first call wins.
 pub fn set_session_maker(maker: fn(SessionConfig) -> SessionContext) {
     let _ = SESSION_MAKER.set(maker);
 }
 
-fn new_session(config: SessionConfig) -> SessionContext {
+pub(in crate::mapserver) fn new_session(config: SessionConfig) -> SessionContext {
     match SESSION_MAKER.get() {
         Some(maker) => maker(config),
         None => SessionContext::new_with_config(config),

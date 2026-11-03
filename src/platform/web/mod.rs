@@ -16827,16 +16827,21 @@ async fn api_mapserver_layer_stats(
     } else {
         manifest
     };
-    match crate::mapserver::resolve::stats::compute_layer_stats(
-        &manifest,
-        crate::mapserver::resolve::stats::StatsAudience::Operator,
-    ) {
-        Ok(stats) => Json(stats).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"ok": false, "error": format!("stats computation failed: {err}")})),
+    // Reads the saved statistics (a GeoParquet layer's are never computed
+    // here); a GeoJSON file is small and is scanned, so neither holds an
+    // async worker.
+    let read = tokio::task::spawn_blocking(move || {
+        let stats_file = mapserver_layer_stats_file(&state, &owner, &project, &instance, &manifest.layer_id);
+        crate::mapserver::resolve::stats::read_layer_stats(
+            &manifest,
+            crate::mapserver::resolve::stats::StatsAudience::Operator,
+            stats_file.as_deref(),
         )
-            .into_response(),
+    })
+    .await;
+    match read {
+        Ok(stats) => Json(stats).into_response(),
+        Err(err) => internal_error(PlatformError::new("MAPSERVER_STATS", err.to_string())),
     }
 }
 
@@ -25291,26 +25296,35 @@ async fn public_mapserver_ingress(
     };
     // ── Stats endpoint: early return ─────────────────────────────────
     if is_stats_request {
-        match crate::mapserver::resolve::stats::compute_layer_stats(
-            &manifest,
-            crate::mapserver::resolve::stats::StatsAudience::Public,
-        ) {
+        let read = {
+            let (state, owner, project) = (state.clone(), owner.to_string(), project.to_string());
+            tokio::task::spawn_blocking(move || {
+                let stats_file = mapserver_layer_stats_file(
+                    &state,
+                    &owner,
+                    &project,
+                    crate::mapserver::publish::registry::DEFAULT_INSTANCE,
+                    &manifest.layer_id,
+                );
+                crate::mapserver::resolve::stats::read_layer_stats(
+                    &manifest,
+                    crate::mapserver::resolve::stats::StatsAudience::Public,
+                    stats_file.as_deref(),
+                )
+            })
+            .await
+        };
+        return match read {
             Ok(stats_json) => {
                 let mut resp = (StatusCode::OK, Json(stats_json)).into_response();
                 resp.headers_mut().insert(
                     HeaderName::from_static("access-control-allow-origin"),
                     HeaderValue::from_static("*"),
                 );
-                return resp;
+                resp
             }
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"ok": false, "error": format!("stats computation failed: {err}")})),
-                )
-                    .into_response();
-            }
-        }
+            Err(err) => internal_error(PlatformError::new("MAPSERVER_STATS", err.to_string())),
+        };
     }
 
     let layer_id = manifest.layer_id;
@@ -26372,6 +26386,20 @@ fn resolve_mapserver_manifest_for_path(
         return Ok(None);
     };
     mapserver_record_to_manifest(state, owner, project, layer).map(Some)
+}
+
+/// Where a layer's saved statistics live: the cache-tier folder of the
+/// layer's artifacts (`mapserver::resolve::stats::layer_stats_file`).
+fn mapserver_layer_stats_file(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    instance: &str,
+    layer_id: &str,
+) -> Option<std::path::PathBuf> {
+    let layout = state.platform.file.ensure_project_layout(owner, project).ok()?;
+    let home = layout.ensure_mapserver_artifacts_home().ok()?;
+    crate::mapserver::resolve::stats::layer_stats_file(&home, instance, layer_id)
 }
 
 fn mapserver_record_to_manifest(

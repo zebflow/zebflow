@@ -104,6 +104,70 @@ A `path` carrying a leading slash is **normalised on read**, not refused: both
 publishers strip it before writing, and stripping it on read repairs a record
 written before they agreed rather than making the layer unreadable.
 
+## Statistics
+
+`/ms/{owner}/{project}/{path}/stats` (public) and
+`/api/projects/{owner}/{project}/mapserver/{instance}/layers/{layer_id}/stats`
+(operator) answer `200` for every known layer in every state, `404` only for
+an unknown layer:
+
+```json
+{
+  "layer_id": "sites",
+  "source_kind": "geoparquet",
+  "state": "ready",
+  "row_count": 123,
+  "computed_at": "2026-11-03T10:00:00Z",
+  "extent": [100.0, -5.5, 101.0, -5.0],
+  "columns": [
+    {
+      "name": "suburb",
+      "data_type": "Utf8",
+      "null_count": 0,
+      "cardinality": 3,
+      "cardinality_exact": true,
+      "top_values": [["north", 812], ["south", 400], ["east", 11]]
+    },
+    {
+      "name": "floors",
+      "data_type": "Int64",
+      "null_count": 2,
+      "cardinality": 14210,
+      "cardinality_exact": false,
+      "min": 1.0, "max": 9.0,
+      "top_values": [],
+      "top_values_skipped": "too_many_distinct",
+      "histogram": { "min": 1.0, "max": 9.0, "counts": [20 integers] }
+    }
+  ],
+  "capabilities": { "mvt": "experimental", "png": true, "geojson": true, "zxy_tiles": true, "point_query": true },
+  "allowed_properties": ["suburb"]
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `state` | `ready`, `computing` or `failed` |
+| `row_count` | a GeoParquet layer's is always present, from the file's footer while `computing` or `failed`; `null` when the footer cannot be read |
+| `computed_at` | `ready` only; UTC, RFC 3339 |
+| `error` | `failed` only |
+| `extent` | the GeoParquet `geo` metadata `bbox`, else the bbox covering columns, else `null` |
+| `columns` | `[]` while `computing` or `failed`; the public view lists only `allowed_properties`, the operator view every attribute column and `allowed_properties` beside it. Geometry and bbox columns are not attributes |
+| `cardinality` | distinct non-null values: exact when `cardinality_exact`, else a HyperLogLog estimate |
+| `min`, `max`, `histogram` | numeric columns only, over their finite values; 20 equal-width bins, the last one includes `max` |
+| `top_values` | at most 10 `[value, count]`, most frequent first, ties by value; counts are exact. Counted only when the estimated distinct count is at most 10,000; otherwise `[]` with `top_values_skipped: "too_many_distinct"`. A nested column (list, struct, map) has only its null count and `top_values_skipped: "unsupported_type"` |
+
+A GeoParquet layer's statistics are computed once, in the background, when the
+layer is published or its file changes, one computation at a time per process,
+and saved at `data/cache/mapserver-artifacts/{instance}/{layer}/stats.json`
+(CACHE: rebuilt from the file, removed with the layer's folder) with the size
+and modification time of the file they describe. `/stats` only reads that
+file; when it is missing or describes another version of the file, the answer
+is `computing` and a computation is queued. A `failed` result stays until the
+file changes or the layer is published again. A GeoJSON file layer is scanned
+when asked and every number is exact; a file over 50 MB answers `failed`. An
+artifact or function layer reports no columns.
+
 ## Open
 
 - **Rebuild.** `artifact_manifest_path` points at CACHE-tier artifacts that must

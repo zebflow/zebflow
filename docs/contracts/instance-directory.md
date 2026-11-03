@@ -94,7 +94,7 @@ records what is on disk today.
             │   ├── cache/             CACHE — regenerates
             │   │   ├── pipelines/
             │   │   ├── agent_docs/    AGENTS.md, SOUL.md (see Open)
-            │   │   └── mapserver-artifacts/   {instance}/{layer}/
+            │   │   └── mapserver-artifacts/   {instance}/{layer}/: artifact chunks, stats.json
             │   │
             │   ├── hub/               INSTALLED — from any hub or local file
             │   │   ├── nodes/

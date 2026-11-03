@@ -128,6 +128,23 @@ async fn publish_get_list_unpublish_answer_layer_and_keep_the_payload() {
     assert!(layer.get("serving").is_some_and(Value::is_boolean));
     assert!(store.fs.head("mapserver/.optimized/roads.spatial.parquet").is_ok(), "the optimized copy is in the store");
 
+    // Publishing queues the layer's statistics; they are computed in the
+    // background and saved in the layer's cache folder.
+    let home = p.file.ensure_project_layout("demo", "demo").expect("layout").ensure_mapserver_artifacts_home().expect("home");
+    let stats_file = crate::mapserver::resolve::stats::layer_stats_file(&home, DEFAULT_INSTANCE, "roads").expect("stats file");
+    let mut saved = Value::Null;
+    for _ in 0..300 {
+        if let Some(value) = crate::mapserver::resolve::stats::saved_layer_stats(&stats_file) {
+            saved = value;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(saved["state"], "ready", "{saved}");
+    assert_eq!(saved["row_count"], 2);
+    let name = saved["columns"].as_array().expect("columns").iter().find(|c| c["name"] == "name").expect("name");
+    assert_eq!(name["top_values"], json!([["High St", 1], ["Main St", 1]]));
+
     let got = run(&p, GET_KIND, json!({ "name": "roads" })).await.expect("get");
     assert_eq!(got["layer"]["found"], true);
     assert_eq!(got["layer"]["source_kind"], "geoparquet");
@@ -141,6 +158,7 @@ async fn publish_get_list_unpublish_answer_layer_and_keep_the_payload() {
     let removed = run(&p, UNPUBLISH_KIND, json!({ "name": "roads" })).await.expect("unpublish");
     assert_eq!(removed["layer"], json!({ "name": "roads", "removed": true }));
     assert!(store.fs.head("mapserver/.optimized/roads.spatial.parquet").is_err(), "the optimized copy goes with it");
+    assert!(!stats_file.exists(), "and so do its statistics");
     assert!(store.fs.head("data/roads.geojson").is_ok(), "the source stays");
     let again = run(&p, UNPUBLISH_KIND, json!({ "name": "roads" })).await.expect("unpublish");
     assert_eq!(again["layer"]["removed"], false);

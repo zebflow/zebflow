@@ -16,6 +16,8 @@
 //! `mapserver/.optimized/` in this node's store and serves that; with
 //! `--skip-optimize` the source is served as it is, and `--build-artifact`
 //! then serves a GeoJSON as a chunked artifact in the cache tier instead.
+//! A GeoParquet layer's statistics are then computed in the background and
+//! saved in the cache tier beside its artifacts (`mapserver::resolve::stats`).
 
 use std::sync::Arc;
 
@@ -98,20 +100,12 @@ fn write_layers(platform: &PlatformService, owner: &str, project: &str, items: &
     registry::write_layers(&path, DEFAULT_INSTANCE, items).map_err(|e| PipelineError::new(code, format!("layer registry: {e}")))
 }
 
-/// Streams an optimized GeoParquet and its column stats into the store.
-fn store_optimized(
-    store: &NodeStore,
-    optimized_abs: &std::path::Path,
-    optimized_rel: &str,
-    stats: &crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport,
-    stats_rel: &str,
-) -> Result<(), PipelineError> {
+/// Streams an optimized GeoParquet into the store.
+fn store_optimized(store: &NodeStore, optimized_abs: &std::path::Path, optimized_rel: &str) -> Result<(), PipelineError> {
     store
         .fs
         .put_from_file(optimized_rel, optimized_abs)
         .map_err(|e| PipelineError::new(PUBLISH_CODE, format!("write '{optimized_rel}': {e}")))?;
-    let stats_json = serde_json::to_vec_pretty(stats).map_err(|e| PipelineError::new(PUBLISH_CODE, e.to_string()))?;
-    store.fs.put(stats_rel, &stats_json).map_err(|e| PipelineError::new(PUBLISH_CODE, format!("write '{stats_rel}': {e}")))?;
     Ok(())
 }
 
@@ -790,23 +784,14 @@ impl Node {
                     crate::mapserver::resolve::geoparquet_optimize::require_lon_lat(report.extent, &source_path)
                         .map_err(|e| PipelineError::new(PUBLISH_CODE, e))?;
 
-                    // Write column stats sidecar JSON
-                    let stats_filename = format!("{name}.spatial.stats.json");
-                    let stats_rel = format!("mapserver/.optimized/{stats_filename}");
-                    let stats_report =
-                        crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
-                            row_count: report.rows,
-                            columns: report.column_stats.clone(),
-                        };
-                    store_optimized(&store, &optimized_abs, &optimized_rel, &stats_report, &stats_rel)?;
+                    store_optimized(&store, &optimized_abs, &optimized_rel)?;
 
                     eprintln!(
-                        "geoparquet optimized: {} rows, {} row groups, {:.1}MB → {:.1}MB, {} column stats",
+                        "geoparquet optimized: {} rows, {} row groups, {:.1}MB → {:.1}MB",
                         report.rows,
                         report.row_groups,
                         report.source_bytes as f64 / 1_048_576.0,
                         report.dest_bytes as f64 / 1_048_576.0,
-                        report.column_stats.len(),
                     );
 
                     source_path = optimized_rel;
@@ -817,8 +802,7 @@ impl Node {
                         "source_format": "parquet",
                         "rows": report.rows,
                         "row_groups": report.row_groups,
-                        "column_stats_count": report.column_stats.len(),
-                        "column_stats_path": stats_rel,
+                        "hilbert_sorted": report.hilbert_sorted,
                     }));
                     "geoparquet".to_string()
                 }
@@ -866,22 +850,13 @@ impl Node {
                 crate::mapserver::resolve::geoparquet_optimize::require_lon_lat(opt_report.extent, &source_path)
                     .map_err(|e| PipelineError::new(PUBLISH_CODE, e))?;
 
-                // Write column stats sidecar JSON
-                let stats_filename = format!("{name}.spatial.stats.json");
-                let stats_rel = format!("mapserver/.optimized/{stats_filename}");
-                let stats_report =
-                    crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
-                        row_count: opt_report.rows,
-                        columns: opt_report.column_stats.clone(),
-                    };
-                store_optimized(&store, &optimized_abs, &optimized_rel, &stats_report, &stats_rel)?;
+                store_optimized(&store, &optimized_abs, &optimized_rel)?;
 
                 eprintln!(
-                    "geoparquet optimized: {} rows, {} row groups, {:.1}MB, {} column stats",
+                    "geoparquet optimized: {} rows, {} row groups, {:.1}MB",
                     opt_report.rows,
                     opt_report.row_groups,
                     opt_report.dest_bytes as f64 / 1_048_576.0,
-                    opt_report.column_stats.len(),
                 );
 
                 feature_count = Some(convert_report.feature_count);
@@ -894,8 +869,7 @@ impl Node {
                     "columns": convert_report.column_count,
                     "rows": opt_report.rows,
                     "row_groups": opt_report.row_groups,
-                    "column_stats_count": opt_report.column_stats.len(),
-                    "column_stats_path": stats_rel,
+                    "hilbert_sorted": opt_report.hilbert_sorted,
                 }));
                 "geoparquet".to_string()
             } else {
@@ -1012,6 +986,9 @@ impl Node {
             None => layers.push(record.clone()),
         }
         write_layers(&self.platform, owner, project, &layers, PUBLISH_CODE)?;
+        if record.source_kind == "geoparquet" {
+            self.queue_statistics(owner, project, &layout, &record);
+        }
 
         // A layer answers only while the project's `ms` surface is on; say
         // so rather than imply it is already reachable.
@@ -1033,6 +1010,20 @@ impl Node {
             layer.insert("optimization".to_string(), opt);
         }
         Ok(layer)
+    }
+
+    /// Queues the statistics of the GeoParquet file a layer serves, saved in
+    /// the cache tier beside the layer's artifacts. A layer whose statistics
+    /// cannot be queued here still gets them: `/stats` queues them when it
+    /// finds none.
+    fn queue_statistics(&self, owner: &str, project: &str, layout: &crate::platform::model::ProjectFileLayout, record: &LayerRecord) {
+        let stats = crate::mapserver::resolve::stats::layer_stats_file;
+        let source = self.platform.file.object_local_path(owner, project, Some(&record.store), &record.source_path).ok();
+        let stats_file = layout.ensure_mapserver_artifacts_home().ok().and_then(|home| stats(&home, DEFAULT_INSTANCE, &record.layer_id));
+        match (source, stats_file) {
+            (Some(source), Some(stats_file)) => crate::mapserver::resolve::stats::queue_layer_stats(&source, &stats_file),
+            _ => eprintln!("mapserver: statistics of layer '{}' were not queued at publish", record.layer_id),
+        }
     }
 
     fn exec_unpublish(&self, owner: &str, project: &str) -> Result<Map<String, Value>, PipelineError> {
@@ -1068,10 +1059,9 @@ impl Node {
             // The optimized copy is the node's own object in the store the
             // layer was published from; the source is left where it is.
             if let Ok(store) = project_store::open_store(&self.platform, owner, project, Some(&record.store)) {
-                for key in [format!("mapserver/.optimized/{name}.spatial.parquet"), format!("mapserver/.optimized/{name}.spatial.stats.json")] {
-                    if store.fs.head(&key).is_ok() {
-                        store.delete_named(&self.platform, owner, project, &key, UNPUBLISH_CODE)?;
-                    }
+                let key = format!("mapserver/.optimized/{name}.spatial.parquet");
+                if store.fs.head(&key).is_ok() {
+                    store.delete_named(&self.platform, owner, project, &key, UNPUBLISH_CODE)?;
                 }
             }
         }

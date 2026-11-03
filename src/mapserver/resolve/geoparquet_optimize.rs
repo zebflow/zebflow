@@ -2,42 +2,26 @@
 //!
 //! Reads a GeoParquet file, adds bbox covering columns (`xmin`, `ymin`, `xmax`, `ymax`),
 //! sorts rows by Hilbert curve index for spatial locality, and writes an optimized
-//! parquet file with small row groups (~10K) and ZSTD compression.
+//! parquet file with small row groups ([`OPTIMIZED_ROW_GROUP_ROWS`]) and ZSTD compression.
 //!
 //! After optimization, DataFusion's `pushdown_filters` can prune 90%+ of row groups
 //! via column statistics on the bbox columns, dramatically reducing query time for
 //! spatial tile queries.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
+use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use serde::{Deserialize, Serialize};
 
-/// Per-column statistics computed during optimization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ColumnStats {
-    pub name: String,
-    pub data_type: String,
-    pub null_count: usize,
-    pub cardinality: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub top_values: Vec<(String, usize)>,
-}
-
-/// Sidecar stats file format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ColumnStatsReport {
-    pub row_count: usize,
-    pub columns: Vec<ColumnStats>,
-}
+/// The most rows in one row group of an optimized copy. DataFusion reads a
+/// whole row group of each column it needs into memory before decoding it,
+/// outside its memory pool, so this must stay small (at most 65,536) for a
+/// large layer to be read with flat memory.
+pub const OPTIMIZED_ROW_GROUP_ROWS: usize = 10_000;
+const _: () = assert!(OPTIMIZED_ROW_GROUP_ROWS <= 65_536);
 
 /// Statistics reported after optimization.
 pub struct OptimizeReport {
@@ -47,7 +31,9 @@ pub struct OptimizeReport {
     pub source_bytes: u64,
     pub dest_bytes: u64,
     pub geom_col: String,
-    pub column_stats: Vec<ColumnStats>,
+    /// Whether rows were sorted along the Hilbert curve. A layer too large
+    /// for the sort's memory budget is written in source order instead.
+    pub hilbert_sorted: bool,
 }
 
 /// A map layer is served in longitude/latitude: a box from a map is compared
@@ -70,86 +56,103 @@ pub fn require_lon_lat(extent: [f64; 4], source: &str) -> Result<(), String> {
 /// Optimize a GeoParquet file for spatial tile queries.
 ///
 /// Delegates spatial optimization (bbox columns, Hilbert sort, ZSTD compression,
-/// small row groups) to `geonative_geoparquet::optimize()`, then computes column
-/// statistics from the optimized output.
+/// small row groups) to `geonative_geoparquet::optimize()`, then reads the
+/// extent from the optimized output's bbox columns. Column statistics are not
+/// computed here: the map server computes them after publishing
+/// (`resolve::stats`).
 pub fn optimize_geoparquet(source: &Path, dest: &Path) -> Result<OptimizeReport, String> {
     let source_bytes = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
 
-    // Core optimization: geonative handles bbox columns, Hilbert sort, ZSTD, row groups
-    let gn_report = geonative_geoparquet::optimize(
+    // Core optimization: geonative handles bbox columns, Hilbert sort, ZSTD,
+    // row groups. The sort holds every feature in memory up to its budget;
+    // a larger layer is written in source order, which keeps the small row
+    // groups and the bbox columns with flat memory.
+    let (rows, hilbert_sorted) = match geonative_geoparquet::optimize(
         source,
         dest,
-        geonative_geoparquet::OptimizeOptions { batch_size: 10_000 },
-    )
-    .map_err(|e| format!("optimize failed: {e}"))?;
+        geonative_geoparquet::OptimizeOptions { batch_size: OPTIMIZED_ROW_GROUP_ROWS },
+    ) {
+        Ok(report) => (report.features as usize, true),
+        Err(geonative_geoparquet::GeoParquetError::HilbertBudgetExceeded { .. }) => {
+            (rewrite_unsorted(source, dest)?, false)
+        }
+        Err(e) => return Err(format!("optimize failed: {e}")),
+    };
 
-    // Column stats + extent: computed from the optimized file
-    let (column_stats, geom_col, extent) = compute_column_stats_from_file(dest)?;
-
-    let num_rows = gn_report.features as usize;
-    let row_groups = (num_rows + 9_999) / 10_000;
+    let (geom_col, extent, row_groups) = read_optimized_layout(dest)?;
 
     Ok(OptimizeReport {
-        rows: num_rows,
+        rows,
         row_groups,
         extent,
         source_bytes,
-        dest_bytes: gn_report.output_bytes,
+        dest_bytes: std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0),
         geom_col,
-        column_stats,
+        hilbert_sorted,
     })
 }
 
-/// Read an optimized parquet file and compute column stats + extent.
-fn compute_column_stats_from_file(
-    path: &Path,
-) -> Result<(Vec<ColumnStats>, String, [f64; 4]), String> {
-    use datafusion::arrow::compute::concat_batches;
+/// The optimized copy without the Hilbert sort: bbox columns and row groups
+/// of [`OPTIMIZED_ROW_GROUP_ROWS`], streamed feature by feature. Answers the
+/// rows written.
+pub fn rewrite_unsorted(source: &Path, dest: &Path) -> Result<usize, String> {
+    use geonative_geoparquet::{GeoParquetReader, GeoParquetWriter, WriterOptions};
+    let reader = GeoParquetReader::open(source).map_err(|e| format!("optimize failed: {e}"))?;
+    let schema = reader.schema().clone();
+    let file = std::fs::File::create(dest).map_err(|e| format!("optimize failed: {e}"))?;
+    let options = WriterOptions {
+        batch_size: OPTIMIZED_ROW_GROUP_ROWS,
+        add_bbox_columns: true,
+        hilbert_sort: false,
+        ..WriterOptions::default()
+    };
+    let mut writer = GeoParquetWriter::create(file, &schema, options).map_err(|e| format!("optimize failed: {e}"))?;
+    let mut rows = 0usize;
+    for feature in reader.into_features() {
+        let feature = feature.map_err(|e| format!("optimize failed: {e}"))?;
+        writer.write(&feature).map_err(|e| format!("optimize failed: {e}"))?;
+        rows += 1;
+    }
+    writer.close().map_err(|e| format!("optimize failed: {e}"))?;
+    Ok(rows)
+}
 
+/// The geometry column, the extent and the row group count of an optimized
+/// file. Only the four bbox columns are read.
+fn read_optimized_layout(path: &Path) -> Result<(String, [f64; 4], usize), String> {
     let file =
         std::fs::File::open(path).map_err(|e| format!("failed to open optimized parquet: {e}"))?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| format!("failed to create parquet reader: {e}"))?
-        .with_batch_size(65536)
-        .build()
-        .map_err(|e| format!("failed to build parquet reader: {e}"))?;
-
-    // The file is read batch by batch and never held whole: the extent is
-    // folded across every batch, and the column statistics (top values,
-    // cardinality — what the publish dialog shows) come from the first
-    // STATS_SAMPLE_ROWS rows.
-    const STATS_SAMPLE_ROWS: usize = 262_144;
-    let schema = reader.schema().clone();
-    let mut sample: Vec<RecordBatch> = Vec::new();
-    let mut sampled_rows = 0usize;
-    let mut extent = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    let mut any_rows = false;
-    for batch in reader {
-        let batch = batch.map_err(|e| format!("failed to read parquet batches: {e}"))?;
-        if batch.num_rows() == 0 {
-            continue;
-        }
-        any_rows = true;
-        let part = read_extent_from_bbox_columns(&batch);
-        extent = [extent[0].min(part[0]), extent[1].min(part[1]), extent[2].max(part[2]), extent[3].max(part[3])];
-        if sampled_rows < STATS_SAMPLE_ROWS {
-            sampled_rows += batch.num_rows();
-            sample.push(batch);
-        }
-    }
-    if !any_rows {
-        return Err("optimized parquet has no data".to_string());
-    }
-
-    let combined = concat_batches(&schema, &sample)
-        .map_err(|e| format!("failed to concatenate batches: {e}"))?;
-
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| format!("failed to create parquet reader: {e}"))?;
+    let schema = builder.schema().clone();
     let geom_idx =
         detect_geom_column_index(&schema).ok_or("no geometry column found in optimized file")?;
     let geom_col = schema.field(geom_idx).name().clone();
-    let column_stats = compute_column_stats(&combined, geom_idx);
+    let row_groups = builder.metadata().num_row_groups();
+    if builder.metadata().file_metadata().num_rows() == 0 {
+        return Err("optimized parquet has no data".to_string());
+    }
 
-    Ok((column_stats, geom_col, extent))
+    let parquet_schema = builder.parquet_schema();
+    let bbox_leaves: Vec<usize> = ["xmin", "ymin", "xmax", "ymax"]
+        .iter()
+        .filter_map(|name| (0..parquet_schema.num_columns()).find(|&i| parquet_schema.column(i).name() == *name))
+        .collect();
+    let mut extent = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    if bbox_leaves.len() == 4 {
+        let projection = ProjectionMask::leaves(parquet_schema, bbox_leaves);
+        let reader = builder
+            .with_projection(projection)
+            .with_batch_size(65_536)
+            .build()
+            .map_err(|e| format!("failed to build parquet reader: {e}"))?;
+        for batch in reader {
+            let batch = batch.map_err(|e| format!("failed to read parquet batches: {e}"))?;
+            let part = read_extent_from_bbox_columns(&batch);
+            extent = [extent[0].min(part[0]), extent[1].min(part[1]), extent[2].max(part[2]), extent[3].max(part[3])];
+        }
+    }
+    Ok((geom_col, extent, row_groups))
 }
 
 /// Read the dataset extent from the xmin/ymin/xmax/ymax bbox columns.
@@ -200,203 +203,10 @@ fn read_extent_from_bbox_columns(batch: &RecordBatch) -> [f64; 4] {
     extent
 }
 
-// ── Column statistics ─────────────────────────────────────────────────
-
-const MAX_DISTINCT_TRACK: usize = 1000;
-const MAX_TOP_VALUES: usize = 50;
-const TOP_VALUES_CARDINALITY_LIMIT: usize = 500;
-
-/// Compute per-column statistics from a combined RecordBatch.
-/// Skips geometry columns and bbox covering columns.
-pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<ColumnStats> {
-    let schema = combined.schema();
-    let skip_names: &[&str] = &[
-        "xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y",
-    ];
-    let num_rows = combined.num_rows();
-    let mut stats = Vec::new();
-
-    for (col_idx, field) in schema.fields().iter().enumerate() {
-        if col_idx == geom_idx {
-            continue;
-        }
-        let name = field.name().as_str();
-        if skip_names.contains(&name) {
-            continue;
-        }
-        if GEOM_NAMES.contains(&name) {
-            continue;
-        }
-        // Skip binary columns (likely geometry)
-        if matches!(field.data_type(), DataType::Binary | DataType::LargeBinary) {
-            continue;
-        }
-
-        let col = combined.column(col_idx);
-        let data_type = format!("{:?}", field.data_type());
-        let null_count = col.null_count();
-
-        let mut value_counts: HashMap<String, usize> = HashMap::new();
-        let mut cardinality_capped = false;
-        let mut min_val: Option<f64> = None;
-        let mut max_val: Option<f64> = None;
-
-        match field.data_type() {
-            DataType::Utf8 => {
-                if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
-                    for i in 0..num_rows {
-                        if arr.is_null(i) {
-                            continue;
-                        }
-                        let v = arr.value(i);
-                        if !cardinality_capped {
-                            let entry = value_counts.entry(v.to_string()).or_insert(0);
-                            *entry += 1;
-                            if value_counts.len() > MAX_DISTINCT_TRACK {
-                                cardinality_capped = true;
-                            }
-                        } else {
-                            if let Some(entry) = value_counts.get_mut(v) {
-                                *entry += 1;
-                            }
-                        }
-                    }
-                }
-            }
-            DataType::Int64 => {
-                if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-                    for i in 0..num_rows {
-                        if arr.is_null(i) {
-                            continue;
-                        }
-                        let v = arr.value(i);
-                        let fv = v as f64;
-                        min_val = Some(min_val.map_or(fv, |m: f64| m.min(fv)));
-                        max_val = Some(max_val.map_or(fv, |m: f64| m.max(fv)));
-                        if !cardinality_capped {
-                            let key = v.to_string();
-                            let entry = value_counts.entry(key).or_insert(0);
-                            *entry += 1;
-                            if value_counts.len() > MAX_DISTINCT_TRACK {
-                                cardinality_capped = true;
-                            }
-                        }
-                    }
-                }
-            }
-            DataType::Int32 => {
-                if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
-                    for i in 0..num_rows {
-                        if arr.is_null(i) {
-                            continue;
-                        }
-                        let v = arr.value(i);
-                        let fv = v as f64;
-                        min_val = Some(min_val.map_or(fv, |m: f64| m.min(fv)));
-                        max_val = Some(max_val.map_or(fv, |m: f64| m.max(fv)));
-                        if !cardinality_capped {
-                            let key = v.to_string();
-                            let entry = value_counts.entry(key).or_insert(0);
-                            *entry += 1;
-                            if value_counts.len() > MAX_DISTINCT_TRACK {
-                                cardinality_capped = true;
-                            }
-                        }
-                    }
-                }
-            }
-            DataType::Float64 => {
-                if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
-                    for i in 0..num_rows {
-                        if arr.is_null(i) {
-                            continue;
-                        }
-                        let v = arr.value(i);
-                        if v.is_finite() {
-                            min_val = Some(min_val.map_or(v, |m: f64| m.min(v)));
-                            max_val = Some(max_val.map_or(v, |m: f64| m.max(v)));
-                        }
-                        if !cardinality_capped {
-                            let key = if v == (v as i64) as f64 {
-                                format!("{}", v as i64)
-                            } else {
-                                format!("{v}")
-                            };
-                            let entry = value_counts.entry(key).or_insert(0);
-                            *entry += 1;
-                            if value_counts.len() > MAX_DISTINCT_TRACK {
-                                cardinality_capped = true;
-                            }
-                        }
-                    }
-                }
-            }
-            DataType::Float32 => {
-                if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
-                    for i in 0..num_rows {
-                        if arr.is_null(i) {
-                            continue;
-                        }
-                        let v = arr.value(i) as f64;
-                        if v.is_finite() {
-                            min_val = Some(min_val.map_or(v, |m: f64| m.min(v)));
-                            max_val = Some(max_val.map_or(v, |m: f64| m.max(v)));
-                        }
-                        if !cardinality_capped {
-                            let key = format!("{v}");
-                            let entry = value_counts.entry(key).or_insert(0);
-                            *entry += 1;
-                            if value_counts.len() > MAX_DISTINCT_TRACK {
-                                cardinality_capped = true;
-                            }
-                        }
-                    }
-                }
-            }
-            DataType::Boolean => {
-                if let Some(arr) = col.as_any().downcast_ref::<BooleanArray>() {
-                    for i in 0..num_rows {
-                        if arr.is_null(i) {
-                            continue;
-                        }
-                        let key = if arr.value(i) { "true" } else { "false" };
-                        let entry = value_counts.entry(key.to_string()).or_insert(0);
-                        *entry += 1;
-                    }
-                }
-            }
-            _ => continue, // Skip unsupported column types
-        }
-
-        let cardinality = value_counts.len();
-
-        // Build top_values for low-cardinality columns
-        let top_values = if cardinality <= TOP_VALUES_CARDINALITY_LIMIT && !cardinality_capped {
-            let mut pairs: Vec<(String, usize)> = value_counts.into_iter().collect();
-            pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            pairs.truncate(MAX_TOP_VALUES);
-            pairs
-        } else {
-            Vec::new()
-        };
-
-        stats.push(ColumnStats {
-            name: name.to_string(),
-            data_type,
-            null_count,
-            cardinality,
-            min: min_val,
-            max: max_val,
-            top_values,
-        });
-    }
-
-    stats
-}
-
 // ── Geometry column detection ─────────────────────────────────────────
 
-const GEOM_NAMES: &[&str] = &["geometry", "geom", "wkb_geometry", "the_geom", "shape"];
+/// Column names read as the geometry column, in order of preference.
+pub(crate) const GEOM_NAMES: &[&str] = &["geometry", "geom", "wkb_geometry", "the_geom", "shape"];
 
 fn detect_geom_column_index(schema: &Schema) -> Option<usize> {
     // Try known names first
@@ -426,7 +236,8 @@ pub fn geojson_geometry_to_wkb(geometry: &serde_json::Value) -> Option<Vec<u8>> 
 // ── Already-optimized checker ─────────────────────────────────────────
 
 /// Check if a parquet file already has spatial optimization columns
-/// (xmin, ymin, xmax, ymax as Float64) and a geometry column.
+/// (xmin, ymin, xmax, ymax as Float64), a geometry column, and row groups of
+/// at most [`OPTIMIZED_ROW_GROUP_ROWS`] rows.
 pub fn is_already_optimized(path: &Path) -> bool {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -451,7 +262,18 @@ pub fn is_already_optimized(path: &Path) -> bool {
     }
 
     // Check for a geometry column
-    detect_geom_column_index(schema.as_ref()).is_some()
+    if detect_geom_column_index(schema.as_ref()).is_none() {
+        return false;
+    }
+
+    // Bbox columns alone do not make a file servable: every reader (tiles,
+    // box queries, statistics) loads a whole row group per column, so a
+    // file with larger row groups gets the optimized copy.
+    builder
+        .metadata()
+        .row_groups()
+        .iter()
+        .all(|group| usize::try_from(group.num_rows()).is_ok_and(|rows| rows <= OPTIMIZED_ROW_GROUP_ROWS))
 }
 
 // ── GeoJSON → GeoParquet converter ────────────────────────────────────
@@ -642,5 +464,76 @@ mod tests {
         convert_geojson_to_geoparquet(&geojson_path, &raw_path).unwrap();
         optimize_geoparquet(&raw_path, &opt_path).unwrap();
         assert!(is_already_optimized(&opt_path));
+    }
+
+    /// `n` invented points in a small box near 100E 5S.
+    fn write_points_geojson(path: &Path, n: usize) {
+        let features: Vec<String> = (0..n)
+            .map(|i| {
+                let (x, y) = (100.0 + (i % 100) as f64 * 0.01, -5.0 - (i % 50) as f64 * 0.01);
+                format!(r#"{{"type":"Feature","properties":{{"n":{i}}},"geometry":{{"type":"Point","coordinates":[{x},{y}]}}}}"#)
+            })
+            .collect();
+        std::fs::write(path, format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(",")))
+            .expect("write geojson");
+    }
+
+    fn row_groups(path: &Path) -> Vec<usize> {
+        let builder = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(path).unwrap()).unwrap();
+        builder.metadata().row_groups().iter().map(|g| g.num_rows() as usize).collect()
+    }
+
+    #[test]
+    fn bbox_columns_with_large_row_groups_are_not_already_optimized() {
+        // A file made elsewhere can carry the bbox columns in one huge row
+        // group; every reader would load that group whole, so it is
+        // optimized like any other source.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let geojson_path = tmp.path().join("points.geojson");
+        let small_groups = tmp.path().join("points.parquet");
+        let one_group = tmp.path().join("one-group.parquet");
+        let rewritten = tmp.path().join("rewritten.parquet");
+        write_points_geojson(&geojson_path, 25_000);
+        convert_geojson_to_geoparquet(&geojson_path, &small_groups).unwrap();
+
+        let builder = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&small_groups).unwrap()).unwrap();
+        let schema = builder.schema().clone();
+        let properties = parquet::file::properties::WriterProperties::builder().set_max_row_group_size(50_000).build();
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(std::fs::File::create(&one_group).unwrap(), schema, Some(properties)).unwrap();
+        for batch in builder.build().unwrap() {
+            writer.write(&batch.unwrap()).unwrap();
+        }
+        writer.close().unwrap();
+
+        assert!(is_already_optimized(&small_groups), "bbox columns in small row groups");
+        assert_eq!(row_groups(&one_group), vec![25_000]);
+        assert!(!is_already_optimized(&one_group), "one row group of 25,000 rows");
+
+        // The copy written without the Hilbert sort, for a layer past the
+        // sort's memory budget, has the small row groups and bbox columns.
+        assert_eq!(rewrite_unsorted(&one_group, &rewritten).unwrap(), 25_000);
+        assert_eq!(row_groups(&rewritten), vec![OPTIMIZED_ROW_GROUP_ROWS, OPTIMIZED_ROW_GROUP_ROWS, 5_000]);
+        assert!(is_already_optimized(&rewritten));
+    }
+
+    #[test]
+    fn an_optimized_copy_is_written_in_small_row_groups() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let geojson_path = tmp.path().join("points.geojson");
+        let raw_path = tmp.path().join("points.parquet");
+        let opt_path = tmp.path().join("points.spatial.parquet");
+        write_points_geojson(&geojson_path, 25_000);
+
+        convert_geojson_to_geoparquet(&geojson_path, &raw_path).unwrap();
+        let report = optimize_geoparquet(&raw_path, &opt_path).unwrap();
+        let file = std::fs::File::open(&opt_path).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let groups: Vec<usize> = builder.metadata().row_groups().iter().map(|g| g.num_rows() as usize).collect();
+        assert_eq!((report.rows, report.row_groups), (25_000, groups.len()));
+        assert_eq!(groups, vec![OPTIMIZED_ROW_GROUP_ROWS, OPTIMIZED_ROW_GROUP_ROWS, 5_000]);
+        for (got, want) in report.extent.iter().zip([100.0, -5.49, 100.99, -5.0]) {
+            assert!((got - want).abs() < 1e-9, "extent {:?}", report.extent);
+        }
     }
 }

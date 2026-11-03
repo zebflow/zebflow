@@ -46,3 +46,5 @@ mod ws_room_views;
 mod pipeline_tabs;
 #[path = "platform/perf.rs"]
 mod perf;
+#[path = "platform/mapserver_stats.rs"]
+mod mapserver_stats;
