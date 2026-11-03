@@ -12,6 +12,7 @@ pub(crate) mod embedded;
 mod file_host;
 mod host_verify;
 mod migration;
+mod architecture_api;
 mod published_mcp;
 mod sections;
 mod stored_answer;
@@ -930,6 +931,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/pipelines/hits",
             get(api_pipeline_hits),
         )
+        .route("/api/projects/{owner}/{project}/architecture", get(architecture_api::api_architecture))
         .route("/api/projects/{owner}/{project}/ws/rooms", get(ws_rooms_api::api_ws_rooms_list))
         .route("/api/projects/{owner}/{project}/ws/rooms/{room}/close", post(ws_rooms_api::api_ws_room_close))
         .route(
