@@ -8,7 +8,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use super::saved::{self, Fingerprint, SavedStats};
+use super::saved::{self, Fingerprint, Outcome, SavedStats};
 
 /// One layer's computation: the GeoParquet file and where its statistics are
 /// saved.
@@ -161,7 +161,8 @@ fn work(queue: &'static StatsQueue) {
 
 /// Computes one job's statistics and saves them, or saves why they could not
 /// be computed. Skipped when the file is gone, or when a saved result already
-/// describes this version of it and the job is not forced.
+/// describes this version of it: a forced job (a republish) only retries a
+/// saved failure, so republishing an unchanged file costs nothing.
 fn run(
     runtime: &tokio::runtime::Runtime,
     job: &Job,
@@ -170,7 +171,10 @@ fn run(
     let Some(source) = Fingerprint::of(&job.source) else {
         return;
     };
-    if !job.force && saved::read(&job.stats_file).is_some_and(|s| s.source == source) {
+    let current = saved::read(&job.stats_file)
+        .filter(|saved| saved.source == source)
+        .is_some_and(|saved| !job.force || matches!(saved.outcome, Outcome::Ready(_)));
+    if current {
         return;
     }
     let computed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

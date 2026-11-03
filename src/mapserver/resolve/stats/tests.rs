@@ -449,6 +449,17 @@ fn stats_are_read_never_computed_on_a_request() {
     assert_eq!(touched["state"], json!("ready"), "a touched file keeps its statistics");
     assert!(queue.waiting().is_empty(), "a touched file is not queued again");
 
+    // Republishing an unchanged file keeps its saved statistics: the forced
+    // job finds them current and computes nothing.
+    queue.enqueue(Job {
+        source: source.clone(),
+        stats_file: stats_file.clone(),
+        force: true,
+    });
+    queue.run_waiting(&default_session);
+    let republished = read_with(&layer, StatsAudience::Public, Some(&stats_file), &queue);
+    assert_eq!(republished["computed_at"], json!(saved.computed_at), "nothing was computed again");
+
     // A changed file is computing again until its own computation runs.
     write_sites(&source, 800, 128, Geo::WithBbox);
     let changed = read_with(&layer, StatsAudience::Public, Some(&stats_file), &queue);
