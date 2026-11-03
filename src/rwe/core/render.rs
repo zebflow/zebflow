@@ -395,6 +395,9 @@ fn build_markup_loaders(
     out
 }
 
+/// `cx`, the same text the server runtime installs (`runtime/cx.js`).
+const CX_JS: &str = include_str!("../runtime/cx.js");
+
 fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let tool_js = TOOL_INIT;
     // No `npm:preact` rewriting. A template reaches the runtime through
@@ -542,6 +545,9 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
              href,\n\
              className,\n\
              onClick: function(e) {{\n\
+               // A #fragment of the page on screen is the browser's to scroll to.\n\
+               var __to = new URL(href, window.location.href);\n\
+               if (__to.hash && __to.pathname === window.location.pathname && __to.search === window.location.search) return;\n\
                e.preventDefault();\n\
                if (typeof window.rweNavigate === 'function') {{\n\
                  window.rweNavigate(href);\n\
@@ -552,7 +558,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
              ...props\n\
            }}, children);\n\
          }};\n\
-         globalThis.cx = function cx(...parts) {{ return parts.filter(Boolean).join(' '); }};\n\
+         {cx_js}\n\
          (function() {{\n\
            if (typeof window.rweNavigate !== 'function') {{\n\
              var __bar = document.createElement('div');\n\
@@ -587,6 +593,9 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                __bar.style.transition = 'opacity 0.15s ease';\n\
                __bar.style.opacity = '0';\n\
              }};\n\
+             // The page on screen, without its #fragment: a history entry\n\
+             // that differs only in the fragment is the same page.\n\
+             var __rweShown = window.location.pathname + window.location.search;\n\
              window.rweNavigate = function(href, mode) {{\n\
                __bStart();\n\
                fetch(href, {{ credentials: 'same-origin' }})\n\
@@ -654,7 +663,10 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                    }} else if (mode !== 'none') {{\n\
                      history.pushState(null, '', href);\n\
                    }}\n\
-                   window.scrollTo(0, 0);\n\
+                   __rweShown = window.location.pathname + window.location.search;\n\
+                   var __hash = window.location.hash.slice(1);\n\
+                   var __anchor = __hash && document.getElementById(decodeURIComponent(__hash));\n\
+                   if (__anchor) __anchor.scrollIntoView(); else window.scrollTo(0, 0);\n\
                    Promise.all(__scriptPromises).then(function() {{\n\
                      window.dispatchEvent(new CustomEvent('rwe:nav', {{ detail: {{ url: href }} }}));\n\
                    }});\n\
@@ -665,8 +677,12 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
              window.addEventListener('popstate', function() {{\n\
                // The browser already moved us. Render the destination, but do\n\
                // not push it — that turned every Back into a new entry and made\n\
-               // the stack impossible to walk out of.\n\
-               window.rweNavigate(window.location.pathname + window.location.search, 'none');\n\
+               // the stack impossible to walk out of. A move that changed only\n\
+               // the #fragment stays on this page: the browser scrolls to it, and\n\
+               // refetching would throw the page away and land at the top.\n\
+               var __here = window.location.pathname + window.location.search;\n\
+               if (__here === __rweShown) return;\n\
+               window.rweNavigate(__here, 'none');\n\
              }});\n\
            }}\n\
          }})();\n\
@@ -765,6 +781,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
            hydrate(h(__RweRoot, __input), __root);\n\
          }}\n",
         zeb_preamble = zeb_preamble,
+        cx_js = CX_JS,
     )
 }
 
@@ -1155,10 +1172,10 @@ fn escape_attr(s: &str) -> String {
 /// Puts the engine's Tailwind block — preflight first, then the utilities —
 /// into the head **before** the project's own stylesheets.
 ///
-/// Order is the whole point. The preflight resets `border: 0 solid`, which
-/// resets border *colour* to `currentColor`; shadcn's base rule
-/// `* { border-color: var(--border) }` lives in the project's `globals.css`
-/// and has to come after that reset to win. Every project stylesheet is a
+/// Order is the whole point. The preflight resets `border: 0 solid` and then
+/// colours every border from `--border` (shadcn's base rule, carried by the
+/// preflight itself so no project has to repeat it); a project's own CSS and
+/// the utilities have to come after it to win. Every project stylesheet is a
 /// `<style data-rwe-style>` block written by [`render`], so the engine block
 /// goes in front of the first one, or before `</head>` when there is none.
 /// The same order a Tailwind build produces: preflight, utilities, your CSS.

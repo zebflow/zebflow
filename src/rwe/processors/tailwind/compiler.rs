@@ -3586,6 +3586,7 @@ fn is_semantic_color_token(v: &str) -> bool {
             | "sidebar-accent-foreground"
             | "sidebar-border"
             | "sidebar-ring"
+            | "overlay"
     )
 }
 fn is_size_like(v: &str) -> bool {

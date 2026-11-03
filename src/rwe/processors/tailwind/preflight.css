@@ -2,6 +2,10 @@
   1. Prevent padding and border from affecting element width. (https://github.com/mozdevs/cssremedy/issues/4)
   2. Remove default margins and padding
   3. Reset all borders.
+  4. Colour every border from the theme's `--border` token, shadcn's base
+     rule, so a component's bare `border` draws in the theme without the
+     page's own stylesheet repeating it. A page with no `--border` keeps
+     `currentColor`. Utilities and the project's CSS come later and win.
 */
 
 *,
@@ -13,6 +17,7 @@
   margin: 0; /* 2 */
   padding: 0; /* 2 */
   border: 0 solid; /* 3 */
+  border-color: var(--border, currentColor); /* 4 */
 }
 
 /*
@@ -446,4 +451,13 @@ input:where([type='button'], [type='reset'], [type='submit']),
 ::before,
 ::after {
   --tw-content: '';
+}
+
+/*
+  The scrim behind a modal (`bg-overlay`), for a page whose theme predates the
+  `overlay` role. A theme that defines it comes later and wins.
+*/
+
+:root {
+  --overlay: #00000080;
 }

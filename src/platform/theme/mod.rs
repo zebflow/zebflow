@@ -47,6 +47,7 @@ pub const THEME_CSS: &str = r#":root {
   --sidebar-accent-foreground: #1b1f24;
   --sidebar-border: #dce3ec;
   --sidebar-ring: #1e66d6;
+  --overlay: #00000080;
   --radius: 0.5rem;
 }
 
@@ -89,6 +90,7 @@ pub const THEME_CSS: &str = r#":root {
   --sidebar-accent-foreground: #e9edf3;
   --sidebar-border: #232932;
   --sidebar-ring: #1e66d6;
+  --overlay: #00000080;
   color-scheme: dark;
 }
 "#;

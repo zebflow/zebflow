@@ -80,6 +80,7 @@
   --sidebar-accent-foreground: var(--color-zeb-ink);
   --sidebar-border:        var(--color-zeb-border);
   --sidebar-ring:          var(--color-brand-blue);
+  --overlay:               #00000080;
   --radius:                0.5rem;
 }
 
@@ -122,6 +123,7 @@
   --sidebar-accent-foreground: #e9edf3;
   --sidebar-border:        var(--color-zeb-dark-border);
   --sidebar-ring:          var(--color-brand-blue);
+  --overlay:               #00000080;
   color-scheme: dark;
 }
 

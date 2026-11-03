@@ -300,8 +300,12 @@ Rules for a sectioned project, on every host it has:
 The first kind is what a website at a domain root writes anyway, which is
 why an agent needs no rule to get it right. The second kind is the only
 place owner and project appear, and code that knows them writes it.
-(v1 emits the platform form everywhere; emitting a `static` route's host for
-CDN caching is a later step and changes nothing above.)
+A page served on a project host addresses its static assets (`_rwe/scripts`,
+`_rwe/lib`, uploads) at that host's own `static` path (`/_static/…`, or the
+host's `static` route), so the public page names neither owner nor project;
+on the platform address, with `static` off, or on a host whose explicit
+routes leave `static` out, it keeps the platform form, the only one that
+answers there (`ProjectAddressing::static_base`).
 
 ## 4. What the tools do
 

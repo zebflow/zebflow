@@ -254,6 +254,31 @@ impl ProjectAddressing {
     /// routes and none of them is `ws` — `/_ws/` misses there, and the
     /// platform form would name the owner and project on the project's own
     /// address. A section host keeps the default mount (§2c).
+    /// Where a page served on `page_host` addresses this project's static
+    /// assets (`_rwe/scripts`, `_rwe/lib`, uploads): the host's own path for
+    /// the `static` surface on a project host, so a public page never names
+    /// its owner or project (§1); the platform form `/static/{o}/{p}/` with no
+    /// host, with the surface off, or on a host whose routes do not carry it.
+    /// Always ends in `/`.
+    pub fn static_base(&self, owner: &str, project: &str, page_host: Option<&str>) -> String {
+        let platform = format!("{}/", Surface::Static.platform_prefix(owner, project).unwrap_or_default());
+        if !self.is_enabled(Surface::Static) {
+            return platform;
+        }
+        let Some(host) = page_host else {
+            return platform;
+        };
+        let host = normalize_host(host);
+        if let Some(route) = self.routes.iter().find(|r| r.host == host && r.surface == Surface::Static) {
+            return format!("{}/", route.path.trim_end_matches('/'));
+        }
+        let carries_routes = self.routes.iter().any(|r| r.host == host);
+        if !carries_routes || self.section_hosts().contains(&host.as_str()) {
+            return Surface::Static.default_path().to_string();
+        }
+        platform
+    }
+
     pub fn room_base(&self, owner: &str, project: &str, page_host: Option<&str>) -> Option<String> {
         if !self.is_enabled(Surface::Ws) {
             return None;
@@ -952,6 +977,38 @@ mod tests {
     /// A page learns where its rooms live from the address it was served on:
     /// the default mount or the host's own `ws` route on a project host, the
     /// platform form on the platform form, and nothing with `ws` off.
+    /// A page's static assets follow the address it was served on, like its
+    /// rooms: the host's own `/_static/` (or its `static` route) on a project
+    /// host, so the public page names neither owner nor project; the platform
+    /// form on the platform address, with `static` off, or on a host whose
+    /// explicit routes leave `static` out (only the platform form answers
+    /// there).
+    #[test]
+    fn a_page_static_base_follows_the_address_it_was_served_on() {
+        let route = |host: &str, path: &str, surface: Surface| AddressRoute {
+            host: host.to_string(),
+            path: path.to_string(),
+            surface,
+            root: None,
+        };
+        let mut on = ProjectAddressing::default();
+        assert!(on.is_enabled(Surface::Static), "static starts on");
+        assert_eq!(on.static_base("site-a", "demo", Some("demo.site-a.localhost:10610")), "/_static/");
+        assert_eq!(on.static_base("site-a", "demo", None), "/static/site-a/demo/");
+
+        on.hosts = vec!["www.example.com".into(), "cdn.example.com".into()];
+        on.routes = vec![
+            route("www.example.com", "/", Surface::Pages),
+            route("cdn.example.com", "/", Surface::Pages),
+            route("cdn.example.com", "/assets/", Surface::Static),
+        ];
+        assert_eq!(on.static_base("site-a", "demo", Some("CDN.example.com")), "/assets/", "the host's own static route");
+        assert_eq!(on.static_base("site-a", "demo", Some("www.example.com")), "/static/site-a/demo/", "routes without static: only the platform form answers");
+
+        let off = ProjectAddressing { disabled: vec![Surface::Static], ..Default::default() };
+        assert_eq!(off.static_base("site-a", "demo", Some("demo.site-a.localhost")), "/static/site-a/demo/");
+    }
+
     #[test]
     fn a_page_room_base_follows_the_address_it_was_served_on() {
         let route = |host: &str, path: &str, surface: Surface, root: Option<&str>| AddressRoute {

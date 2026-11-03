@@ -196,13 +196,7 @@
   globalThis.usePathname = usePathname;
   globalThis.useSearchParams = useSearchParams;
   globalThis.Link = Link;
-  globalThis.cx = function cx() {
-    var out = [];
-    for (var i = 0; i < arguments.length; i++) {
-      if (arguments[i]) out.push(arguments[i]);
-    }
-    return out.join(" ");
-  };
+  // globalThis.cx comes from runtime/cx.js, shared with the client module.
 
   // ---------------------------------------------------------------------------
   // Devicon helpers — no-ops during SSR. The marks are a platform

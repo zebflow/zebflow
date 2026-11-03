@@ -84,7 +84,7 @@ export function AlertDialogContent({ className, children, ...props }) {
   }
 
   const node = (
-    <div className="fixed inset-0 z-50 bg-foreground/50" data-slot="alert-dialog-overlay">
+    <div className="fixed inset-0 z-50 bg-overlay" data-slot="alert-dialog-overlay">
       <div
         ref={panelRef}
         role="alertdialog"

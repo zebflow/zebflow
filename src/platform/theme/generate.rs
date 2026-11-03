@@ -377,11 +377,16 @@ pub const TOKEN_ORDER: [&str; 38] = [
     "sidebar-accent", "sidebar-accent-foreground", "sidebar-border", "sidebar-ring",
 ];
 
+/// The scrim behind a modal: the same in every theme and mode, whatever the
+/// seed, so it is written as it is rather than generated (like `--radius`).
+pub const OVERLAY: &str = "#00000080";
+
 fn css_block(selector: &str, tokens: &BTreeMap<String, String>, radius_rem: f32) -> String {
     let mut out = format!("{selector} {{\n");
     for k in TOKEN_ORDER {
         out.push_str(&format!("  --{k}: {};\n", tokens[k].to_ascii_lowercase()));
     }
+    out.push_str(&format!("  --overlay: {OVERLAY};\n"));
     out.push_str(&format!("  --radius: {radius_rem}rem;\n}}\n"));
     out
 }
@@ -498,7 +503,7 @@ mod tests {
         for (seed, mood) in cases {
             let theme = generate(&seed, mood).expect("generates");
             for (mode, tokens) in [("light", &theme.light), ("dark", &theme.dark)] {
-                assert_eq!(tokens.len(), 38, "{seed} {mode}: 38 tokens");
+                assert_eq!(tokens.len(), TOKEN_ORDER.len(), "{seed} {mode}: every token");
                 for k in TOKEN_ORDER {
                     let v = &tokens[k];
                     assert!(v.len() == 7 && v.starts_with('#'), "{seed} {mode} {k} = {v}");
@@ -523,7 +528,8 @@ mod tests {
 
     #[test]
     fn the_css_names_exactly_the_platform_tokens() {
-        let mut expected: Vec<&str> = crate::platform::theme::token_names().into_iter().filter(|t| *t != "radius").collect();
+        // `radius` and `overlay` are written as they are, not generated.
+        let mut expected: Vec<&str> = crate::platform::theme::token_names().into_iter().filter(|t| !matches!(*t, "radius" | "overlay")).collect();
         expected.sort();
         let mut ours: Vec<&str> = TOKEN_ORDER.to_vec();
         ours.sort();

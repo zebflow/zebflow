@@ -38,6 +38,7 @@ Pairs: a surface token has a `-foreground` for what sits on it.
 | `ring` | focus outline |
 | `chart-1` … `chart-5` | series colours, in order |
 | `sidebar`, `sidebar-foreground`, `sidebar-primary`, `sidebar-primary-foreground`, `sidebar-accent`, `sidebar-accent-foreground`, `sidebar-border`, `sidebar-ring` | the navigation rail, themed apart from content |
+| `overlay` | the scrim behind a modal (dialog, sheet, drawer): dark in both themes, alpha included (`bg-overlay`) |
 | `radius` | base corner radius; `rounded-*` derive from it |
 
 `success`, `warning`, `info` are additions, made the way shadcn's theming doc

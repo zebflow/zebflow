@@ -84,7 +84,7 @@ export function DialogContent({ className, children, ...props }) {
   }
 
   const node = (
-    <div className="fixed inset-0 z-50 bg-foreground/50" data-slot="dialog-overlay" onClick={() => setIsOpen(false)}>
+    <div className="fixed inset-0 z-50 bg-overlay" data-slot="dialog-overlay" onClick={() => setIsOpen(false)}>
       <div
         ref={panelRef}
         role="dialog"
