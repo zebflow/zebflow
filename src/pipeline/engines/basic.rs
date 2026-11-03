@@ -11,10 +11,8 @@
 //! |------------|-------------|-------------|
 //! | `timeout`  | `--timeout` | How long the node may run: a duration from 1s to 1h (`30s`, `2m`). Omitted: the project's node timeout. A value outside that is refused, not clamped. |
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -51,46 +49,6 @@ use crate::platform::services::CredentialService;
 use crate::platform::services::PlatformService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
 
-/// A single entry in the template compile cache.
-/// Pairs the compiled page artifact with the set of component files it depends on,
-/// enabling dependency-aware eviction when a component is edited.
-pub struct CacheEntry {
-    /// The compiled page artifact.
-    pub page: Arc<web::response::CompiledPage>,
-    /// Absolute filesystem paths of all component files inlined during compilation.
-    /// Populated from `CompiledTemplate.dependency_paths` (the `visited` set of
-    /// `collect_inlined_module`). When any of these paths change on disk,
-    /// this entry is evicted so the next request recompiles with the updated component.
-    pub dependencies: std::collections::HashSet<String>,
-}
-
-/// In-memory compile cache for template nodes.
-///
-/// Key: hash of the entry-page markup string.
-/// Value: compiled page + dependency set for targeted eviction.
-///
-/// Entry-page changes → new hash → automatic cache miss.
-/// Component changes → `evict_template_cache_by_path` removes affected entries.
-///
-/// Uses `RwLock` so concurrent reads (cache hits) never block each other;
-/// only cache-miss writes take an exclusive lock.
-pub type TemplateCache = Arc<RwLock<HashMap<u64, CacheEntry>>>;
-
-/// Create a new empty template compile cache.
-pub fn new_template_cache() -> TemplateCache {
-    Arc::new(RwLock::new(HashMap::new()))
-}
-
-/// Evict all cache entries whose dependency set includes `abs_path`.
-/// Called whenever any template or component file is written (UI, MCP, API).
-/// Entry-page saves don't need this — they already cause a hash miss automatically.
-pub fn evict_template_cache_by_path(cache: &TemplateCache, abs_path: &str) {
-    cache
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain(|_, entry| !entry.dependencies.contains(abs_path));
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NodesAccess {
     None,
@@ -112,17 +70,17 @@ struct NodesRetentionPlan {
 mod compiled;
 mod flow;
 pub use compiled::CompiledLane;
+mod page_cache;
+pub use page_cache::{
+    CacheEntry, PageRecipe, TemplateCache, evict_template_cache_by_path, new_template_cache,
+    project_pages_root, refresh_template_cache_by_path, refresh_template_cache_by_paths,
+};
 mod scheduler;
 mod web_site;
 
 const RETRY_STATE_KEY: &str = "__zf_retry";
 const MAX_NODE_OUTPUT_FILE_BYTES: usize = 256 * 1024 * 1024;
 
-fn hash_markup(s: &str) -> u64 {
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
-}
 
 fn build_nodes_retention_plan(graph: &PipelineGraph) -> Result<NodesRetentionPlan, PipelineError> {
     let mut plan = NodesRetentionPlan::default();
@@ -2508,10 +2466,16 @@ impl BasicPipelineEngine {
                             let head = config.check()?;
 
                             let template_id = config.template.clone().unwrap_or_default();
-                            let source_path = self
-                                .template_root
-                                .as_ref()
-                                .and_then(|r| config.template.as_deref().map(|t| r.join(t)));
+                            // The file the platform read the markup from: the
+                            // template path is relative to the repository, not
+                            // to the source folder the `@/` alias names.
+                            let source_path = config.template.as_deref().and_then(|t| {
+                                let rel = t.trim_start_matches('/');
+                                match &self.repo_layout {
+                                    Some(layout) => Some(layout.repo_dir.join(rel)),
+                                    None => self.template_root.as_ref().map(|r| r.join(rel)),
+                                }
+                            });
                             let options = crate::rwe::ReactiveWebOptions {
                                 templates: crate::rwe::TemplateOptions {
                                     template_root: self.template_root.clone(),
@@ -2521,44 +2485,31 @@ impl BasicPipelineEngine {
                                 ..Default::default()
                             };
 
-                            let key = hash_markup(markup);
-                            let cached = self.template_cache.as_ref().and_then(|c| {
-                                c.read()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .get(&key)
-                                    .map(|e| e.page.clone())
-                            });
-                            let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) =
-                                cached
-                            {
-                                Ok(hit)
-                            } else {
-                                let fresh = web::response::compile_page(
-                                    &node_id,
-                                    &TemplateSource {
-                                        id: template_id,
-                                        source_path,
-                                        markup: markup.to_string(),
-                                    },
-                                    &options,
-                                    self.rwe.as_ref(),
-                                    self.language.as_ref(),
-                                )
-                                .map(Arc::new);
-                                if let Ok(ref fresh_arc) = fresh {
-                                    if let Some(cache) = &self.template_cache {
-                                        let deps = fresh_arc.template.dependency_paths.clone();
-                                        cache.write().unwrap_or_else(|e| e.into_inner()).insert(
-                                            key,
-                                            CacheEntry {
-                                                page: fresh_arc.clone(),
-                                                dependencies: deps,
-                                            },
-                                        );
-                                    }
-                                }
-                                fresh
+                            let root = self.template_root.as_deref().map(|r| r.display().to_string()).unwrap_or_default();
+                            let identity = match &source_path {
+                                Some(path) => format!("page|{root}|{}", path.display()),
+                                None => format!("page|{root}|inline:{node_id}"),
                             };
+                            let compiled_result = page_cache::compile_cached(
+                                self.template_cache.as_ref(),
+                                &identity,
+                                markup,
+                                || {
+                                    PageRecipe::new(
+                                        identity.clone(),
+                                        source_path.as_deref(),
+                                        node_id,
+                                        TemplateSource {
+                                            id: template_id,
+                                            source_path: source_path.clone(),
+                                            markup: markup.to_string(),
+                                        },
+                                        options,
+                                        self.rwe.clone(),
+                                        self.language.clone(),
+                                    )
+                                },
+                            );
 
                             compiled_result.and_then(|compiled| {
                             let enabled_libraries: Vec<String> = self.platform

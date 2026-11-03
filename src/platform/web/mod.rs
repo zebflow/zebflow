@@ -15218,27 +15218,31 @@ async fn api_repo_read(
     }
 }
 
-/// Drop any compiled page whose bundle inlined this file.
-///
-/// The compiler flattens every component a page imports into one bundle, so a
-/// page keeps serving its old copy of a component until the entry holding it is
-/// evicted. MCP's `template_write` has always done this; the repo file API never
-/// did, so writing a component through `PUT /repo/file` left the browser served
-/// from cache indefinitely — not until a timeout, but until someone restarted
-/// the server or pressed Clear Template Cache.
-///
-/// Silent on failure by design: a path that resolves to nothing was not a
-/// template, and refusing the write over it would be worse than the stale entry.
-fn evict_cached_pages_for(state: &PlatformAppState, owner: &str, project: &str, rel_path: &str) {
+/// Drop every compiled page of a project, for a write the cache cannot follow
+/// one file at a time (a move, a package install, a migration).
+fn evict_project_pages(state: &PlatformAppState, owner: &str, project: &str) {
+    if let Ok(root) = state.platform.projects.resolve_repo_root_abs(owner, project) {
+        crate::pipeline::engines::basic::evict_template_cache_by_path(
+            &state.template_cache,
+            &root.to_string_lossy(),
+        );
+    }
+}
+
+/// Recompile every compiled page built from this file, before the write
+/// answers: the first request after a save renders the new page instead of
+/// compiling it. Silent on failure for the same reason as eviction.
+async fn refresh_cached_pages_for(state: &PlatformAppState, owner: &str, project: &str, rel_path: &str) {
     if let Ok(abs) = state
         .platform
         .projects
         .resolve_template_abs_path(owner, project, rel_path)
     {
-        crate::pipeline::engines::basic::evict_template_cache_by_path(
+        crate::pipeline::engines::basic::refresh_template_cache_by_path(
             &state.template_cache,
             &abs.to_string_lossy(),
-        );
+        )
+        .await;
     }
 }
 
@@ -15282,7 +15286,7 @@ async fn api_repo_write(
     };
     match written {
         Ok(payload) => {
-            evict_cached_pages_for(&state, &owner, &project, &path);
+            refresh_cached_pages_for(&state, &owner, &project, &path).await;
             Json(json!({"ok": true, "file": payload})).into_response()
         }
         Err(err) => internal_error(err),
@@ -15308,13 +15312,21 @@ async fn api_repo_delete(
         Ok(path) => path,
         Err(response) => return response,
     };
+    // Resolved while it exists: a deleted path no longer canonicalises, and
+    // the cache records canonical paths.
+    let gone = state.platform.projects.resolve_template_abs_path(&owner, &project, &path);
     match state
         .platform
         .projects
         .delete_repo_entry(&owner, &project, &path)
     {
         Ok(()) => {
-            evict_cached_pages_for(&state, &owner, &project, &path);
+            if let Ok(abs) = gone {
+                crate::pipeline::engines::basic::evict_template_cache_by_path(
+                    &state.template_cache,
+                    &abs.to_string_lossy(),
+                );
+            }
             Json(json!({"ok": true})).into_response()
         }
         Err(err) => internal_error(err),
@@ -15370,7 +15382,11 @@ async fn api_repo_move(
         .projects
         .move_repo_entry(&owner, &project, &req.from_path, &req.to_path)
     {
-        Ok(rel) => Json(json!({"ok": true, "path": rel})).into_response(),
+        Ok(rel) => {
+            // Pages that imported the old path no longer resolve it.
+            evict_project_pages(&state, &owner, &project);
+            Json(json!({"ok": true, "path": rel})).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }

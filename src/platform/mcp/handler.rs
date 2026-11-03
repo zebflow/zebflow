@@ -906,7 +906,9 @@ impl ZebflowMcpHandler {
         self.check_tool_capability(&session, "migration_apply")?;
         self.check_owner_grant(&session)?;
         let service = crate::platform::services::MigrationService::new(self.platform.clone());
-        match service.apply_plan(&session.owner, &session.project, &params.fingerprint).await {
+        let applied = service.apply_plan(&session.owner, &session.project, &params.fingerprint).await;
+        self.evict_project_pages(&session.owner, &session.project);
+        match applied {
             Ok(report) => Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&report).unwrap_or_default(),
             )])),
@@ -1147,10 +1149,11 @@ impl ZebflowMcpHandler {
                 &session.project,
                 &params.rel_path,
             ) {
-                crate::pipeline::engines::basic::evict_template_cache_by_path(
+                crate::pipeline::engines::basic::refresh_template_cache_by_path(
                     &self.template_cache,
                     &abs.to_string_lossy(),
-                );
+                )
+                .await;
             }
         }
         // navigate is ignored for MCP
@@ -1205,10 +1208,11 @@ impl ZebflowMcpHandler {
                 &session.project,
                 &params.rel_path,
             ) {
-                crate::pipeline::engines::basic::evict_template_cache_by_path(
+                crate::pipeline::engines::basic::refresh_template_cache_by_path(
                     &self.template_cache,
                     &abs.to_string_lossy(),
-                );
+                )
+                .await;
             }
         }
         ok_or_err(result)
@@ -1298,18 +1302,23 @@ impl ZebflowMcpHandler {
             return Err(McpError::invalid_params(result.text, None));
         }
         if !result.text.starts_with("Error:") {
-            for edit in &params.edits {
-                if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
-                    &session.owner,
-                    &session.project,
-                    &edit.rel_path,
-                ) {
-                    crate::pipeline::engines::basic::evict_template_cache_by_path(
-                        &self.template_cache,
-                        &abs.to_string_lossy(),
-                    );
-                }
-            }
+            // One refresh for the batch: a page several edits touch is
+            // recompiled once.
+            let mut paths: Vec<String> = params
+                .edits
+                .iter()
+                .filter_map(|edit| {
+                    self.platform
+                        .projects
+                        .resolve_template_abs_path(&session.owner, &session.project, &edit.rel_path)
+                        .ok()
+                        .map(|abs| abs.to_string_lossy().into_owned())
+                })
+                .collect();
+            paths.sort();
+            paths.dedup();
+            crate::pipeline::engines::basic::refresh_template_cache_by_paths(&self.template_cache, paths)
+                .await;
         }
         ok_or_err(result)
     }
@@ -1474,6 +1483,7 @@ impl ZebflowMcpHandler {
         self.check_tool_capability(&session, "install_ui_components")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.install_ui_components(params.names, params.overwrite);
+        self.evict_project_pages(&session.owner, &session.project);
         ok_or_err(result)
     }
 
@@ -1590,7 +1600,9 @@ impl ZebflowMcpHandler {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "hub_add")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        ok_or_err(ops.hub_add(params.package_id, params.version, params.target_folder))
+        let result = ops.hub_add(params.package_id, params.version, params.target_folder);
+        self.evict_project_pages(&session.owner, &session.project);
+        ok_or_err(result)
     }
 
     // ── Move Resource ─────────────────────────────────────────────────────────
@@ -1608,7 +1620,20 @@ impl ZebflowMcpHandler {
         self.check_tool_capability(&session, "move_resource")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.move_resource(&params.from_path, &params.to_path).await;
+        // Pages that imported the old path no longer resolve it.
+        self.evict_project_pages(&session.owner, &session.project);
         ok_or_err(result)
+    }
+
+    /// Drop every compiled page of a project, after a write the cache cannot
+    /// follow one file at a time.
+    fn evict_project_pages(&self, owner: &str, project: &str) {
+        if let Ok(root) = self.platform.projects.resolve_repo_root_abs(owner, project) {
+            crate::pipeline::engines::basic::evict_template_cache_by_path(
+                &self.template_cache,
+                &root.to_string_lossy(),
+            );
+        }
     }
 
     // ── Lock helpers ──────────────────────────────────────────────────────────

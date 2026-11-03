@@ -2535,6 +2535,13 @@ impl ProjectService {
         Ok(std::fs::canonicalize(&abs).unwrap_or(abs))
     }
 
+    /// The project's repository root, canonical as the page cache records
+    /// paths: what evicting every compiled page of the project matches.
+    pub fn resolve_repo_root_abs(&self, owner: &str, project: &str) -> Result<PathBuf, PlatformError> {
+        let layout = self.file.ensure_project_layout(&slug_segment(owner), &slug_segment(project))?;
+        Ok(std::fs::canonicalize(&layout.repo_dir).unwrap_or_else(|_| layout.repo_dir.clone()))
+    }
+
     /// Search pipeline `.zf.json` files for a pattern. Returns (rel_path, line_number, block) tuples.
     /// Optional `glob` filters which files to search.
     /// `context` lines before and after each match are included in the block.

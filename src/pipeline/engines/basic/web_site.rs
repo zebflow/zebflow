@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use super::{BasicPipelineEngine, CacheEntry, hash_markup};
+use super::{BasicPipelineEngine, PageRecipe};
 use crate::pipeline::PipelineError;
 use crate::pipeline::model::PipelineContext;
 use crate::pipeline::nodes::NodeExecutionOutput;
@@ -119,25 +119,22 @@ impl BasicPipelineEngine {
             processors,
             ..Default::default()
         };
-        let key = hash_markup(&source.markup);
-        let cached = self
-            .template_cache
-            .as_ref()
-            .and_then(|c| c.read().unwrap_or_else(|e| e.into_inner()).get(&key).map(|e| e.page.clone()));
-        if let Some(hit) = cached {
-            return Ok(hit);
-        }
-        let fresh = web::response::compile_page(node_id, source, &options, self.rwe.as_ref(), self.language.as_ref())
-            .map(Arc::new)
-            .map_err(|err| PipelineError::new(CODE_COMPILE, err.message))?;
-        if let Some(cache) = &self.template_cache {
-            let deps = fresh.template.dependency_paths.clone();
-            cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(key, CacheEntry { page: fresh.clone(), dependencies: deps });
-        }
-        Ok(fresh)
+        let root = self.template_root.as_deref().map(|r| r.display().to_string()).unwrap_or_default();
+        let identity = format!("site|{root}|{}|{}", source.id, options.processors.join(","));
+        // The markup is the site's, built from the file, not the file: a save
+        // of the entry page recompiles it at the next generation, not before.
+        super::page_cache::compile_cached(self.template_cache.as_ref(), &identity, &source.markup, || {
+            PageRecipe::new(
+                identity.clone(),
+                None,
+                node_id,
+                source.clone(),
+                options,
+                self.rwe.clone(),
+                self.language.clone(),
+            )
+        })
+        .map_err(|err| PipelineError::new(CODE_COMPILE, err.message))
     }
 
     /// Renders one page and decorates it to open from a file.
