@@ -494,14 +494,37 @@ fn strip_outer_quotes(s: &str) -> &str {
 }
 
 /// Extracts the raw body substring after ` -- ` in a segment string.
-/// Strips outer quotes if the entire body is quoted.
+/// Strips outer quotes if the entire body is quoted. A double-quoted body
+/// follows the same rule as a double-quoted flag value: `\"` is a quote and
+/// `\\` a backslash, every other backslash stays as written. Single quotes
+/// and backticks keep the body literal.
 fn extract_raw_body_from(raw: &str) -> Option<String> {
     find_body_delimiter(raw)
         .map(|body_start| {
             let after = raw[body_start..].trim();
-            strip_outer_quotes(after).to_string()
+            let inner = strip_outer_quotes(after);
+            if inner.len() + 2 == after.len() && after.starts_with('"') {
+                unescape_double_quoted(inner)
+            } else {
+                inner.to_string()
+            }
         })
         .filter(|s| !s.is_empty())
+}
+
+/// `\"` to `"` and `\\` to `\`, as inside a double-quoted flag value
+/// ([`tokenize`]); any other backslash is kept.
+fn unescape_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && matches!(chars.peek(), Some('"') | Some('\\')) {
+            out.push(chars.next().unwrap_or(ch));
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn find_body_delimiter(raw: &str) -> Option<usize> {

@@ -590,30 +590,37 @@ impl DslExecutor {
 
         let name = crate::platform::services::project::name_from_file_rel_path(file_rel_path);
         let node_definitions = self.node_definitions();
-        let graph_source = if as_json {
-            body.to_string()
-        } else {
-            match build_pipeline_graph_with_definitions(&name, body, &node_definitions) {
-                Ok(mut graph) => {
-                    if !description.trim().is_empty() {
-                        graph.description = Some(description.trim().to_string());
-                    }
-                    // A register replaces the nodes and edges, never the notes a
-                    // person or an earlier agent left on the canvas: existing
-                    // notes stay unless the body declares the same id.
-                    self.keep_existing_notes(file_rel_path, &mut graph);
-                    match encode_pipeline_graph(graph).and_then(|bytes| {
-                        String::from_utf8(bytes).map_err(|err| {
-                            crate::contracts::ContractError::invalid(err.to_string())
-                        })
-                    }) {
-                        Ok(source) => source,
-                        Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
-                    }
+        let graph_source = match build_pipeline_graph_with_definitions(&name, body, &node_definitions) {
+            Ok(mut graph) => {
+                if !description.trim().is_empty() {
+                    graph.description = Some(description.trim().to_string());
                 }
-                Err(e) => return DslOutput::err(format!("Parse error: {e}")),
+                // A register replaces the nodes and edges, never the notes a
+                // person or an earlier agent left on the canvas: existing
+                // notes stay unless the body declares the same id.
+                self.keep_existing_notes(file_rel_path, &mut graph);
+                match encode_pipeline_graph(graph).and_then(|bytes| {
+                    String::from_utf8(bytes).map_err(|err| {
+                        crate::contracts::ContractError::invalid(err.to_string())
+                    })
+                }) {
+                    Ok(source) => source,
+                    Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
+                }
             }
+            Err(e) => return DslOutput::err(format!("Parse error: {e}")),
         };
+
+        // `--as-json` prints the JSON this register would save, and saves
+        // nothing. It used to read the body as JSON instead, so every body
+        // the DSL page shows with it was refused as "Invalid pipeline JSON".
+        if as_json {
+            let mut out = DslOutput::new_ok();
+            for line in graph_source.lines() {
+                out.push(DslLine::info(line.to_string()));
+            }
+            return out;
+        }
 
         // Validate JSON
         let graph = match decode_pipeline_graph(graph_source.as_bytes()) {
@@ -648,21 +655,7 @@ impl DslExecutor {
             Err(err) => return DslOutput::err(format!("Webhook validation failed: {err}")),
         }
 
-        let trigger_kind = graph
-            .nodes
-            .first()
-            .map(|n| {
-                if n.kind.contains("webhook") {
-                    "webhook"
-                } else if n.kind.contains("schedule") {
-                    "schedule"
-                } else if n.kind.contains("function") {
-                    "function"
-                } else {
-                    "manual"
-                }
-            })
-            .unwrap_or("manual");
+        let trigger_kind = trigger_kind_of(&graph_source);
 
         let display_title = if title.is_empty() { &name } else { title };
         // --description flag takes precedence; fall back to description embedded in graph JSON
@@ -678,7 +671,7 @@ impl DslExecutor {
             file_rel_path,
             display_title,
             &effective_description,
-            trigger_kind,
+            &trigger_kind,
             &graph_source,
         ) {
             Ok(meta) => {
@@ -1080,21 +1073,7 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
         };
 
-        let trigger_kind = graph
-            .nodes
-            .first()
-            .map(|n| {
-                if n.kind.contains("webhook") {
-                    "webhook"
-                } else if n.kind.contains("schedule") {
-                    "schedule"
-                } else if n.kind.contains("function") {
-                    "function"
-                } else {
-                    "manual"
-                }
-            })
-            .unwrap_or("manual");
+        let trigger_kind = trigger_kind_of(&new_source);
 
         match self.platform.projects.upsert_pipeline_definition(
             &self.owner,
@@ -1102,7 +1081,7 @@ impl DslExecutor {
             &meta.file_rel_path,
             &meta.title,
             &meta.description,
-            trigger_kind,
+            &trigger_kind,
             &new_source,
         ) {
             Ok(_) => {
@@ -1290,11 +1269,7 @@ impl DslExecutor {
                     "Pipeline '{}' executed (run {}).",
                     meta.file_rel_path, ctx.request_id
                 )));
-                let result_str = serde_json::to_string_pretty(&output.value)
-                    .unwrap_or_else(|_| output.value.to_string());
-                for line in result_str.lines().take(20) {
-                    out.push(DslLine::info(line.to_string()));
-                }
+                push_payload_preview(&mut out, &output.value);
                 if !output.node_trace.is_empty() {
                     let total_ms: u64 = output.node_trace.iter().map(|e| e.duration_ms).sum();
                     out.push(DslLine::muted(format!(
@@ -1303,15 +1278,9 @@ impl DslExecutor {
                         total_ms
                     )));
                     for entry in &output.node_trace {
-                        let marker = if entry.error.is_none() { "✓" } else { "✗" };
-                        let err_part = entry
-                            .error
-                            .as_deref()
-                            .map(|e| format!("  → {}", e))
-                            .unwrap_or_default();
                         out.push(DslLine::info(format!(
-                            "  {}  {}  ({})  {}ms{}",
-                            marker, entry.node_id, entry.node_kind, entry.duration_ms, err_part
+                            "  {}",
+                            crate::platform::services::ops::trace_entry_line(entry)
                         )));
                     }
                 }
@@ -1408,11 +1377,7 @@ impl DslExecutor {
                             "Ephemeral pipeline executed ({} nodes).",
                             graph.nodes.len()
                         )));
-                        let result_str = serde_json::to_string_pretty(&output.value)
-                            .unwrap_or_else(|_| output.value.to_string());
-                        for line in result_str.lines().take(20) {
-                            out.push(DslLine::info(line.to_string()));
-                        }
+                        push_payload_preview(&mut out, &output.value);
                         if !output.node_trace.is_empty() {
                             let total_ms: u64 =
                                 output.node_trace.iter().map(|e| e.duration_ms).sum();
@@ -1422,19 +1387,9 @@ impl DslExecutor {
                                 total_ms
                             )));
                             for entry in &output.node_trace {
-                                let marker = if entry.error.is_none() { "✓" } else { "✗" };
-                                let err_part = entry
-                                    .error
-                                    .as_deref()
-                                    .map(|e| format!("  → {}", e))
-                                    .unwrap_or_default();
                                 out.push(DslLine::info(format!(
-                                    "  {}  {}  ({})  {}ms{}",
-                                    marker,
-                                    entry.node_id,
-                                    entry.node_kind,
-                                    entry.duration_ms,
-                                    err_part
+                                    "  {}",
+                                    crate::platform::services::ops::trace_entry_line(entry)
                                 )));
                             }
                         }
@@ -1690,6 +1645,15 @@ fn parse_node_kind_ref(s: &str) -> (String, Option<usize>) {
         }
     }
     (s.to_string(), None)
+}
+
+/// The trigger kind a pipeline list shows for `source`: its entry trigger's
+/// source word (`webhook`, `room`, `mcp`, …), by the rule the pipeline API
+/// uses, and `manual` for a body with no trigger. The console used to guess
+/// from three substrings and called every other trigger `manual`.
+fn trigger_kind_of(source: &str) -> String {
+    crate::platform::services::project::derive_trigger_kind_from_source(source)
+        .unwrap_or_else(|| "manual".to_string())
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1991,6 +1955,26 @@ fn review_git_flag_value(flag: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Lines of a run's payload the console shows.
+const RUN_PREVIEW_LINES: usize = 20;
+
+/// The payload a run answered, as the console shows it: its first
+/// [`RUN_PREVIEW_LINES`] lines, and when it is longer, a line saying how many
+/// were left out, so a cut answer never reads as the whole one.
+fn push_payload_preview(out: &mut DslOutput, value: &Value) {
+    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    let total = text.lines().count();
+    for line in text.lines().take(RUN_PREVIEW_LINES) {
+        out.push(DslLine::info(line.to_string()));
+    }
+    if total > RUN_PREVIEW_LINES {
+        out.push(DslLine::muted(format!(
+            "… {} more lines of the payload not shown",
+            total - RUN_PREVIEW_LINES
+        )));
+    }
+}
+
 #[cfg(test)]
 mod note_tests {
     use super::decode_pipeline_graph;
@@ -2030,6 +2014,49 @@ mod note_tests {
             self.0.lock().unwrap().push(format!("disarm {path}"));
             Ok(())
         }
+    }
+
+    /// `check` refuses a script body the save would refuse. It used to answer
+    /// "would register" and leave the parse error for `register` to find.
+    #[tokio::test]
+    async fn check_refuses_a_script_body_register_refuses() {
+        let (_tmp, ex) = executor();
+        let body = r#"| trigger.webhook --route /x --method GET | javascript.script.run -- "return {""#;
+        let checked = ex.execute_dsl(&format!("check {body}")).await;
+        assert!(!checked.ok, "check passed an unparseable script: {:?}", texts(&checked));
+        assert!(texts(&checked).iter().any(|t| t.contains("does not parse")), "{:?}", texts(&checked));
+        let registered = ex.execute_dsl(&format!("register pipelines/test/broken -- {body}")).await;
+        assert!(!registered.ok, "{:?}", texts(&registered));
+    }
+
+    /// A double-quoted body follows the quoting rule a double-quoted flag value
+    /// does (`help pipeline/dsl` § Quoting): `\"` reaches the script as `"`.
+    #[tokio::test]
+    async fn a_double_quoted_body_unescapes_quotes_as_a_flag_value_does() {
+        let (_tmp, ex) = executor();
+        let out = ex
+            .execute_dsl(r#"run | trigger.function | javascript.script.run -- "const s = \"a\" + \"b\"; return { s: s, back: \"x\\\\y\" }""#)
+            .await;
+        assert!(out.ok, "{:?}", texts(&out));
+        let shown = texts(&out).join("\n");
+        assert!(shown.contains(r#""s": "ab""#), "{shown}");
+        assert!(shown.contains(r#""back": "x\\y""#), "\\\\ in the body is one backslash in the script: {shown}");
+    }
+
+    /// A run's payload longer than the console shows says how much is left
+    /// out; a cut answer used to read as the whole one.
+    #[tokio::test]
+    async fn a_long_run_payload_says_it_is_cut() {
+        let (_tmp, ex) = executor();
+        let out = ex
+            .execute_dsl(r#"run | trigger.function | javascript.script.run -- "return { items: Array.from({ length: 40 }, (_, i) => i) }""#)
+            .await;
+        assert!(out.ok, "{:?}", texts(&out));
+        assert!(
+            texts(&out).iter().any(|t| t.contains("more lines of the payload not shown")),
+            "{:?}",
+            texts(&out)
+        );
     }
 
     /// `activate pipeline` in the console arms what the pipeline starts (a
@@ -2151,6 +2178,58 @@ mod note_tests {
             .collect();
         ids.sort();
         assert_eq!(ids, vec![("more".to_string(), "another".to_string()), ("why".to_string(), "second".to_string())]);
+    }
+
+    /// `register <path> --as-json` prints the JSON the register would save
+    /// and saves nothing (`help pipeline/dsl` § Commands). It used to read the
+    /// DSL body as JSON and answer "Invalid pipeline JSON".
+    #[tokio::test]
+    async fn register_as_json_prints_the_json_and_saves_nothing() {
+        let (_tmp, ex) = executor();
+        let out = ex
+            .execute_dsl(r#"register dsl/asjson --as-json -- | trigger.function --description d | javascript.script.run -- "return 1""#)
+            .await;
+        assert!(out.ok, "{}", text(&out));
+        let printed = decode_pipeline_graph(text(&out).as_bytes()).expect("the output is the pipeline JSON");
+        let kinds: Vec<&str> = printed.spec.nodes.iter().map(|n| n.kind.as_str()).collect();
+        assert_eq!(kinds, ["trigger.function", "javascript.script.run"]);
+        let saved = ex.platform.projects.get_pipeline_meta_by_file_id("superadmin", "default", "dsl/asjson").expect("meta");
+        assert!(saved.is_none(), "--as-json saved the pipeline");
+    }
+
+    /// `run` lists a node on the branch the run did not take as skipped, as
+    /// `pipeline_get_invocations` does; both used to mark it done in 0 ms.
+    #[tokio::test]
+    async fn run_lists_a_node_on_the_branch_not_taken_as_skipped() {
+        let (_tmp, ex) = executor();
+        let out = ex
+            .execute_dsl("run --\n[t] trigger.manual\n[v] logic.if --when \"false\"\n[no] javascript.script.run -- \"return 0\"\n[yes] javascript.script.run -- \"return 1\"\n[t] -> [v]\n[v]:false -> [no]\n[v]:true -> [yes]")
+            .await;
+        assert!(out.ok, "{}", text(&out));
+        let line = |id: &str| texts(&out).into_iter().find(|l| l.split_whitespace().nth(1) == Some(id)).unwrap_or_default();
+        assert!(line("no").trim_start().starts_with("✓"), "{}", text(&out));
+        assert!(line("yes").trim_start().starts_with("-") && line("yes").ends_with("skipped"), "{}", text(&out));
+    }
+
+    /// The pipeline list names a pipeline's trigger by its kind. A register
+    /// through the console called every trigger but three `manual`.
+    #[tokio::test]
+    async fn register_records_the_trigger_kind_the_pipeline_has() {
+        let (_tmp, ex) = executor();
+        for (path, body, patch, kind) in [
+            ("rooms/hello", "| trigger.room --room lobby --event hello | ws.message.send --body 1", "--body 2", "room"),
+            ("hooks/one", "| trigger.webhook --route /one --method GET | web.response.send --body 1", "--body 2", "webhook"),
+            ("fns/one", "| trigger.function --description d | javascript.script.run -- \"return 1\"", "-- \"return 2\"", "function"),
+        ] {
+            let out = ex.execute_dsl(&format!("register {path} -- {body}")).await;
+            assert!(out.ok, "{}", text(&out));
+            let meta = ex.platform.projects.get_pipeline_meta_by_file_id("superadmin", "default", path).expect("meta").expect("saved");
+            assert_eq!(meta.trigger_kind, kind, "{path}");
+            let patched = ex.execute_dsl(&format!("patch pipeline {path} node n1 {patch}")).await;
+            assert!(patched.ok, "{}", text(&patched));
+            let meta = ex.platform.projects.get_pipeline_meta_by_file_id("superadmin", "default", path).expect("meta").expect("saved");
+            assert_eq!(meta.trigger_kind, kind, "{path} after a patch");
+        }
     }
 
     #[tokio::test]

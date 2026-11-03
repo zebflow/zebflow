@@ -235,6 +235,20 @@ fn parse_and_validate_pipeline_source_for_save(
 /// Termination, allocation and backtracking are deliberately NOT checked
 /// here: they are not decidable at save time, and are the host watchdog's job.
 fn validate_script_bodies(graph: &PipelineGraph) -> Result<(), PlatformError> {
+    match script_body_problems(graph).into_iter().next() {
+        Some(problem) => Err(PlatformError::new(
+            "PLATFORM_PIPELINE_SCRIPT_INVALID",
+            format!("node `{}`: {}", problem.node_id, problem.message),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Every script node whose body does not compile, one problem each. A save
+/// refuses on the first; `check` reports them all, so it never answers that a
+/// body would register when the save then refuses its script.
+fn script_body_problems(graph: &PipelineGraph) -> Vec<crate::pipeline::nodes::check::Problem> {
+    let mut problems = Vec::new();
     for node in &graph.nodes {
         // `typescript.script.run` is checked by its own compiler at build, not here:
         // this check parses JavaScript.
@@ -260,13 +274,15 @@ fn validate_script_bodies(graph: &PipelineGraph) -> Result<(), PlatformError> {
             inject_guards: false,
         };
         if let Err(diagnostic) = compile_body(body, policy) {
-            return Err(PlatformError::new(
-                "PLATFORM_PIPELINE_SCRIPT_INVALID",
-                format!("node `{}`: {diagnostic}", node.id),
+            problems.push(crate::pipeline::nodes::check::Problem::node(
+                &node.id,
+                &node.kind,
+                None,
+                diagnostic.to_string(),
             ));
         }
     }
-    Ok(())
+    problems
 }
 
 fn parse_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
@@ -999,7 +1015,9 @@ impl ProjectService {
                 .flatten()
                 .map(|credential| credential.kind)
         };
-        crate::pipeline::nodes::check::check_pipeline(graph, &defs, catalogue, &credential_kind)
+        let mut check = crate::pipeline::nodes::check::check_pipeline(graph, &defs, catalogue, &credential_kind);
+        check.refusals.extend(script_body_problems(graph));
+        check
     }
 
     /// Refuses a graph whose save-time check finds anything to refuse.

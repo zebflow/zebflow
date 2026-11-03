@@ -2488,14 +2488,19 @@ fn typed_document(
             out.insert(field, Value::Null);
             continue;
         }
+        // TIMESTAMPTZ and DATE are whole microseconds on disk and take an
+        // ISO string or the integer itself, as an SQL INSERT does: the text
+        // is converted here, or the store refuses it with no field named.
+        if let Some(declared_time @ ("TIMESTAMPTZ" | "DATE")) = spec.declared.as_deref()
+            && let Some(text) = value.as_str()
+        {
+            let micros = time_literal_micros(collection, &field, declared_time, text)?;
+            out.insert(field, Value::from(micros));
+            continue;
+        }
         let ok = match &spec.kind {
             FieldKind::Text => value.is_string(),
-            FieldKind::Int => match spec.declared.as_deref() {
-                // TIMESTAMPTZ and DATE are Int on disk and take an ISO string
-                // or the integer itself.
-                Some("TIMESTAMPTZ") | Some("DATE") => value.is_string() || value.as_i64().is_some(),
-                _ => value.as_i64().is_some() || value.as_u64().is_some(),
-            },
+            FieldKind::Int => value.as_i64().is_some() || value.as_u64().is_some(),
             FieldKind::Real => value.as_f64().is_some(),
             FieldKind::Bool => value.is_boolean(),
             FieldKind::Json => true,
@@ -2527,6 +2532,55 @@ fn typed_document(
         out.insert(field, value);
     }
     Ok(out)
+}
+
+/// One microsecond day: a DATE is midnight UTC of its day.
+const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+/// An ISO-8601 date or date-time for a TIMESTAMPTZ or DATE field, as the
+/// whole UTC microseconds sekejap stores, in the forms its SQL accepts:
+/// `YYYY-MM-DD`, or `YYYY-MM-DD` `T`/space `HH:MM[:SS[.ffffff]]` with an
+/// optional `Z` or `±HH:MM` (no offset is UTC). A DATE carrying a time of day
+/// is refused rather than cut, as SQL refuses it.
+fn time_literal_micros(collection: &str, field: &str, declared: &str, text: &str) -> Result<i64, PlatformError> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime};
+    let refuse = |why: &str| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_INSERT_TYPE",
+            format!("field '{field}' in collection '{collection}' is {declared} and `{text}` {why}"),
+        )
+    };
+    let raw = text.trim();
+    let normal = match raw.as_bytes().get(10) {
+        Some(b' ' | b't') => format!("{}T{}", &raw[..10], &raw[11..]),
+        _ => raw.to_string(),
+    };
+    let micros = if normal.len() == 10 {
+        NaiveDate::parse_from_str(&normal, "%Y-%m-%d")
+            .ok()
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|t| t.and_utc().timestamp_micros())
+    } else {
+        DateTime::parse_from_rfc3339(&normal)
+            .or_else(|_| DateTime::parse_from_str(&normal, "%Y-%m-%dT%H:%M%:z"))
+            .map(|t| t.timestamp_micros())
+            .ok()
+            .or_else(|| {
+                ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M"]
+                    .iter()
+                    .find_map(|f| NaiveDateTime::parse_from_str(&normal, f).ok())
+                    .map(|t| t.and_utc().timestamp_micros())
+            })
+    };
+    let Some(micros) = micros else {
+        return Err(refuse(
+            "is not an ISO-8601 date or date-time: write YYYY-MM-DD, or YYYY-MM-DD HH:MM[:SS[.ffffff]] with an optional Z or +HH:MM",
+        ));
+    };
+    if declared == "DATE" && micros.rem_euclid(MICROS_PER_DAY) != 0 {
+        return Err(refuse("carries a time of day; a DATE is a day, so write YYYY-MM-DD"));
+    }
+    Ok(micros)
 }
 
 /// Records and edges, under one commit.
@@ -2614,7 +2668,7 @@ fn write_batch(
         let typed = typed_document(collection, &declared, row.fields, &mut field_dimensions)?;
         document.extend(typed);
         tx.put((collection, key.as_str()), &Value::Object(document))
-            .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", e))?;
+            .map_err(|e| store_error("PLATFORM_SEKEJAP_INSERT_FAILED", format!("row '{collection}/{key}': {e}")))?;
         written += 1;
     }
     for edge in &edges {
@@ -3924,6 +3978,68 @@ mod tests {
         assert_eq!(read.row_count, 1);
         assert_eq!(read.rows[0][0], Value::String("first".to_string()));
         assert_eq!(read.rows[0][1], Value::String("Hello".to_string()));
+    }
+
+    /// The upsert the blog example (`help pipeline/examples/blog-with-admin`)
+    /// teaches, run as written: the first call creates the post, the second
+    /// updates it and keeps the first call's `created_at`.
+    #[test]
+    fn the_blog_example_upsert_creates_then_updates_keeping_created_at() {
+        let tmp = tmp_root();
+        let run = |sql: &str, params: &[Value]| {
+            execute_sql(tmp.path(), "alice", "demo", sql, params, 100, false).expect(sql)
+        };
+        run("CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, body TEXT, published BOOLEAN, created_at INTEGER, updated_at INTEGER)", &[]);
+        let upsert = "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $5) \
+                      ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body, published = EXCLUDED.published, updated_at = EXCLUDED.updated_at";
+        run(upsert, &[json!("hello"), json!("Hello"), json!("first"), json!(false), json!(1000)]);
+        run(upsert, &[json!("hello"), json!("Hello again"), json!("second"), json!(true), json!(2000)]);
+        let db = get_db(tmp.path(), "alice", "demo").expect("db");
+        let row = db.get(("posts", "hello")).expect("get").expect("row");
+        assert_eq!(row["title"], json!("Hello again"));
+        assert_eq!(row["published"], json!(true));
+        assert_eq!(row["created_at"], json!(1000), "the first call's created_at is kept");
+        assert_eq!(row["updated_at"], json!(2000));
+    }
+
+    /// A record write takes ISO text for a TIMESTAMPTZ or DATE field and
+    /// stores the same microseconds an SQL INSERT of that text stores; text it
+    /// cannot read, or a DATE with a time of day, is refused naming the field.
+    #[test]
+    fn record_writes_store_iso_dates_as_sql_does() {
+        let tmp = tmp_root();
+        let sql = |statement: &str| {
+            execute_sql(tmp.path(), "alice", "demo", statement, &[], 100, false).expect(statement)
+        };
+        sql("CREATE TABLE events (_key TEXT PRIMARY KEY, at TIMESTAMPTZ, day DATE)");
+        sql("INSERT INTO events (_key, at, day) VALUES ('by-sql', '2025-03-10T15:00:00+07:00', '2025-03-10')");
+        let write = |key: &str, at: Value, day: Value| {
+            bulk_write_records(
+                tmp.path(),
+                "alice",
+                "demo",
+                "events",
+                vec![StructuredInsertRecord {
+                    key: key.to_string(),
+                    fields: Map::from_iter([("at".to_string(), at), ("day".to_string(), day)]),
+                }],
+                StructuredWriteMode::Insert,
+            )
+        };
+        write("by-record", json!("2025-03-10T08:00:00Z"), json!("2025-03-10")).expect("ISO text is converted");
+        write("spaced", json!("2025-03-10 08:00:00"), json!(1741564800000000_i64)).expect("a space and no offset is UTC");
+
+        let db = get_db(tmp.path(), "alice", "demo").expect("db");
+        let row = |key: &str| db.get(("events", key)).expect("get").expect("row");
+        for key in ["by-record", "spaced"] {
+            assert_eq!(row(key)["at"], row("by-sql")["at"], "{key}: same instant as SQL wrote");
+        }
+        assert_eq!(row("by-record")["day"], row("by-sql")["day"]);
+
+        let bad = write("bad", json!("10 March 2025"), Value::Null).unwrap_err();
+        assert!(bad.message.contains("field 'at'") && bad.message.contains("events"), "{}", bad.message);
+        let timed = write("timed", Value::Null, json!("2025-03-10T08:00:00Z")).unwrap_err();
+        assert!(timed.message.contains("field 'day'") && timed.message.contains("time of day"), "{}", timed.message);
     }
 
     #[test]
