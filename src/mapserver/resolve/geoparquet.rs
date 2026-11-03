@@ -74,11 +74,49 @@ fn file_version(path: &Path) -> Option<(u64, u64)> {
     Some((mtime, meta.len()))
 }
 
+/// The most stored geometry (WKB bytes) one answer gathers as features. A
+/// shape count alone does not bound memory: a few thousand detailed polygons
+/// hold hundreds of megabytes, and each becomes a JSON tree several times its
+/// stored size. An answer that reaches this stops early and is `truncated`.
+const MAX_GATHERED_GEOMETRY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Rows per batch the scan hands over. Small, so a batch of detailed shapes
+/// stays small too.
+const BATCH_ROWS: usize = 512;
+
 /// Resolve features from a GeoParquet file using DataFusion spatial queries.
 pub fn resolve_from_geoparquet(
     manifest: &PublishedLayerManifest,
     request: &ResolveRequest,
 ) -> Result<ResolveResponse, String> {
+    let mut features = Vec::new();
+    let mut gathered = 0usize;
+    let truncated = for_each_feature(manifest, request, |feature, geometry_bytes| {
+        gathered += geometry_bytes;
+        if gathered > MAX_GATHERED_GEOMETRY_BYTES {
+            return false;
+        }
+        features.push(feature);
+        true
+    })?;
+    Ok(ResolveResponse {
+        layer: manifest.layer_id.clone(),
+        count: features.len(),
+        truncated,
+        features,
+    })
+}
+
+/// Runs the layer's query and hands each row to `each` as a GeoJSON feature,
+/// with the stored size of its geometry, until `each` answers false. Rows
+/// arrive batch by batch and are dropped once handed over, so memory holds one
+/// batch and one feature, never the whole answer. Answers whether rows were
+/// left out: `each` stopped, or the layer has more than the request's limit.
+pub(super) fn for_each_feature(
+    manifest: &PublishedLayerManifest,
+    request: &ResolveRequest,
+    each: impl FnMut(Value, usize) -> bool,
+) -> Result<bool, String> {
     if manifest.bbox_required && request.bbox.is_none() {
         return Err("bbox is required for this layer".to_string());
     }
@@ -93,15 +131,23 @@ pub fn resolve_from_geoparquet(
 
     // DataFusion is async; use block_in_place since we're called from an async context
     tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(resolve_async(manifest, request, source_path))
+        tokio::runtime::Handle::current().block_on(stream_features(
+            manifest,
+            request,
+            source_path,
+            each,
+        ))
     })
 }
 
-async fn resolve_async(
+async fn stream_features(
     manifest: &PublishedLayerManifest,
     request: &ResolveRequest,
     source_path: &Path,
-) -> Result<ResolveResponse, String> {
+    mut each: impl FnMut(Value, usize) -> bool,
+) -> Result<bool, String> {
+    use futures::StreamExt;
+
     let pool_key = source_path.to_string_lossy().to_string();
     let current_version = file_version(source_path).unwrap_or((0, 0));
 
@@ -120,6 +166,7 @@ async fn resolve_async(
 
         if needs_create {
             let config = SessionConfig::new()
+                .with_batch_size(BATCH_ROWS)
                 .set_bool("datafusion.execution.parquet.pushdown_filters", true)
                 .set_bool("datafusion.execution.parquet.reorder_filters", true);
             let ctx = new_session(config);
@@ -221,62 +268,97 @@ async fn resolve_async(
         }
     };
 
-    let sql = format!("SELECT {select_cols} FROM layer {where_clause} LIMIT {hard_limit}");
+    // One row past the limit tells whether the layer holds more.
+    let sql = format!(
+        "SELECT {select_cols} FROM layer {where_clause} LIMIT {}",
+        hard_limit.saturating_add(1)
+    );
 
     let df = ctx
         .sql(&sql)
         .await
         .map_err(|e| format!("geoparquet query failed: {e}"))?;
 
-    let batches = df
-        .collect()
+    let mut stream = df
+        .execute_stream()
         .await
-        .map_err(|e| format!("geoparquet collect failed: {e}"))?;
+        .map_err(|e| format!("geoparquet query failed: {e}"))?;
 
-    // Convert to GeoJSON features
-    let mut features: Vec<Value> = Vec::new();
-    for batch in &batches {
+    let mut handed = 0usize;
+    while let Some(batch) = stream.next().await {
+        let batch = batch.map_err(|e| format!("geoparquet read failed: {e}"))?;
         let geom_col_idx = batch
             .schema()
             .index_of(&geom_col)
             .map_err(|e| format!("geometry column not found in results: {e}"))?;
 
         for row_idx in 0..batch.num_rows() {
-            let mut properties = serde_json::Map::new();
-            let mut geometry = Value::Null;
-
-            for (col_idx, field) in batch.schema().fields().iter().enumerate() {
-                let col = batch.column(col_idx);
-                let value = arrow_value_at(col, row_idx);
-
-                if col_idx == geom_col_idx {
-                    // Try to parse geometry — it could be WKB binary, WKT text, or GeoJSON
-                    geometry = parse_geometry_value(&value);
-                } else {
-                    let name = field.name().clone();
-                    // Skip internal bbox covering columns from output
-                    if matches!(name.as_str(), "xmin" | "ymin" | "xmax" | "ymax") {
-                        continue;
-                    }
-                    properties.insert(name, value);
-                }
+            if handed == hard_limit {
+                return Ok(true);
             }
-
-            features.push(json!({
-                "type": "Feature",
-                "properties": Value::Object(properties),
-                "geometry": geometry,
-            }));
+            let (feature, geometry_bytes) = feature_at(&batch, row_idx, geom_col_idx);
+            if !each(feature, geometry_bytes) {
+                return Ok(true);
+            }
+            handed += 1;
         }
     }
+    Ok(false)
+}
 
-    let count = features.len();
-    Ok(ResolveResponse {
-        layer: manifest.layer_id.clone(),
-        count,
-        truncated: false, // We used LIMIT so can't know total
-        features,
-    })
+/// One row as a GeoJSON feature, with the stored size of its geometry.
+fn feature_at(
+    batch: &datafusion::arrow::record_batch::RecordBatch,
+    row_idx: usize,
+    geom_col_idx: usize,
+) -> (Value, usize) {
+    let mut properties = serde_json::Map::new();
+    let mut geometry = (Value::Null, 0);
+
+    for (col_idx, field) in batch.schema().fields().iter().enumerate() {
+        let col = batch.column(col_idx);
+        if col_idx == geom_col_idx {
+            geometry = geometry_at(col, row_idx);
+            continue;
+        }
+        let name = field.name().clone();
+        // Skip internal bbox covering columns from output
+        if matches!(name.as_str(), "xmin" | "ymin" | "xmax" | "ymax") {
+            continue;
+        }
+        properties.insert(name, arrow_value_at(col, row_idx));
+    }
+
+    let feature = json!({
+        "type": "Feature",
+        "properties": Value::Object(properties),
+        "geometry": geometry.0,
+    });
+    (feature, geometry.1)
+}
+
+/// A geometry cell as GeoJSON, with its stored size. WKB is read straight
+/// from the column; text (GeoJSON, hex WKB, WKT) goes through
+/// `parse_geometry_value`.
+fn geometry_at(col: &dyn datafusion::arrow::array::Array, idx: usize) -> (Value, usize) {
+    use datafusion::arrow::array::AsArray;
+    use datafusion::arrow::datatypes::DataType;
+
+    if col.is_null(idx) {
+        return (Value::Null, 0);
+    }
+    let wkb = match col.data_type() {
+        DataType::Binary => Some(col.as_binary::<i32>().value(idx)),
+        DataType::LargeBinary => Some(col.as_binary::<i64>().value(idx)),
+        DataType::BinaryView => Some(col.as_binary_view().value(idx)),
+        _ => None,
+    };
+    if let Some(wkb) = wkb {
+        return (wkb_to_geojson(wkb).unwrap_or(Value::Null), wkb.len());
+    }
+    let value = arrow_value_at(col, idx);
+    let size = value.as_str().map_or(0, str::len);
+    (parse_geometry_value(&value), size)
 }
 
 /// Detect the geometry column name from the registered table schema.

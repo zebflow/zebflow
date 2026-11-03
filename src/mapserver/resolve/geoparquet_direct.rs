@@ -51,6 +51,10 @@ fn file_version(path: &Path) -> (u64, u64) {
 
 const GEOM_NAMES: &[&str] = &["geometry", "geom", "wkb_geometry", "the_geom", "shape"];
 
+/// Rows per batch a tile reads. A tile draws one batch and drops it before the
+/// next, so this bounds the memory of a tile over detailed shapes.
+const TILE_BATCH_ROWS: usize = 1024;
+
 fn detect_geom_col(schema: &SchemaRef) -> Option<usize> {
     // Check by name first
     for name in GEOM_NAMES {
@@ -200,7 +204,7 @@ pub fn render_tile_direct(
         style_field_pq_idx,
         &filter_field_pq_indices,
     );
-    let mut b = builder.with_projection(projection).with_batch_size(8192);
+    let mut b = builder.with_projection(projection).with_batch_size(TILE_BATCH_ROWS);
     if let Some(ref rgs) = selected_row_groups {
         b = b.with_row_groups(rgs.clone());
     }
@@ -1237,7 +1241,7 @@ pub fn render_mvt_direct(
         None,
         &all_extra,
     );
-    let mut b = builder.with_projection(projection).with_batch_size(8192);
+    let mut b = builder.with_projection(projection).with_batch_size(TILE_BATCH_ROWS);
     if let Some(ref rgs) = selected_row_groups {
         b = b.with_row_groups(rgs.clone());
     }

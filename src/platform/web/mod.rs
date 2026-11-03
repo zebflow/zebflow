@@ -26211,12 +26211,14 @@ async fn public_mapserver_ingress(
         );
         return resp;
     }
-    let resolved = match crate::mapserver::resolve::resolve_features(
+    // Written feature by feature with a largest size (`MAX_REPLY_BYTES`), so
+    // one request cannot run the process out of memory.
+    let body = match crate::mapserver::resolve::reply::geojson_reply(
         &manifest,
         &request,
         preloaded_features.as_ref(),
     ) {
-        Ok(v) => v,
+        Ok(body) => body,
         Err(err) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -26225,25 +26227,9 @@ async fn public_mapserver_ingress(
                 .into_response();
         }
     };
-    let payload = json!({
-        "type": "FeatureCollection",
-        "layer": resolved.layer,
-        "count": resolved.count,
-        "truncated": resolved.truncated,
-        "features": resolved.features
-    });
-    let body = match serde_json::to_vec(&payload) {
-        Ok(body) => body,
-        Err(err) => {
-            return internal_error(PlatformError::new(
-                "MAPSERVER_RESPONSE_SERIALIZE",
-                format!("failed serializing mapserver payload: {err}"),
-            ));
-        }
-    };
     crate::mapserver::resolve::cache::put_response_bytes(
         response_cache_key,
-        body.clone(),
+        &body,
         &manifest.source_ref,
     );
     let mut resp = (StatusCode::OK, body).into_response();

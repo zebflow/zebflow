@@ -59,6 +59,11 @@ served, what it was built from, and what the public may see of it.
 | `feature_count`, `chunk_count` | counts of the built artifact |
 | `style`, `filter`, `function_slug`, `cache_ttl_secs` | optional presentation and caching |
 
+A GeoJSON answer holds at most `max_features` features and at most
+`MAX_REPLY_BYTES` (16 MiB, `src/mapserver/resolve/reply.rs`) of text; it is
+written feature by feature, so one request never holds more than that in
+memory. Either limit sets `"truncated": true`; `count` is the features sent.
+
 `mapserver.layer.publish` writes a record from its flags and its answer reads it back
 in the flags' words: `--name` → `layer_id`, `--route` → `path`, `--max-items` →
 `max_features`, each `--field` → one of `allowed_properties`, `--function` →

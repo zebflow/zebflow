@@ -11,6 +11,7 @@ pub mod geoparquet_direct;
 pub mod geoparquet_optimize;
 pub mod mvt;
 pub mod query;
+pub mod reply;
 pub mod stats;
 pub mod style;
 pub mod style_dsl;

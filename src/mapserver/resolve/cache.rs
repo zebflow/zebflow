@@ -108,11 +108,11 @@ pub fn get_response_bytes(key: &str) -> Option<Vec<u8>> {
     None
 }
 
-pub fn put_response_bytes(key: String, body: Vec<u8>, source_ref: &str) {
+pub fn put_response_bytes(key: String, body: &[u8], source_ref: &str) {
     if body.len() > RESPONSE_CACHE_MAX_BODY_BYTES {
         return;
     }
-    let Ok(body_gzip) = encode_gzip(&body) else {
+    let Ok(body_gzip) = encode_gzip(body) else {
         return;
     };
     let Ok(mut cache) = response_cache().lock() else {

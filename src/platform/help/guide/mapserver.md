@@ -42,6 +42,11 @@ while the project's `ms` surface is on (Settings → Addressing).
   `5m`; default 60s).
 - Each `--field` is a property the public may see; none serves geometry only.
   `--max-items` caps the features one query answers (default 1000).
+- A GeoJSON answer is also at most 16 MiB: features are written one by one
+  and the answer stops before the one that would pass that size. An answer
+  with features left out, by `--max-items` or by size, says `"truncated":
+  true`, and `count` is the features it holds. Draw every shape of a large
+  layer as PNG or vector tiles instead.
 - A viewport query is `/ms/{owner}/{project}/{route}?bbox=<west>,<south>,<east>,<north>`
   (longitude, latitude). A layer published with `--min-zoom` or `--max-zoom`
   also needs `&zoom=<n>` on it: without one the answer is `400` ("send ?zoom=
