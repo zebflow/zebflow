@@ -181,19 +181,28 @@ export function Editor({ value, defaultValue, onChange, placeholder = "Type '/' 
     editor.insertNode(pickerExt.picker.type || pickerExt.name, pickerExt.picker.toAttrs(item), range);
   }
 
-  // The slash menu takes the arrow keys and Enter while it is open.
+  // The slash menu takes the arrow keys and Enter while it is open. One
+  // listener for the editor's life reads the latest render. A listener put
+  // back by an effect after each keystroke runs late: an effect waits for a
+  // timer after the render, and Enter pressed before it ran deleted the range
+  // of the keystroke before (`/potor`, leaving the `u` in the document).
+  const slashKeys = useRef(null);
+  slashKeys.current = { slash, items: slashItems, index: slashIndex, run: runSlash };
   useEffect(() => {
     const mount = mountRef.current;
-    if (!mount || !slash) return;
+    if (!mount) return;
     const onKey = (event) => {
-      if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex((i) => (i + 1) % Math.max(slashItems.length, 1)); }
-      else if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex((i) => (i - 1 + Math.max(slashItems.length, 1)) % Math.max(slashItems.length, 1)); }
-      else if (event.key === "Enter") { event.preventDefault(); if (slashItems[slashIndex]) runSlash(slashItems[slashIndex]); }
+      const { slash: open, items, index, run } = slashKeys.current;
+      if (!open) return;
+      const count = Math.max(items.length, 1);
+      if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex((i) => (i + 1) % count); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex((i) => (i - 1 + count) % count); }
+      else if (event.key === "Enter") { event.preventDefault(); if (items[index]) run(items[index]); }
       else if (event.key === "Escape") { event.preventDefault(); setSlash(null); }
     };
     mount.addEventListener("keydown", onKey, true);
     return () => mount.removeEventListener("keydown", onKey, true);
-  }, [slash, slashItems.length, slashIndex]);
+  }, []);
 
   // A menu is placed at the caret as it opens; while the page scrolls or
   // resizes it follows the caret instead of staying where it was drawn.

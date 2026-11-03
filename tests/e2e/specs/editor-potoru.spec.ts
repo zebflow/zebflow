@@ -187,6 +187,8 @@ test.describe.serial("editor: Potoru story block", () => {
     const block = editor.locator("[data-potoru-block=potoru]");
     await expect(block.locator("[data-zeb-lib=potoru]")).toHaveAttribute("data-config", `{"src":"/_files/stories/square.poto","libraries":["${BASIC}"],"controls":true}`);
     await expect(block.locator("figcaption")).toHaveText("Square");
+    // `/potoru` left nothing behind: the block took the paragraph it was typed in.
+    await expect(page.locator("#doc-json")).toContainText(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"A story: "}]},{"type":"potoru",`);
     // The block put the placeholder on the page: now, and only now, the library loads and the preview draws.
     await expect.poll(() => seen.length, { timeout: 10_000 }).toBeGreaterThan(0);
     await expect.poll(() => players(page), { timeout: 15_000 }).toHaveLength(1);
@@ -213,6 +215,8 @@ test.describe.serial("editor: Potoru story block", () => {
     const panel = page.locator("[data-slot=editor-panel][data-extension=potoru]");
     await block.locator("figcaption").click();
     await expect(panel).toBeVisible();
+    // Below a tall block the panel stays on screen; its lower fields scroll inside it.
+    await expect(panel).toBeInViewport({ ratio: 1 });
     await panel.locator("input[name=still]").check();
     await panel.locator("input[name=time]").fill("1");
     await expect(block.locator("[data-zeb-lib=potoru]")).toHaveAttribute("data-config", `{"src":"/_files/stories/square.poto",${LIBRARIES},"controls":true,"still":true,"time":1}`);

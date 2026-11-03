@@ -1,4 +1,6 @@
+import { cx } from "zeb/react";
 import { readAttrPath, writeAttrPath } from "zeb/ui/editor-extension";
+import { editorMenuPlacement } from "zeb/ui/editor-picker";
 
 /**
  * EditorNodePanel — edits the node under the caret when its extension
@@ -9,20 +11,32 @@ import { readAttrPath, writeAttrPath } from "zeb/ui/editor-extension";
  * A field's `type` is text (default), `url`, `number`, `checkbox` or
  * `select` (with `options`).
  *
- * `node` is the engine's report: `{ extension, type, pos, attrs, left, bottom }`.
+ * `node` is the engine's report: `{ extension, type, pos, attrs, left, top, bottom }`.
+ *
+ * Placed like the editor's menus: below the node, or above it when there is
+ * more room there, and never taller than the room on its side; the rest of
+ * its fields scroll inside it.
  */
 
 const INPUT = "h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
 
+/** The panel's full height: its header and padding, then each field and the actions row. */
+function panelHeight(ext) {
+  const fields = (ext.fields || []).reduce((sum, field) => sum + (field.type === "checkbox" ? 28 : 60), 0);
+  return 56 + fields + (ext.actions && ext.actions.length ? 36 : 0);
+}
+
 export function EditorNodePanel({ ext, node, editor, onClose }) {
   const set = (path, value) => editor.setNodeAttrs(node.pos, writeAttrPath(node.attrs, path, value));
-  const left = Math.max(8, Math.min(node.left, (typeof window === "undefined" ? 1280 : window.innerWidth) - 296));
+  // (296: the panel's w-72 and an 8px margin)
+  const height = panelHeight(ext);
+  const place = editorMenuPlacement(node, height, height, 296);
   return (
     <div
       data-slot="editor-panel"
       data-extension={ext.name}
-      className="fixed z-40 w-72 rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md"
-      style={{ left: `${left}px`, top: `${node.bottom + 8}px` }}
+      className={cx("fixed z-40 w-72 overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md", place.up ? "-translate-y-full" : "")}
+      style={place.style}
       onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); editor.focus(); } }}
     >
       <div className="mb-2 flex items-center justify-between">

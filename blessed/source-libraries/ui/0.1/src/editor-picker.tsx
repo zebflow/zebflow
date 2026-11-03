@@ -32,9 +32,10 @@ export function EditorPicker({ picker, query, anchor, searchable, onPick, onClos
   const [loading, setLoading] = useState(true);
   const [index, setIndex] = useState(0);
   const q = searchable ? own : query || "";
-  // The key listener reads the latest handlers: the caller's range moves with every keystroke.
+  // The key listener reads the latest render: the caller's range moves with
+  // every keystroke, and the list it picks from arrives after it is attached.
   const handlers = useRef(null);
-  handlers.current = { onPick, onClose };
+  handlers.current = { onPick, onClose, items, index };
 
   useEffect(() => {
     let live = true;
@@ -50,15 +51,16 @@ export function EditorPicker({ picker, query, anchor, searchable, onPick, onClos
 
   useEffect(() => {
     const onKey = (event) => {
+      const { items: list, index: at } = handlers.current;
       if (event.key === "Escape") { event.preventDefault(); handlers.current.onClose(); return; }
-      if (items.length === 0) return;
-      if (event.key === "ArrowDown") { event.preventDefault(); setIndex((i) => (i + 1) % items.length); }
-      else if (event.key === "ArrowUp") { event.preventDefault(); setIndex((i) => (i - 1 + items.length) % items.length); }
-      else if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); handlers.current.onPick(items[index]); }
+      if (list.length === 0) return;
+      if (event.key === "ArrowDown") { event.preventDefault(); setIndex((i) => (i + 1) % list.length); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); setIndex((i) => (i - 1 + list.length) % list.length); }
+      else if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); handlers.current.onPick(list[at]); }
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [items, index]);
+  }, []);
 
   const place = editorMenuPlacement(anchor, Math.min(items.length, 6) * 44 + (searchable ? 52 : 8), 320);
   return (
