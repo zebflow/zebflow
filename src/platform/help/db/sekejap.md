@@ -21,7 +21,10 @@ that section in the pinned copy.
    names it, or the table mints it: `_key TEXT PRIMARY KEY DEFAULT ulid()`,
    and `INSERT ... RETURNING _key` hands the new key back. An `INSERT` that
    gives no key to a table that mints none is refused (`23502`). ULID keys
-   sort by time, so `ORDER BY _key DESC` is newest first.
+   sort by time, so `ORDER BY _key DESC` is newest first. `_key` is the
+   row's address, not one of its columns: `SELECT *` (and `RETURNING *`)
+   answers the declared columns without it, even when the `CREATE TABLE`
+   names `_key`. Ask for it by name: `SELECT _key, * FROM posts`.
 2. **A `WHERE` needs an index on its column, and it never scans instead.**
    Every `TEXT`, `INT`, `REAL`, `BOOLEAN` and geometry column gets one
    automatically when the table is created. Full text, spatial and vector

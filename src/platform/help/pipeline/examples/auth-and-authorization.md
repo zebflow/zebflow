@@ -16,7 +16,8 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
   "secret": "your-signing-secret",
   "auth_roles": ["user", "admin"],
   "auth_redirect": "/auth/login",
-  "auth_forbidden_redirect": "/home"
+  "auth_forbidden_redirect": "/home",
+  "cookie_name": "session"
 }
 ```
 
@@ -27,6 +28,7 @@ Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 | `auth_roles` | Roles registered for this credential — used to populate the **Required Role** checkboxes in webhook nodes. Defines what values are valid in the JWT `roles` array claim. |
 | `auth_redirect` | Where to redirect on 401 (browser navigation only — `Sec-Fetch-Mode: navigate`) |
 | `auth_forbidden_redirect` | Where to redirect on 403 (browser navigation only) |
+| `cookie_name` | The cookie `--auth jwt` reads the token from when a request has no `Authorization: Bearer` header. Set it to the name the login's `Set-Cookie` writes (`session` below); unset, it reads `zebflow_session`, and a `session` cookie is never read |
 
 `auth_redirect` and `auth_forbidden_redirect` trigger only on browser page navigation. API/fetch calls always receive JSON 401/403.
 

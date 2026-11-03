@@ -158,7 +158,11 @@ recipe with registration: `help("pipeline/examples/cookie-jwt-auth")`.
 
 The payload becomes the page's `input`, and `web.response.send` merges the request
 context into it — `route`, `params`, `query`, `search`, `headers`, `auth` — so
-they are there even after `sekejap.query.run` replaced the payload. `input.auth`
+they are there even after `sekejap.query.run` replaced the payload. A key the
+payload already has wins: after a query node, `input.query` is that node's
+answer (`input.query.rows`), not the URL's query string. Read the URL from
+`input.search` (`"?tab=a&tag=x&tag=y"`, as written, repeated parameters kept),
+which no node answers under. `input.auth`
 carries only the claims minted with `:public`; a token whose claims are all
 private gives `input.auth = null` in the browser, while the same claims stay
 complete in `$trigger.auth` and `ctx.trigger.auth` server-side.
@@ -168,7 +172,7 @@ import { useState } from "zeb/react";
 
 export default function Dashboard(input) {
   const user = input.auth;            // { name, roles } — public claims only
-  const tab = input.query?.tab ?? "overview";
+  const tab = new URLSearchParams(input.search ?? "").get("tab") ?? "overview";
   if (!user) return <main>Not signed in</main>;
   return <main><h1>Hello {user.name}</h1>{input.query.rows.map((r) => <p key={r.id}>{r.title}</p>)}</main>;
 }

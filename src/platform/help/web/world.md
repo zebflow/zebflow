@@ -142,7 +142,7 @@ The pack is built from OpenStreetMap data (ODbL) and records its sources and cre
 
 ## Testing a page
 
-Expose the world from `onReady` (`globalThis.__world = w`) and drive it from a browser
+Expose the world from `onReady` (`globalThis.world = w`) and drive it from a browser
 test. `w.api` says which graphics ran, `w.list` holds the elements, `w.on("elements", fn)`
 says whether an update was `props` (a restyle) or `add` / `remove`, and `liveGraphics()`
 reads zero graphics, buffers, textures and bytes once every world is disposed. Headless

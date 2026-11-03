@@ -15,7 +15,8 @@ the one admin account live in Sekejap.
 3. `GET /admin/posts` → JWT-gated → list all posts → render admin panel
 4. `POST /api/posts` → JWT-gated → create or update post → return JSON
 5. `DELETE /api/posts/:slug` → JWT-gated → delete post → return JSON
-6. `POST /auth/login` → verify credentials → issue JWT → redirect
+6. `GET /auth/login` → render the login form
+7. `POST /auth/login` → verify credentials → issue JWT → redirect to the admin panel
 
 ---
 
@@ -27,6 +28,27 @@ The post's slug is its key — one lookup, no separate id column.
 CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT, body TEXT, published BOOLEAN, created_at INTEGER, updated_at INTEGER)
 CREATE TABLE users (_key TEXT PRIMARY KEY, password_hash TEXT, roles JSON)
 ```
+
+## The credential
+
+A `jwt_signing_key` credential, here `blog-jwt`, signs the session and
+checks it on every `--auth jwt` route. Its `secret` is a long random
+string entered in the credential form and never written in a file; the
+other fields:
+
+```json
+{
+  "algorithm": "HS256",
+  "auth_roles": ["admin"],
+  "auth_redirect": "/auth/login",
+  "cookie_name": "session"
+}
+```
+
+`--auth jwt` reads the token from `Authorization: Bearer`, else from the
+cookie `cookie_name` names. The login below sets a cookie called `session`;
+without `"cookie_name": "session"` the routes look for `zebflow_session`
+instead and answer every signed-in request as signed out.
 
 Seed one admin user. `javascript.script.run` adds its return value as `script`, keeping
 the rest of the payload; `crypto.password.hash` then adds `password: { hash,
@@ -48,7 +70,7 @@ run
 
 ```
 | trigger.webhook --route /blog --method GET
-| sekejap.query.run -- "SELECT * FROM posts WHERE published = true ORDER BY created_at DESC LIMIT 20"
+| sekejap.query.run -- "SELECT _key, title, body, created_at FROM posts WHERE published = true ORDER BY created_at DESC LIMIT 20"
 | javascript.script.run -- "return { posts: input.query.rows }"
 | web.response.send --template pages/blog-home.tsx
 ```
@@ -78,14 +100,15 @@ the pipeline only ever runs for someone already verified.
 
 ```
 | trigger.webhook --route /admin/posts --method GET --auth jwt --credential blog-jwt --role admin
-| sekejap.query.run -- "SELECT * FROM posts ORDER BY created_at DESC"
+| sekejap.query.run -- "SELECT _key, title, published, created_at FROM posts ORDER BY created_at DESC"
 | javascript.script.run -- "return { posts: input.query.rows }"
 | web.response.send --template pages/admin-posts.tsx
 ```
 
 ### api-post-upsert — create or update post
 
-Sekejap has no `UPSERT`/`ON CONFLICT`. Look the slug up first, then branch:
+One statement creates the post or updates it: `ON CONFLICT (_key) DO UPDATE`
+keeps the row's `created_at` and changes only what an edit changes.
 
 ```zf
 register blog/api-post-upsert --
@@ -93,35 +116,37 @@ register blog/api-post-upsert --
 [has_title] logic.if --when "!!(input.webhook.body && input.webhook.body.title)"
 [bad] web.response.send --status 400 --body "{{ { ok: false, error: 'title required' } }}"
 [draft] javascript.script.run -- "const slug = $trigger.body.slug || String($trigger.body.title).toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { slug, title: $trigger.body.title, body: $trigger.body.body || '', published: !!$trigger.body.published };"
-[find] sekejap.query.run --param "1={{ $nodes.draft.script.slug }}" -- "SELECT _key FROM posts WHERE _key = $1"
-[exists] logic.if --when "input.query.rows.length > 0"
-[update] sekejap.query.run --write --param "1={{ $nodes.draft.script.title }}" --param "2={{ $nodes.draft.script.body }}" --param "3={{ $nodes.draft.script.published }}" --param "4={{ Date.now() }}" --param "5={{ $nodes.draft.script.slug }}" -- "UPDATE posts SET title = $1, body = $2, published = $3, updated_at = $4 WHERE _key = $5"
-[insert] sekejap.query.run --write --param "1={{ $nodes.draft.script.slug }}" --param "2={{ $nodes.draft.script.title }}" --param "3={{ $nodes.draft.script.body }}" --param "4={{ $nodes.draft.script.published }}" --param "5={{ Date.now() }}" --param "6={{ Date.now() }}" -- "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+[save] sekejap.query.run --write --param "1={{ $nodes.draft.script.slug }}" --param "2={{ $nodes.draft.script.title }}" --param "3={{ $nodes.draft.script.body }}" --param "4={{ $nodes.draft.script.published }}" --param "5={{ Date.now() }}" -- "INSERT INTO posts (_key, title, body, published, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $5) ON CONFLICT (_key) DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body, published = EXCLUDED.published, updated_at = EXCLUDED.updated_at"
 [ok] web.response.send --body "{{ { ok: true, slug: $nodes.draft.script.slug } }}"
 
 [trig] -> [has_title]
 [has_title]:false -> [bad]
 [has_title]:true -> [draft]
-[draft] -> [find]
-[find] -> [exists]
-[exists]:true -> [update]
-[exists]:false -> [insert]
-[update] -> [ok]
-[insert] -> [ok]
+[draft] -> [save]
+[save] -> [ok]
 ```
-
-`$nodes.draft.script.slug` reaches back to the `[draft]` script's output
-(added under its `script` key) by its graph id — it still resolves after
-`[find]`'s `sekejap.query.run` has replaced `input` with
-`{ query: { columns, rows, … } }`.
 
 ### api-post-delete — delete post
 
 ```
 | trigger.webhook --route /api/posts/:slug --method DELETE --auth jwt --credential blog-jwt --role admin
 | sekejap.query.run --write --param "1={{ input.webhook.params.slug }}" -- "DELETE FROM posts WHERE _key = $1"
-| javascript.script.run -- "return { ok: true }"
+| web.response.send --body "{{ { ok: true, deleted: input.query.rows_affected > 0 } }}"
 ```
+
+A pipeline that ends without `web.response.send` answers `204 No Content`,
+so the route names its answer.
+
+### auth-login-page: the login form
+
+```
+| trigger.webhook --route /auth/login --method GET
+| web.response.send --template pages/login.tsx
+```
+
+`pages/login.tsx` is a form that posts `username` and `password` to
+`/auth/login`; the credential's `auth_redirect` sends a signed-out visitor of
+`/admin/posts` here.
 
 ### auth-login — issue JWT
 
@@ -132,7 +157,7 @@ register blog/auth-login --
 [found] logic.if --when "input.query.rows.length > 0"
 [verify] crypto.password.verify --from "{{ $trigger.body.password }}" --hash "{{ input.query.rows[0]?.password_hash }}"
 [token] auth.token.create --credential blog-jwt --claim "sub={{ input.query.rows[0]._key }}" --claim "roles:public={{ input.query.rows[0].roles }}" --ttl 1d
-[welcome] web.response.send --status 302 --header "Location=/admin" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
+[welcome] web.response.send --status 302 --header "Location=/admin/posts" --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"
 [denied] web.response.send --status 401 --body "invalid credentials"
 
 [trig] -> [lookup]
@@ -169,6 +194,7 @@ constant-time.
 - `pages/blog-home.tsx` — post listing
 - `pages/blog-detail.tsx` — single post display
 - `pages/admin-posts.tsx` — admin CRUD interface
+- `pages/login.tsx`: the login form
 
 > A script cannot set the response. It returns a value; the graph decides what
 > happens next. Branch with `logic.if` and let `web.response.send` answer —

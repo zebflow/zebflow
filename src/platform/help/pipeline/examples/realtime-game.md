@@ -40,7 +40,7 @@ nobody opened is refused (close code `4404`).
 
 ```
 | trigger.webhook --route /game --method GET
-| sekejap.query.run -- "SELECT * FROM game_rooms WHERE status = 'waiting'"
+| sekejap.query.run -- "SELECT _key, name, status FROM game_rooms WHERE status = 'waiting'"
 | javascript.script.run -- "return { rooms: input.query.rows }"
 | web.response.send --template pages/game-lobby.tsx
 ```
@@ -50,7 +50,7 @@ nobody opened is refused (close code `4404`).
 ```zf
 register game/room --
 [a] trigger.webhook --route /game/:room --method GET
-[b] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT * FROM game_rooms WHERE _key = $1"
+[b] sekejap.query.run --param "1={{ input.webhook.params.room }}" -- "SELECT _key, name, status FROM game_rooms WHERE _key = $1"
 [c] logic.if --when "input.query.rows.length > 0"
 [d] javascript.script.run -- "return { room: input.query.rows[0] };"
 [e] web.response.send --template pages/game-room.tsx
@@ -149,12 +149,16 @@ whenever the player moves, and draws `state.players`, applying each tick's
 ## State Sync Protocol
 
 A page joins with `zeb/rooms`, which keeps the state, reconnects and takes
-a held seat back on its own (`help("web/libraries")`):
+a held seat back on its own (`help("web/libraries")`). The page receives the
+payload, so the room the `[d]` script returned is `input.script.room`, and its
+id is `_key` because the query names it (`SELECT *` answers the declared
+columns, not `_key`):
 
 ```tsx
 import { useRoom } from "zeb/rooms";
 
-export default function GameRoom({ room }) {
+export default function GameRoom(input) {
+  const room = input.script.room;
   const { state, status, send } = useRoom(room._key, { select: (s) => s.players });
   if (status !== "joined") return <p>{status}</p>;
   return <Board players={state} onMove={(x, y) => send("player.move", { x, y })} />;
@@ -233,7 +237,7 @@ session closes with `4408` when the login expires.
 
 ## Templates Needed
 
-- `pages/game-lobby.tsx` — room list + create room
+- `pages/game-lobby.tsx` — room list (`input.script.rooms`) + create room
 - `pages/game-room.tsx` — game board + player list, joined with `useRoom` from `zeb/rooms`
 
 > A script cannot set the response. It returns a value; the graph decides what

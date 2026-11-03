@@ -24,7 +24,13 @@ connector ─▶ /_mcp/library/_oauth/token ─▶ tools/list, tools/call
 1. A `jwt_signing_key` credential — here `library-jwt`. It signs the app's own
    session tokens (`auth.token.create`) and the server's access tokens.
 2. The `mcp` surface switched on (Settings → Addressing). The connector's URL
-   is `https://<project host>/_mcp/library`.
+   is `https://<project host>/_mcp/library` (on a local machine, the dev host
+   `http://<project>.<owner>.localhost:<port>/_mcp/library`). The platform
+   address `/mcp/<owner>/<project>/library` has OAuth only when the platform's
+   public address is configured (`ZEBFLOW_PLATFORM_BASE_URL`): without it the
+   server cannot name that URL as the token's audience, and an `oauth` route
+   there answers `404` ("this MCP server signs people in on the project's
+   host; connect there").
 3. The tool pipelines, the login page and the login handler below.
 
 ---
@@ -35,13 +41,15 @@ connector ─▶ /_mcp/library/_oauth/token ─▶ tools/list, tools/call
 
 ```
 | trigger.mcp --route /library --name search --description "Find a book in the reading list by words." --parameter q:string! "The words to look for." --auth oauth --credential library-jwt --login /auth/login --role reader
-| sekejap.query.run --param "1={{ input.mcp.arguments.q }}" -- "SELECT title, author FROM books WHERE title ILIKE '%' || $1 || '%'"
+| sekejap.query.run --param "1={{ '%' + input.mcp.arguments.q + '%' }}" -- "SELECT title, author FROM books WHERE title ILIKE $1"
 | web.response.send --body "{{ input.query.rows }}"
 ```
 
 Every `trigger.mcp` on `/library` declares the same `--auth oauth
 --credential library-jwt --login /auth/login`. `--role reader` admits only
-tokens whose `roles` claim holds `reader`.
+tokens whose `roles` claim holds `reader`. The `%` go into the bound value:
+Sekejap matches `title ILIKE $1` with the whole pattern as the parameter, and
+refuses an expression such as `'%' || $1 || '%'` in its place.
 
 ### GET /auth/login — the login page
 

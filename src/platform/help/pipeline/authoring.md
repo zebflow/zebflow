@@ -51,9 +51,9 @@ zebflow:
 {
   "apiVersion": "zebflow.com/v1",
   "kind": "Pipeline",
-  "metadata": { "name": "api/login" },
+  "metadata": { "name": "login" },
   "spec": {
-    "id": "api/login",
+    "id": "login",
     "entry_nodes": ["n0"],
     "nodes": [
       { "id": "n0", "kind": "trigger.webhook", "input_pins": [], "output_pins": ["out"],
@@ -73,7 +73,7 @@ zebflow:
 
 | Field | Meaning |
 |---|---|
-| `metadata.name`, `spec.id` | the pipeline's identity — the same value, equal to `file_rel_path` without the extension |
+| `metadata.name`, `spec.id` | the pipeline's name, the same value in both: the file's name without its folder and `.zf.json` (`login` for `api/login.zf.json`). The identity is `file_rel_path`; the name is what `function.result.call --function` finds a function pipeline by, so two functions need two file names even in two folders |
 | `spec.entry_nodes` | nodes with no incoming edge; computed by the DSL |
 | `spec.nodes[].id` | `n0, n1, …` in pipe mode; the `[label]` you wrote in graph mode |
 | `spec.nodes[].kind` | the kind exactly as the DSL writes it: `family.noun.verb`, `trigger.<source>`, `input.<type>`, `logic.<verb>`, or `x.<package>.<noun>.<verb>` |

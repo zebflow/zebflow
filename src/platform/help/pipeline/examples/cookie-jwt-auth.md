@@ -16,7 +16,8 @@ Create a credential of kind `jwt_signing_key` with these fields in the secret:
   "secret": "your-signing-secret",
   "auth_roles": ["user", "admin", "lecturer", "student"],
   "auth_redirect": "/auth/login",
-  "auth_forbidden_redirect": "/home"
+  "auth_forbidden_redirect": "/home",
+  "cookie_name": "session"
 }
 ```
 
@@ -27,6 +28,7 @@ Create a credential of kind `jwt_signing_key` with these fields in the secret:
 | `auth_roles` | Roles registered for this credential — populates the **Required Role** checkboxes in webhook nodes. Defines valid values for the JWT `roles` array claim. |
 | `auth_redirect` | Where to redirect on 401 (browser navigation only — Sec-Fetch aware) |
 | `auth_forbidden_redirect` | Where to redirect on 403 (browser navigation only) |
+| `cookie_name` | The cookie `--auth jwt` reads the token from when a request has no `Authorization: Bearer` header. Set it to the name the login's `Set-Cookie` writes (`session` below); unset, it reads `zebflow_session`, and a `session` cookie is never read |
 
 If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns JSON 401/403 (API behaviour).
 
@@ -34,7 +36,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ## Key Concepts
 
-- `trigger.webhook --auth jwt --credential <id>` — auto-verifies JWT from `Authorization: Bearer` header or session cookie. On success: claims in `input.webhook.auth` right after the trigger (`$trigger.auth` anywhere later). On failure: 303 redirect (page nav, to the credential's `auth_redirect`) or 401 JSON (fetch/API).
+- `trigger.webhook --auth jwt --credential <id>` — auto-verifies JWT from `Authorization: Bearer` header or the session cookie the credential's `cookie_name` names. On success: claims in `input.webhook.auth` right after the trigger (`$trigger.auth` anywhere later). On failure: 303 redirect (page nav, to the credential's `auth_redirect`) or 401 JSON (fetch/API).
 - `trigger.webhook --role admin --role lecturer` — repeat `--role` once per role; additionally checks the JWT `roles` array claim against the listed roles. Failure: 303 redirect (to `auth_forbidden_redirect`) or 403 JSON. **Empty (no `--role` given) = any valid JWT is accepted — roles are not checked.**
 - `auth.token.create --credential <id> --claim "sub={{ input.field }}" --claim "name:public={{ input.name }}" --ttl <duration>` — signs a JWT; output is `token: { access_token, token_type, expires_in, profile }`, read as `{{ input.token.access_token }}`. Claims whose name ends in `:public` are the only ones exposed in the browser via `ctx.auth` — all others remain server-only.
 - `web.response.send --header "Set-Cookie=session={{ input.token.access_token }}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly"` — sets the session cookie. Quote the whole header — an unquoted `{{ }}` is cut at its first space. The header is sent exactly as written: nothing is added, so the cookie names its own `Path`, `SameSite` and `HttpOnly` (and `Secure` behind HTTPS).

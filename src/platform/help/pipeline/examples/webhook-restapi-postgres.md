@@ -69,13 +69,15 @@ the whole request envelope; nothing is merged to the root — a JSON body field
 | web.response.send --body "{{ input.script }}"
 ```
 
-Note: each `postgres.query.run` REPLACES `input` with `{ query: { rows: [...] } }` — there is no
-`input._prev`. To reach an earlier node's output after later nodes have
-replaced the payload, use `ctx.nodes['<node id>']` in a script (pipe-mode node
-ids are `n0`, `n1`, … in source order — the first script above is `n2`) or
-`$nodes.<node id>` inside a `{{ }}` expression. A script node adds its answer
-under `script` and keeps the rest, so `ctx.nodes['n2']` is the whole payload
-`n2` left behind — what it returned is `ctx.nodes['n2'].script`.
+Note: every node adds its answer under its own key and keeps the rest of the
+payload (`help("pipeline/dsl")` § One answer key). The second
+`postgres.query.run` answers under `query` again, so it replaces the first
+query's rows and nothing else: `input.script` from the first script is still
+there. To reach a node's answer by name when a later node used the same key,
+use `ctx.nodes['<node id>']` in a script (pipe-mode node ids are `n0`, `n1`, …
+in source order — the first script above is `n2`) or `$nodes.<node id>` inside
+a `{{ }}` expression. `ctx.nodes['n2']` is the whole payload `n2` left behind;
+what it returned is `ctx.nodes['n2'].script`.
 
 ### POST /api/items — create from body
 
@@ -115,6 +117,29 @@ Combine path param and body fields with `--param`:
 | javascript.script.run -- "return { ok: true, deleted: input.query.rows?.[0]?.id ?? null }"
 | web.response.send --body "{{ input.script }}"
 ```
+
+---
+
+## The same API on Sekejap
+
+The project's own database (`sekejap.query.run`, no credential) takes the same
+`--param` binding. Three differences change these statements:
+
+- A row's key is `_key`. `CREATE TABLE posts (_key TEXT PRIMARY KEY DEFAULT ulid(), title TEXT, body TEXT, author_id TEXT, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ)`
+  mints one per `INSERT`.
+- `RETURNING` takes column names and `*`, no `AS` alias and no expression:
+  `INSERT … RETURNING _key, title`, and rename in the next node. `UPDATE …
+  WHERE _key = $1 RETURNING _key, title` answers the changed row (none when
+  the key does not exist, which is the 404 branch).
+- `DELETE … RETURNING` is refused. Delete by key and read `rows_affected`:
+
+```
+| trigger.webhook --route /api/posts/:id --method DELETE
+| sekejap.query.run --write --param "1={{ input.webhook.params.id }}" -- "DELETE FROM posts WHERE _key = $1"
+| web.response.send --body "{{ { ok: true, deleted: input.query.rows_affected > 0 ? $trigger.params.id : null } }}"
+```
+
+`help("db/sekejap")` has the whole dialect.
 
 ---
 
