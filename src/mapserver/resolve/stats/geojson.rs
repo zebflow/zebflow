@@ -31,7 +31,7 @@ pub fn stats(source: &Path) -> Answer {
         "{}\n{}\n{}",
         source.display(),
         fingerprint.size,
-        fingerprint.modified_ns
+        fingerprint.tail_sha256
     );
     if let Some(hit) = cache()
         .lock()

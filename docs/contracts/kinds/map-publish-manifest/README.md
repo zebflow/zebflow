@@ -161,7 +161,9 @@ A GeoParquet layer's statistics are computed once, in the background, when the
 layer is published or its file changes, one computation at a time per process,
 and saved at `data/cache/mapserver-artifacts/{instance}/{layer}/stats.json`
 (CACHE: rebuilt from the file, removed with the layer's folder) with the size
-and modification time of the file they describe. `/stats` only reads that
+of the file they describe and a SHA-256 of its last 64 KiB, where a Parquet
+file keeps its footer; not its modification time, which a bucket's mirror
+copy moves on every read. `/stats` only reads that
 file; when it is missing or describes another version of the file, the answer
 is `computing` and a computation is queued. A `failed` result stays until the
 file changes or the layer is published again. A GeoJSON file layer is scanned

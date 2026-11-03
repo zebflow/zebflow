@@ -2,40 +2,47 @@
 //! all, that names the version of the source file it describes.
 
 use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
 /// The saved file's name inside the layer's cache folder.
 pub const STATS_FILE_NAME: &str = "stats.json";
 /// The saved file's format. A file of another version is computed again.
-pub const SAVED_VERSION: u32 = 1;
+pub const SAVED_VERSION: u32 = 2;
 
-/// Which version of a source file statistics describe: its size and its
-/// modification time. A file whose fingerprint differs has changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Which version of a source file statistics describe: its size and a digest
+/// of its last bytes, where a Parquet file keeps its footer (schema, row
+/// groups and their offsets). Not its modification time: a bucket's mirror
+/// copy is marked as used on every read by moving that time, which would make
+/// saved statistics look stale on every request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fingerprint {
     pub size: u64,
-    pub modified_ns: u64,
+    pub tail_sha256: String,
 }
+
+/// How many trailing bytes the fingerprint reads.
+const TAIL_BYTES: u64 = 64 * 1024;
 
 impl Fingerprint {
     /// The fingerprint of the file at `path`, or `None` when it is not a
     /// readable file.
     pub fn of(path: &Path) -> Option<Self> {
-        let meta = std::fs::metadata(path).ok()?;
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(path).ok()?;
+        let meta = file.metadata().ok()?;
         if !meta.is_file() {
             return None;
         }
-        let modified = meta
-            .modified()
-            .ok()?
-            .duration_since(UNIX_EPOCH)
-            .ok()?
-            .as_nanos();
+        let size = meta.len();
+        let tail = size.min(TAIL_BYTES);
+        file.seek(SeekFrom::Start(size - tail)).ok()?;
+        let mut bytes = Vec::with_capacity(tail as usize);
+        file.take(tail).read_to_end(&mut bytes).ok()?;
         Some(Self {
-            size: meta.len(),
-            modified_ns: u64::try_from(modified).unwrap_or(u64::MAX),
+            size,
+            tail_sha256: hex::encode(Sha256::digest(&bytes)),
         })
     }
 }

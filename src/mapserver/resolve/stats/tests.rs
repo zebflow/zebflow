@@ -436,6 +436,19 @@ fn stats_are_read_never_computed_on_a_request() {
     assert_eq!(names(&operator), ["area", "floors", "name", "suburb"]);
     assert_eq!(operator["allowed_properties"], json!(["suburb"]));
 
+    // A bucket's mirror copy is marked as used by moving its modification
+    // time on every read. That is not a new version of the file: the saved
+    // statistics stay ready and nothing is queued.
+    std::fs::File::options()
+        .append(true)
+        .open(&source)
+        .expect("source")
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+        .expect("touch");
+    let touched = read_with(&layer, StatsAudience::Public, Some(&stats_file), &queue);
+    assert_eq!(touched["state"], json!("ready"), "a touched file keeps its statistics");
+    assert!(queue.waiting().is_empty(), "a touched file is not queued again");
+
     // A changed file is computing again until its own computation runs.
     write_sites(&source, 800, 128, Geo::WithBbox);
     let changed = read_with(&layer, StatsAudience::Public, Some(&stats_file), &queue);
