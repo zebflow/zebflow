@@ -498,7 +498,7 @@ mod tests {
 
         let builder = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(&small_groups).unwrap()).unwrap();
         let schema = builder.schema().clone();
-        let properties = parquet::file::properties::WriterProperties::builder().set_max_row_group_size(50_000).build();
+        let properties = parquet::file::properties::WriterProperties::builder().set_max_row_group_row_count(Some(50_000)).build();
         let mut writer =
             parquet::arrow::ArrowWriter::try_new(std::fs::File::create(&one_group).unwrap(), schema, Some(properties)).unwrap();
         for batch in builder.build().unwrap() {
