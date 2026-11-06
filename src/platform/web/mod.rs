@@ -4293,6 +4293,22 @@ async fn home_clone_project_submit(
         }
     }
 
+    // A clone is a `repo`-only import (`kinds/project-bundle/README.md`): the
+    // cloned pipelines are registered in the catalog, and the store is set up
+    // from the repo's declared schema and initial data, as a bundle import
+    // does. An empty repo has nothing to register or apply.
+    if has_commits {
+        if let Err(err) = reindex_project_repo_files(&state, &owner, &project) {
+            return internal_error(err);
+        }
+        if let Err(err) = state.platform.hub.initiate_project_store(&owner, &project) {
+            return internal_error(err);
+        }
+        if let Err(err) = refresh_local_project_workspace(&state, &owner, &project) {
+            return internal_error(err);
+        }
+    }
+
     if let Err(err) =
         finalize_project_runtime_setup(&state, &owner, &project, &create_req.runtime).await
     {

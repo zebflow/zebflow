@@ -1448,12 +1448,16 @@ pub fn apply_schema_export(
     })
 }
 
+/// Applies the schema document the project declares, read from where its
+/// layout puts it (`spec.layout.schema`, `schemas/sekejap` by default), the
+/// same way the SQLite schema follows `spec.layout.sqlite_schema`.
 pub fn apply_schema_from_repo(
     data_root: &Path,
     owner: &str,
     project: &str,
+    layout: &ResolvedProjectLayout,
 ) -> Result<Option<SekejapSchemaApplyReport>, PlatformError> {
-    let schema_path = repo_schema_dir(data_root, owner, project).join(SCHEMA_DOCUMENT_FILE);
+    let schema_path = repo_dir(data_root, owner, project).join(layout.schema_document_rel());
     if !schema_path.is_file() {
         return Ok(None);
     }
@@ -2983,7 +2987,7 @@ mod tests {
             .expect("target schema dir");
         std::fs::copy(source_schema, &target_schema).expect("copy schema");
 
-        let report = apply_schema_from_repo(tmp.path(), "alice", "clone")
+        let report = apply_schema_from_repo(tmp.path(), "alice", "clone", &ResolvedProjectLayout::platform_default())
             .expect("apply schema")
             .expect("schema report");
         assert_eq!(report.tables_created, vec!["places"]);
@@ -2998,6 +3002,30 @@ mod tests {
         assert!(places.vector_fields.contains(&"embedding".to_string()));
         let embedding = places.attributes.iter().find(|a| a.name == "embedding").expect("embedding");
         assert_eq!(embedding.kind, "vector(3)", "the dimension survives the round trip");
+    }
+
+    #[test]
+    fn apply_schema_from_repo_reads_the_schema_folder_the_layout_declares() {
+        // A project that moves its schema (`spec.layout.schema`) has it read
+        // from there, as the SQLite schema follows `spec.layout.sqlite_schema`.
+        let tmp = tmp_root();
+        create(tmp.path(), "alice", "source", "places", vec![attribute("name", "string", &["hash"])]);
+        let source_schema = tmp.path().join("users/alice/source/repo/schemas/sekejap/schema.json");
+        let moved_schema = tmp.path().join("users/alice/moved/repo/app/db/schema.json");
+        std::fs::create_dir_all(moved_schema.parent().expect("schema parent")).expect("schema dir");
+        std::fs::copy(source_schema, &moved_schema).expect("copy schema");
+
+        let default_layout = ResolvedProjectLayout::platform_default();
+        assert!(
+            apply_schema_from_repo(tmp.path(), "alice", "moved", &default_layout).expect("apply").is_none(),
+            "the default folder holds no schema in this project"
+        );
+        let mut declared = ResolvedProjectLayout::platform_default();
+        declared.schema = "app/db".to_string();
+        let report = apply_schema_from_repo(tmp.path(), "alice", "moved", &declared)
+            .expect("apply schema")
+            .expect("schema report");
+        assert_eq!(report.tables_created, vec!["places"]);
     }
 
     #[test]
@@ -3035,7 +3063,7 @@ mod tests {
         )
         .expect("legacy schema");
 
-        let err = apply_schema_from_repo(tmp.path(), "alice", "demo").unwrap_err();
+        let err = apply_schema_from_repo(tmp.path(), "alice", "demo", &ResolvedProjectLayout::platform_default()).unwrap_err();
         assert_eq!(err.code, "PLATFORM_SEKEJAP_SCHEMA_READ");
         assert!(err.message.contains("invalid contract"));
         assert!(err.message.contains("schema_version"));
@@ -3125,7 +3153,7 @@ mod tests {
         let target_schema = repo_schema_dir(tmp.path(), "alice", "target");
         std::fs::create_dir_all(&target_schema).expect("target repo");
         std::fs::write(target_schema.join(SCHEMA_DOCUMENT_FILE), &document).expect("copy");
-        let report = apply_schema_from_repo(tmp.path(), "alice", "target")
+        let report = apply_schema_from_repo(tmp.path(), "alice", "target", &ResolvedProjectLayout::platform_default())
             .expect("apply")
             .expect("a document to apply");
         assert_eq!(report.tables_created.len(), 4, "{report:?}");
@@ -3256,7 +3284,7 @@ mod tests {
         let target_schema = repo_schema_dir(tmp.path(), "alice", "target");
         std::fs::create_dir_all(&target_schema).expect("target repo");
         std::fs::write(target_schema.join(SCHEMA_DOCUMENT_FILE), &document).expect("copy");
-        apply_schema_from_repo(tmp.path(), "alice", "target")
+        apply_schema_from_repo(tmp.path(), "alice", "target", &ResolvedProjectLayout::platform_default())
             .expect("apply")
             .expect("a document");
 

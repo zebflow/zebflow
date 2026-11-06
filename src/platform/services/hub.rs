@@ -3349,7 +3349,7 @@ impl HubService {
         project: &str,
     ) -> Result<Vec<HubPackageInitialDataStep>, PlatformError> {
         let layout = self.projects.project_layout(owner, project)?;
-        sekejap::apply_schema_from_repo(&self.data_root, owner, project)?;
+        sekejap::apply_schema_from_repo(&self.data_root, owner, project, &layout.repo_layout)?;
         sqlite_schema::apply_schema_from_repo(
             &self.data_root,
             owner,
@@ -4994,7 +4994,7 @@ impl HubService {
             )?;
         }
         if scope.execute_schema {
-            sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
+            sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project, &layout.repo_layout)?;
             sqlite_schema::apply_schema_from_repo(
                 &self.data_root,
                 &target_owner,
