@@ -56,7 +56,7 @@ pub fn definition() -> NodeDefinition {
         title: "HTTP Request".to_string(),
         description: "Calls another server over HTTP — the only way a pipeline reaches the outside (a script's `fetch` is blocked). \
             `--url`, `--method` (GET default), `--body \"{{ expr }}\"` written as `--format json` (default), `text` or `form-data` \
-            (a FileRef is a file part), `--header K=V` repeatable (a repeated name is sent twice), `--credential <id>` for a \
+            (a FileRef is a file part; every method but GET and HEAD sends it, and those two refuse one), `--header K=V` repeatable (a repeated name is sent twice), `--credential <id>` for a \
             secure_request or oauth2 credential so secrets never sit in the pipeline, with `--argument NAME=value` filling a \
             secure_request profile's variables. Adds `response: { status, ok, headers, content_type, body, request }` and keeps the \
             rest of the payload — the answer is `input.response.body`, read as `--parse json` (default; text when it is not JSON), \
@@ -80,7 +80,7 @@ pub fn definition() -> NodeDefinition {
         dsl_flags: vec![
             flag("--url", "url", "The URL to call (http or https). Leave it out when a secure_request credential owns the URL.", "text"),
             DslFlag { choices: words(METHODS), ..flag("--method", "method", "The HTTP method (default GET).", "") },
-            flag("--body", "body", "The request body — a literal or {{ expr }}; a whole {{ }} keeps its type, so an object stays an object. With a secure_request profile it is sent when the profile's Body Template is blank.", "json"),
+            flag("--body", "body", "The request body — a literal or {{ expr }}; a whole {{ }} keeps its type, so an object stays an object. With a secure_request profile it is sent when the profile's Body Template is blank. Every method but GET and HEAD sends it; those two refuse one.", "json"),
             DslFlag { choices: words(FORMAT_WORDS), ..flag("--format", "format", "How the body is written: json (default), text, or form-data (multipart; a FileRef is a file part).", "") },
             DslFlag { kind: DslFlagKind::KeyValuePairs, ..flag("--header", "headers", "A request header, repeated: --header \"Accept=application/json\". A repeated name is sent twice.", "text") },
             DslFlag { choices: words(PARSE_WORDS), ..flag("--parse", "parse", "How the response body is read: json (default; text when it is not JSON), text, or bytes (stored as a FileRef).", "") },
@@ -294,6 +294,11 @@ impl Node {
         // Every choice is checked before anything is sent; an unknown word is
         // refused, never read as the default.
         let method = choice(&config.method, METHODS, "GET", "--method", CONFIG_CODE)?.to_string();
+        // With a credential the profile's template decides the method, so
+        // only a node that names its own is judged now; run time judges the rest.
+        if !has_credential {
+            refuse_body_without_method(&method, Some(&config.body))?;
+        }
         choice(&config.parse, PARSE_WORDS, "json", "--parse", CONFIG_CODE)?;
         choice(&config.format, FORMAT_WORDS, "json", "--format", CONFIG_CODE)?;
         argument_map(&config.argument)?;
@@ -487,44 +492,44 @@ impl NodeHandler for Node {
 
         // ── The body, written as `--format` says ─────────────────────────────────
         let body_type = choice(&self.config.format, FORMAT_WORDS, "json", "--format", CONFIG_CODE)?;
-        let has_body = !matches!(
-            method_parsed.as_str(),
-            "GET" | "HEAD" | "DELETE" | "OPTIONS"
-        );
+        // Every method but GET and HEAD sends the body it is given, DELETE
+        // included: the browser's fetch draws the line at the same two. A
+        // secure_request profile may set the method from a variable, so the
+        // refusal `Node::new` makes for a written --method is made again here
+        // on the method that resolved.
+        refuse_body_without_method(method_parsed.as_str(), prepared.body.as_ref())?;
 
-        if has_body {
-            if let Some(body) = &prepared.body {
-                match body_type {
-                    "form-data" => {
-                        req = build_multipart_request(
-                            req,
-                            body,
-                            self.platform.as_ref(),
-                            &input.metadata,
-                        )?;
+        if let Some(body) = &prepared.body {
+            match body_type {
+                "form-data" => {
+                    req = build_multipart_request(
+                        req,
+                        body,
+                        self.platform.as_ref(),
+                        &input.metadata,
+                    )?;
+                }
+                "text" => {
+                    let body_str = match body {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    // Only set content-type if not already in headers
+                    if !prepared.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+                        req = req.header("content-type", "text/plain");
                     }
-                    "text" => {
-                        let body_str = match body {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        // Only set content-type if not already in headers
-                        if !prepared.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
-                            req = req.header("content-type", "text/plain");
-                        }
-                        req = req.body(body_str);
+                    req = req.body(body_str);
+                }
+                _ => {
+                    // "json" (default)
+                    let body_str = match body {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    if !prepared.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+                        req = req.header("content-type", "application/json");
                     }
-                    _ => {
-                        // "json" (default)
-                        let body_str = match body {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        if !prepared.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
-                            req = req.header("content-type", "application/json");
-                        }
-                        req = req.body(body_str);
-                    }
+                    req = req.body(body_str);
                 }
             }
         }
@@ -995,6 +1000,24 @@ fn argument_map(argument: &Value) -> Result<BTreeMap<String, String>, PipelineEr
 
 /// `--header` as name/value pairs in order: a list value (a name given
 /// twice) is sent once per item.
+/// A GET or HEAD carries no body. One given with either is refused, never
+/// dropped without a word. `null` and `""` are no body.
+fn refuse_body_without_method(method: &str, body: Option<&Value>) -> Result<(), PipelineError> {
+    let given = match body {
+        None | Some(Value::Null) => false,
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(_) => true,
+    };
+    let method = method.trim().to_ascii_uppercase();
+    if given && matches!(method.as_str(), "GET" | "HEAD") {
+        return Err(PipelineError::new(
+            CONFIG_CODE,
+            format!("--body cannot go with {method}: a {method} request carries no body. Send it with POST, or put the values in the URL"),
+        ));
+    }
+    Ok(())
+}
+
 fn header_pairs(headers: &Map<String, Value>) -> Vec<(String, String)> {
     let text = |value: &Value| match value {
         Value::String(s) => s.clone(),
@@ -1282,6 +1305,76 @@ mod tests {
             assert!(connections <= 2, "{CALLS} calls opened {connections} connections");
         }
         server.abort();
+    }
+
+    /// Every method but GET and HEAD sends its body, DELETE included. A GET
+    /// with a body is refused: when the node is built if it names the method
+    /// itself, and at run when a profile's variable picks it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delete_sends_its_body_and_a_get_refuses_one() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let app = Router::new().route(
+            "/echo",
+            axum::routing::any(|method: axum::http::Method, body: String| async move {
+                Json(json!({ "method": method.as_str(), "body": body }))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        platform
+            .credentials
+            .upsert_project_credential(
+                "superadmin",
+                "default",
+                &crate::platform::model::UpsertProjectCredentialRequest {
+                    credential_id: "echo".to_string(),
+                    title: "Echo".to_string(),
+                    kind: "secure_request".to_string(),
+                    secret: json!({
+                        "request": { "method": "<METHOD>", "url": format!("http://{addr}/echo") },
+                        "variables": [{ "name": "METHOD", "required": true }],
+                        "egress": { "allow_private": true, "allowed_hosts": ["127.0.0.1"] }
+                    }),
+                    notes: String::new(),
+                },
+            )
+            .expect("credential");
+        let node_for = |method: &str| {
+            Node::new(
+                serde_json::from_value(json!({ "credential_id": "echo", "argument": { "METHOD": method }, "body": { "ids": [7] } }))
+                    .unwrap(),
+                Arc::new(NoopLanguageEngine),
+                Some(platform.credentials.clone()),
+                None,
+                None,
+            )
+            .expect("built: the profile decides the method")
+        };
+        let input = || NodeExecutionInput {
+            node_id: "n1".to_string(),
+            input_pin: INPUT_PIN_IN.to_string(),
+            payload: json!({}),
+            metadata: json!({ "owner": "superadmin", "project": "default", "pipeline": "t", "request_id": "r" }),
+            bus: None,
+        };
+
+        for method in ["DELETE", "OPTIONS", "POST"] {
+            let out = node_for(method).execute_async(input()).await.expect("fetches");
+            assert_eq!(out.payload["response"]["body"]["method"], method);
+            assert_eq!(out.payload["response"]["body"]["body"], r#"{"ids":[7]}"#, "{method} sent its body");
+        }
+        let err = node_for("GET").execute_async(input()).await.err().expect("a GET with a body");
+        assert!(err.message.contains("carries no body"), "{}", err.message);
+        server.abort();
+
+        let err = build(json!({ "url": "https://example.com/x", "method": "GET", "body": { "a": 1 } })).err().expect("refused when built");
+        assert!(err.message.contains("carries no body"), "{}", err.message);
+        assert!(build(json!({ "url": "https://example.com/x", "method": "HEAD", "body": "x" })).is_err());
+        assert!(build(json!({ "url": "https://example.com/x", "method": "GET" })).is_ok(), "no body is fine");
+        assert!(build(json!({ "url": "https://example.com/x", "method": "GET", "body": "" })).is_ok(), "an empty body is no body");
+        assert!(build(json!({ "url": "https://example.com/x", "method": "DELETE", "body": { "a": 1 } })).is_ok());
     }
 
     /// A header given twice is sent twice; `--argument` is pairs or one object.
