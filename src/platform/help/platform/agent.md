@@ -76,6 +76,7 @@ Read the help topic before writing in a domain you have not used this session:
 | `pipeline_register` | save a DSL body as a draft at `file_rel_path` (`title`, `description` optional); refused, with every problem listed, when `pipeline_check` would refuse it. Re-registering a live pipeline makes it `stale` |
 | `pipeline_patch` | change one node's flags or body by `node_id`; the pipeline becomes `stale` |
 | `pipeline_activate` / `pipeline_deactivate` | promote to live / stop serving; `glob="api/**"` activates many |
+| `pipeline_delete` | remove a pipeline (`file_rel_path`): a live one is switched off first, then its source and registry row go |
 | `pipeline_execute` | run the live version with `input` |
 | `pipeline_run` | run a DSL body once, unsaved — the way to test a query or a script |
 | `pipeline_get_invocations` | recent runs of a live pipeline: status, duration, error, per-node trace |
@@ -98,6 +99,7 @@ scripts, CSS, docs, pipelines); paths are relative to that root.
 | `file_edit` / `file_batch_edit` | exact `old_string` → `new_string` replacement, one file or many |
 | `file_search` | grep across files |
 | `move_resource` | rename or move a pipeline or file; a live pipeline is deactivated, moved and re-activated |
+| `file_delete` | remove one file or an empty folder (`rel_path`); a folder that still holds files and a `.zf.json` (use `pipeline_delete`) are refused |
 
 Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 `AGENTS.md`, `SOUL.md` and `MEMORY.md` are separate: `docs_agent_list`,

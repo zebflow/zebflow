@@ -48,3 +48,5 @@ mod pipeline_tabs;
 mod perf;
 #[path = "platform/mapserver_stats.rs"]
 mod mapserver_stats;
+#[path = "platform/mcp_delete.rs"]
+mod mcp_delete;

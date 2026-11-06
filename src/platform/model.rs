@@ -4514,6 +4514,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "pipeline_patch" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_activate" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_deactivate" => Some(ProjectCapability::PipelinesWrite),
+        "pipeline_delete" => Some(ProjectCapability::PipelinesDelete),
         // The 0.10 → 0.11 migration. The session needs the pipeline
         // capability, and the tool also asks whether the session's creator
         // holds `ProjectDelete` (the owner, or a superadmin), as the HTTP
@@ -4535,6 +4536,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "file_read" => Some(ProjectCapability::TemplatesRead),
         "file_create" => Some(ProjectCapability::TemplatesCreate),
         "file_write" => Some(ProjectCapability::TemplatesWrite),
+        "file_delete" => Some(ProjectCapability::TemplatesDelete),
         "file_search" => Some(ProjectCapability::TemplatesRead),
         "file_edit" => Some(ProjectCapability::TemplatesWrite),
         "file_outline" => Some(ProjectCapability::TemplatesRead),

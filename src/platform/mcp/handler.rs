@@ -110,6 +110,12 @@ struct FileWriteParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct FileDeleteParams {
+    /// Path relative to the project source root of a file, or of an empty folder (e.g. "sandbox/preview.tsx").
+    rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct FileSearchParams {
     /// Pattern to search for (case-insensitive substring).
     pattern: String,
@@ -311,6 +317,12 @@ struct MigrationApplyParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct PipelineDeactivateParams {
     /// Source-relative path of the pipeline to deactivate (e.g. "api/blog-home.zf.json").
+    file_rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct PipelineDeleteParams {
+    /// Source-relative path of the pipeline to delete (e.g. "pipelines/sandbox/preview.zf.json").
     file_rel_path: String,
 }
 
@@ -981,6 +993,62 @@ impl ZebflowMcpHandler {
     }
 
     #[tool(
+        description = "Delete a pipeline: its source and its registry row. A live pipeline is switched off first, so its \
+                       routes, schedules and subscriptions stop before the file goes. The delete Studio makes, and as final: \
+                       git history is the only way back. Answers { ok, file_rel_path, was_active }."
+    )]
+    async fn pipeline_delete(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PipelineDeleteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "pipeline_delete")?;
+        if self.pipeline_locked(&session.owner, &session.project, &params.file_rel_path) {
+            return Err(McpError::invalid_params(
+                "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
+        let meta = self
+            .platform
+            .projects
+            .get_pipeline_meta_by_file_id(&session.owner, &session.project, &params.file_rel_path)
+            .ok()
+            .flatten();
+        // A path that names nothing is said so: a typo must not read as done.
+        let has_source = self
+            .platform
+            .projects
+            .read_pipeline_source(&session.owner, &session.project, &params.file_rel_path)
+            .is_ok();
+        if meta.is_none() && !has_source {
+            return Err(McpError::invalid_params(
+                format!("no pipeline at '{}': pipeline_list shows what there is", params.file_rel_path),
+                None,
+            ));
+        }
+        let was_active = meta.is_some_and(|meta| meta.active_hash.is_some());
+        // Switched off the way every other door does it, so a schedule or a
+        // subscription is disarmed rather than left firing at a missing file.
+        if was_active {
+            self.platform
+                .switch_off(&session.owner, &session.project, &params.file_rel_path)
+                .await
+                .map_err(|err| McpError::invalid_params(err.to_string(), None))?;
+        }
+        self.platform
+            .projects
+            .delete_pipeline(&session.owner, &session.project, &params.file_rel_path)
+            .map_err(|err| McpError::invalid_params(err.to_string(), None))?;
+        self.platform
+            .pipeline_runtime
+            .evict(&session.owner, &session.project, &params.file_rel_path);
+        let answer = serde_json::json!({ "ok": true, "file_rel_path": params.file_rel_path, "was_active": was_active });
+        Ok(CallToolResult::success(vec![Content::text(answer.to_string())]))
+    }
+
+    #[tool(
         description = "Execute a registered active pipeline by name. Records execution hits. \
                        Pipeline must be activated first — use pipeline_activate if status is draft or stale. \
                        Use pipeline_list to see pipeline names and activation status. \
@@ -1158,6 +1226,50 @@ impl ZebflowMcpHandler {
         }
         // navigate is ignored for MCP
         ok_or_err(result)
+    }
+
+    #[tool(
+        description = "Delete one file, or an empty folder, from the project's source root (`rel_path` as file_write takes it). \
+                       A folder that still holds anything is refused: delete what is in it first, so nothing goes unseen. \
+                       A pipeline (`.zf.json`) is refused here: pipeline_delete switches it off and removes its registry row. \
+                       Files the platform writes (zebflow.yaml) and folders the project's layout names stay. Answers { ok, rel_path }."
+    )]
+    async fn file_delete(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<FileDeleteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "file_delete")?;
+        let rel_path = params.rel_path.trim().trim_matches('/');
+        if rel_path.ends_with(".zf.json") {
+            return Err(McpError::invalid_params(
+                format!("'{rel_path}' is a pipeline: delete it with pipeline_delete, which switches it off first"),
+                None,
+            ));
+        }
+        if self.template_locked(&session.owner, &session.project, rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
+        // Resolved while it exists: a deleted path no longer canonicalises,
+        // and the template cache records canonical paths.
+        let abs = self
+            .platform
+            .projects
+            .resolve_template_abs_path(&session.owner, &session.project, rel_path)
+            .ok();
+        self.platform
+            .projects
+            .delete_repo_file_or_empty_folder(&session.owner, &session.project, rel_path)
+            .map_err(|err| McpError::invalid_params(err.to_string(), None))?;
+        if let Some(abs) = abs {
+            crate::pipeline::engines::basic::evict_template_cache_by_path(&self.template_cache, &abs.to_string_lossy());
+        }
+        let answer = serde_json::json!({ "ok": true, "rel_path": rel_path });
+        Ok(CallToolResult::success(vec![Content::text(answer.to_string())]))
     }
 
     #[tool(

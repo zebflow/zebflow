@@ -2426,6 +2426,27 @@ impl ProjectService {
         project: &str,
         rel_path: &str,
     ) -> Result<(), PlatformError> {
+        self.remove_repo_entry(owner, project, rel_path, true)
+    }
+
+    /// As [`Self::delete_repo_entry`], but a folder that still holds anything
+    /// is refused: what an agent removes, it removes one file at a time.
+    pub fn delete_repo_file_or_empty_folder(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<(), PlatformError> {
+        self.remove_repo_entry(owner, project, rel_path, false)
+    }
+
+    fn remove_repo_entry(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        recursive: bool,
+    ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.ensure_template_tree_editable(&owner, &project, rel_path, "deleted")?;
@@ -2463,6 +2484,12 @@ impl ProjectService {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_DECLARED_ROOT",
                 format!("'{rel}' is named by this project's layout and cannot be deleted"),
+            ));
+        }
+        if abs.is_dir() && !recursive && fs::read_dir(&abs).map(|mut entries| entries.next().is_some()).unwrap_or(true) {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_NOT_EMPTY",
+                format!("'{rel}' is a folder that still holds files: delete them one by one first"),
             ));
         }
         if abs.is_dir() {
