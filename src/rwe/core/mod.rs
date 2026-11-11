@@ -29,6 +29,19 @@ pub(crate) fn js_path(path: &std::path::Path) -> String {
     js_path_text(&path.to_string_lossy(), cfg!(windows))
 }
 
+/// Whether an import specifier names a file by absolute path, the form an
+/// `@/` import takes once resolved (`js_path`). On Unix that is a leading `/`;
+/// on Windows also a drive (`C:/…`). Elsewhere this is exactly the old test,
+/// so nothing changes there.
+pub(crate) fn is_file_specifier(specifier: &str) -> bool {
+    specifier.starts_with('/') || (cfg!(windows) && has_drive_prefix(specifier))
+}
+
+fn has_drive_prefix(text: &str) -> bool {
+    let b = text.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\')
+}
+
 fn js_path_text(text: &str, windows: bool) -> String {
     if !windows {
         return text.to_string();
@@ -52,6 +65,14 @@ mod js_path_tests {
         assert_eq!(js_path_text(r"\\?\D:\work\Ui\button.tsx", true), "D:/work/Ui/button.tsx");
         assert_eq!(js_path_text(r"C:\site-a\pages\home.tsx", true), "C:/site-a/pages/home.tsx");
         assert_eq!(js_path_text(r"\\?\UNC\server\share\ui\x.tsx", true), "//server/share/ui/x.tsx");
+    }
+
+    #[test]
+    fn a_drive_prefix_is_a_letter_a_colon_and_a_slash() {
+        use super::has_drive_prefix;
+        assert!(has_drive_prefix("C:/site-a/x.tsx") && has_drive_prefix(r"d:\site-a\x.tsx"));
+        assert!(!has_drive_prefix("zeb/react") && !has_drive_prefix("npm:react") && !has_drive_prefix("C:"));
+        assert!(!has_drive_prefix("https://example.com/x.js"));
     }
 
     #[test]

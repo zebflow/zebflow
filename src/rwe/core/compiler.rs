@@ -295,7 +295,7 @@ fn validate_import_allowlist(
         // An absolute path is the resolved form of an @/ import, written to
         // disk by prepare_template_root() before compile() is called — and
         // also what an author can type. Only the first is inside a root.
-        if import.starts_with('/') {
+        if super::is_file_specifier(import) {
             ensure_bundle_read_allowed(
                 import,
                 options.template_root.as_deref(),
@@ -366,7 +366,7 @@ fn validate_zeb_exclusive_symbols(program: &oxc_ast::ast::Program<'_>) -> Result
             // Only zeb/react, and absolute paths (the resolved form of @/ after
             // prepare_template_root rewrites them on disk). A sibling library
             // exporting the word `memo` does not get to supply `memo`.
-            if specifier == super::zeb_react::SPECIFIER || specifier.starts_with('/') {
+            if specifier == super::zeb_react::SPECIFIER || super::is_file_specifier(specifier) {
                 continue;
             }
             if let Some(specifiers) = &import.specifiers {
@@ -864,9 +864,9 @@ fn bundle_for_client(
     // Depth-first: inline all filesystem imports from the page.
     for edge in imports {
         let path = edge.resolved.as_deref().unwrap_or(&edge.source);
-        if path.starts_with('/') && path.ends_with(".css") {
+        if super::is_file_specifier(path) && path.ends_with(".css") {
             collect_inline_style(path, &mut inline_styles, &mut visited, template_root, library_roots)?;
-        } else if path.starts_with('/') && !is_rwe_runtime_path(path) {
+        } else if super::is_file_specifier(path) && !is_rwe_runtime_path(path) {
             collect_inlined_module(
                 path,
                 &mut inlined_parts,
@@ -1454,7 +1454,7 @@ fn extract_filesystem_import_paths(source: &str) -> Vec<String> {
         .filter_map(|stmt| {
             if let Statement::ImportDeclaration(import) = stmt {
                 let path = import.source.value.as_str();
-                if path.starts_with('/') {
+                if super::is_file_specifier(path) {
                     return Some(path.to_string());
                 }
             }
@@ -1593,7 +1593,7 @@ fn strip_local_imports(
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            let should_strip = specifier.starts_with("zeb/") || specifier.starts_with('/');
+            let should_strip = specifier.starts_with("zeb/") || super::is_file_specifier(specifier);
             if should_strip {
                 let start = import.span.start as usize;
                 let mut end = import.span.end as usize;
@@ -1606,7 +1606,7 @@ fn strip_local_imports(
                 // keeps its names in the flat bundle.
                 let replacement = if specifier == super::zeb_react::SPECIFIER {
                     super::zeb_react::lower_import(import)?
-                } else if specifier.starts_with('/') {
+                } else if super::is_file_specifier(specifier) {
                     bind_inlined_import(import, specifier, sources)?
                 } else {
                     super::zeb_lib::lower_import(import)

@@ -704,6 +704,12 @@ impl ModuleLoader for RweModuleLoader {
             return ModuleSpecifier::parse(&format!("file://{specifier}"))
                 .map_err(JsErrorBox::from_err);
         }
+        // On Windows the same paths start with a drive (`C:/…`), which a URL
+        // join would read as a scheme.
+        if cfg!(windows) && super::is_file_specifier(specifier) {
+            return ModuleSpecifier::from_file_path(specifier)
+                .map_err(|_| JsErrorBox::generic(format!("invalid module path: {specifier}")));
+        }
         // Relative or other specifiers — resolve against referrer URL.
         if let Ok(base) = ModuleSpecifier::parse(referrer) {
             if let Ok(resolved) = base.join(specifier) {
