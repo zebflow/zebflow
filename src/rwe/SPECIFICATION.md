@@ -132,7 +132,7 @@ Source .tsx file (entry page)
         ▼
 ┌──────────────────┐
 │   OXC Parser     │  Parse TSX into AST (Rust, fast)
-│  (Rust, oxc)     │  Panics → saved to /tmp/rwe-parse-failed.tsx
+│  (Rust, oxc)     │  Panics → saved to rwe-parse-failed.tsx (system temp folder)
 └────────┬─────────┘
          │
          ▼

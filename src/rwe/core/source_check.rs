@@ -57,7 +57,7 @@ pub fn is_template_path(path: &str) -> bool {
     path.ends_with(".tsx") || path.ends_with(".ts")
 }
 
-fn line_col(source: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn line_col(source: &str, offset: usize) -> (usize, usize) {
     let offset = offset.min(source.len());
     let before = &source[..offset];
     let line = before.matches('\n').count() + 1;

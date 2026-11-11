@@ -21,13 +21,21 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
     }));
     match result {
         Ok(r) => r,
-        Err(_) => {
-            let _ = std::fs::write("/tmp/rwe-parse-failed.tsx", source);
-            Err(EngineError::new(
-                "RWE_PARSE_PANIC",
-                "oxc compiler panicked — source written to /tmp/rwe-parse-failed.tsx",
-            ))
-        }
+        Err(_) => Err(EngineError::new(
+            "RWE_PARSE_PANIC",
+            format!("oxc compiler panicked; {}", keep_failed_source(source)),
+        )),
+    }
+}
+
+/// Keeps a source the parser could not read in the system's temporary folder
+/// (`/tmp` does not exist on Windows). The message names the file, not the
+/// folder: the folder's path can carry the account name, and this message can
+/// reach a browser.
+fn keep_failed_source(source: &str) -> String {
+    match std::fs::write(std::env::temp_dir().join("rwe-parse-failed.tsx"), source) {
+        Ok(()) => "source kept as rwe-parse-failed.tsx in the system temporary folder".to_string(),
+        Err(_) => "the source could not be kept".to_string(),
     }
 }
 
@@ -37,10 +45,20 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
     let parsed = Parser::new(&alloc, source, source_type).parse();
 
     if parsed.panicked {
-        let _ = std::fs::write("/tmp/rwe-parse-failed.tsx", source);
+        // A fatal syntax error: name the first one, where it is and the line it
+        // points at, so a build log shows the fault when the source is out of reach.
+        let first = match parsed.errors.first() {
+            Some(error) => {
+                let offset = error.labels.as_ref().and_then(|l| l.first().map(|s| s.offset())).unwrap_or(0);
+                let (line, column) = super::source_check::line_col(source, offset);
+                let text: String = source.lines().nth(line - 1).unwrap_or("").chars().take(160).collect();
+                format!("{} at line {line}, column {column}: {text:?}", error.message)
+            }
+            None => "the parser gave up without a diagnostic".to_string(),
+        };
         return Err(EngineError::new(
             "RWE_PARSE",
-            "oxc parser panicked while parsing TSX",
+            format!("oxc parser panicked while parsing TSX: {first}; {}", keep_failed_source(source)),
         ));
     }
     if !parsed.errors.is_empty() {
@@ -1622,6 +1640,20 @@ mod tests {
             .expect("tempdir");
         let root = tmp.path().to_path_buf();
         (tmp, root)
+    }
+
+    /// A source that does not parse names the first error, its line and the
+    /// line's text, so a build log on a machine without the source still
+    /// shows the fault; the message names no folder.
+    #[test]
+    fn a_source_that_does_not_parse_says_where_and_what() {
+        let source = "export default function Page() {\n  return <main>{1 +}</main>;\n}\n";
+        let err = compile(source, CompileOptions::default()).expect_err("must not compile");
+        assert_eq!(err.code, "RWE_PARSE", "{}", err.message);
+        assert!(err.message.contains("at line 2, column"), "{}", err.message);
+        assert!(err.message.contains("return <main>{1 +}</main>;"), "{}", err.message);
+        assert!(err.message.contains("rwe-parse-failed.tsx in the system temporary folder"), "{}", err.message);
+        assert!(!err.message.contains("/tmp"), "{}", err.message);
     }
 
     #[test]

@@ -1,0 +1,101 @@
+name: Build & Start Check
+
+# Builds the release binaries and starts each one before anything is published.
+# The release workflow calls this; a push to a `check/...` branch runs it alone,
+# which publishes nothing.
+#
+# Build machines are pinned, not `-latest`: a moving image changed what the
+# binaries need underneath us (a Linux build on a newer Ubuntu asked for a newer
+# C library than Debian 13 or Ubuntu 24.04 has) and a retired one cancelled a
+# release outright. Linux builds on Ubuntu 22.04, so the binaries run on it and
+# on anything newer; the start check runs them on Debian 12 to prove it.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version baked into the binaries, e.g. v0.11.26"
+        type: string
+        required: true
+  workflow_dispatch:
+  push:
+    branches: ["check/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-22.04
+            asset: zebflow-linux-amd64.tar.gz
+            binary: zebflow
+            check: docker debian:12
+          - name: linux-arm64
+            runner: ubuntu-22.04-arm
+            asset: zebflow-linux-arm64.tar.gz
+            binary: zebflow
+            check: docker debian:12
+          - name: darwin-arm64
+            runner: macos-15
+            asset: zebflow-darwin-arm64.tar.gz
+            binary: zebflow
+            check: native
+          - name: windows-amd64
+            runner: windows-2022
+            asset: zebflow-windows-amd64.zip
+            binary: zebflow.exe
+            check: native
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --bin zebflow
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+
+      - name: Start check
+        shell: bash
+        run: bash .github/scripts/start-check.sh ${{ matrix.check }} "target/release/${{ matrix.binary }}"
+
+      - name: Archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd target/release
+          tar -czf "../../${{ matrix.asset }}" "${{ matrix.binary }}"
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/release/${{ matrix.binary }}" -DestinationPath "${{ matrix.asset }}"
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+          if-no-files-found: error
