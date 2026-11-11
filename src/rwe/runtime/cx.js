@@ -97,8 +97,11 @@ globalThis.cx = (function () {
     if (m) return /^\[/.test(m[1]) ? null : ["shadow-color", ["shadow-color"]];
     m = /^ring(?:-(.+))?$/.exec(u);
     if (m) {
-      if (!m[1] || /^\d+$/.test(m[1])) return ["ring-width", ["ring-width"]];
-      if (/^(offset|inset)/.test(m[1]) || /^\[/.test(m[1])) return null;
+      // A bracket value is a width when it is a length (`ring-[3px]`) and a
+      // colour when it reads as one, as for `border-`; anything else stays.
+      if (!m[1] || /^\d+$/.test(m[1]) || LENGTH.test(m[1])) return ["ring-width", ["ring-width"]];
+      if (/^(offset|inset)/.test(m[1])) return null;
+      if (/^\[/.test(m[1]) && !COLORISH.test(m[1])) return null;
       return ["ring-color", ["ring-color"]];
     }
     m = /^(leading|tracking|opacity|z|items|self|cursor|whitespace|select|overflow-x|overflow-y|overflow)-(.+)$/.exec(u);

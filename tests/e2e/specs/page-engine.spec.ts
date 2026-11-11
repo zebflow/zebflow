@@ -25,6 +25,7 @@ export default function Demo() {
       <button id="count" onClick={() => setCount(count + 1)}>{count}</button>
       <a id="jump" href="#far">far</a>
       <div id="merged" className={cx("px-4 text-primary", "px-0 text-muted-foreground")}>merged</div>
+      <div id="ringed" className={cx("focus-visible:ring-[3px] ring-[#f00]", "focus-visible:ring-0 ring-blue-500")}>ringed</div>
       <div id="bordered" className="border">bordered</div>
       <div id="probe" style={{ color: "var(--border)" }}>probe</div>
       <div id="scrim" className="bg-overlay">scrim</div>
@@ -109,8 +110,12 @@ test.describe("page engine", () => {
     expect(classes).toEqual(expect.arrayContaining(["px-0", "text-muted-foreground"]));
     expect(classes).not.toContain("px-4");
     expect(classes).not.toContain("text-primary");
+    // A ring width or colour written in brackets is replaced like any other.
+    const ringed = /id="ringed" class="([^"]*)"|class="([^"]*)" id="ringed"/.exec(html);
+    expect(ringed?.[1] ?? ringed?.[2]).toBe("focus-visible:ring-0 ring-blue-500");
     await hydrated(page, "/demo");
     await expect(page.locator("#merged")).toHaveClass("px-0 text-muted-foreground");
+    await expect(page.locator("#ringed")).toHaveClass("focus-visible:ring-0 ring-blue-500");
     expect(consoleErrors).toEqual([]);
   });
 

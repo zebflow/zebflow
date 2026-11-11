@@ -5,14 +5,15 @@ import { Textarea } from "zeb/ui/textarea";
 
 /**
  * InputGroup — a bordered row combining an Input/Textarea with icon/button/
- * text addons. Upstream detects a nested textarea or an invalid control
- * with `:has(>textarea)` / `:has([aria-invalid=true])`; this engine's
- * Tailwind subset doesn't reach into children that way, so this port takes
- * that state as explicit props instead: `multiline` (the height/direction
- * switch upstream gets from `:has(>textarea)`) and `invalid` (the border/
- * ring upstream gets from `:has([aria-invalid=true])`). `InputGroupButton`
- * reuses `Button`'s own size scale (`xs`/`sm`/`icon-xs`/`icon-sm`) instead
- * of redeclaring one.
+ * text addons. The focus ring is upstream's: the group rings when its
+ * control (`data-slot="input-group-control"`) has visible focus, and the
+ * control drops its own ring. Upstream detects a nested textarea or an
+ * invalid control with `:has(>textarea)` / `:has([aria-invalid=true])`;
+ * this port takes that state as explicit props instead: `multiline` (the
+ * height/direction switch upstream gets from `:has(>textarea)`) and
+ * `invalid` (the border/ring upstream gets from `:has([aria-invalid=true])`).
+ * `InputGroupButton` reuses `Button`'s own size scale (`xs`/`sm`/`icon-xs`/
+ * `icon-sm`) instead of redeclaring one.
  */
 
 const ALIGN = {
@@ -29,6 +30,8 @@ export function InputGroup({ className, multiline, invalid, ...props }) {
       role="group"
       className={cx(
         "relative flex w-full items-center rounded-md border border-input shadow-xs transition-colors outline-none dark:bg-input/30",
+        // The group, not the field inside it, shows the focus ring (upstream's selector).
+        "has-[[data-slot=input-group-control]:focus-visible]:border-ring has-[[data-slot=input-group-control]:focus-visible]:ring-[3px] has-[[data-slot=input-group-control]:focus-visible]:ring-ring/50",
         multiline ? "h-auto flex-col" : "h-9 min-w-0",
         invalid ? "border-destructive ring-destructive/20 dark:ring-destructive/40" : "",
         className

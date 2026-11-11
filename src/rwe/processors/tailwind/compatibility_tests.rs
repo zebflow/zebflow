@@ -134,6 +134,11 @@ fn common_tailwind_variants_transform_selectors_and_at_rules() {
     );
     assert_rule("peer-checked:block", &[".peer:checked ~ ", "display:block"]);
     assert_rule("has-[:checked]:ring-2", &[":has(:checked)"]);
+    // zeb/ui InputGroup rings itself while its control has visible focus.
+    assert_rule(
+        "has-[[data-slot=input-group-control]:focus-visible]:ring-[3px]",
+        &[":has([data-slot=input-group-control]:focus-visible)", "3px"],
+    );
     assert_rule("aria-checked:bg-blue-500", &["[aria-checked=\"true\"]"]);
     assert_rule("data-[state=open]:block", &["[data-state=\"open\"]"]);
     assert_rule(
