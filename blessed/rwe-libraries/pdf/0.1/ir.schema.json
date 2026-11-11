@@ -179,7 +179,7 @@
             "y": { "type": "number" },
             "width": { "type": "number" },
             "height": { "type": "number" },
-            "format": { "type": "string" }
+            "format": { "enum": ["png", "jpeg"] }
           },
           "required": ["type", "data"]
         }

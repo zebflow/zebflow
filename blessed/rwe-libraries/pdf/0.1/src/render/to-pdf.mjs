@@ -11,6 +11,7 @@ import {
 import { validateNode, getPageDimensions, getEffectiveMargin, NODE_TYPES } from "../ir/nodes.mjs";
 import { StyleEngine, colorToRgb, parseColor } from "../ir/stylesheet.mjs";
 import { measureTextWidth, wrapText } from "../ir/layout.mjs";
+import { imageBytes, fingerprint, sameBytes, pdfImage } from "./images.mjs";
 
 const FONT_MAP = {
   'Helvetica': '/Helvetica',
@@ -55,16 +56,18 @@ export class IrRenderer {
     return this._fontResources.get(fontName);
   }
 
+  // One image object per distinct content: the key covers every byte, and equal keys are compared in full.
   getImageId(imageData) {
-    const key = imageData instanceof Uint8Array
-      ? `bin_${imageData.length}`
-      : imageData.slice(0, 100);
-    
-    if (!this._imageResources.has(key)) {
-      const id = this._nextImageId++;
-      this._imageResources.set(key, { id, data: imageData });
+    const bytes = imageBytes(imageData);
+    const key = fingerprint(bytes);
+    const same = this._imageResources.get(key) || [];
+    let info = same.find((known) => sameBytes(known.bytes, bytes));
+    if (!info) {
+      info = { id: this._nextImageId++, bytes, image: pdfImage(bytes) };
+      same.push(info);
+      this._imageResources.set(key, same);
     }
-    return this._imageResources.get(key);
+    return info;
   }
 
   measureText(text, fontFamily, fontSize) {
@@ -72,23 +75,6 @@ export class IrRenderer {
       width: measureTextWidth(text, fontFamily, fontSize),
       height: fontSize * 1.2,
     };
-  }
-
-  parseImageData(data) {
-    if (typeof data === 'string') {
-      const match = data.match(/^data:image\/(\w+);base64,(.+)$/);
-      if (match) {
-        const format = match[1];
-        const base64 = match[2];
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        return { bytes, format };
-      }
-    }
-    return { bytes: data instanceof Uint8Array ? data : new Uint8Array(), format: 'png' };
   }
 
   renderDocument(irDoc) {
@@ -244,30 +230,12 @@ export class IrRenderer {
     }
 
     const imageXObjectEntries = [];
-    for (const [key, imgInfo] of this._imageResources) {
-      const imgId = imgInfo.id;
-      if (!this._writtenImageIds.has(imgId)) {
-        const { bytes, format } = this.parseImageData(imgInfo.data);
-        const filter = format === 'jpeg' ? [pName('/DCTDecode')] : [];
-
-        const imgDict = {
-          Type: pName('/XObject'),
-          Subtype: pName('/Image'),
-          Width: pInt(imgInfo.width || 100),
-          Height: pInt(imgInfo.height || 100),
-          ColorSpace: pName('/DeviceRGB'),
-          BitsPerComponent: pInt(8),
-        };
-
-        if (filter.length > 0) {
-          imgDict.Filter = pArray(filter);
+    for (const same of this._imageResources.values()) {
+      for (const imgInfo of same) {
+        if (!this._writtenImageIds.has(imgInfo.id)) {
+          imgInfo.pdfId = this._writeImage(imgInfo.image);
+          this._writtenImageIds.add(imgInfo.id);
         }
-
-        const pdfId = this.writer.add(pStream(imgDict, bytes));
-        imgInfo.pdfId = pdfId;
-        this._writtenImageIds.add(imgId);
-      }
-      if (imgInfo.pdfId !== undefined) {
         imageXObjectEntries.push([`I${imgInfo.id}`, pRef(imgInfo.pdfId)]);
       }
     }
@@ -281,6 +249,32 @@ export class IrRenderer {
     }
 
     return pDict(resources);
+  }
+
+  // An image XObject, with its alpha as a separate /SMask image when it has one. Returns the object id.
+  _writeImage(img) {
+    const dict = {
+      Type: pName('/XObject'),
+      Subtype: pName('/Image'),
+      Width: pInt(img.width),
+      Height: pInt(img.height),
+      ColorSpace: pName('/' + img.colorSpace),
+      BitsPerComponent: pInt(img.bits),
+    };
+    if (img.filter) dict.Filter = pName('/' + img.filter);
+    if (img.decodeParms) dict.DecodeParms = pDict(Object.fromEntries(Object.entries(img.decodeParms).map(([k, v]) => [k, pInt(v)])));
+    if (img.decode) dict.Decode = pArray(img.decode.map((v) => pInt(v)));
+    if (img.smask) {
+      dict.SMask = pRef(this.writer.add(pStream({
+        Type: pName('/XObject'),
+        Subtype: pName('/Image'),
+        Width: pInt(img.smask.width),
+        Height: pInt(img.smask.height),
+        ColorSpace: pName('/DeviceGray'),
+        BitsPerComponent: pInt(8),
+      }, img.smask.bytes)));
+    }
+    return this.writer.add(pStream(dict, img.bytes));
   }
 
   renderNode(node, context, layout, ancestors = [], sibIdx = 0, sibCount = 1) {
@@ -382,14 +376,13 @@ export class IrRenderer {
   renderImage(imageNode, context, layout, style) {
     const imageData = imageNode.data;
     const imgInfo = this.getImageId(imageData);
-    
-    let width = imageNode.width || 100;
-    let height = imageNode.height || 100;
-    
-    if (imgInfo.width && imgInfo.height) {
-      width = imgInfo.width;
-      height = imgInfo.height;
-    }
+    // The size on the page is the node's; with one side given the other keeps the image's proportions,
+    // and with neither the image takes one point per pixel.
+    const px = imgInfo.image;
+    let width = imageNode.width, height = imageNode.height;
+    if (width === undefined && height === undefined) { width = px.width; height = px.height; }
+    else if (width === undefined) width = (height * px.width) / px.height;
+    else if (height === undefined) height = (width * px.height) / px.width;
 
     const x = imageNode.x !== undefined ? imageNode.x : layout.x;
     const y = imageNode.y !== undefined ? imageNode.y : layout.y;

@@ -206,12 +206,13 @@ function validateRect(node) {
 }
 
 function validateImage(node) {
-  assert(isString(node.data) || node.data instanceof Uint8Array, 'image.data must be string or Uint8Array');
+  assert(isString(node.data) || node.data instanceof Uint8Array || node.data instanceof ArrayBuffer || isArray(node.data),
+    'image.data must be a data URL, a Uint8Array, an ArrayBuffer or an array of bytes');
   if (node.x !== undefined) assert(isNumber(node.x), 'image.x must be a number');
   if (node.y !== undefined) assert(isNumber(node.y), 'image.y must be a number');
   if (node.width !== undefined) assert(isNumber(node.width), 'image.width must be a number');
   if (node.height !== undefined) assert(isNumber(node.height), 'image.height must be a number');
-  if (node.format) assertEnum(node.format, ['png', 'jpeg', 'webp'], 'image.format');
+  if (node.format) assertEnum(node.format, ['png', 'jpeg'], 'image.format');
   if (node.quality !== undefined) assert(node.quality >= 0 && node.quality <= 1, 'image.quality must be 0-1');
 }
 

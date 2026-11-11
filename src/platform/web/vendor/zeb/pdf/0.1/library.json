@@ -3,7 +3,7 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
-  "description": "Browser-native PDF generation library. Zero dependencies, 42 KB raw / 13 KB gzip. Build structured PDFs from a declarative IR tree with text flow, tables, multi-column layout, floats, headers/footers, and automatic page-break handling.",
+  "description": "Browser-native PDF generation library. Zero dependencies, 50 KB raw / 16 KB gzip. Build structured PDFs from a declarative IR tree with text flow, tables, multi-column layout, floats, headers/footers, and automatic page-break handling.",
   "source": {
     "provider": "zebflow",
     "package": "zeb-pdf",

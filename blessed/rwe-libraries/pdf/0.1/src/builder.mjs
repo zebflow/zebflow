@@ -677,6 +677,10 @@ export function text(value, options = {}) {
   };
 }
 
+// A PNG or JPEG: `data` is a base64 data URL, a Uint8Array, an ArrayBuffer or an array of bytes; the format is
+// read from the bytes. `width`/`height` are the size on the page in points: give one and the other keeps the
+// image's proportions, give neither and it takes one point per pixel. PNG transparency is kept. The builders'
+// `.image()` methods take the same options.
 export function image(options = {}) {
   return {
     type: NODE_TYPES.IMAGE,
