@@ -2203,12 +2203,6 @@ fn externalize_rwe_scripts(
         None => None,
     };
 
-    // A project whose lock pins installed RWE libraries must load them from
-    // its own installed copies at `data/hub/rwe-libraries/` — every accepted
-    // lock source resolves there — and only the project-scoped asset route
-    // can serve those. When a deployment asset base is set the existing
-    // `{base}/libraries/` rewrite already lands on that route, so this only
-    // applies without one.
     // Where this page addresses the project's static assets, for the address
     // it was served on: the host's own `/_static/` on a project host, so a
     // public page never names its owner or project (`addressing.md` §1); the
@@ -2224,14 +2218,16 @@ fn externalize_rwe_scripts(
         (None, _) => String::new(),
     };
 
+    // A project page loads `zeb/*` libraries through the project's own asset
+    // route, which answers with the project's installed copy when its lock pins
+    // one and with the hub catalogue otherwise. `/assets/libraries/` answers
+    // with the Studio's vendored pins first: those are the platform's own, not
+    // a default for somebody else's project, and a fix published to a library
+    // would never reach a project page through them. When a deployment asset
+    // base is set the existing `{base}/libraries/` rewrite already lands on
+    // that route, so this only applies without one.
     let hub_library_base = match (project_scope, &deployment_asset_base) {
-        (Some((owner, project)), None) => state
-            .platform
-            .dependency_lock
-            .read(owner, project)
-            .ok()
-            .filter(|lock| !lock.rwe.libraries.is_empty())
-            .map(|_| format!("{static_base}_rwe/lib/")),
+        (Some(_), None) => Some(format!("{static_base}_rwe/lib/")),
         _ => None,
     };
 

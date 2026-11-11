@@ -8,6 +8,9 @@ import type { APIRequestContext, Page } from "@playwright/test";
  *
  * - its scripts come from the host's own `/_static/`, so the public page names
  *   neither its owner nor its project (`addressing.md` §1);
+ * - its `zeb/*` libraries load through the project's own `_rwe/lib/` route
+ *   (installed copy, else the hub catalogue), never the Studio's pinned
+ *   `/assets/libraries/` copies;
  * - a `#fragment` link scrolls to the fragment and refetches nothing;
  * - `cx` lets a class passed last replace one that sets the same property, on
  *   the server and after hydration alike (`<Button className="px-0">`);
@@ -86,6 +89,21 @@ test.describe("page engine", () => {
     expect(html).not.toContain(`/static/${OWNER}/${project}`);
     const platform = await (await request.get(`/wh/${OWNER}/${project}/demo`)).text();
     expect(platform, "the platform address keeps the platform form").toContain(`/static/${OWNER}/${project}/_rwe/scripts/`);
+    await hydrated(page, "/demo");
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("a project page loads zeb libraries through its own route, not the Studio's pins", async ({ page, consoleErrors }) => {
+    const html = await (await request.get(`${host}/demo`)).text();
+    const src = /src="(\/_static\/_rwe\/scripts\/[^"]+)"/.exec(html)?.[1];
+    expect(src, "the page's compiled script").toBeTruthy();
+    const script = await (await request.get(`${host}${src}`)).text();
+    expect(script).not.toContain("/assets/libraries/");
+    const lib = /\/_static\/_rwe\/lib\/zeb\/[^"'`)\s]+\.m?js/.exec(script)?.[0];
+    expect(lib, "a zeb library imported through the project's route").toBeTruthy();
+    const served = await request.get(`${host}${lib}`);
+    expect(served.status(), lib).toBe(200);
+    expect(served.headers()["content-type"]).toContain("javascript");
     await hydrated(page, "/demo");
     expect(consoleErrors).toEqual([]);
   });
