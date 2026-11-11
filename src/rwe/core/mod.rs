@@ -19,6 +19,48 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
     compiler::compile(source, options)
 }
 
+/// A file path as it can sit inside a JavaScript string (an import
+/// specifier) on every platform. On Windows `canonicalize` answers
+/// `\\?\D:\work\…` with backslashes: every backslash in a string literal is an
+/// escape, and some are invalid (`\U`, `\x` without hex digits), so a page could
+/// not parse at all. Forward slashes and no `\\?\` prefix: Windows opens
+/// `C:/a/b.tsx` as it opens `C:\a\b.tsx`. Elsewhere the path is left as it is.
+pub(crate) fn js_path(path: &std::path::Path) -> String {
+    js_path_text(&path.to_string_lossy(), cfg!(windows))
+}
+
+fn js_path_text(text: &str, windows: bool) -> String {
+    if !windows {
+        return text.to_string();
+    }
+    let plain = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        text.to_string()
+    };
+    plain.replace('\\', "/")
+}
+
+#[cfg(test)]
+mod js_path_tests {
+    use super::js_path_text;
+
+    #[test]
+    fn a_windows_path_becomes_a_specifier_with_no_escapes() {
+        assert_eq!(js_path_text(r"\\?\D:\work\Ui\button.tsx", true), "D:/work/Ui/button.tsx");
+        assert_eq!(js_path_text(r"C:\site-a\pages\home.tsx", true), "C:/site-a/pages/home.tsx");
+        assert_eq!(js_path_text(r"\\?\UNC\server\share\ui\x.tsx", true), "//server/share/ui/x.tsx");
+    }
+
+    #[test]
+    fn elsewhere_a_path_is_left_as_it_is() {
+        assert_eq!(js_path_text("/var/lib/site-a/ui/button.tsx", false), "/var/lib/site-a/ui/button.tsx");
+        assert_eq!(js_path_text(r"/odd\name.tsx", false), r"/odd\name.tsx");
+    }
+}
+
 pub fn render(
     compiled: &CompiledTemplate,
     vars: &serde_json::Value,
@@ -168,7 +210,7 @@ fn rewrite_imports_variant(
         if rel == "rwe" {
             let shim = root.join("rwe.ts");
             let resolved = fs::canonicalize(&shim).unwrap_or(shim);
-            let resolved_str = resolved.to_string_lossy().to_string();
+            let resolved_str = js_path(&resolved);
             out.replace_range(spec_start..spec_end, &resolved_str);
             cursor = spec_start + resolved_str.len();
             continue;
@@ -194,21 +236,21 @@ fn resolve_alias(root: &std::path::Path, rel: &str) -> Result<String, EngineErro
     let base = root.join(rel);
     if base.exists() {
         let abs = fs::canonicalize(&base).unwrap_or(base);
-        return Ok(abs.to_string_lossy().to_string());
+        return Ok(js_path(&abs));
     }
     for ext in [".tsx", ".ts", ".jsx", ".js"] {
         let candidate = PathBuf::from(format!("{}{ext}", base.display()));
         if candidate.exists() {
             let abs = fs::canonicalize(&candidate).unwrap_or(candidate);
-            return Ok(abs.to_string_lossy().to_string());
+            return Ok(js_path(&abs));
         }
     }
     for index in ["index.tsx", "index.ts", "index.jsx", "index.js"] {
         let candidate = base.join(index);
         if candidate.exists() {
             let abs = fs::canonicalize(&candidate).unwrap_or(candidate);
-            return Ok(abs.to_string_lossy().to_string());
+            return Ok(js_path(&abs));
         }
     }
-    Ok(base.to_string_lossy().to_string())
+    Ok(js_path(&base))
 }

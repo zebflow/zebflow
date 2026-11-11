@@ -78,6 +78,10 @@ Share and add reusable packages: templates, pipelines, libraries, components, ex
 
 Choose the path that fits your machine.
 
+On Linux the release binary needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12
+and later), OpenSSL 3 and `git`. Each release starts the binary on Debian 12
+before it is published.
+
 ### npm
 
 Many users already have Node.js installed. This is the shortest path when you want a familiar command:

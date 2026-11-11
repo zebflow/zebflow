@@ -51,7 +51,21 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
             Some(error) => {
                 let offset = error.labels.as_ref().and_then(|l| l.first().map(|s| s.offset())).unwrap_or(0);
                 let (line, column) = super::source_check::line_col(source, offset);
-                let text: String = source.lines().nth(line - 1).unwrap_or("").chars().take(160).collect();
+                let mut text: String = source.lines().nth(line - 1).unwrap_or("").chars().take(200).collect();
+                // Imports name files under the template folder by absolute path; the
+                // folder is the server's, not the template's, so it is not shown.
+                if let Some(root) = options.template_root.as_deref() {
+                    let canonical = std::fs::canonicalize(root).ok();
+                    let mut forms = vec![root.to_string()];
+                    if let Some(canonical) = &canonical {
+                        forms.push(canonical.to_string_lossy().to_string());
+                        forms.push(super::js_path(canonical));
+                    }
+                    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+                    for form in forms.iter().filter(|form| !form.is_empty()) {
+                        text = text.replace(form.as_str(), "<templates>");
+                    }
+                }
                 format!("{} at line {line}, column {column}: {text:?}", error.message)
             }
             None => "the parser gave up without a diagnostic".to_string(),
@@ -552,7 +566,7 @@ fn resolve_library_import(
     };
     let final_path = normalize_path(&canonical_or_fallback(&resolved)?);
     ensure_within_root(&final_path, &root_path)?;
-    Ok(Some(final_path.to_string_lossy().to_string()))
+    Ok(Some(super::js_path(&final_path)))
 }
 
 fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<String>, EngineError> {
@@ -584,7 +598,7 @@ fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<Strin
         };
         let final_path = normalize_path(&canonical_or_fallback(&resolved)?);
         ensure_within_root(&final_path, &root_path)?;
-        return Ok(Some(final_path.to_string_lossy().to_string()));
+        return Ok(Some(super::js_path(&final_path)));
     }
 
     if import.starts_with("./") || import.starts_with("../") {
@@ -609,7 +623,7 @@ fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<Strin
             let root_path = canonical_or_current(Path::new(root))?;
             ensure_within_root(&final_path, &root_path)?;
         }
-        return Ok(Some(final_path.to_string_lossy().to_string()));
+        return Ok(Some(super::js_path(&final_path)));
     }
 
     Ok(None)
@@ -1654,6 +1668,19 @@ mod tests {
         assert!(err.message.contains("return <main>{1 +}</main>;"), "{}", err.message);
         assert!(err.message.contains("rwe-parse-failed.tsx in the system temporary folder"), "{}", err.message);
         assert!(!err.message.contains("/tmp"), "{}", err.message);
+    }
+
+    /// The template folder is the server's: a parse error that quotes a line
+    /// importing from it shows `<templates>` instead.
+    #[test]
+    fn a_parse_error_does_not_show_the_template_folder() {
+        let (_tmp, root) = temp_root("rwe-parse-folder");
+        let root_text = root.display().to_string();
+        let source = format!("import X from \"{root_text}/x.tsx\" +;\nexport default function Page() {{ return <main />; }}\n");
+        let options = CompileOptions { template_root: Some(root_text.clone()), ..CompileOptions::default() };
+        let err = compile(&source, options).expect_err("must not compile");
+        assert!(err.message.contains("<templates>/x.tsx"), "{}", err.message);
+        assert!(!err.message.contains(&root_text), "{}", err.message);
     }
 
     #[test]

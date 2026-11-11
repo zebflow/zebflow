@@ -2,7 +2,7 @@
 # Starts a built zebflow binary with an empty data folder and waits until /health answers.
 #   start-check.sh native <binary>          on the build machine itself (macOS, Windows)
 #   start-check.sh docker <image> <binary>  inside an older Linux, with only what a normal
-#                                           install has (OpenSSL 3), so a binary that needs a
+#                                           install has (OpenSSL 3, git), so a binary that needs a
 #                                           newer C library than the image has fails here
 # On failure it prints the log and exits non-zero.
 set -euo pipefail
@@ -32,7 +32,7 @@ elif [[ "$mode" == "docker" ]]; then
   cid=$(docker run -d -p "127.0.0.1:$port:$port" -v "$bin:/zebflow:ro" \
     -e ZEBFLOW_PLATFORM_HOST=0.0.0.0 -e ZEBFLOW_PLATFORM_PORT=$port -e ZEBFLOW_PLATFORM_DATA_DIR=/data \
     -e ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="$password" "$image" sh -c \
-    'apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends libssl3 ca-certificates >/dev/null && exec /zebflow')
+    'apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends libssl3 ca-certificates git >/dev/null && exec /zebflow')
   running() { [[ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" == "true" ]]; }
   stop() { docker rm -f "$cid" >/dev/null 2>&1 || true; }
   show() { docker logs "$cid" 2>&1 || true; }
