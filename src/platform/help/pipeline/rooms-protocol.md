@@ -39,6 +39,15 @@ A protocol version is replaced, never kept beside its successor: a client
 that names `zebflow.rooms.v1` against a server that speaks only a later
 version is refused the same way, and learns which version to speak.
 
+### Pages on other sites
+
+A browser page may open a room socket when it is on one of the project's own
+hosts, its dev host, or the address the socket is reached on. A page on any
+other site is refused with `403` before the upgrade, unless the project lists
+its origin in Settings → Addressing (`origins`, e.g.
+`https://game.example.com` or `https://*.example.com`). A client that is not a
+browser (a game engine, a server) sends no origin and is not affected.
+
 ## What the client sends
 
 One text frame per event, JSON:

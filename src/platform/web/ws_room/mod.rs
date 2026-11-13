@@ -95,6 +95,29 @@ fn protocol_refused() -> Response {
     response
 }
 
+/// A page from a site the project does not take, refused before the upgrade.
+fn origin_refused(origin: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "ok": false,
+            "error": format!("this project's rooms do not take pages from {origin}; a page on another site is let in when the project lists its origin (Settings → Addressing)"),
+        })),
+    )
+        .into_response()
+}
+
+/// The host the visitor's browser named: the one a forwarding controller
+/// passed on, else this request's own.
+fn visitor_host(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(axum::http::header::HOST))
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').next().unwrap_or("").trim().to_string())
+        .unwrap_or_default()
+}
+
 pub(super) async fn ws_room_handler(
     ws: WebSocketUpgrade,
     Path((owner, project, room_id)): Path<(String, String, String)>,
@@ -102,6 +125,17 @@ pub(super) async fn ws_room_handler(
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
+    // Cross-site socket hijacking: a page elsewhere must not open a socket
+    // that carries this site's visitor's login. Every browser names the page's
+    // origin; it must be the page's own site, one of the project's hosts, or
+    // one the project lists. No Origin means no browser, and no visitor's
+    // login to borrow. (A browser cannot set x-forwarded-host on a socket.)
+    if let Some(origin) = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        let addressing = state.platform.addressing.read(&owner, &project).unwrap_or_default();
+        if !crate::platform::services::addressing::origin_allowed(&addressing, &owner, &project, origin, &visitor_host(&headers)) {
+            return origin_refused(origin);
+        }
+    }
     if !names_protocol(&headers) {
         return protocol_refused();
     }
@@ -122,6 +156,11 @@ pub(super) async fn ws_room_handler(
             let worker_url = worker_websocket_url(&worker.base_url, &uri);
             let mut proxy_headers = forwarded_websocket_headers(&headers);
             proxy_headers.push(("sec-websocket-protocol".to_string(), PROTOCOL.to_string()));
+            // The office checks the page's origin against the host the
+            // visitor named, which forwarding replaces.
+            if !proxy_headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-forwarded-host")) {
+                proxy_headers.push(("x-forwarded-host".to_string(), visitor_host(&headers)));
+            }
             return ws
                 .on_upgrade(move |socket| proxy_websocket_to_worker(socket, worker_url, proxy_headers))
                 .into_response();

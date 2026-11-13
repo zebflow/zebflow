@@ -72,6 +72,14 @@ The client connects to `/_ws/rooms/match-…?ticket=…`.
   `input.room.auth` as proved at join; events are not re-authenticated.
 - A refusal closes with `4401` before anything of the room is sent; an expired
   login closes with `4408`.
+- **Which pages may connect, checked before the upgrade:** a browser names the
+  page's origin on every socket (`Origin`). It must be the page's own site (the
+  host the socket was reached on), one of the project's hosts or its dev host,
+  or an origin the project lists in `origins` (`addressing.md` §2a);
+  anything else, `null` included, answers `403` and never upgrades. This stops
+  a page elsewhere from opening a socket that carries a visitor's login. A
+  client that names no origin is not a browser and is let through; the join
+  rule still applies to it.
 
 ## Events and ticks
 

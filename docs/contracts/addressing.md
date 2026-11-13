@@ -105,6 +105,7 @@ Beside `hosts`, `routes` and `disabled`, the project's addressing record
 |---|---|---|
 | `api_on_hosts` | `false` | the platform API `/api/projects/{o}/{p}/…` answers on the project's hosts (dev host included). The platform address always serves it — that is where the Studio lives. Authentication applies either way. The dev MCP (`…/mcp`) is excluded: it never answers on a project host |
 | `mcp` (in `disabled`) | off | the published MCP servers: `/_mcp/ROUTE` on the project's hosts and `/mcp/{o}/{p}/ROUTE` on the platform — both off until switched on |
+| `origins` | empty | other sites whose browser pages may open the project's room sockets, as origins: `https://game.example.com`, or `https://*.example.com` for its subdomains; no path. A page on the project's own hosts, its dev host, or the address the socket was reached on needs no entry (`rooms.md`, The join rule) |
 | `errors` | `hidden` | what a **5xx** shows on the project's hosts: `hidden` — the project's 500 page (or the platform's neutral one) with the first eight characters of the run id, and `{ "error": { "code": "internal", "request_id": … } }` for a JSON request; `shown` — the same page plus the error code, message, node id and a link to the run. A webhook overrides its own routes with `--errors show` or `--errors hide` (`kinds/pipeline`). Status codes never change with this switch, and an authored 4xx (`web.response.send --status 400 --body …`) always shows its message |
 
 The full detail of every failure is in the invocation record and its error

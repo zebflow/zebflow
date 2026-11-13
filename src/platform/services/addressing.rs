@@ -168,6 +168,12 @@ pub struct ProjectAddressing {
     /// overrides it for its own routes (`--errors`). Status codes never change.
     #[serde(default)]
     pub errors: ErrorDetail,
+    /// Other websites whose pages may open this project's room sockets, as
+    /// origins: `https://game.example.com`, or `https://*.example.com` for its
+    /// subdomains. A page on one of the project's own hosts, or on the address
+    /// the socket is reached on, needs no entry (`origin_allowed`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origins: Vec<String>,
 }
 
 /// `addressing.md` §2a, `errors`.
@@ -195,7 +201,7 @@ fn default_disabled() -> Vec<Surface> {
 
 impl Default for ProjectAddressing {
     fn default() -> Self {
-        Self { hosts: Vec::new(), routes: Vec::new(), disabled: default_disabled(), api_on_hosts: false, errors: ErrorDetail::Hidden }
+        Self { hosts: Vec::new(), routes: Vec::new(), disabled: default_disabled(), api_on_hosts: false, errors: ErrorDetail::Hidden, origins: Vec::new() }
     }
 }
 
@@ -656,6 +662,24 @@ impl AddressingService {
         }
         addressing.hosts = hosts;
 
+        let mut origins: Vec<String> = Vec::new();
+        for raw in &addressing.origins {
+            let origin = raw.trim().trim_end_matches('/').to_ascii_lowercase();
+            if origin.is_empty() {
+                continue;
+            }
+            if split_origin(&origin.replacen("://*.", "://", 1)).is_none() {
+                return Err(PlatformError::new(
+                    "ADDRESSING_ORIGIN_INVALID",
+                    format!("`{raw}` is not an origin: write `https://game.example.com`, or `https://*.example.com` for its subdomains; no path"),
+                ));
+            }
+            if !origins.contains(&origin) {
+                origins.push(origin);
+            }
+        }
+        addressing.origins = origins;
+
         let mut routes = Vec::new();
         for route in &addressing.routes {
             let host = normalize_host(&route.host);
@@ -857,6 +881,59 @@ impl AddressingService {
 }
 
 /// Lowercase, no port, no trailing dot.
+/// `scheme://host[:port]` as (scheme, host, port), lowercased; `None` for
+/// anything else: a path, another scheme, `null` (a sandboxed page).
+fn split_origin(origin: &str) -> Option<(String, String, Option<u16>)> {
+    let origin = origin.trim().to_ascii_lowercase();
+    let (scheme, rest) = origin.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port.parse::<u16>().ok()?)),
+        None => (rest, None),
+    };
+    if host.is_empty() || !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        return None;
+    }
+    Some((scheme.to_string(), host.to_string(), port))
+}
+
+/// Whether a browser page from `origin` (its `Origin` header) may open one of
+/// this project's room sockets, reached at `request_host` (the `Host` the
+/// visitor's browser named). The rule most socket servers follow: the page's
+/// own site, one of the project's hosts or its dev host, or an origin the
+/// project lists (`origins`). Anything else, `null` included, is refused:
+/// a page elsewhere must not open a socket that carries this site's visitor's
+/// login. A request with no `Origin` is not a browser's and never reaches here.
+pub fn origin_allowed(addressing: &ProjectAddressing, owner: &str, project: &str, origin: &str, request_host: &str) -> bool {
+    let Some((scheme, host, port)) = split_origin(origin) else {
+        return false;
+    };
+    let authority = match port {
+        Some(port) => format!("{host}:{port}"),
+        None => host.clone(),
+    };
+    if authority == request_host.trim().to_ascii_lowercase() {
+        return true;
+    }
+    if host == AddressingService::dev_host(owner, project) || addressing.hosts.iter().any(|h| normalize_host(h) == host) {
+        return true;
+    }
+    addressing.origins.iter().any(|entry| {
+        let entry = entry.trim().trim_end_matches('/').to_ascii_lowercase();
+        if let Some((entry_scheme, suffix)) = entry.split_once("://*.") {
+            let (domain, entry_port) = match suffix.rsplit_once(':') {
+                Some((domain, p)) => (domain, p.parse::<u16>().ok()),
+                None => (suffix, None),
+            };
+            entry_scheme == scheme && entry_port == port && host.ends_with(&format!(".{domain}"))
+        } else {
+            split_origin(&entry).is_some_and(|(s, h, p)| s == scheme && h == host && p == port)
+        }
+    })
+}
+
 pub fn normalize_host(raw: &str) -> String {
     let host = raw.trim().to_ascii_lowercase();
     let host = host.strip_prefix('[').unwrap_or(&host).to_string();
@@ -973,6 +1050,28 @@ fn strip_prefix(path: &str, prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room socket opened by a browser page: the page's own site, the
+    /// project's hosts and dev host, and the origins it lists are let in;
+    /// any other site, and `null`, are not.
+    #[test]
+    fn a_room_socket_takes_pages_from_its_own_sites_and_the_listed_ones() {
+        let mut a = ProjectAddressing { hosts: vec!["site-a.example".to_string()], ..Default::default() };
+        let ok = |a: &ProjectAddressing, origin: &str, host: &str| origin_allowed(a, "owner-a", "demo", origin, host);
+        assert!(ok(&a, "https://studio.example", "studio.example"), "the same site as the socket");
+        assert!(ok(&a, "http://localhost:10610", "localhost:10610"), "with its port");
+        assert!(ok(&a, "https://site-a.example", "rooms.example"), "one of the project's hosts");
+        assert!(ok(&a, "http://demo.owner-a.localhost:10610", "localhost:10610"), "its dev host");
+        assert!(!ok(&a, "https://other.example", "site-a.example"), "another site");
+        assert!(!ok(&a, "null", "site-a.example"), "a sandboxed page");
+        assert!(!ok(&a, "https://site-a.example.other.example", "rooms.example"), "a look-alike");
+        a.origins = vec!["https://game.example.net".to_string(), "https://*.play.example".to_string()];
+        assert!(ok(&a, "https://game.example.net", "site-a.example"), "a listed origin");
+        assert!(!ok(&a, "http://game.example.net", "site-a.example"), "listed for https only");
+        assert!(ok(&a, "https://eu.play.example", "site-a.example"), "a listed subdomain pattern");
+        assert!(!ok(&a, "https://play.example", "site-a.example"), "the pattern is for subdomains only");
+        assert!(!ok(&a, "https://evilplay.example", "site-a.example"), "not a suffix match");
+    }
 
     /// A page learns where its rooms live from the address it was served on:
     /// the default mount or the host's own `ws` route on a project host, the

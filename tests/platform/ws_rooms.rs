@@ -113,6 +113,42 @@ async fn a_socket_naming_no_protocol_or_another_is_refused_before_the_upgrade() 
     assert_eq!(next(&mut socket).await.expect("joined")["type"], "joined");
 }
 
+/// Cross-site socket hijacking: a browser page on a site the project does
+/// not take is refused before the upgrade; the page's own site, a listed
+/// origin, and a client that names no origin (not a browser) are let in.
+#[tokio::test]
+async fn a_page_from_another_site_cannot_open_a_room_socket() {
+    let root = temp_dir("ws-rooms-origin");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "lobby-chat", r#"| trigger.room --room lobby --event chat | ws.message.send --body 1"#).await;
+    let address = serve(app.clone(), &cookie).await;
+
+    let foreign = [("sec-websocket-protocol", PROTOCOL), ("origin", "https://other.example")];
+    match connect_raw(address, "lobby", &foreign).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status().as_u16(), 403);
+            let body: Value = serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("json body");
+            assert!(body["error"].as_str().unwrap_or("").contains("https://other.example"), "{body}");
+        }
+        other => panic!("a page from another site upgraded: {:?}", other.map(|_| ())),
+    }
+
+    let own = format!("http://{address}");
+    for headers in [vec![("origin", own.as_str())], vec![]] {
+        let mut socket = connect(address, "lobby", &headers).await;
+        assert_eq!(next(&mut socket).await.expect("joined")["type"], "joined", "{headers:?}");
+    }
+
+    // A site the project lists; an entry that is not an origin is refused.
+    let (status, body) = send(&app, &cookie, "PUT", &format!("/api/projects/{OWNER}/{PROJECT}/settings/addressing"),
+        json!({ "data": { "hosts": [], "routes": [], "disabled": ["files", "ms"], "origins": ["https://other.example/play"] } })).await;
+    assert_eq!(status.as_u16(), 400, "{body}");
+    addressing(&app, &cookie, json!({ "hosts": [], "routes": [], "disabled": ["files", "ms"], "origins": ["https://other.example"] })).await;
+    let mut socket = connect(address, "lobby", &[("origin", "https://other.example")]).await;
+    assert_eq!(next(&mut socket).await.expect("joined")["type"], "joined");
+}
+
 #[tokio::test]
 async fn activation_refuses_two_join_rules_for_one_room() {
     let root = temp_dir("ws-rooms-rules");
