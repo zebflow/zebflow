@@ -152,12 +152,13 @@ pub fn forget(store_dir: &Path, path: &str) -> Result<usize, ZebFsError> {
     Ok(removed)
 }
 
-/// The project's hosts changed: origins on hosts it no longer has leave every
-/// `serve`, and a rule left with none becomes private. Answers those paths.
-pub fn retain_hosts(store_dir: &Path, hosts: &[String]) -> Result<Vec<String>, ZebFsError> {
+/// The project's hosts changed: entries on hosts it no longer has leave every
+/// `serve` (a path mount may stay on a section host), and a rule left with
+/// none becomes private. Answers those paths.
+pub fn retain_hosts(store_dir: &Path, site_hosts: &[String], section_hosts: &[String]) -> Result<Vec<String>, ZebFsError> {
     let mut manifest = read(store_dir)?;
     let before = serde_json::to_vec(&manifest.rules).unwrap_or_default();
-    let demoted = manifest.retain_hosts(hosts);
+    let demoted = manifest.retain_hosts(site_hosts, section_hosts);
     if serde_json::to_vec(&manifest.rules).unwrap_or_default() != before {
         write(store_dir, &manifest)?;
     }
@@ -281,7 +282,7 @@ mod tests {
         assert_eq!(effective_access(store, "site/index.html").unwrap(), ZebFsAccess::PublicExecute);
         assert_eq!(forget(store, "covers/a.jpg").unwrap(), 1);
         assert!(!is_public_read(store, "covers/a.jpg").unwrap());
-        assert_eq!(retain_hosts(store, &["other.example".to_string()]).unwrap(), vec!["site".to_string()]);
+        assert_eq!(retain_hosts(store, &["other.example".to_string()], &[]).unwrap(), vec!["site".to_string()]);
         assert_eq!(effective_access(store, "site/index.html").unwrap(), ZebFsAccess::Private);
     }
 

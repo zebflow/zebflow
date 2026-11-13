@@ -100,7 +100,7 @@ pub fn auth_flags(guarded: &str) -> Vec<DslFlag> {
         DslFlag {
             flag: "--credential".to_string(),
             config_key: "credential_id".to_string(),
-            description: "The credential (its id) that verifies --auth: a JWT signing key, an HMAC secret or an API key.".to_string(),
+            description: "The credential (its id) that verifies --auth: a JWT signing key, an hmac signature check (help pipeline/examples/webhook-signatures) or an API key.".to_string(),
             kind: DslFlagKind::Scalar,
             value: "text".to_string(),
             ..Default::default()
@@ -199,6 +199,8 @@ pub fn definition() -> NodeDefinition {
             Request context: webhook.query (URL query params), webhook.params (path params), webhook.headers (a safe subset), \
             webhook.path (request path), webhook.method (HTTP method). \
             Use --auth jwt|hmac|api_key and --credential <id> to protect the route, --role to require a role. \
+            hmac checks a vendor's signature exactly as its credential describes (what is signed, which header, a timestamp window): \
+            help(\"pipeline/examples/webhook-signatures\"). \
             jwt auth checks Authorization: Bearer header first, then the cookie the credential names (`cookie_name`, default zebflow_session) — \
             verified claims are webhook.auth. Add --auth-optional for a public page that only wants to know \
             who is signed in: a valid token fills webhook.auth, anything else leaves it null and the page renders for the guest. \
@@ -305,7 +307,8 @@ pub struct Config {
     ///
     /// - `jwt`     — verifies `Authorization: Bearer <token>` against a `jwt_signing_key` credential.
     ///               Verified claims are `webhook.auth`.
-    /// - `hmac`    — verifies `X-Hub-Signature-256: sha256=<hex>` (GitHub-style) against a credential.
+    /// - `hmac`    — verifies a vendor's signature as the `hmac` credential describes it
+    ///               (`services::webhook_signature`; help `pipeline/examples/webhook-signatures`).
     /// - `api_key` — verifies `X-API-Key: <key>` or `Authorization: ApiKey <key>` against a credential.
     /// - `none`    — no authentication (default).
     #[serde(default)]

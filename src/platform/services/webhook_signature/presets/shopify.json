@@ -1,0 +1,10 @@
+{
+  "id": "shopify",
+  "title": "Shopify",
+  "note": "HMAC-SHA256 of the raw body, base64, in X-Shopify-Hmac-Sha256.",
+  "settings": {
+    "algorithm": "sha256",
+    "signed": "{body}",
+    "signature": { "from": "header:X-Shopify-Hmac-Sha256", "encoding": "base64" }
+  }
+}

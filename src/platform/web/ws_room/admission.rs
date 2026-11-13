@@ -138,9 +138,11 @@ fn verify_rule(ctx: &SessionCtx, spec: &WsTriggerSpec) -> Result<Option<Value>, 
     if spec.join_rule().0 == "none" {
         return Ok(None);
     }
+    let path = format!("/_ws/rooms/{}", ctx.room_id);
     verify_webhook_auth(
         &ctx.headers,
         &axum::body::Bytes::new(), // WS messages have no body to sign
+        &WebhookFacts::new("GET", &path, None, &ctx.headers),
         &spec.auth_type,
         &spec.auth_credential,
         &spec.auth_required_role,

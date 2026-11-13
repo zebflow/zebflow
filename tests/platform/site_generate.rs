@@ -693,3 +693,94 @@ async fn a_version_is_checked_before_anything_is_written() {
     }
     assert_eq!(store_object(&app, &cookie, "site/docs/versions.json").await.0, StatusCode::NOT_FOUND, "nothing was written");
 }
+
+async fn visit_as(app: &axum::Router, method: &str, host: &str, uri: &str, extra: &[(&str, &str)]) -> (StatusCode, HeaderMap, String) {
+    let mut request = Request::builder().method(method).uri(uri).header(header::HOST, host);
+    for (name, value) in extra {
+        request = request.header(*name, *value);
+    }
+    text_of(app.clone().oneshot(request.body(Body::empty()).expect("request")).await.expect("response")).await
+}
+
+/// A docs folder mounted at a path (`serve: ["http://host/learn/"]`) answers
+/// under that path with links, search and sitemap written for it, while the
+/// host's other paths stay the project's pages. `/learn` redirects to
+/// `/learn/`; a miss under the mount is a 404, never a page; only GET and
+/// HEAD; an ambiguous path and a service worker are refused; a mount that
+/// would hide an active webhook, or sits on a platform path, is refused.
+#[tokio::test]
+async fn a_docs_folder_mounted_at_a_path_keeps_the_hosts_pages() {
+    let root = temp_dir("site-generate-mount");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    handbook(&app, &cookie).await;
+    publish(&app, &cookie, "hello-page", r#"| trigger.webhook --route /hello --method GET | web.response.send --body hi"#).await;
+    publish(&app, &cookie, "form-page", r#"| trigger.webhook --route /form --method POST | web.response.send --body posted"#).await;
+
+    let mount = format!("{SITE_ORIGIN}/learn/");
+    let (status, body) = send(
+        &app,
+        &cookie,
+        "PUT",
+        &api("/files/access"),
+        json!({ "path": "handbook-site", "access": "public_execute", "scope": "prefix", "serve": [mount] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let built = generate(&app, &cookie, "docs-build", json!({})).await;
+    assert_eq!(built["origin"], json!(SITE_ORIGIN), "the origin carries no path: {built}");
+
+    let (status, _, home) = visit(&app, SITE_HOST, "/learn/").await;
+    assert_eq!(status, StatusCode::OK, "{home}");
+    assert!(home.contains("<title>Welcome | Demo Handbook</title>"), "{home}");
+    let (status, _, install) = visit(&app, SITE_HOST, "/learn/setup/install/").await;
+    assert_eq!(status, StatusCode::OK, "{install}");
+    assert!(install.contains("http://default.superadmin.localhost/learn/setup/install/"), "canonical link under the mount: {install}");
+    let (status, _, metadata) = visit(&app, SITE_HOST, "/learn/search/m-0.json").await;
+    assert_eq!(status, StatusCode::OK, "{metadata}");
+    assert_eq!(search_hrefs(&metadata), vec!["/learn/", "/learn/setup/install/", "/learn/setup/configure/", "/learn/advanced/tuning/"]);
+    let (_, _, sitemap) = visit(&app, SITE_HOST, "/learn/sitemap.xml").await;
+    assert!(sitemap.contains(&format!("<loc>{SITE_ORIGIN}/learn/setup/install/</loc>")), "{sitemap}");
+
+    // The host's other paths are still its pages.
+    let (status, _, hello) = visit(&app, SITE_HOST, "/hello").await;
+    assert_eq!((status, hello.as_str()), (StatusCode::OK, "hi"));
+    let (status, headers, _) = visit(&app, SITE_HOST, "/learn?q=1").await;
+    assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(headers.get(header::LOCATION).and_then(|v| v.to_str().ok()), Some("/learn/?q=1"));
+    let (status, _, learning) = visit(&app, SITE_HOST, "/learning").await;
+    assert!(!learning.contains("Demo Handbook"), "a neighbouring path is not the mount: {status} {learning}");
+    assert_eq!(visit(&app, SITE_HOST, "/learn/missing/").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(visit_as(&app, "POST", SITE_HOST, "/learn/", &[]).await.0, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(visit_as(&app, "POST", SITE_HOST, "/learn", &[]).await.0, StatusCode::METHOD_NOT_ALLOWED, "checked before the redirect");
+    // The host's own pages keep every method outside the mount.
+    let (status, _, posted) = visit_as(&app, "POST", SITE_HOST, "/form", &[]).await;
+    assert_eq!((status, posted.as_str()), (StatusCode::OK, "posted"));
+    assert_eq!(visit(&app, SITE_HOST, "/learn/setup/%2e%2e/setup/install/").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(visit(&app, SITE_HOST, "/learn/setup%2finstall/").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(visit(&app, SITE_HOST, "/learn%2f").await.0, StatusCode::BAD_REQUEST, "checked before the redirect");
+    assert_eq!(visit(&app, SITE_HOST, "//learn/setup/install/").await.0, StatusCode::BAD_REQUEST, "a doubled slash before the mount");
+    assert_eq!(visit(&app, SITE_HOST, "/./learn/").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(visit_as(&app, "GET", SITE_HOST, "/learn/index.html", &[("service-worker", "script")]).await.0, StatusCode::NOT_FOUND);
+
+    // A mount over an active webhook's path, or at a platform path, is refused.
+    let (status, body) = send(
+        &app,
+        &cookie,
+        "PUT",
+        &api("/files/access"),
+        json!({ "path": "other-site", "access": "public_execute", "scope": "prefix", "serve": [format!("{SITE_ORIGIN}/hello/")] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("/hello"), "{body}");
+    let (status, body) = send(
+        &app,
+        &cookie,
+        "PUT",
+        &api("/files/access"),
+        json!({ "path": "other-site", "access": "public_execute", "scope": "prefix", "serve": [format!("{SITE_ORIGIN}/api/")] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}

@@ -527,17 +527,18 @@ impl ProjectTransferService {
                 // (kinds/zebfs-acl §Lifetime).
                 let dev_host =
                     crate::platform::services::addressing::AddressingService::dev_host(&owner, &project);
-                let hosts = fs::read(target.join(ADDRESSING_FILE))
-                    .ok()
-                    .and_then(|bytes| {
-                        serde_json::from_slice::<
-                            crate::platform::services::addressing::ProjectAddressing,
-                        >(&bytes)
-                        .ok()
-                    })
+                let addressing = fs::read(target.join(ADDRESSING_FILE)).ok().and_then(|bytes| {
+                    serde_json::from_slice::<crate::platform::services::addressing::ProjectAddressing>(&bytes).ok()
+                });
+                let hosts = addressing
+                    .as_ref()
                     .map(|addressing| addressing.site_hosts(dev_host.clone()))
                     .unwrap_or_else(|| vec![dev_host]);
-                crate::platform::services::zebfs_acl::retain_hosts(&target, &hosts).map_err(
+                let section_hosts: Vec<String> = addressing
+                    .as_ref()
+                    .map(|addressing| addressing.section_hosts().into_iter().map(str::to_string).collect())
+                    .unwrap_or_default();
+                crate::platform::services::zebfs_acl::retain_hosts(&target, &hosts, &section_hosts).map_err(
                     |err| PlatformError::new("PROJECT_TRANSFER_IMPORT", err.message),
                 )?;
             }

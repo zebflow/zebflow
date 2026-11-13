@@ -7,8 +7,9 @@ listing settled after the Astra and Fable review the same day). Code caught up
 location, the lifetime rules, the dev file host and `public_execute` on its
 origins (`src/platform/web/file_host.rs`), and §Authority for the Studio file
 routes (`files.publish`, `updated_by_role`); `/files/…` and `/fs/…` are
-deleted. Still owed: pipelines write without a role; a named file host in
-production.
+deleted. Still owed: a named file host in production. Pipelines write without a
+role: kept as the default by the owner on 2026-11-13 (§Open). Mount paths in
+`serve` added 2026-11-13 (0.11.28).
 
 Which of a project's files are exposed, and how. One document per project.
 Everything it does not name is private.
@@ -60,7 +61,7 @@ bucket policy or an anonymous identity.
 | key | the object or prefix path the rule covers, normalised, no leading slash |
 | `access` | `private`, `public_read` or `public_execute`. Nothing else exists; there is no public write |
 | `scope` | `object` — that path only — or `prefix` — that path and everything beneath it |
-| `serve` | `public_execute` only, required, non-empty: full origins, no wildcards, each a host the project already registered in [Addressing](../../addressing.md). One host runs one folder: a second rule naming it is refused |
+| `serve` | `public_execute` only, required, non-empty: full origins, no wildcards, each a host the project already registered in [Addressing](../../addressing.md). An entry may end in a mount path (`https://example.com/docs/`): segments of `[a-z0-9-]`, never a first segment of `api`, `assets`, `mcp`, `ms`, `static`, `wh` or `ws`. One rule's entries share one mount path (one build has one base). One address runs one folder: a second rule naming the same host with an overlapping mount (the same path, one inside the other, or the whole host) is refused |
 | `updated_at` | unix seconds, when the rule was last set |
 | `updated_by_role` | the setter's project role at that moment; absent on rules written before it existed |
 
@@ -75,7 +76,18 @@ bucket policy or an anonymous identity.
 - `public_execute` answers unsandboxed only on its `serve` origins. The same
   path on the file host is served as `public_read`; on any other origin it is
   refused.
-- A host listed in a `serve` answers only that folder, mounted at `/`, with
+- A mount path in a `serve` entry gives the folder that path on its host and
+  leaves the host's other paths to its pages: the longest mount wins; the path
+  without its last slash answers `308` to the mount; a miss under the mount is
+  `404`, never a page; only `GET` and `HEAD`; an encoded `/`, `\` or NUL, a
+  doubled `/` or a dot segment answers `400`; a service worker script request
+  is refused. Scripts there share the host's origin, so they act with that
+  host's visitors' sign-in: everyone who can write the folder is trusted that
+  far (§Authority). A path mount over an active webhook's literal path is
+  refused when set; a webhook registered under a mount later is unreachable
+  there. A path mount may stand on a section host (Addressing §2c) and
+  answers before its section's routes; a whole-host entry may not.
+- A host listed in a `serve` with no mount path answers only that folder, mounted at `/`, with
   `index.html` for a folder path — the same rule as a host carrying a custom
   route ([Addressing](../../addressing.md) §2). It never also answers `pages`.
 - The file host is a cookie-less origin of its own, never the Studio's or the
@@ -131,14 +143,19 @@ before the first stable release).
 
 Unknown root or spec fields. Unknown `access` or `scope` values. `serve` on a
 rule that is not `public_execute`, a missing or empty `serve` on one that is,
-an origin with a wildcard, a path, or a host the project has not registered. A
+an origin with a wildcard, a host the project has not registered, a mount path
+with another character, an empty segment or a reserved first segment, entries
+of one rule with different mount paths, or an overlapping mount. A
 rule key that escapes the project's files (`..`, absolute paths). A future
 `apiVersion`.
 
 ## Open
 
 - **Whether an MCP tool may change a rule.**
-- **What role a pipeline writes with.** Pipelines carry no role today.
+- **What role a pipeline writes with.** Pipelines carry no role today, and
+  the owner kept that as the default on 2026-11-13: a pipeline may write,
+  move and delete beneath a `public_execute` prefix (Estuary
+  `pipeline-writes-beneath-public-execute`).
   Proposed: the activator's role, stored at activation and re-checked on every
   run; a pipeline whose activator lost the role is deactivated with a visible
   reason, and editing it needs a fresh activation.

@@ -32,7 +32,7 @@ fn plain_secret_keys(kind: &str) -> HashSet<String> {
         .collect();
     let hand_written: &[&str] = match kind {
         "oauth2" => &["provider", "client_id", "authorize_url", "token_url", "scopes", "redirect_uri", "expires_at", "token_type"],
-        "hmac" => &["provider", "signature_header", "signature_encoding", "signature_prefix", "algorithm", "replay_tolerance"],
+        "hmac" => crate::platform::services::webhook_signature::PLAIN_KEYS,
         "secure_request" => &["request", "variables", "egress"],
         "github" | "gitlab" => &["repo_url", "instance_url"],
         _ => &[],
@@ -323,6 +323,12 @@ impl CredentialService {
             .get_project_credential(&owner, &project, &credential_id)?;
         let created_at = existing.as_ref().map(|row| row.created_at).unwrap_or(now);
         let secret = restore_masked(&req.secret, existing.as_ref().map(|row| &row.secret), "secret")?;
+        // An hmac credential is a whole signature check: a setting it cannot
+        // use is refused here, by name, not on the vendor's first delivery.
+        if kind == "hmac" {
+            crate::platform::services::webhook_signature::validate(&secret)
+                .map_err(|err| PlatformError::new("PLATFORM_CREDENTIAL_INVALID", err))?;
+        }
         let credential = ProjectCredential {
             owner: owner.clone(),
             project: project.clone(),
@@ -340,6 +346,38 @@ impl CredentialService {
         };
         self.data.put_project_credential(&credential)?;
         Ok(credential)
+    }
+
+    /// Rewrites each `hmac` credential of one project saved before 0.11.28
+    /// into the settings the check reads now, keeping its secret and its
+    /// check (`webhook_signature::from_old_shape`), so a webhook or signing
+    /// node that worked before the upgrade keeps working. Answers the ids it
+    /// rewrote and, apart, any it could not (left as they were). Runs at
+    /// startup; a credential already in the new shape is untouched.
+    pub fn convert_old_hmac_credentials(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<(Vec<String>, Vec<String>), PlatformError> {
+        let mut converted = Vec::new();
+        let mut refused = Vec::new();
+        for mut credential in self.data.list_project_credentials(owner, project)? {
+            if credential.kind != "hmac" {
+                continue;
+            }
+            let Some(settings) = crate::platform::services::webhook_signature::from_old_shape(&credential.secret) else {
+                continue;
+            };
+            if let Err(err) = crate::platform::services::webhook_signature::validate(&settings) {
+                refused.push(format!("{}: {err}", credential.credential_id));
+                continue;
+            }
+            credential.secret = settings;
+            credential.updated_at = now_ts();
+            self.data.put_project_credential(&credential)?;
+            converted.push(credential.credential_id.clone());
+        }
+        Ok((converted, refused))
     }
 
     /// Deletes one credential.
@@ -922,10 +960,8 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
         CredentialTypeDef {
             kind: "hmac".into(),
             title: "HMAC".into(),
-            description: "HMAC signing secret for webhook verification.".into(),
-            fields: vec![
-                F { full_width: true, generate: Some("random_hex_32".into()), help: Some("HMAC shared secret.".into()), ..fp("secret", "Secret") },
-            ],
+            description: "A webhook signature check: what the vendor signs, where its signature and timestamp are, and the shared secrets (help: pipeline/examples/webhook-signatures).".into(),
+            fields: vec![], // Complex UI rendered client-side; settings in services::webhook_signature
             ..Default::default()
         },
         CredentialTypeDef {
@@ -1115,6 +1151,36 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn an_hmac_credential_from_before_0_11_28_is_rewritten_with_its_secret() {
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        // Stored as an older release saved it, past today's save check.
+        let kept = format!("kept-{}", uuid::Uuid::new_v4().simple());
+        let mut old = credential(
+            "hmac",
+            json!({ "provider": "generic", "secret": kept, "signature_header": "X-Hub-Signature-256", "signature_prefix": "sha256=", "replay_tolerance": 0 }),
+        );
+        old.owner = "superadmin".into();
+        old.project = "default".into();
+        platform.credentials.data.put_project_credential(&old).expect("stored");
+        let mut other = old.clone();
+        other.credential_id = "plain".into();
+        other.kind = "api_key".into();
+        other.secret = json!({ "key": "k" });
+        platform.credentials.data.put_project_credential(&other).expect("stored");
+
+        let (converted, refused) = platform.credentials.convert_old_hmac_credentials("superadmin", "default").expect("convert");
+        assert_eq!(converted, vec!["main".to_string()]);
+        assert!(refused.is_empty(), "{refused:?}");
+        let now = platform.credentials.get_project_credential("superadmin", "default", "main").expect("read").expect("there");
+        assert_eq!(now.secret["secrets"]["current"], json!(kept));
+        assert!(crate::platform::services::webhook_signature::Settings::from_value(&now.secret).is_ok(), "{}", now.secret);
+        let untouched = platform.credentials.get_project_credential("superadmin", "default", "plain").expect("read").expect("there");
+        assert_eq!(untouched.secret, json!({ "key": "k" }));
+        // Run again: nothing left to convert.
+        assert!(platform.credentials.convert_old_hmac_credentials("superadmin", "default").expect("again").0.is_empty());
     }
 
     #[test]

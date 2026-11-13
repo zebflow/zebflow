@@ -245,3 +245,43 @@ async fn a_save_refuses_a_route_its_section_cannot_reach() {
     assert_eq!(on(&app, SITE, "/site-a/api/x", &[]).await.body, "x");
     assert_eq!(on(&app, "site-a.default.superadmin.localhost", "/api/x", &[]).await.status == StatusCode::OK, false, "the section dev host is gone");
 }
+
+/// A folder mounted at a path of a section host answers that path before the
+/// section's routes, the section keeps every other path, and saving the
+/// addressing again keeps the mount (a section host is not a site host, but a
+/// path of it may be a folder's). A whole section host stays refused.
+#[tokio::test]
+async fn a_folder_mounted_at_a_path_of_a_section_host_answers_there() {
+    let root = temp_dir("sections-mount");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    sectioned_app(&app, &cookie).await;
+    publish(&app, &cookie, "learn-file", r#"| trigger.manual | fs.file.put --text "<h1>learn here</h1>" --path learn-site/index.html --on-conflict overwrite"#).await;
+    let (status, ran) = send(
+        &app,
+        &cookie,
+        "POST",
+        &format!("/api/projects/{OWNER}/{PROJECT}/pipelines/execute"),
+        json!({ "file_rel_path": "pipelines/tests/learn-file.zf.json", "trigger": "manual", "input": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{ran}");
+
+    let access = |serve: &str| json!({ "path": "learn-site", "access": "public_execute", "scope": "prefix", "serve": [serve] });
+    let files_access = format!("/api/projects/{OWNER}/{PROJECT}/files/access");
+    let (status, body) = send(&app, &cookie, "PUT", &files_access, access(&format!("https://{SECTION}/"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "the whole section host is never a folder's: {body}");
+    let (status, body) = send(&app, &cookie, "PUT", &files_access, access(&format!("https://{SECTION}/learn/"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let learn = on(&app, SECTION, "/learn/", &[]).await;
+    assert_eq!(learn.status, StatusCode::OK, "{}", learn.body);
+    assert!(learn.body.contains("learn here"), "{}", learn.body);
+    let map = on(&app, SECTION, "/map", &[]).await;
+    assert_eq!((map.status, map.body.as_str()), (StatusCode::OK, "a-map"), "the section keeps its routes");
+
+    // Another addressing save prunes hosts; the mount on the section host stays.
+    sectioned_app(&app, &cookie).await;
+    let again = on(&app, SECTION, "/learn/", &[]).await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+}

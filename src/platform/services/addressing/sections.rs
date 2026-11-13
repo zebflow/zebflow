@@ -513,7 +513,9 @@ pub fn check_routes(table: &SectionTable, pages: &[String], mcp: &[String]) -> R
     Ok(())
 }
 
-/// The hosts a project's ACL serves, read from its `serve` origins.
+/// The hosts a project's ACL gives whole to a folder: `serve` entries with no
+/// mount path. A folder mounted at a path leaves the host's other paths to its
+/// pages, so it is not one of these.
 pub fn serve_hosts_of(store_dir: &std::path::Path) -> Vec<String> {
     let Ok(manifest) = crate::platform::services::zebfs_acl::read(store_dir) else {
         return Vec::new();
@@ -522,6 +524,7 @@ pub fn serve_hosts_of(store_dir: &std::path::Path) -> Vec<String> {
         .rules
         .values()
         .flat_map(|rule| rule.serve.iter())
+        .filter(|entry| crate::zebfs::acl::serve_mount_path(entry) == "/")
         .map(|origin| normalize_host(crate::zebfs::acl::serve_origin_host(origin)))
         .collect();
     hosts.sort();

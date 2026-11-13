@@ -44,6 +44,7 @@ pub mod project_transfer;
 pub mod published_oauth;
 pub mod tsx_outline;
 pub mod user;
+pub mod webhook_signature;
 pub mod zebfs_acl;
 
 pub use access::{GitIdentityService, ProjectInviteService, ProjectMembershipService};

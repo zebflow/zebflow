@@ -1,5 +1,5 @@
 //! `crypto.signature.sign` and `crypto.signature.verify` — HMAC-SHA256 of
-//! `--text`, keyed by the `secret` of an `hmac` credential named by
+//! `--text`, keyed by the current secret (`secrets.current`) of an `hmac` credential named by
 //! `--credential`. The key never appears in a flag or the payload.
 //!
 //! Signing answers `signature: { algorithm, value }` (lowercase hex).
@@ -188,11 +188,11 @@ impl Plan {
                 format!("credential '{}' is '{}' not '{CREDENTIAL_KIND}'", credential.credential_id, credential.kind),
             ));
         }
-        let secret = credential.secret.get("secret").and_then(Value::as_str).unwrap_or_default();
-        if secret.is_empty() {
-            return Err(PipelineError::new(codes.credential, format!("credential '{}' has no secret", credential.credential_id)));
-        }
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|e| PipelineError::new(codes.credential, e.to_string()))?;
+        // The credential's current secret, decoded as it says
+        // (`services::webhook_signature::key`).
+        let key = crate::platform::services::webhook_signature::key(&credential.secret)
+            .map_err(|err| PipelineError::new(codes.credential, format!("credential '{}': {err}", credential.credential_id)))?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(&key).map_err(|e| PipelineError::new(codes.credential, e.to_string()))?;
         mac.update(self.text.as_bytes());
         Ok(mac)
     }

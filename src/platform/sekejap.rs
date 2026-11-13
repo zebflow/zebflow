@@ -1493,17 +1493,29 @@ pub fn sync_schema_to_repo(
     };
     let layout = repo_layout();
     let schema_root = repo_schema_dir(data_root, owner, project);
-    std::fs::create_dir_all(&schema_root)?;
 
     let mut changed = false;
     let mut files_removed = Vec::new();
+    let mut files_written = Vec::new();
 
     let schema_path = schema_root.join(SCHEMA_DOCUMENT_FILE);
-    let schema_bytes = encode_schema_export(export.clone())?;
-    if write_bytes_if_changed(&schema_path, &schema_bytes)? {
-        changed = true;
+    if export.tables.is_empty() {
+        // No tables, no document: one with `tables: []` describes nothing,
+        // applying it changes nothing, and it kept its folder from being
+        // deleted while the repository tree showed the folder empty.
+        if schema_path.is_file() {
+            std::fs::remove_file(&schema_path)?;
+            files_removed.push(layout.schema_document_rel());
+            changed = true;
+        }
+    } else {
+        std::fs::create_dir_all(&schema_root)?;
+        let schema_bytes = encode_schema_export(export.clone())?;
+        if write_bytes_if_changed(&schema_path, &schema_bytes)? {
+            changed = true;
+        }
+        files_written.push(layout.schema_document_rel());
     }
-    let files_written = vec![layout.schema_document_rel()];
 
     // A `tables/` directory beside the schema document is the residue of an
     // earlier writer. It duplicated what the schema document already carries,
@@ -2935,6 +2947,18 @@ mod tests {
         let title = items[0].attributes.iter().find(|a| a.name == "title").expect("title");
         assert!(title.index_types.contains(&"hash".to_string()));
         assert!(title.index_types.contains(&"range".to_string()));
+    }
+
+    #[test]
+    fn dropping_the_last_table_removes_the_schema_document() {
+        let tmp = tmp_root();
+        create(tmp.path(), "alice", "demo", "posts", vec![attribute("title", "string", &["hash"])]);
+        let schema_path = tmp.path().join("users/alice/demo/repo/schemas/sekejap/schema.json");
+        assert!(schema_path.is_file());
+        delete_table(tmp.path(), "alice", "demo", "posts").expect("drop the only table");
+        assert!(!schema_path.exists(), "no tables, no schema document: its folder can then be deleted");
+        let report = sync_schema_to_repo(tmp.path(), "alice", "demo").expect("sync again");
+        assert!(!report.changed && report.files_written.is_empty(), "nothing to write: {report:?}");
     }
 
     #[test]

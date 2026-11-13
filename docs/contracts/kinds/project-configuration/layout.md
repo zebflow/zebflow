@@ -394,6 +394,14 @@ It creates none of them now. **A layout entry says where a kind is looked for;
 it is not a directory that must exist.** Every repository writer creates its own
 parents, so a folder exists because somebody put something in it.
 
+Deleting follows from that, as one rule (0.11.28): a directory the layout
+names, or a folder that holds one, can be deleted once it holds no file; empty
+subfolders are not files. While a file is in it the delete answers `409`
+`PLATFORM_REPO_DECLARED_ROOT` naming that file, including a file the tree hides
+because the platform writes it. A platform-written file itself answers `403`
+`PLATFORM_REPO_MACHINE_OWNED`. The Sekejap schema export follows the same idea:
+with no tables there is no `schema.json`.
+
 With nothing scaffolded, `source` defaulting to `pipelines` had nothing left to
 recommend it: it named a directory that no longer existed in a new project. The
 default is the repository itself, and an empty declaration is legal and means

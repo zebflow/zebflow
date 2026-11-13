@@ -193,6 +193,15 @@ Every route, link, breadcrumb, search address and the sitemap carry that
 prefix. Before the folder is served the site answers at `/`; build again
 once it is served.
 
+A folder can also be served at a path of a host that runs the project's
+pages: give `serve` an address with a path, `https://www.example.com/learn/`.
+The docs then answer at `/learn/…` (and `/learn` redirects there) while every
+other path of that host stays a page; the routes, links, search and sitemap
+carry `/learn/`. Scripts in that folder share the pages' origin and act with
+their visitors' sign-in, so only trusted people and pipelines should write it.
+A path mount over an active webhook's path is refused, and so is one at a
+platform path (`/api/`, `/static/`, `/wh/` …).
+
 ### Versions
 
 A product that ships releases keeps the docs of each one. `--version` makes

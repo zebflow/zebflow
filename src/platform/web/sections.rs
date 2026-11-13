@@ -104,7 +104,19 @@ pub(super) async fn gate(
             .map(|(_, port)| port)
             .filter(|port| port.bytes().all(|b| b.is_ascii_digit()));
         if let Some(response) =
-            file_host::execute_site_response(state, &owner, &project, &host, port, &raw_path, request.headers())
+            file_host::execute_site_response(state, &owner, &project, &host, port, request.method(), &raw_path, request.uri().query(), request.headers())
+        {
+            return response;
+        }
+    } else {
+        // A folder mounted at a path of this host answers that path, before
+        // the host's routes; every other path goes on to them.
+        let port = raw_host
+            .rsplit_once(':')
+            .map(|(_, port)| port)
+            .filter(|port| port.bytes().all(|b| b.is_ascii_digit()));
+        if let Some(response) =
+            file_host::execute_site_response(state, &owner, &project, &host, port, request.method(), &raw_path, request.uri().query(), request.headers())
         {
             return response;
         }

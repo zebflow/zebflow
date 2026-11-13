@@ -77,8 +77,11 @@ address and never on a project host.
 under `/_files/…` only when switched on (off by default). The `fs` surface and
 the platform forms `/files/…` and `/fs/…` are deleted (2026-10-03). Exposure
 is only what `ZebFsAcl` says; `public_read` answers on the cookie-less file
-host, `public_execute` on the hosts in its `serve`, each of which answers only
-that folder (as a host with a custom route does).
+host, `public_execute` on the addresses in its `serve`: a host named with no
+path answers only that folder (as a host with a custom route does); a host
+named with a mount path (`https://example.com/docs/`) answers that path from
+the folder and every other path from its pages (`kinds/zebfs-acl`
+§Resolution).
 
 Rules: `/_` is reserved — a webhook path starting with it is refused at
 register (`PIPELINE_ROUTE_RESERVED`). `pages` mounts at `/` or nowhere

@@ -14,12 +14,12 @@ use std::time::UNIX_EPOCH;
 
 use axum::body::Body;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::{PlatformAppState, content_type_for_path, harden_byte_response, internal_error};
 use crate::platform::error::PlatformError;
-use crate::zebfs::acl::serve_origin_host;
+use crate::zebfs::acl::{serve_mount_path, serve_origin_host, serve_origin_port};
 use crate::zebfs::{ZebFsAccess, normalize_object_path};
 
 fn not_found() -> Response {
@@ -181,45 +181,111 @@ pub(super) async fn file_host_response(
     }
 }
 
-/// A request on one of the project's hosts: the `public_execute` folder whose
-/// `serve` names this host answers it, or `None` when no rule names it.
+/// A request on one of the project's hosts that a `public_execute` folder
+/// answers, or `None` when no folder claims it and the project's pages do.
+///
+/// - A `serve` entry with no mount path gives its folder the whole host:
+///   every path answers from it.
+/// - Entries with a mount path (`https://example.com/docs/`) answer those
+///   paths and leave every other path to the pages: the longest mount wins,
+///   `/docs` redirects to `/docs/`, and a missing file is a 404, never a page.
+///
+/// GET and HEAD only. An unreadable rules document means everything is
+/// private (kinds/zebfs-acl §Resolution): no folder answers, the pages do.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_site_response(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
     request_host: &str,
     request_port: Option<&str>,
+    method: &Method,
     path: &str,
+    query: Option<&str>,
     request: &HeaderMap,
 ) -> Option<Response> {
     if !super::project_exists_or_on_disk(state, owner, project) {
         return None;
     }
     let layout = state.platform.file.ensure_project_layout(owner, project).ok()?;
-    let store_dir = layout.data_store_dir();
-    let manifest = crate::platform::services::zebfs_acl::read(&store_dir).ok()?;
-    let folder = manifest.rules.iter().find_map(|(folder, rule)| {
-        (rule.access == ZebFsAccess::PublicExecute
-            && rule.serve.iter().any(|origin| origin_matches(origin, request_host, request_port)))
-        .then(|| folder.clone())
-    })?;
+    let manifest = crate::platform::services::zebfs_acl::read(&layout.data_store_dir()).ok()?;
+    let mut claims: Vec<(&str, &str)> = manifest
+        .rules
+        .iter()
+        .filter(|(_, rule)| rule.access == ZebFsAccess::PublicExecute)
+        .flat_map(|(folder, rule)| rule.serve.iter().map(move |entry| (folder.as_str(), entry.as_str())))
+        .filter(|(_, entry)| origin_matches(entry, request_host, request_port))
+        .map(|(folder, entry)| (folder, serve_mount_path(entry)))
+        .collect();
+    if claims.is_empty() {
+        return None;
+    }
+    // Only a request the folder answers is held to GET and HEAD: a host with
+    // a mounted path still takes its pages' other methods everywhere else.
+    let readable = method == Method::GET || method == Method::HEAD;
+    let decoded = percent_decode(path);
+    let (folder, mount) = match claims.iter().find(|(_, mount)| *mount == "/") {
+        Some(&whole_host) => {
+            if !readable {
+                return Some(StatusCode::METHOD_NOT_ALLOWED.into_response());
+            }
+            whole_host
+        }
+        None => {
+            claims.sort_by_key(|(_, mount)| std::cmp::Reverse(mount.len()));
+            let under = |path: &str, mount: &str| path.starts_with(mount) || path == mount.trim_end_matches('/');
+            let Some(&(folder, mount)) = claims.iter().find(|(_, mount)| under(&decoded, mount)) else {
+                // `//learn/x` or `/./learn/x` reads as the mount once its empty
+                // and `.` segments go: refused, never handed to the pages.
+                if ambiguous_path(path, &decoded) && claims.iter().any(|(_, mount)| under(&squeezed(&decoded), mount)) {
+                    return Some((StatusCode::BAD_REQUEST, "This address can be read more than one way.").into_response());
+                }
+                return None;
+            };
+            if !readable {
+                return Some(StatusCode::METHOD_NOT_ALLOWED.into_response());
+            }
+            if ambiguous_path(path, &decoded) {
+                return Some((StatusCode::BAD_REQUEST, "This address can be read more than one way.").into_response());
+            }
+            // A worker installed from a mounted folder would keep answering in
+            // visitors' browsers after the folder changes, on the site's own
+            // origin. Mounted folders serve pages, not workers.
+            if request.contains_key("service-worker") {
+                return Some(not_found());
+            }
+            if decoded == mount.trim_end_matches('/') {
+                // The folder's pages link relative to the mount, so its root
+                // is the path with the slash.
+                let location = match query.filter(|q| !q.is_empty()) {
+                    Some(q) => format!("{mount}?{q}"),
+                    None => mount.to_string(),
+                };
+                return Some(axum::response::Redirect::permanent(&location).into_response());
+            }
+            (folder, mount)
+        }
+    };
 
-    let request_rel = percent_decode(path);
+    let request_rel = decoded.get(mount.len()..).unwrap_or("").trim_start_matches('/').to_string();
     if hidden_path(&request_rel) {
         return Some(not_found());
     }
-    let request_rel = request_rel.trim_start_matches('/');
     let zebfs = layout.open_files();
-    for candidate in site_candidates(&folder, request_rel) {
+    for candidate in site_candidates(folder, &request_rel) {
         let Ok(rel) = normalize_object_path(&candidate) else {
             continue;
         };
         // A nested rule may make part of the folder private again; the
-        // longest match decides, here as everywhere.
+        // longest match decides, here as everywhere, and it must still be
+        // served at this address.
         match manifest.effective_rule(&rel) {
             Ok(Some((_, rule)))
                 if rule.access == ZebFsAccess::PublicExecute
-                    && rule.serve.iter().any(|origin| origin_matches(origin, request_host, request_port)) => {}
+                    && rule
+                        .serve
+                        .iter()
+                        .any(|entry| origin_matches(entry, request_host, request_port) && serve_mount_path(entry) == mount) => {}
             _ => continue,
         }
         if let Ok(object) = zebfs.get(&rel) {
@@ -234,8 +300,26 @@ pub(super) fn execute_site_response(
     Some(not_found())
 }
 
-/// The objects a site path may name, in order: the exact object, then the
-/// folder's `index.html`, then `<path>.html`.
+/// `decoded` without empty or `.` segments, keeping a trailing `/`.
+fn squeezed(decoded: &str) -> String {
+    let segments: Vec<&str> = decoded.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    let tail = if decoded.ends_with('/') && !segments.is_empty() { "/" } else { "" };
+    format!("/{}{tail}", segments.join("/"))
+}
+
+/// An encoded `/`, `\` or NUL, a doubled `/`, or a `.` or `..` segment: a path
+/// the mount and the store could read two ways. Refused, never guessed.
+fn ambiguous_path(raw: &str, decoded: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    lower.contains("%2f")
+        || lower.contains("%5c")
+        || lower.contains("%00")
+        || decoded.contains('\\')
+        || decoded.contains('\0')
+        || decoded.contains("//")
+        || decoded.split('/').any(|segment| segment == "." || segment == "..")
+}
+
 fn site_candidates(folder: &str, request_rel: &str) -> Vec<String> {
     let base = if request_rel.is_empty() {
         folder.to_string()
@@ -259,12 +343,8 @@ fn origin_matches(origin: &str, request_host: &str, request_port: Option<&str>) 
     if serve_origin_host(origin) != request_host {
         return false;
     }
-    let authority = origin
-        .split_once("://")
-        .map(|(_, rest)| rest.trim_end_matches('/'))
-        .unwrap_or(origin);
-    match authority.rsplit_once(':') {
-        Some((_, port)) => request_port == Some(port),
+    match serve_origin_port(origin) {
+        Some(port) => request_port == Some(port),
         None => true,
     }
 }

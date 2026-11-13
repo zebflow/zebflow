@@ -1,0 +1,10 @@
+{
+  "id": "meta",
+  "title": "Meta (Instagram, WhatsApp, Facebook, Messenger)",
+  "note": "HMAC-SHA256 of the raw body with the app secret, hex, after sha256= in X-Hub-Signature-256.",
+  "settings": {
+    "algorithm": "sha256",
+    "signed": "{body}",
+    "signature": { "from": "header:X-Hub-Signature-256", "prefix": "sha256=", "encoding": "hex" }
+  }
+}

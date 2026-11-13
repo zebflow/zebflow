@@ -2465,26 +2465,25 @@ impl ProjectService {
                 format!("'{rel}' is written by the platform and cannot be deleted here"),
             ));
         }
-        // A declared root is protected while it holds something. An empty one is
-        // just a reserved name, and refusing to delete it would leave a folder
-        // nobody asked for that nobody can remove — the platform re-creates it
-        // the moment a feature writes there.
-        let declared_and_used = abs.is_dir()
-            && repo_entry_is_declared_root(&layout.repo_layout, &rel)
-            && std::fs::read_dir(&abs)
-                .map(|mut entries| entries.next().is_some())
-                .unwrap_or(true);
-        if abs.is_dir() && repo_entry_contains_declared_root(&layout.repo_layout, &rel) {
-            return Err(PlatformError::new(
-                "PLATFORM_REPO_DECLARED_ROOT",
-                format!("'{rel}' holds a directory this project's layout names and cannot be deleted"),
-            ));
-        }
-        if declared_and_used {
-            return Err(PlatformError::new(
-                "PLATFORM_REPO_DECLARED_ROOT",
-                format!("'{rel}' is named by this project's layout and cannot be deleted"),
-            ));
+        // One rule for the folders the layout names, and for a folder that
+        // holds them: deletable once they hold no file. Empty subfolders are
+        // not files. A reserved name with nothing in it would otherwise be a
+        // folder nobody can remove; the platform re-creates it the moment a
+        // feature writes there. The refusal names the file in the way, which
+        // the repository tree may not show (`repo_entry_is_machine_owned`).
+        if abs.is_dir()
+            && (repo_entry_is_declared_root(&layout.repo_layout, &rel)
+                || repo_entry_contains_declared_root(&layout.repo_layout, &rel))
+        {
+            if let Some(blocker) = first_file_under(&abs, &rel) {
+                let written_by = if repo_entry_is_machine_owned(&blocker) { ", which the platform writes" } else { "" };
+                return Err(PlatformError::new(
+                    "PLATFORM_REPO_DECLARED_ROOT",
+                    format!("'{rel}' is a folder this project's layout names and it still holds {blocker}{written_by}; it can be deleted once it holds no file"),
+                ));
+            }
+            fs::remove_dir_all(&abs)?;
+            return Ok(());
         }
         if abs.is_dir() && !recursive && fs::read_dir(&abs).map(|mut entries| entries.next().is_some()).unwrap_or(true) {
             return Err(PlatformError::new(
@@ -3517,6 +3516,27 @@ fn repo_entry_contains_declared_root(layout: &ResolvedProjectLayout, rel: &str) 
     })
 }
 
+/// The first file under the folder `abs` (repository path `rel`), in name
+/// order, depth first; `None` when it holds only empty folders. A link is a
+/// file here: what it points at is never followed.
+fn first_file_under(abs: &Path, rel: &str) -> Option<String> {
+    let mut entries: Vec<_> = fs::read_dir(abs).ok()?.flatten().collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let child_rel = format!("{rel}/{name}");
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {
+                if let Some(found) = first_file_under(&entry.path(), &child_rel) {
+                    return Some(found);
+                }
+            }
+            _ => return Some(child_rel),
+        }
+    }
+    None
+}
+
 /// Recursively collect all files under `dir` as (rel_path, abs_path) pairs.
 fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
     let entries = match fs::read_dir(dir) {
@@ -4144,15 +4164,23 @@ mod tests {
             .expect_err("a declared root with content cannot be deleted");
         assert_eq!(err.code, "PLATFORM_REPO_DECLARED_ROOT");
 
-        // And a plain parent cannot be used to take a declared root with it.
-        // `schemas/sekejap` is declared while `schemas` is not, so guarding the
-        // root alone would let a delete of its parent carry it off.
+        // A plain parent follows the same rule, so it cannot carry off a
+        // declared root that holds a file. `schemas/sekejap` is declared while
+        // `schemas` is not. The refusal names the file, even one the tree
+        // hides because the platform writes it.
         svc.create_repo_folder("superadmin", "default", "schemas/sekejap")
             .expect("the declared schema root");
+        let layout = svc.file.ensure_project_layout("superadmin", "default").expect("layout");
+        std::fs::write(layout.repo_dir.join("schemas/sekejap/schema.json"), b"{}").expect("a platform-written schema export");
         let err = svc
             .delete_repo_entry("superadmin", "default", "schemas")
-            .expect_err("a parent holding a declared root cannot be deleted");
+            .expect_err("a parent of a declared root that holds a file cannot be deleted");
         assert_eq!(err.code, "PLATFORM_REPO_DECLARED_ROOT");
+        assert!(err.message.contains("schemas/sekejap/schema.json") && err.message.contains("the platform writes"), "{}", err.message);
+        // With no file left, empty folders are no reason to refuse.
+        std::fs::remove_file(layout.repo_dir.join("schemas/sekejap/schema.json")).expect("remove");
+        svc.delete_repo_entry("superadmin", "default", "schemas")
+            .expect("a parent of empty declared roots can be deleted");
 
         svc.create_repo_folder("superadmin", "default", "notes")
             .expect("an ordinary folder");

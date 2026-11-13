@@ -1,0 +1,10 @@
+{
+  "id": "square",
+  "title": "Square",
+  "note": "HMAC-SHA256 of the notification URL followed by the raw body, base64, in x-square-hmacsha256-signature. {url} must be exactly the address registered with Square, including scheme and any query.",
+  "settings": {
+    "algorithm": "sha256",
+    "signed": "{url}{body}",
+    "signature": { "from": "header:x-square-hmacsha256-signature", "encoding": "base64" }
+  }
+}

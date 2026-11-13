@@ -1,0 +1,13 @@
+{
+  "id": "standard-webhooks",
+  "title": "Standard Webhooks",
+  "note": "webhook-id, webhook-timestamp and webhook-signature (space-separated v1,<base64>); HMAC-SHA256 of {id}.{timestamp}.{body}; the secret is whsec_ followed by base64.",
+  "settings": {
+    "algorithm": "sha256",
+    "secret_prefix": "whsec_",
+    "secret_encoding": "base64",
+    "signed": "{header:webhook-id}.{timestamp}.{body}",
+    "signature": { "from": "header:webhook-signature", "prefix": "v1,", "encoding": "base64", "split": " " },
+    "timestamp": { "from": "header:webhook-timestamp", "unit": "seconds", "tolerance": 300 }
+  }
+}

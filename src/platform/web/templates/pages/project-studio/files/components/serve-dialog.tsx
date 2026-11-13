@@ -9,8 +9,11 @@ import DialogFooter from "@/components/ui/dialog-footer";
 
 /**
  * Makes a folder run as a site (`public_execute`) on addresses written out in
- * full — one per line, each a host this project already has in Addressing.
- * Whoever can write into the folder decides what runs there; the dialog says so.
+ * full — one per line, each a host this project already has in Addressing. An
+ * address with a path (`https://example.com/docs/`) gives the folder that path
+ * and leaves the host's other paths to its pages; one without gives it the
+ * whole host. Whoever can write into the folder decides what runs there; the
+ * dialog says so, and says more when the folder would share a pages host.
  */
 export function ServeDialog({ target, browser, onClose }) {
   const [origins, setOrigins] = useState("");
@@ -19,6 +22,7 @@ export function ServeDialog({ target, browser, onClose }) {
     setOrigins(Array.isArray(rule?.serve) ? rule.serve.join("\n") : "");
   }, [target?.path]);
   const serve = origins.split("\n").map((line) => line.trim()).filter(Boolean);
+  const mountsAtPath = serve.some((line) => /^https?:\/\/[^/]+\/[^/\s]+/.test(line));
   const save = async () => {
     await browser.setAccess(target, "prefix", "public_execute", serve);
     onClose();
@@ -40,8 +44,15 @@ export function ServeDialog({ target, browser, onClose }) {
             onInput={(event) => setOrigins(event.currentTarget.value)}
           />
           <p className="text-[0.72rem] text-muted-foreground">
-            Full addresses only, no wildcards. Each host must already be added in Settings → Addressing.
+            Full addresses, no wildcards; each host must already be added in Settings → Addressing. Add a path
+            (https://example.com/docs/) to serve the folder there and keep the host's other pages.
           </p>
+          {mountsAtPath ? (
+            <p className="text-[0.72rem] text-destructive">
+              A path on a host that runs your pages shares their sign-in: a script in this folder can act as any
+              signed-in visitor of that host. Only let trusted pipelines and people write here.
+            </p>
+          ) : null}
         </div>
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>

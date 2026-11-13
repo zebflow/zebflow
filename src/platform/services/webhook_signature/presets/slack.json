@@ -1,0 +1,11 @@
+{
+  "id": "slack",
+  "title": "Slack",
+  "note": "HMAC-SHA256 of v0:{timestamp}:{body} with the signing secret, hex, after v0= in X-Slack-Signature.",
+  "settings": {
+    "algorithm": "sha256",
+    "signed": "v0:{timestamp}:{body}",
+    "signature": { "from": "header:X-Slack-Signature", "prefix": "v0=", "encoding": "hex" },
+    "timestamp": { "from": "header:X-Slack-Request-Timestamp", "unit": "seconds", "tolerance": 300 }
+  }
+}

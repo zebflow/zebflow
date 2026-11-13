@@ -1,0 +1,12 @@
+{
+  "id": "stripe",
+  "title": "Stripe",
+  "note": "Stripe-Signature carries t= and one or more v1=; HMAC-SHA256 of {t}.{body}, hex. Every v1 is tried, so a rolled secret keeps working.",
+  "settings": {
+    "algorithm": "sha256",
+    "parts": { "from": "header:Stripe-Signature", "separator": ",", "assign": "=" },
+    "signed": "{timestamp}.{body}",
+    "signature": { "from": "part:v1", "encoding": "hex" },
+    "timestamp": { "from": "part:t", "unit": "seconds", "tolerance": 300 }
+  }
+}

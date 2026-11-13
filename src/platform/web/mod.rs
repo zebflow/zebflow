@@ -1026,6 +1026,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_oauth2_authorize),
         )
         .route(
+            "/api/projects/{owner}/{project}/credential-types/hmac/presets",
+            get(api_hmac_presets),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/credentials/{credential_id}/hmac/check",
+            post(api_hmac_check),
+        )
+        .route(
             "/api/projects/{owner}/{project}/assistant/config",
             get(api_get_project_assistant_config).put(api_upsert_project_assistant_config),
         )
@@ -1647,8 +1655,10 @@ async fn addressing_gate(
             )
             .await;
         }
-        // A host a `public_execute` folder names in `serve` answers only that
-        // folder, at `/`, with scripts running (kinds/zebfs-acl §Resolution).
+        // A host a `public_execute` folder names in `serve` answers that
+        // folder with scripts running: the whole host, or the path the entry
+        // mounts it at, leaving the host's other paths to its pages
+        // (kinds/zebfs-acl §Resolution).
         let request_host = crate::platform::services::addressing::normalize_host(&host);
         let request_port = host
             .rsplit_once(':')
@@ -1660,7 +1670,9 @@ async fn addressing_gate(
             &resolution.project,
             &request_host,
             request_port,
+            request.method(),
             &path,
+            request.uri().query(),
             request.headers(),
         ) {
             return response;
@@ -16469,12 +16481,11 @@ fn set_project_file_access(
     // Every serve origin must be a host this project already answers on: a
     // project can never claim another project's domain.
     if !req.serve.is_empty() {
-        let hosts = state
-            .platform
-            .addressing
-            .read(owner, project)
-            .map_err(internal_error)?
-            .site_hosts(crate::platform::services::addressing::AddressingService::dev_host(owner, project));
+        let addressing = state.platform.addressing.read(owner, project).map_err(internal_error)?;
+        let hosts = addressing.site_hosts(crate::platform::services::addressing::AddressingService::dev_host(owner, project));
+        // A section host is never a whole site for a folder, but a path of it
+        // may be one (`kinds/zebfs-acl` §Resolution).
+        let section_hosts = addressing.section_hosts();
         for origin in &req.serve {
             let normalized = crate::zebfs::acl::normalize_serve_origin(origin).map_err(|err| {
                 (
@@ -16484,12 +16495,42 @@ fn set_project_file_access(
                     .into_response()
             })?;
             let host = crate::zebfs::acl::serve_origin_host(&normalized);
-            if !hosts.iter().any(|known| known == host) {
+            let mounted = crate::zebfs::acl::serve_mount_path(&normalized) != "/";
+            if !hosts.iter().any(|known| known == host) && !(mounted && section_hosts.contains(&host)) {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(json!({
                         "ok": false,
                         "error": format!("'{host}' is not a site host of this project — add it in Settings → Addressing first (a file host runs nothing)"),
+                    })),
+                )
+                    .into_response());
+            }
+            // A folder mounted at a path answers everything under it, so an
+            // active webhook written under that path would stop answering.
+            // A route with a parameter there (`/:slug`) only loses this one
+            // path, and is left alone.
+            let mount = crate::zebfs::acl::serve_mount_path(&normalized);
+            if mount != "/"
+                && let Some((route, pipeline)) = state.platform.pipeline_runtime.list_project(owner, project).iter().find_map(|compiled| {
+                    compiled.webhook_triggers.iter().find_map(|trigger| {
+                        let literal: String = trigger
+                            .path
+                            .split('/')
+                            .filter(|segment| !segment.is_empty())
+                            .take_while(|segment| !segment.starts_with(':') && !segment.starts_with('*') && !segment.starts_with('{'))
+                            .map(|segment| format!("/{segment}"))
+                            .collect();
+                        let literal = format!("{literal}/");
+                        literal.starts_with(mount).then(|| (trigger.path.clone(), compiled.file_rel_path.clone()))
+                    })
+                })
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": format!("the active webhook {route} ({pipeline}) answers under {mount}: move it or mount the folder at another path"),
                     })),
                 )
                     .into_response());
@@ -17198,6 +17239,114 @@ async fn api_list_credentials(
     {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
         Err(err) => internal_error(err),
+    }
+}
+
+/// GET /api/projects/{owner}/{project}/credential-types/hmac/presets
+/// The built-in webhook signature presets: `{ id, title, note, settings }`.
+/// Choosing one fills the hmac form; nothing here carries a secret.
+async fn api_hmac_presets(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) =
+        require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::CredentialsRead)
+    {
+        return response;
+    }
+    Json(json!({ "ok": true, "presets": crate::platform::services::webhook_signature::presets() })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct HmacCheckRequest {
+    /// Header lines as a vendor's dashboard shows them: `Name: value`.
+    #[serde(default)]
+    headers: String,
+    /// The body exactly as delivered.
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    /// A pasted delivery is older than any time window; on by default.
+    #[serde(default = "default_true")]
+    ignore_time: bool,
+}
+
+/// POST /api/projects/{owner}/{project}/credentials/{credential_id}/hmac/check
+/// Runs a saved hmac credential's check on a pasted delivery and answers which
+/// step failed. Nothing is stored; the answer never carries the secret, the
+/// computed signature or the signed text.
+async fn api_hmac_check(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, credential_id)): Path<(String, String, String)>,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    if let Err(response) =
+        require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::CredentialsWrite)
+    {
+        return response;
+    }
+    match maybe_forward_project_api_to_worker(&state, &uri, &Method::POST, &headers, body.clone(), &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let request: HmacCheckRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(err) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": { "code": "PLATFORM_HMAC_CHECK_INVALID", "message": err.to_string() } }))).into_response();
+        }
+    };
+    let credential = match state.platform.credentials.get_project_credential(&owner, &project, &credential_id) {
+        Ok(Some(credential)) if credential.kind == "hmac" => credential,
+        Ok(Some(_)) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": { "code": "PLATFORM_CREDENTIAL_INVALID", "message": "this credential is not an hmac credential" } }))).into_response();
+        }
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "ok": false, "error": { "code": "PLATFORM_CREDENTIAL_MISSING", "message": "credential not found" } }))).into_response();
+        }
+        Err(err) => return internal_error(err),
+    };
+    let settings = match crate::platform::services::webhook_signature::Settings::from_value(&credential.secret) {
+        Ok(settings) if request.ignore_time => settings.ignoring_time(),
+        Ok(settings) => settings,
+        Err(err) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": { "code": "PLATFORM_CREDENTIAL_INVALID", "message": err } }))).into_response();
+        }
+    };
+    let pasted: Vec<(String, String)> = request
+        .headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .filter(|(name, _)| !name.is_empty() && !name.contains(' '))
+        .collect();
+    let header = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        pasted.iter().find(|(k, _)| *k == name).map(|(_, v)| v.clone())
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
+    let method = request.method.unwrap_or_else(|| "POST".to_string());
+    let path = request.path.unwrap_or_else(|| "/".to_string());
+    let url = request.url.unwrap_or_default();
+    let outcome = settings.verify(&crate::platform::services::webhook_signature::Request {
+        header: &header,
+        body: request.body.as_bytes(),
+        method: &method,
+        path: &path,
+        url: &url,
+        now,
+    });
+    match outcome {
+        Ok(()) => Json(json!({ "ok": true, "passed": true })).into_response(),
+        Err(refusal) => Json(json!({ "ok": true, "passed": false, "code": refusal.code, "message": refusal.message })).into_response(),
     }
 }
 
@@ -18613,6 +18762,7 @@ async fn api_upsert_settings_section(
                         && let Err(err) = crate::platform::services::zebfs_acl::retain_hosts(
                             &layout.data_store_dir(),
                             &hosts_after,
+                            &saved.section_hosts().into_iter().map(str::to_string).collect::<Vec<_>>(),
                         )
                     {
                         return internal_error(PlatformError::new(err.code, err.message));
@@ -23893,9 +24043,40 @@ where
 /// - `Ok(Some(claims))` — JWT auth passed; claims to inject as `payload.auth`
 /// - `Ok(None)` — HMAC / API key auth passed; no claims to inject
 /// - `Err(AuthError)` — auth failed
+/// What a webhook signature may cover besides headers and body.
+struct WebhookFacts<'a> {
+    method: &'a str,
+    /// The path the caller asked for, before a project host's rewrite.
+    path: &'a str,
+    /// The full address the caller asked for: scheme, host, path and query.
+    url: String,
+}
+
+impl<'a> WebhookFacts<'a> {
+    /// The host is the `Host` the request was routed by, so a caller cannot
+    /// name another project's host without reaching that project. The scheme
+    /// is the proxy's `X-Forwarded-Proto`, else `http`; a wrong one only makes
+    /// a `{url}` signature fail.
+    fn new(method: &'a str, path: &'a str, query: Option<&str>, headers: &HeaderMap) -> Self {
+        let first = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let scheme = first("x-forwarded-proto").unwrap_or_else(|| "http".to_string());
+        let host = first("host").unwrap_or_default();
+        let query = query.filter(|q| !q.is_empty()).map(|q| format!("?{q}")).unwrap_or_default();
+        WebhookFacts { method, path, url: format!("{scheme}://{host}{path}{query}") }
+    }
+}
+
 fn verify_webhook_auth(
     headers: &HeaderMap,
     body: &Bytes,
+    facts: &WebhookFacts,
     auth_type: &str,
     auth_credential: &str,
     required_roles: &[String],
@@ -24011,194 +24192,35 @@ fn verify_webhook_auth(
         }
 
         "hmac" => {
-            use hmac::{Hmac, Mac};
-
             if credential.kind != "hmac" {
                 return Err(AuthError::Internal(format!(
                     "credential '{}' is kind '{}', expected 'hmac'",
                     credential.credential_id, credential.kind
                 )));
             }
-
-            // Read configurable fields from credential secret.
-            let provider = credential
-                .secret
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or("generic");
-            let sig_header_name = credential
-                .secret
-                .get("signature_header")
-                .and_then(|v| v.as_str())
-                .unwrap_or("X-Hub-Signature-256");
-            let sig_prefix = credential
-                .secret
-                .get("signature_prefix")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let sig_encoding = credential
-                .secret
-                .get("signature_encoding")
-                .and_then(|v| v.as_str())
-                .unwrap_or("hex");
-            let algorithm = credential
-                .secret
-                .get("algorithm")
-                .and_then(|v| v.as_str())
-                .unwrap_or("sha256");
-            let replay_tolerance = credential
-                .secret
-                .get("replay_tolerance")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            let secret = credential
-                .secret
-                .get("secret")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    AuthError::Internal("hmac credential missing 'secret' field".to_string())
-                })?;
-
-            // Get signature value from the configured header.
-            let sig_raw = headers
-                .get(sig_header_name)
-                .and_then(|h| h.to_str().ok())
-                .ok_or_else(|| AuthError::Unauthenticated {
-                    message: format!("missing HMAC signature header '{sig_header_name}'"),
+            // The credential describes the whole check — what was signed,
+            // where the signature and timestamp are — so a new vendor is a
+            // filled form, not code (`services::webhook_signature`).
+            let settings = crate::platform::services::webhook_signature::Settings::from_value(&credential.secret)
+                .map_err(|err| AuthError::Internal(format!("hmac credential '{}': {err}", credential.credential_id)))?;
+            let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or_default();
+            settings
+                .verify(&crate::platform::services::webhook_signature::Request {
+                    header: &header,
+                    body: body.as_ref(),
+                    method: facts.method,
+                    path: facts.path,
+                    url: &facts.url,
+                    now,
+                })
+                .map_err(|refusal| AuthError::Unauthenticated {
+                    message: format!("{}: {}", refusal.code, refusal.message),
                     redirect_url: None,
                 })?;
-
-            // Provider-specific parsing: extract expected signature bytes + message to sign.
-            let (expected_sig_str, message_to_sign): (String, Vec<u8>) = match provider {
-                // Stripe: header = "t=1234567890,v1=<hex_sig>", signs "{t}.{body}"
-                "stripe" => {
-                    let parts: std::collections::HashMap<&str, &str> = sig_raw
-                        .split(',')
-                        .filter_map(|p| p.split_once('='))
-                        .collect();
-                    let timestamp = parts.get("t").ok_or_else(|| AuthError::Unauthenticated {
-                        message: "Stripe signature missing 't' field".to_string(),
-                        redirect_url: None,
-                    })?;
-                    let sig = parts.get("v1").ok_or_else(|| AuthError::Unauthenticated {
-                        message: "Stripe signature missing 'v1' field".to_string(),
-                        redirect_url: None,
-                    })?;
-
-                    if replay_tolerance > 0 {
-                        let ts: i64 =
-                            timestamp.parse().map_err(|_| AuthError::Unauthenticated {
-                                message: "Stripe timestamp invalid".to_string(),
-                                redirect_url: None,
-                            })?;
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs() as i64;
-                        if (now - ts).unsigned_abs() > replay_tolerance {
-                            return Err(AuthError::Unauthenticated {
-                                message: format!("replay tolerance exceeded ({replay_tolerance}s)"),
-                                redirect_url: None,
-                            });
-                        }
-                    }
-
-                    let body_str = std::str::from_utf8(body.as_ref()).unwrap_or("");
-                    let msg = format!("{timestamp}.{body_str}");
-                    (sig.to_string(), msg.into_bytes())
-                }
-                // Slack: timestamp in X-Slack-Request-Timestamp, signs "v0:{ts}:{body}"
-                "slack" => {
-                    let timestamp = headers
-                        .get("X-Slack-Request-Timestamp")
-                        .and_then(|h| h.to_str().ok())
-                        .ok_or_else(|| AuthError::Unauthenticated {
-                            message: "missing X-Slack-Request-Timestamp header".to_string(),
-                            redirect_url: None,
-                        })?;
-
-                    if replay_tolerance > 0 {
-                        let ts: i64 =
-                            timestamp.parse().map_err(|_| AuthError::Unauthenticated {
-                                message: "Slack timestamp invalid".to_string(),
-                                redirect_url: None,
-                            })?;
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs() as i64;
-                        if (now - ts).unsigned_abs() > replay_tolerance {
-                            return Err(AuthError::Unauthenticated {
-                                message: format!("replay tolerance exceeded ({replay_tolerance}s)"),
-                                redirect_url: None,
-                            });
-                        }
-                    }
-
-                    let sig = if !sig_prefix.is_empty() {
-                        sig_raw.strip_prefix(sig_prefix).unwrap_or(sig_raw)
-                    } else {
-                        sig_raw
-                    };
-                    let body_str = std::str::from_utf8(body.as_ref()).unwrap_or("");
-                    let msg = format!("v0:{timestamp}:{body_str}");
-                    (sig.to_string(), msg.into_bytes())
-                }
-                // Generic / GitHub / Shopify: strip prefix, sign raw body.
-                _ => {
-                    let sig = if !sig_prefix.is_empty() {
-                        sig_raw.strip_prefix(sig_prefix).unwrap_or(sig_raw)
-                    } else {
-                        sig_raw
-                    };
-                    (sig.to_string(), body.to_vec())
-                }
-            };
-
-            // Decode expected signature from hex or base64.
-            let expected_bytes = match sig_encoding {
-                "base64" => {
-                    use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD
-                        .decode(expected_sig_str.as_bytes())
-                        .map_err(|e| AuthError::Unauthenticated {
-                            message: format!("invalid base64 in signature: {e}"),
-                            redirect_url: None,
-                        })?
-                }
-                _ => hex::decode(&expected_sig_str).map_err(|e| AuthError::Unauthenticated {
-                    message: format!("invalid hex in signature: {e}"),
-                    redirect_url: None,
-                })?,
-            };
-
-            // Compute HMAC and verify using constant-time comparison.
-            match algorithm {
-                "sha1" => {
-                    type HmacSha1 = Hmac<sha1::Sha1>;
-                    let mut mac = HmacSha1::new_from_slice(secret.as_bytes())
-                        .map_err(|e| AuthError::Internal(e.to_string()))?;
-                    mac.update(&message_to_sign);
-                    mac.verify_slice(&expected_bytes)
-                        .map_err(|_| AuthError::Unauthenticated {
-                            message: "HMAC signature mismatch".to_string(),
-                            redirect_url: None,
-                        })?;
-                }
-                _ => {
-                    type HmacSha256 = Hmac<sha2::Sha256>;
-                    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-                        .map_err(|e| AuthError::Internal(e.to_string()))?;
-                    mac.update(&message_to_sign);
-                    mac.verify_slice(&expected_bytes)
-                        .map_err(|_| AuthError::Unauthenticated {
-                            message: "HMAC signature mismatch".to_string(),
-                            redirect_url: None,
-                        })?;
-                }
-            }
-
             Ok(None)
         }
 
@@ -24614,9 +24636,16 @@ async fn public_webhook_ingress_run(
     // call header proves who forwarded it, never that the visitor is signed
     // in, so it is no stand-in for the route's `--auth`.
     let auth_claims = {
+        let called_path = section
+            .as_ref()
+            .map(|s| s.visitor_path.clone())
+            .or_else(|| visitor_path.clone())
+            .unwrap_or_else(|| uri.path().to_string());
+        let facts = WebhookFacts::new(&method_key, &called_path, uri.query(), &headers);
         let verified = verify_webhook_auth(
             &headers,
             &body,
+            &facts,
             &selected.auth_type,
             &selected.auth_credential,
             &selected.auth_required_role,
@@ -24624,6 +24653,20 @@ async fn public_webhook_ingress_run(
             &owner,
             &project,
         );
+        // A refused signature is a machine caller failing, never a visitor
+        // who is not signed in: it shows on the pipeline as a code and a
+        // sentence, never the signature, the secret or the signed text. A
+        // misconfigured check is the operator's to fix, so it shows there too.
+        match &verified {
+            Err(AuthError::Unauthenticated { message, .. }) if selected.auth_type == "hmac" => {
+                let code = message.split_once(':').map(|(code, _)| code).unwrap_or("HMAC_REFUSED");
+                state.platform.pipeline_hits.record_failure(&owner, &project, &selected.compiled.file_rel_path, "webhook.hmac", code, message);
+            }
+            Err(AuthError::Internal(message)) => {
+                state.platform.pipeline_hits.record_failure(&owner, &project, &selected.compiled.file_rel_path, "webhook.auth", "AUTH_MISCONFIGURED", message);
+            }
+            _ => {}
+        }
         // `--auth-optional`: the route is public and only wants to know who is
         // signed in. A missing, expired or role-less token is a guest, not a
         // refusal; the page reads `$trigger.auth` and decides. A misconfigured
@@ -24649,7 +24692,14 @@ async fn public_webhook_ingress_run(
                     message,
                     redirect_url,
                 } => (StatusCode::FORBIDDEN, message, redirect_url),
-                AuthError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message, None),
+                // The detail names the credential and its settings: it is on
+                // the pipeline's error list for the operator, never sent to
+                // whoever called.
+                AuthError::Internal(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "this route's --auth check is misconfigured; the pipeline's errors say how".to_string(),
+                    None,
+                ),
             };
 
             if is_page_navigation(&headers) {
@@ -28295,7 +28345,11 @@ fn internal_error(err: PlatformError) -> Response {
         | "HUB_TOKEN_FORBIDDEN"
         | "HUB_PUBLISHER_FORBIDDEN"
         | "HUB_PUBLISHER_SCOPE_DENIED"
-        | "HUB_PACKAGE_FORBIDDEN" => StatusCode::FORBIDDEN,
+        | "HUB_PACKAGE_FORBIDDEN"
+        // A file the platform writes: no caller may change it here.
+        | "PLATFORM_REPO_MACHINE_OWNED" => StatusCode::FORBIDDEN,
+        // A folder that still holds something: the caller's to empty first.
+        "PLATFORM_REPO_DECLARED_ROOT" | "PLATFORM_REPO_NOT_EMPTY" => StatusCode::CONFLICT,
         "HUB_PUBLISHER_DISABLED" => StatusCode::CONFLICT,
         "HUB_PUBLISHER_QUOTA_EXCEEDED" => StatusCode::CONFLICT,
         // A published release is immutable, so a republish is a conflict with
@@ -28329,7 +28383,8 @@ fn internal_error(err: PlatformError) -> Response {
         | "PLATFORM_PIPELINE_ID_MISSING"
         | "PLATFORM_PIPELINE_META_INJECTED"
         | "PLATFORM_PIPELINE_TRIGGER_MISMATCH"
-        | "PLATFORM_PIPELINE_REGISTRY_SCOPE_INVALID" => StatusCode::BAD_REQUEST,
+        | "PLATFORM_PIPELINE_REGISTRY_SCOPE_INVALID"
+        | "PLATFORM_CREDENTIAL_INVALID" => StatusCode::BAD_REQUEST,
         // Someone else already owns that webhook path: a conflict with existing
         // state rather than a malformed request.
         "PLATFORM_PIPELINE_WEBHOOK_CONFLICT" => StatusCode::CONFLICT,
@@ -30440,7 +30495,11 @@ mod home_directory_tests {
                     credential_id: "hook-hmac".to_string(),
                     title: "HMAC".to_string(),
                     kind: "hmac".to_string(),
-                    secret: json!({ "secret": uuid::Uuid::new_v4().to_string() }),
+                    secret: json!({
+                        "secrets": { "current": uuid::Uuid::new_v4().to_string() },
+                        "signed": "{body}",
+                        "signature": { "from": "header:X-Signature" }
+                    }),
                     notes: String::new(),
                 },
             )
@@ -30453,6 +30512,7 @@ mod home_directory_tests {
         match verify_webhook_auth(
             &headers,
             &Bytes::new(),
+            &WebhookFacts::new("POST", "/hook", None, &headers),
             "jwt",
             "hook-hmac",
             &[],

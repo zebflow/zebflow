@@ -1,0 +1,12 @@
+{
+  "id": "paddle",
+  "title": "Paddle Billing",
+  "note": "Paddle-Signature carries ts= and h1= separated by ;; HMAC-SHA256 of {ts}:{body}, hex. Paddle's own library allows 5 seconds of clock difference; 300 is the default here.",
+  "settings": {
+    "algorithm": "sha256",
+    "parts": { "from": "header:Paddle-Signature", "separator": ";", "assign": "=" },
+    "signed": "{timestamp}:{body}",
+    "signature": { "from": "part:h1", "encoding": "hex" },
+    "timestamp": { "from": "part:ts", "unit": "seconds", "tolerance": 300 }
+  }
+}

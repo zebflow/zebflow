@@ -51,7 +51,7 @@ fn platform() -> (Arc<PlatformService>, tempfile::TempDir) {
                     credential_id: id.to_string(),
                     title: id.to_string(),
                     kind: kind.to_string(),
-                    secret: json!({ "secret": key, "algorithm": "HS256" }),
+                    secret: if kind == "hmac" { json!({ "secrets": { "current": key } }) } else { json!({ "secret": key, "algorithm": "HS256" }) },
                     notes: String::new(),
                 },
             )

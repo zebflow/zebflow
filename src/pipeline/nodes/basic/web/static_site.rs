@@ -215,10 +215,11 @@ pub fn site_manifest_rel_path(site_root_rel: &str) -> String {
     format!("{}/{SITE_MANIFEST_FILE}", site_root_rel.trim_end_matches('/'))
 }
 
-/// The origin a site folder is served on: the first `serve` origin of the
-/// `public_execute` rule covering it (`node-conventions.md` §7). A site with
-/// no such rule has no origin, and writes host-relative links only. An origin
-/// is scheme, host and port: the rule's trailing `/` is not part of it.
+/// The origin a site folder is served on: the origin of the first `serve`
+/// entry of the `public_execute` rule covering it (`node-conventions.md` §7).
+/// A site with no such rule has no origin, and writes host-relative links
+/// only. An origin is scheme, host and port: a mount path is not part of it
+/// (the base path carries it).
 pub fn site_origin(
     platform: Option<&std::sync::Arc<crate::platform::services::PlatformService>>,
     owner: &str,
@@ -230,25 +231,39 @@ pub fn site_origin(
     if rule.access != crate::zebfs::acl::ZebFsAccess::PublicExecute {
         return None;
     }
-    normalize_deploy_base_url(rule.serve.first().map(String::as_str))
+    normalize_deploy_base_url(rule.serve.first().map(|entry| crate::zebfs::acl::serve_origin(entry)))
 }
 
-/// Where a site's pages answer on its serve origin: the site folder's place
-/// under the folder its `public_execute` rule is set on. A served `site` with
-/// the docs written to `site/docs` answers them at `/docs/`; a site folder
-/// that is the served folder, or one not served yet, answers at `/`.
+/// Where a site's pages answer on its serve address: the mount path of the
+/// rule's `serve` entry, then the site folder's place under the folder the
+/// `public_execute` rule is set on. A served `site` with the docs written to
+/// `site/docs` answers them at `/docs/`; the same rule mounted at `/learn/`
+/// answers them at `/learn/docs/`; a site folder not served yet answers at `/`.
 pub fn site_base_path(
     platform: Option<&std::sync::Arc<crate::platform::services::PlatformService>>,
     owner: &str,
     project: &str,
     site_root: &str,
 ) -> String {
-    let rule_folder = platform.and_then(|platform| {
+    let served = platform.and_then(|platform| {
         let layout = platform.file.ensure_project_layout(owner, project).ok()?;
         let (folder, rule) = crate::platform::services::zebfs_acl::effective_rule(&layout.data_store_dir(), site_root).ok()??;
-        (rule.access == crate::zebfs::acl::ZebFsAccess::PublicExecute).then_some(folder)
+        if rule.access != crate::zebfs::acl::ZebFsAccess::PublicExecute {
+            return None;
+        }
+        let mount = rule.serve.first().map(|entry| crate::zebfs::acl::serve_mount_path(entry).to_string()).unwrap_or_else(|| "/".to_string());
+        Some((folder, mount))
     });
-    base_path_under(rule_folder.as_deref(), site_root)
+    match served {
+        Some((folder, mount)) => join_base(&mount, &base_path_under(Some(&folder), site_root)),
+        None => base_path_under(None, site_root),
+    }
+}
+
+/// A mount path and a base path under it: `/learn/` and `/docs/` make
+/// `/learn/docs/`. Both start and end with `/`.
+fn join_base(mount: &str, below: &str) -> String {
+    format!("{}{}", mount.trim_end_matches('/'), below)
 }
 
 /// `site_root`'s path below `served`, as a base path: `/`, or `/docs/`.
@@ -1116,7 +1131,7 @@ fn path_segments(raw: &str) -> Vec<String> {
 mod tests {
     use super::{
         LocalizedStaticHtml, StaticAssetRecord, StaticAssetSources, StaticPageRecord,
-        absolute_deploy_url, asset_group_id, localize_static_html_assets,
+        absolute_deploy_url, asset_group_id, join_base, localize_static_html_assets,
         normalize_deploy_base_path, normalize_page_output_path, normalize_site_root_rel_path,
         collect_static_asset_refs, page_rel_path_from_site_root, route_path_for_output_path,
         site_manifest_rel_path, update_site_manifest, SiteStore, StaticSiteManifest,
@@ -1131,6 +1146,9 @@ mod tests {
         assert_eq!(base_path_under(Some("site/"), "site/docs"), "/docs/");
         assert_eq!(base_path_under(Some("site"), "site/docs/0.11"), "/docs/0.11/");
         assert_eq!(base_path_under(Some(""), "docs"), "/docs/");
+        assert_eq!(join_base("/", "/docs/"), "/docs/");
+        assert_eq!(join_base("/learn/", "/"), "/learn/");
+        assert_eq!(join_base("/learn/", "/docs/"), "/learn/docs/");
         // Not served, or served from a folder that only shares a prefix: the root.
         assert_eq!(base_path_under(None, "site/docs"), "/");
         assert_eq!(base_path_under(Some("site"), "site-old/docs"), "/");

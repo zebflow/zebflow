@@ -330,8 +330,14 @@ impl S3ZebFs {
         ensure_user_object_path(&rel)?;
         let key = self.key_for(&rel);
         self.delete_key(&key)?;
-        for under in self.keys_under(&format!("{key}/"))? {
-            self.delete_key(&under)?;
+        // Deepest first, each folder's marker (`dir/`) after everything inside
+        // it: listing order puts the marker first, and a store whose folders
+        // are real directories (SeaweedFS's filer) keeps a marker deleted while
+        // its folder still holds entries. Reverse key order is exactly that.
+        let mut under = self.keys_under(&format!("{key}/"))?;
+        under.sort_unstable_by(|a, b| b.cmp(a));
+        for key in under {
+            self.delete_key(&key)?;
         }
         Ok(())
     }
@@ -937,7 +943,13 @@ pub(crate) mod tests {
                             None => StatusCode::NOT_FOUND.into_response(),
                         },
                         "DELETE" => {
-                            objects.remove(&key);
+                            // As SeaweedFS's filer does: a folder marker is a
+                            // directory there, and one that still holds entries
+                            // stays when it is deleted.
+                            let holds = key.ends_with('/') && objects.keys().any(|k| k != &key && k.starts_with(&key));
+                            if !holds {
+                                objects.remove(&key);
+                            }
                             StatusCode::NO_CONTENT.into_response()
                         }
                         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
@@ -1017,6 +1029,20 @@ pub(crate) mod tests {
         assert_eq!(fs.read_reserved(".zebfs/acl.json").unwrap().unwrap(), b"{}");
         assert_eq!(fs.put(".zebfs/acl.json", b"no").unwrap_err().code, "ZEBFS_RESERVED_PATH");
         assert!(fs.list("").unwrap().iter().all(|e| e.name != ".zebfs"));
+    }
+
+    #[test]
+    fn deleting_a_folder_made_in_the_studio_leaves_no_empty_folder() {
+        let (port, objects) = fake_s3();
+        let fs = store(port, "projects/demo");
+        fs.create_prefix("site/sub").unwrap();
+        fs.put("site/sub/page.html", b"x").unwrap();
+        fs.put("site/a.txt", b"a").unwrap();
+        assert!(objects.lock().unwrap().contains_key("projects/demo/site/sub/"), "the Studio's folder marker");
+        fs.delete("site").unwrap();
+        let left: Vec<String> = objects.lock().unwrap().keys().filter(|k| k.starts_with("projects/demo/site")).cloned().collect();
+        assert!(left.is_empty(), "nothing of the folder stays: {left:?}");
+        assert!(fs.list("").unwrap().iter().all(|e| e.name != "site"));
     }
 
     #[test]

@@ -1,0 +1,11 @@
+{
+  "id": "zoom",
+  "title": "Zoom",
+  "note": "HMAC-SHA256 of v0:{timestamp}:{body} with the app's secret token, hex, after v0= in x-zm-signature. The endpoint URL validation challenge is a separate request the pipeline answers.",
+  "settings": {
+    "algorithm": "sha256",
+    "signed": "v0:{timestamp}:{body}",
+    "signature": { "from": "header:x-zm-signature", "prefix": "v0=", "encoding": "hex" },
+    "timestamp": { "from": "header:x-zm-request-timestamp", "unit": "seconds", "tolerance": 300 }
+  }
+}

@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use super::PublishedTool;
 use super::oauth::{AccessRefusal, Issuer, verify_access};
 use crate::pipeline::nodes::basic::trigger::mcp_trigger;
-use crate::platform::web::{AuthError, PlatformAppState, token_roles, verify_webhook_auth};
+use crate::platform::web::{AuthError, PlatformAppState, WebhookFacts, token_roles, verify_webhook_auth};
 
 /// Refusals one client address may collect on one route within [`WINDOW`].
 pub const MAX_FAILURES: u32 = 20;
@@ -168,9 +168,12 @@ impl Door<'_> {
         let verified = if auth_type == "oauth" {
             self.oauth(&credential, &roles)
         } else {
+            let headers = app_credentials(self.headers);
+            let facts = WebhookFacts::new("POST", self.route, None, &headers);
             verify_webhook_auth(
-                &app_credentials(self.headers),
+                &headers,
                 self.body,
+                &facts,
                 &auth_type,
                 &credential,
                 &roles,

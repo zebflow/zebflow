@@ -430,6 +430,20 @@ impl PlatformService {
             for user in &users {
                 if let Ok(projects) = svc.projects.list_projects(&user.owner) {
                     for project in &projects {
+                        // Before the routes load: an hmac credential saved
+                        // before 0.11.28 is rewritten to the shape the check
+                        // reads, same secret, same check.
+                        match svc.credentials.convert_old_hmac_credentials(&user.owner, &project.project) {
+                            Ok((converted, refused)) => {
+                                for id in converted {
+                                    println!("credentials: {}/{}: hmac '{id}' converted to the 0.11.28 settings", user.owner, project.project);
+                                }
+                                for why in refused {
+                                    eprintln!("⚠ credentials: {}/{}: hmac {why}", user.owner, project.project);
+                                }
+                            }
+                            Err(err) => eprintln!("⚠ credentials: {}/{}: {}", user.owner, project.project, err.message),
+                        }
                         let _ = svc
                             .node_registry
                             .refresh_project(&user.owner, &project.project);

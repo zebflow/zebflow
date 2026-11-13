@@ -1,0 +1,13 @@
+{
+  "id": "svix",
+  "title": "Svix",
+  "note": "The Standard Webhooks scheme under svix- header names.",
+  "settings": {
+    "algorithm": "sha256",
+    "secret_prefix": "whsec_",
+    "secret_encoding": "base64",
+    "signed": "{header:svix-id}.{timestamp}.{body}",
+    "signature": { "from": "header:svix-signature", "prefix": "v1,", "encoding": "base64", "split": " " },
+    "timestamp": { "from": "header:svix-timestamp", "unit": "seconds", "tolerance": 300 }
+  }
+}

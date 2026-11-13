@@ -50,3 +50,5 @@ mod perf;
 mod mapserver_stats;
 #[path = "platform/mcp_delete.rs"]
 mod mcp_delete;
+#[path = "platform/webhook_signatures.rs"]
+mod webhook_signatures;
