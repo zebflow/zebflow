@@ -15,12 +15,15 @@ import type { APIRequestContext, Page } from "@playwright/test";
  * - `cx` lets a class passed last replace one that sets the same property, on
  *   the server and after hydration alike (`<Button className="px-0">`);
  * - a bare `border` is drawn in the theme's border colour;
+ * - `<Markdown className="prose">` styles its headings and lists in a project
+ *   page, with no stylesheet of the project's own;
  * - `bg-overlay` dims in light and dark, and on a page whose theme predates
  *   the `overlay` role.
  */
 
 const DEMO = `import "@/globals.css";
 import { cx, useState } from "zeb/react";
+import { Markdown } from "zeb/markdown";
 export default function Demo() {
   const [count, setCount] = useState(0);
   return (
@@ -29,6 +32,7 @@ export default function Demo() {
       <a id="jump" href="#far">far</a>
       <div id="merged" className={cx("px-4 text-primary", "px-0 text-muted-foreground")}>merged</div>
       <div id="ringed" className={cx("focus-visible:ring-[3px] ring-[#f00]", "focus-visible:ring-0 ring-blue-500")}>ringed</div>
+      <div id="md"><Markdown className="prose" content={"## Heading\\n\\n- one\\n- two"} /></div>
       <div id="bordered" className="border">bordered</div>
       <div id="probe" style={{ color: "var(--border)" }}>probe</div>
       <div id="scrim" className="bg-overlay">scrim</div>
@@ -134,6 +138,17 @@ test.describe("page engine", () => {
     await hydrated(page, "/demo");
     await expect(page.locator("#merged")).toHaveClass("px-0 text-muted-foreground");
     await expect(page.locator("#ringed")).toHaveClass("focus-visible:ring-0 ring-blue-500");
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("Markdown with prose styles its headings and lists", async ({ page, consoleErrors }) => {
+    await hydrated(page, "/demo");
+    const h2 = page.locator("#md h2");
+    await expect(h2).toHaveText("Heading");
+    const size = await h2.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    const body = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+    expect(size / body).toBeCloseTo(1.35, 2);
+    expect(await page.locator("#md ul").evaluate((el) => getComputedStyle(el).listStyleType)).toBe("disc");
     expect(consoleErrors).toEqual([]);
   });
 

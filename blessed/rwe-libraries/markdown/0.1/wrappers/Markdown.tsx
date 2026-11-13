@@ -3,10 +3,15 @@
  *
  * Usage:
  *   import { Markdown } from "zeb/markdown";
- *   <Markdown content={post.body} class="prose prose-invert max-w-none" />
+ *   <Markdown content={post.body} className="prose max-w-none" />
  *
  *   // Inline children
- *   <Markdown class="prose">## Heading\n\nSome **bold** text.</Markdown>
+ *   <Markdown className="prose">## Heading\n\nSome **bold** text.</Markdown>
+ *
+ * `prose` styles the rendered headings, lists, links, code, quotes and tables
+ * with the theme's colours in any project; `prose-sm` / `prose-lg` change the
+ * size. `className` is the name every zeb/ui component takes; `class` works
+ * too.
  *
  * For direct client-side rendering (e.g., reactive preview), use renderMarkdown:
  *   import { renderMarkdown } from "zeb/markdown";
@@ -21,10 +26,12 @@ export const app = {};
 interface MarkdownProps {
   content?: string;
   children?: string;
+  className?: string;
   class?: string;
 }
 
-export default function Markdown({ content, children, class: className }: MarkdownProps) {
+export default function Markdown({ content, children, className, class: htmlClass }: MarkdownProps) {
+  const classes = [className, htmlClass].filter(Boolean).join(" ");
   const text = content ?? (typeof children === "string" ? children : "") ?? "";
 
   // Base64-encode markdown so JSX doesn't HTML-escape the content.
@@ -35,7 +42,7 @@ export default function Markdown({ content, children, class: className }: Markdo
 
   return (
     <div
-      class={`rwe-md-placeholder${className ? ` ${className}` : ""}`}
+      class={`rwe-md-placeholder${classes ? ` ${classes}` : ""}`}
       data-rwe-md={encoded}
       data-zeb-lib="markdown"
     />

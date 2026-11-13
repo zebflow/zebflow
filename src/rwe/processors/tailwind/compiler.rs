@@ -790,7 +790,53 @@ fn is_safe_attribute_name(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
+/// Readable rich text under one class, the way Tailwind Typography's `prose`
+/// works: headings, lists, links, code, quotes and tables inside the element,
+/// drawn with the theme's roles. What `<Markdown className="prose">` needs in
+/// any project; until now only the Studio's own stylesheet had it.
+fn prose_rules(s: &str) -> String {
+    let display = "var(--font-display,inherit)";
+    let mono = "var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace)";
+    [
+        format!("{s}.max-w-none{{max-width:none;}}"),
+        format!("{s}.prose-sm{{font-size:0.92rem;}}"),
+        format!("{s}.prose-lg{{font-size:1.04rem;}}"),
+        format!("{s}>:first-child{{margin-top:0;}}"),
+        format!("{s}>:last-child{{margin-bottom:0;}}"),
+        format!("{s} :is(h1,h2,h3,h4,h5,h6){{margin:1.5rem 0 0.7rem;color:var(--foreground);font-family:{display};line-height:1.2;letter-spacing:-0.01em;}}"),
+        format!("{s} h1{{font-size:1.7rem;}}"),
+        format!("{s} h2{{font-size:1.35rem;}}"),
+        format!("{s} h3{{font-size:1.1rem;}}"),
+        format!("{s} :is(p,ul,ol,pre,blockquote,table){{margin:0.8rem 0 1rem;}}"),
+        format!("{s} :is(ul,ol){{padding-left:1.25rem;}}"),
+        format!("{s} ul{{list-style-type:disc;}}"),
+        format!("{s} ol{{list-style-type:decimal;}}"),
+        format!("{s} li+li{{margin-top:0.28rem;}}"),
+        format!("{s} li>p{{margin:0.35rem 0;}}"),
+        format!("{s} a{{color:var(--primary);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:0.16em;}}"),
+        format!("{s} strong{{color:var(--foreground);font-weight:650;}}"),
+        format!("{s} em{{color:var(--muted-foreground);}}"),
+        format!("{s} hr{{border:0;border-top:1px solid var(--border);margin:1.25rem 0;}}"),
+        format!("{s} code{{font-family:{mono};font-size:0.88em;background:color-mix(in srgb,var(--accent) 88%,transparent);border:1px solid var(--border);border-radius:0.35rem;padding:0.12rem 0.34rem;}}"),
+        format!("{s} pre{{overflow-x:auto;border:1px solid var(--border);border-radius:0.85rem;background:color-mix(in srgb,var(--card) 72%,var(--muted));padding:0.95rem 1rem;}}"),
+        format!("{s} pre code{{display:block;background:transparent;border:0;border-radius:0;padding:0;color:inherit;line-height:1.6;}}"),
+        format!("{s} blockquote{{border-left:3px solid var(--primary);padding:0.15rem 0 0.15rem 0.9rem;color:var(--muted-foreground);}}"),
+        format!("{s} table{{width:100%;border-collapse:collapse;font-size:0.94em;}}"),
+        format!("{s} :is(th,td){{border:1px solid var(--border);padding:0.55rem 0.7rem;text-align:left;vertical-align:top;}}"),
+        format!("{s} th{{background:color-mix(in srgb,var(--accent) 86%,transparent);color:var(--foreground);font-weight:650;}}"),
+        format!("{s} img{{max-width:100%;height:auto;}}"),
+    ]
+    .concat()
+}
+
 fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<UtilityRule> {
+    if utility == "prose" {
+        return Some(UtilityRule {
+            selector: base_selector.to_string(),
+            declarations: maybe_important("color:var(--foreground);line-height:1.7;", important),
+            prelude: Some(prose_rules(base_selector)),
+        });
+    }
     if utility == "container" {
         let prelude = [
             ("640px", "640px"),

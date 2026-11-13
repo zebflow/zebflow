@@ -134,6 +134,11 @@ fn common_tailwind_variants_transform_selectors_and_at_rules() {
     );
     assert_rule("peer-checked:block", &[".peer:checked ~ ", "display:block"]);
     assert_rule("has-[:checked]:ring-2", &[":has(:checked)"]);
+    // Rich text: `prose` styles what is inside it, with the theme's roles.
+    assert_rule(
+        "prose",
+        &[".prose{color:var(--foreground);line-height:1.7;}", ".prose :is(h1,h2,h3,h4,h5,h6){", ".prose ul{list-style-type:disc;}", ".prose a{color:var(--primary);", ".prose pre code{"],
+    );
     // zeb/ui InputGroup rings itself while its control has visible focus.
     assert_rule(
         "has-[[data-slot=input-group-control]:focus-visible]:ring-[3px]",
