@@ -15,6 +15,12 @@ password=$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')
 work=$(mktemp -d)
 log="$work/start.log"
 limit=240
+# A JavaScript heap shared out unevenly: on these machines each runtime gets
+# between V8's 64 MB minimum and its code-area maximum, and not a whole number
+# of pages, which once stopped a 12-core machine from starting. A binary that
+# starts here starts on any machine's 'auto' share.
+mkdir -p "$work/data/platform"
+printf '{"javascript":{"heap":"1000MB"},"runs":{"record_queue":"auto"}}' > "$work/data/platform/settings.json"
 
 if [[ "$mode" == "native" ]]; then
   bin=$1
@@ -29,7 +35,7 @@ if [[ "$mode" == "native" ]]; then
 elif [[ "$mode" == "docker" ]]; then
   image=$1
   bin=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
-  cid=$(docker run -d -p "127.0.0.1:$port:$port" -v "$bin:/zebflow:ro" \
+  cid=$(docker run -d -p "127.0.0.1:$port:$port" -v "$bin:/zebflow:ro" -v "$work/data:/data" \
     -e ZEBFLOW_PLATFORM_HOST=0.0.0.0 -e ZEBFLOW_PLATFORM_PORT=$port -e ZEBFLOW_PLATFORM_DATA_DIR=/data \
     -e ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="$password" "$image" sh -c \
     'apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends libssl3 ca-certificates git >/dev/null && exec /zebflow')

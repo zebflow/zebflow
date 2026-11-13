@@ -31,6 +31,7 @@ const STOPPING_ROOM: usize = 4;
 /// leaves it to V8. Runtimes already running are replaced before their next
 /// run.
 pub fn set_runtime_heap_limit(bytes: usize) {
+    let bytes = whole_mib(bytes);
     if LIMIT.swap(bytes, Ordering::AcqRel) != bytes {
         GENERATION.fetch_add(1, Ordering::AcqRel);
     }
@@ -64,7 +65,18 @@ pub(crate) fn current() -> Heap {
 }
 
 fn params(limit: usize) -> Option<v8::CreateParams> {
-    (limit > 0).then(|| v8::CreateParams::default().heap_limits(0, limit))
+    (limit > 0).then(|| v8::CreateParams::default().heap_limits(0, whole_mib(limit)))
+}
+
+/// A limit V8 takes as given. Under its code-area maximum (512 MB on x64,
+/// 256 MB on arm64) V8 reserves its code area at the heap limit, unrounded,
+/// and aborts the process if that is not a whole number of the system's
+/// allocation pages (4 KiB on Linux, 16 KiB on Apple arm64, 64 KiB on
+/// Windows). `memory / 4 / runtimes` is any number of bytes: on a 12-core,
+/// 19 GB machine it was, and nothing started. A whole MiB is a whole number
+/// of every one of those pages.
+fn whole_mib(bytes: usize) -> usize {
+    if bytes == 0 { 0 } else { (bytes >> 20).max(1) << 20 }
 }
 
 /// A limit as an error names it: `36MiB`, or V8's own.
@@ -109,6 +121,18 @@ mod tests {
         // The process is still here, and a runtime made after it works.
         let mut next = JsRuntime::new(RuntimeOptions { create_params: params(limit), ..Default::default() });
         assert!(next.execute_script("<after>", FastString::from_static("1 + 1")).is_ok());
+    }
+
+    /// The limit that stopped a 12-core machine from starting: between V8's
+    /// 64 MB minimum and its code-area maximum, and not a whole number of
+    /// pages. A runtime made with it works.
+    #[test]
+    fn a_limit_that_is_not_a_whole_number_of_pages_still_makes_a_runtime() {
+        let odd = 136_363_636; // 1500 MB shared by 11 runtimes
+        assert_eq!(whole_mib(odd), 130 << 20);
+        assert_eq!(whole_mib(0), 0, "0 still leaves the heap to V8");
+        let mut js_rt = JsRuntime::new(RuntimeOptions { create_params: params(odd), ..Default::default() });
+        assert!(js_rt.execute_script("<odd>", FastString::from_static("1 + 1")).is_ok());
     }
 
     #[test]
