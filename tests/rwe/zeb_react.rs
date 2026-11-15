@@ -361,3 +361,47 @@ export default function Page() {
         assert!(output.html.contains("<i>offline</i>"), "{}", output.html);
     }
 }
+
+/// Inside `<style>` and `<script>` the browser reads text raw, so the server
+/// writes it as it is: `li > ul` stays `li > ul` (an entity there is never
+/// decoded and the rule would be lost until hydration). Only what would end
+/// the element early is broken up. Text anywhere else is still escaped.
+#[test]
+fn style_and_script_text_render_raw_on_the_server() {
+    let engine = RweReactiveWebEngine;
+    let language = NoopLanguageEngine;
+    let source = TemplateSource {
+        id: "zeb-react-raw-text".into(),
+        source_path: None,
+        markup: r#"
+const CSS = ".docs li > ul { margin: 0 } a[href^=\"x\"] { color: red } /* </style><b>no</b> */";
+export default function Page() {
+  return <main><style>{CSS}</style><style>{"</sty"}{"le><i>split</i>"}</style><script type="application/ld+json">{'{"d":"a <!-- b"}'}</script><p>{"a > b & c"}</p></main>;
+}
+"#
+        .into(),
+    };
+    let compiled = engine
+        .compile_template(&source, &language, &ReactiveWebOptions::default())
+        .expect("compile");
+    let context = RenderContext {
+        route: "/raw".into(),
+        request_id: "zeb-react-raw-text".into(),
+        metadata: json!({}),
+        enabled_libraries: vec![],
+    };
+    let html = engine.render(&compiled, json!({}), &language, &context).expect("render").html;
+    assert!(html.contains(".docs li > ul { margin: 0 }"), "{html}");
+    assert!(html.contains(r#"a[href^="x"]"#), "{html}");
+    assert!(!html.contains("li &gt; ul"), "{html}");
+    // A closing tag inside the text cannot end the element early.
+    assert!(html.contains(r"<\/style><b>no</b>"), "{html}");
+    assert!(!html.contains("</style><b>no</b>"), "{html}");
+    // Nor can one made of two pieces of text.
+    assert!(html.contains(r"<\/style><i>split</i>"), "{html}");
+    assert!(!html.contains("</style><i>split</i>"), "{html}");
+    // In a script `<!--` is written so a JSON or JS string still reads it.
+    assert!(html.contains(r#"{"d":"a \u003c!-- b"}"#), "{html}");
+    // Ordinary text is still escaped.
+    assert!(html.contains("a &gt; b &amp; c"), "{html}");
+}

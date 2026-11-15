@@ -2496,14 +2496,10 @@ impl BasicPipelineEngine {
                                     None => self.template_root.as_ref().map(|r| r.join(rel)),
                                 }
                             });
-                            let options = crate::rwe::ReactiveWebOptions {
-                                templates: crate::rwe::TemplateOptions {
-                                    template_root: self.template_root.clone(),
-                                    library_roots: self.library_roots(),
-                                    style_entries: Vec::new(),
-                                },
-                                ..Default::default()
-                            };
+                            let options = crate::rwe::ReactiveWebOptions::for_project_page(
+                                self.template_root.clone(),
+                                self.library_roots(),
+                            );
 
                             let root = self.template_root.as_deref().map(|r| r.display().to_string()).unwrap_or_default();
                             let identity = match &source_path {

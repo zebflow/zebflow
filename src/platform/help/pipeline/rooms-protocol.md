@@ -177,7 +177,14 @@ Sec-WebSocket-Protocol: zebflow.rooms.v1
 | `4408` | the login the join rule proved expired | no |
 | `4409` | the server closed this session (`ws.session.close`) | no |
 | `4410` | the room was closed (`ws.room.close`) | no |
+| `4411` | the session sent no event for the room's `--session-idle` | no |
 | `1008` | too many events waiting (flooding) | no |
+
+The server pings every socket every 20 s and treats one that stays silent for
+40 s (pongs included) as a dropped connection, so a phone that left the
+network loses its seat instead of keeping it. Answering a ping is automatic in
+browsers and in WebSocket libraries; a client that stops reading its socket
+stops answering.
 
 A client that closes on purpose sends a close frame; the room then raises
 `$disconnect { reason: "left" }`. A connection that ends without one is a

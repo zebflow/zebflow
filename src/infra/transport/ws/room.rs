@@ -220,6 +220,8 @@ pub struct RoomHandle {
     epoch: AtomicU64,
     /// Set when a `--event $tick` trigger matches the room.
     tick: RwLock<Option<TickSpec>>,
+    /// `--session-idle` of the trigger that declares the room.
+    session_idle: RwLock<Option<Duration>>,
     /// Wakes the room loop when [`Self::epoch`] rose.
     changed: Notify,
 }
@@ -260,6 +262,7 @@ impl RoomHandle {
             turn: tokio::sync::Mutex::new(()),
             epoch: AtomicU64::new(0),
             tick: RwLock::new(None),
+            session_idle: RwLock::new(None),
             changed: Notify::new(),
         })
     }
@@ -296,8 +299,9 @@ impl RoomHandle {
 
     /// The project's active `trigger.room` set changed; `tick` is what it
     /// now says of this room.
-    pub(super) fn redeclared(&self, tick: Option<TickSpec>) {
+    pub(super) fn redeclared(&self, tick: Option<TickSpec>, session_idle: Option<Duration>) {
         *self.tick.write().unwrap_or_else(|e| e.into_inner()) = tick;
+        *self.session_idle.write().unwrap_or_else(|e| e.into_inner()) = session_idle;
         self.epoch.fetch_add(1, Ordering::AcqRel);
         self.changed.notify_one();
     }
@@ -305,6 +309,11 @@ impl RoomHandle {
     /// The tick, when this is a tick room.
     pub fn tick(&self) -> Option<TickSpec> {
         *self.tick.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// How long a session may send nothing before it is closed, if limited.
+    pub fn session_idle(&self) -> Option<Duration> {
+        *self.session_idle.read().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn name(&self) -> &str {
@@ -1076,7 +1085,7 @@ mod tests {
     #[tokio::test]
     async fn a_tick_sends_one_frame_with_its_ops_and_its_events() {
         let room = room(DEFAULT_MAX_STATE);
-        room.redeclared(Some(TickSpec { every_ms: 50, max_inputs: 30 }));
+        room.redeclared(Some(TickSpec { every_ms: 50, max_inputs: 30 }), None);
         let (mut s1, _k1) = seat(&room, "s1", None);
         let (mut s2, _k2) = seat(&room, "s2", None);
         room.apply(StateOp::Set, "/a", Some(json!(1)), false, &[]).unwrap();
@@ -1101,7 +1110,7 @@ mod tests {
         room.emit("between", json!({}), EmitTarget::All);
         assert_eq!(frame(&mut s1).unwrap()["type"], "event", "outside a tick an event goes out as an event frame");
         assert_eq!(room.describe(false)["mode"], "tick");
-        room.redeclared(None);
+        room.redeclared(None, None);
         assert_eq!(room.describe(false)["mode"], "event");
         room.apply(StateOp::Set, "/a", Some(json!(3)), false, &[]).unwrap();
         assert!(frame(&mut s1).is_some(), "an event room sends at once again");

@@ -272,6 +272,11 @@ pub(super) fn execute_site_response(
         return Some(not_found());
     }
     let zebfs = layout.open_files();
+    // A folder asked for without its last `/` is redirected to it, as static
+    // hosts do: its page names its scripts and assets relative to itself
+    // (`./_assets/…`), and from `/docs/guide` they would resolve one folder up.
+    let folder_page = (!request_rel.is_empty() && !request_rel.ends_with('/'))
+        .then(|| format!("{folder}/{}/index.html", request_rel.trim_end_matches('/')));
     for candidate in site_candidates(folder, &request_rel) {
         let Ok(rel) = normalize_object_path(&candidate) else {
             continue;
@@ -287,6 +292,13 @@ pub(super) fn execute_site_response(
                         .iter()
                         .any(|entry| origin_matches(entry, request_host, request_port) && serve_mount_path(entry) == mount) => {}
             _ => continue,
+        }
+        if folder_page.as_deref().and_then(|page| normalize_object_path(page).ok()).as_deref() == Some(rel.as_str()) && zebfs.head(&rel).is_ok() {
+            let location = match query.filter(|q| !q.is_empty()) {
+                Some(q) => format!("{}/?{q}", path.trim_end_matches('/')),
+                None => format!("{}/", path.trim_end_matches('/')),
+            };
+            return Some(axum::response::Redirect::permanent(&location).into_response());
         }
         if let Ok(object) = zebfs.get(&rel) {
             let mut resp = object_response(&rel, object.bytes, &object.stat, request);

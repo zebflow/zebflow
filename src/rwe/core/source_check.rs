@@ -57,6 +57,17 @@ pub fn is_template_path(path: &str) -> bool {
     path.ends_with(".tsx") || path.ends_with(".ts")
 }
 
+/// Whether the source has an `export default` statement, the one thing the
+/// compiler requires of a page. A component file need not have one, and a
+/// source that does not parse has none.
+pub fn has_default_export(source: &str) -> bool {
+    let allocator = Allocator::default();
+    let source_type = SourceType::default().with_module(true).with_jsx(true).with_typescript(true);
+    let parsed = Parser::new(&allocator, source, source_type).parse();
+    !parsed.panicked
+        && parsed.program.body.iter().any(|stmt| matches!(stmt, oxc_ast::ast::Statement::ExportDefaultDeclaration(_)))
+}
+
 pub(crate) fn line_col(source: &str, offset: usize) -> (usize, usize) {
     let offset = offset.min(source.len());
     let before = &source[..offset];
@@ -134,6 +145,13 @@ pub fn check_template_source(source: &str, tsx: bool) -> Vec<SourceProblem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_has_a_default_export_and_a_component_need_not() {
+        assert!(has_default_export("export default function Page() { return <main />; }"));
+        assert!(!has_default_export("export function Card() { return <div />; }"));
+        assert!(!has_default_export("export default function Page() { return <main>; }}}"), "a source that does not parse has none");
+    }
 
     #[test]
     fn a_broken_file_reports_its_line() {

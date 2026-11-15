@@ -3,10 +3,11 @@ import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 
 /**
- * Other sites whose pages may open this project's room sockets
- * (`docs/contracts/rooms.md`, Who may connect). A page on the project's own
- * hosts needs no entry; a browser page anywhere else is refused unless its
- * origin is listed here. The panel above owns the list and saves it.
+ * Other sites whose pages may open this project's room sockets and call its
+ * webhooks with the visitor's sign-in (`docs/contracts/addressing.md` §2a
+ * `origins`). A page on the project's own hosts needs no entry; a browser page
+ * anywhere else is refused unless its origin is listed here. The panel above
+ * owns the list and saves it.
  */
 export default function AddressingOrigins({ config, onChange, busy }) {
   const [draft, setDraft] = useState("");
@@ -16,7 +17,7 @@ export default function AddressingOrigins({ config, onChange, busy }) {
     e.preventDefault();
     const origin = draft.trim().toLowerCase().replace(/\/+$/, "");
     if (!origin || origins.includes(origin)) return;
-    onChange({ ...config, origins: [...origins, origin] }, `Pages on ${origin} may open this project's rooms.`);
+    onChange({ ...config, origins: [...origins, origin] }, `Pages on ${origin} may use this project's rooms and webhooks.`);
     setDraft("");
   }
 
@@ -26,11 +27,11 @@ export default function AddressingOrigins({ config, onChange, busy }) {
 
   return (
     <div>
-      <h5 className="text-[0.78rem] font-semibold text-foreground">Other sites that may open room sockets</h5>
+      <h5 className="text-[0.78rem] font-semibold text-foreground">Other sites that may use rooms and webhooks</h5>
       <p className="mt-1 text-[0.78rem] leading-[1.45] text-muted-foreground">
-        A browser page on another site cannot join this project&apos;s rooms unless its origin is listed here, so a
-        page elsewhere cannot borrow a visitor&apos;s sign-in. Pages on this project&apos;s own hosts need no entry; a
-        game or server that connects without a browser is not affected.
+        A browser page on another site cannot join this project&apos;s rooms, or read its webhooks&apos; answers, unless
+        its origin is listed here, so a page elsewhere cannot borrow a visitor&apos;s sign-in. Pages on this
+        project&apos;s own hosts need no entry; a game or server that connects without a browser is not affected.
       </p>
       {origins.length ? (
         <ul className="mt-2 flex flex-col divide-y divide-border border border-border">

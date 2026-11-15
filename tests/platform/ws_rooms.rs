@@ -371,3 +371,58 @@ async fn a_login_is_checked_once_and_closes_the_session_when_it_expires() {
     assert_eq!(next_of(&mut socket, "event").await["payload"], "u-17", "the claims proved at connect ride on the event");
     assert_eq!(next(&mut socket).await.expect_err("the login expired"), 4408);
 }
+
+/// `--session-idle`: a session that sends no event for that long is closed
+/// with `4411`, and one that keeps sending stays. A ping the server sends is
+/// answered by the client library and does not count as an event.
+#[tokio::test]
+async fn a_session_that_sends_nothing_past_the_rooms_idle_limit_is_closed() {
+    let root = temp_dir("ws-rooms-idle");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "lobby-idle", r#"| trigger.room --room lobby --event hello --session-idle 5s | ws.message.send --body 1"#).await;
+    let address = serve(app, &cookie).await;
+    let mut quiet = connect(address, "lobby", &[]).await;
+    let mut talking = connect(address, "lobby", &[]).await;
+    assert_eq!(next(&mut quiet).await.expect("joined")["type"], "joined");
+    assert_eq!(next(&mut talking).await.expect("joined")["type"], "joined");
+    let started = std::time::Instant::now();
+    // One keeps sending every two seconds; the other says nothing.
+    for _ in 0..3 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        talking.send(Message::Text(r#"{"event":"hello","payload":{}}"#.into())).await.expect("send");
+    }
+    // It still receives the room's broadcasts; receiving is not sending.
+    let closed = loop {
+        match next(&mut quiet).await {
+            Ok(_) => continue,
+            Err(code) => break code,
+        }
+    };
+    assert_eq!(closed, 4411, "the quiet one is closed as idle");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(5), "not before the limit");
+    // The one that kept sending is still in: its event is answered.
+    talking.send(Message::Text(r#"{"event":"hello","payload":{}}"#.into())).await.expect("send");
+    assert!(next(&mut talking).await.is_ok(), "the talking session stays");
+}
+
+/// The server pings a quiet socket every 20 s; one that answers nothing for
+/// 40 s (a connection that died without a close) loses its seat as a dropped
+/// one does, instead of holding it for ever. The client library answers a
+/// ping only while the socket is read, so a socket left unread stands in for
+/// a dead connection. Slow on purpose: it waits out the real limit.
+#[tokio::test]
+async fn a_connection_that_stops_answering_pings_loses_its_seat() {
+    let root = temp_dir("ws-rooms-heartbeat");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    publish(&app, &cookie, "lobby-hello", r#"| trigger.room --room lobby --event hello | ws.message.send --body 1"#).await;
+    publish(&app, &cookie, "lobby-count", r#"| trigger.webhook --route /lobby-count --method POST | ws.room.list --room lobby | web.response.send --body "{{ input.room.total }}""#).await;
+    let address = serve(app.clone(), &cookie).await;
+    let mut silent = connect(address, "lobby", &[]).await;
+    assert_eq!(next(&mut silent).await.expect("joined")["type"], "joined");
+    assert_eq!(hook(&app, "/lobby-count", json!({})).await["sessions"], json!(1));
+    tokio::time::sleep(std::time::Duration::from_secs(46)).await;
+    assert_eq!(hook(&app, "/lobby-count", json!({})).await["sessions"], json!(0), "the silent connection lost its seat");
+    drop(silent);
+}

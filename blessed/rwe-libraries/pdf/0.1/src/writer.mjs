@@ -24,8 +24,12 @@ export class PdfWriter {
     return id;
   }
 
-  /** Two-pass serialization → Uint8Array */
-  serialize(rootId) {
+  /**
+   * Two-pass serialization → Uint8Array. `infoId` is the document
+   * information dictionary (title, author …): the trailer must name it, or
+   * no reader finds it.
+   */
+  serialize(rootId, infoId = null) {
     const objs = this._objects;
     const offsets = new Array(this._nextId).fill(0); // offsets[id] = byte offset
 
@@ -46,7 +50,7 @@ export class PdfWriter {
     size += xrefSection.length;
 
     // trailer
-    const trailer = buildTrailer(xrefCount, rootId, xrefOffset);
+    const trailer = buildTrailer(xrefCount, rootId, xrefOffset, infoId);
     size += trailer.length;
 
     // --- Pass 2: allocate + fill ---
@@ -82,8 +86,9 @@ function buildXref(offsets, count) {
   return s;
 }
 
-function buildTrailer(size, rootId, xrefOffset) {
+function buildTrailer(size, rootId, xrefOffset, infoId = null) {
+  const info = infoId == null ? "" : ` /Info ${infoId} 0 R`;
   return (
-    `trailer\n<< /Size ${size} /Root ${rootId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+    `trailer\n<< /Size ${size} /Root ${rootId} 0 R${info} >>\nstartxref\n${xrefOffset}\n%%EOF\n`
   );
 }

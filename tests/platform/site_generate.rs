@@ -745,6 +745,11 @@ async fn a_docs_folder_mounted_at_a_path_keeps_the_hosts_pages() {
     // The host's other paths are still its pages.
     let (status, _, hello) = visit(&app, SITE_HOST, "/hello").await;
     assert_eq!((status, hello.as_str()), (StatusCode::OK, "hi"));
+    // A folder inside the mount asked for without its slash is sent to it:
+    // its page loads ./_assets/... relative to itself.
+    let (status, headers, _) = visit(&app, SITE_HOST, "/learn/setup/install").await;
+    assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(headers.get(header::LOCATION).and_then(|v| v.to_str().ok()), Some("/learn/setup/install/"));
     let (status, headers, _) = visit(&app, SITE_HOST, "/learn?q=1").await;
     assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
     assert_eq!(headers.get(header::LOCATION).and_then(|v| v.to_str().ok()), Some("/learn/?q=1"));

@@ -81,6 +81,10 @@ pub struct WsTriggerSpec {
     /// `--event $tick --every … --max-inputs …`: the tick of the rooms it matches.
     #[serde(default)]
     pub tick: Option<crate::infra::transport::ws::TickSpec>,
+    /// `--session-idle`: a session that sends no event for this long is
+    /// closed (`$disconnect { reason: "idle" }`).
+    #[serde(default)]
+    pub session_idle: Option<std::time::Duration>,
     /// `--state`: the paths of the room's state each run gets.
     #[serde(default)]
     pub state: Vec<String>,
@@ -403,6 +407,8 @@ impl CompiledPipeline {
                         .map_err(|err| trigger_refused(meta, node, err))?;
                     let state = crate::pipeline::nodes::basic::ws::trigger::state_of(&node.config)
                         .map_err(|err| trigger_refused(meta, node, err))?;
+                    let session_idle = crate::pipeline::nodes::basic::ws::trigger::session_idle_of(&node.config)
+                        .map_err(|err| trigger_refused(meta, node, err))?;
                     ws_triggers.push(WsTriggerSpec {
                         node_id: node.id.clone(),
                         room,
@@ -411,6 +417,7 @@ impl CompiledPipeline {
                         auth_credential,
                         auth_required_role,
                         tick,
+                        session_idle,
                         state,
                     });
                 }
@@ -930,7 +937,7 @@ impl PipelineRuntimeService {
             .values()
             .filter(|compiled| compiled.owner == owner && compiled.project == project)
             .flat_map(|compiled| {
-                compiled.ws_triggers.iter().map(|t| RoomDecl { tick: t.tick, ..RoomDecl::new(&t.room, &compiled.file_rel_path) })
+                compiled.ws_triggers.iter().map(|t| RoomDecl { tick: t.tick, session_idle: t.session_idle, ..RoomDecl::new(&t.room, &compiled.file_rel_path) })
             })
             .collect();
         // By room and path, so a fixed room names the same pipeline each time.

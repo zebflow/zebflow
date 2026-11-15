@@ -19,8 +19,13 @@ root unless `zebflow.yaml` sets `spec.layout.source`.
 ## Import rules
 
 **Every file imports what it uses, from `"zeb/react"`.** Entry pages and
-component files alike. There is one door; `react`, `preact`, npm, CDN and
-relative paths are refused at compile time.
+component files alike. There is one door: `react`, `preact`, a bare package
+name such as `"lodash"` and a relative path are refused at compile time.
+`npm:`, `jsr:`, `node:` and `http(s):` specifiers are not refused, but they
+are not bundled either: the compiler passes them through unresolved, so a
+page must not depend on one (`help("web/custom-scripts")` rule 6). A script
+from a CDN goes in `page.head.scripts` (below) and the page reads what it
+puts on `window` once it has loaded.
 
 ```tsx
 import { useState, useEffect, cx } from "zeb/react";

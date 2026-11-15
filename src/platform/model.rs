@@ -2118,12 +2118,40 @@ pub struct CredentialSweepReport {
     pub compacted: bool,
 }
 
+/// A change to part of one project credential (`PATCH /credentials/{id}`):
+/// what it names changes, the rest is kept. `secret` is a JSON merge patch
+/// (RFC 7396) onto the stored secret: a key it names replaces the stored
+/// value (an object merges key by key), `null` removes the key, and a key it
+/// leaves out keeps its value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PatchProjectCredentialRequest {
+    /// New display title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// New notes.
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Merge patch onto the stored secret. An explicit `null` is kept as
+    /// `Some(Null)`, apart from a missing key, so it can be refused.
+    #[serde(default, deserialize_with = "present_value")]
+    pub secret: Option<serde_json::Value>,
+}
+
+/// A field that is present, `null` included, reads as `Some`; only a missing
+/// field (the `default`) is `None`.
+fn present_value<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error> {
+    <serde_json::Value as Deserialize>::deserialize(deserializer).map(Some)
+}
+
 /// Create payload for one project credential.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpsertProjectCredentialRequest {
-    /// Stable credential id.
+    /// Stable credential id. A `PUT /credentials/{id}` takes it from the
+    /// path; a `POST` without one is refused by the save.
+    #[serde(default)]
     pub credential_id: String,
-    /// Display title.
+    /// Display title; empty means one made from the id.
+    #[serde(default)]
     pub title: String,
     /// Driver/kind (`postgres`, `openai`, ...).
     pub kind: String,

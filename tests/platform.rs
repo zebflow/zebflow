@@ -52,3 +52,5 @@ mod mapserver_stats;
 mod mcp_delete;
 #[path = "platform/webhook_signatures.rs"]
 mod webhook_signatures;
+#[path = "platform/webhook_cors.rs"]
+mod webhook_cors;

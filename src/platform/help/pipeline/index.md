@@ -188,6 +188,13 @@ inside a longer string is stringified.
 | `$nodes.<id>` | an upstream node's payload; its answer is `$nodes.<id>.<key>` — `null` when it was skipped |
 | `$item`, `$index`, `$count` | inside `logic.foreach` |
 
+`$nodes` (and `ctx.nodes` in a script) is read when the pipeline is saved,
+not when it runs: write the id literally, `$nodes.fetch` or
+`$nodes["geo-convert"]`, and name a node of this pipeline that an edge path
+leads from. A computed `$nodes[name]`, `Object.keys($nodes)` or a bare
+`$nodes` is refused (`FW_NODES_SCOPE_DYNAMIC`), and so is a node that is not
+upstream or not in this pipeline (`FW_NODES_SCOPE_UPSTREAM`).
+
 Always quote a value that contains `{{ }}` or a space as one argument.
 
 Full grammar: `help("pipeline/dsl")`. The JSON model: `help("pipeline/authoring")`.

@@ -58,6 +58,16 @@ pub(super) const BACK_EVENT: &str = "$back";
 const KICK_EXPIRED: Kick = Kick { code: 4408, reason: "expired" };
 /// Close code for a client that broke the room's rules (RFC 6455 §7.4.1).
 const KICK_FLOOD: Kick = Kick { code: 1008, reason: "flood" };
+/// Close code for a session that sent no event for the room's `--session-idle`.
+const KICK_IDLE: Kick = Kick { code: 4411, reason: "idle" };
+/// How often the server pings a socket. The controller's proxy to a worker
+/// pings the visitor on the same clock (`proxy_websocket_to_worker`).
+pub(super) const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long a socket may be silent, pongs included, before it counts as
+/// dropped: a missed pong and one ping more.
+pub(super) const SILENT_LIMIT: std::time::Duration = std::time::Duration::from_secs(40);
+/// How long one frame may take to go out before the socket counts as dropped.
+pub(super) const SEND_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What one socket needs.
 struct SessionCtx {
@@ -132,7 +142,7 @@ pub(super) async fn ws_room_handler(
     // login to borrow. (A browser cannot set x-forwarded-host on a socket.)
     if let Some(origin) = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()) {
         let addressing = state.platform.addressing.read(&owner, &project).unwrap_or_default();
-        if !crate::platform::services::addressing::origin_allowed(&addressing, &owner, &project, origin, &visitor_host(&headers)) {
+        if !crate::platform::services::addressing::origin_allowed(&addressing, &owner, &project, origin, &visitor_host(&headers), &request_scheme(&headers)) {
             return origin_refused(origin);
         }
     }

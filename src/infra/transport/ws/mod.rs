@@ -102,12 +102,14 @@ pub struct RoomDecl {
     pub room: String,
     pub pipeline: String,
     pub tick: Option<TickSpec>,
+    /// `--session-idle`: a session sending nothing this long is closed.
+    pub session_idle: Option<Duration>,
 }
 
 impl RoomDecl {
     /// A trigger that is not a tick.
     pub fn new(room: &str, pipeline: &str) -> Self {
-        Self { room: room.to_string(), pipeline: pipeline.to_string(), tick: None }
+        Self { room: room.to_string(), pipeline: pipeline.to_string(), tick: None, session_idle: None }
     }
 }
 
@@ -116,6 +118,12 @@ struct Declared {
     pattern: RoomPattern,
     pipeline: String,
     tick: Option<TickSpec>,
+    session_idle: Option<Duration>,
+}
+
+/// The session idle limit of the first trigger that matches `name` and sets one.
+fn session_idle_of(declared: &[Declared], name: &str) -> Option<Duration> {
+    declared.iter().filter(|d| d.pattern.matches(name)).find_map(|d| d.session_idle)
 }
 
 /// The tick of the first `$tick` trigger that matches `name`.
@@ -230,7 +238,7 @@ impl WsHub {
             .iter()
             .filter_map(|d| {
                 let pattern = RoomPattern::parse(&d.room).ok()?;
-                Some(Declared { pattern, pipeline: d.pipeline.clone(), tick: d.tick })
+                Some(Declared { pattern, pipeline: d.pipeline.clone(), tick: d.tick, session_idle: d.session_idle })
             })
             .collect();
         let mut declared = self.inner.declared.lock().unwrap_or_else(|e| e.into_inner());
@@ -257,7 +265,7 @@ impl WsHub {
         }
         // Every room of the project resolves its pipelines again.
         for (_, room) in registry.iter().filter(|(key, _)| key.starts_with(&prefix)) {
-            room.redeclared(tick_of(&parsed, room.name()));
+            room.redeclared(tick_of(&parsed, room.name()), session_idle_of(&parsed, room.name()));
         }
         drop(registry);
         if parsed.is_empty() {
@@ -278,9 +286,12 @@ impl WsHub {
     }
 
     /// The tick an active `$tick` trigger gives the room `name`, if any.
-    fn declared_tick(&self, owner: &str, project: &str, name: &str) -> Option<TickSpec> {
+    fn declared_tick(&self, owner: &str, project: &str, name: &str) -> (Option<TickSpec>, Option<Duration>) {
         let declared = self.inner.declared.lock().unwrap_or_else(|e| e.into_inner());
-        tick_of(declared.get(&project_key(owner, project))?, name)
+        match declared.get(&project_key(owner, project)) {
+            Some(rooms) => (tick_of(rooms, name), session_idle_of(rooms, name)),
+            None => (None, None),
+        }
     }
 
     /// Open the room `name` under an active pattern.
@@ -294,7 +305,7 @@ impl WsHub {
             Some(RoomKind::Opened) => {}
         }
         // Read before `rooms` is locked: `declared` comes first.
-        let tick = self.declared_tick(owner, project, name);
+        let (tick, session_idle) = self.declared_tick(owner, project, name);
         let room = {
             let mut rooms = self.rooms();
             let key = room_key(owner, project, name);
@@ -302,7 +313,7 @@ impl WsHub {
                 return Err(HubRefusal::Taken(name.to_string()));
             }
             let room = RoomHandle::new(name, RoomKind::Opened, settings);
-            room.redeclared(tick);
+            room.redeclared(tick, session_idle);
             rooms.insert(key, room.clone());
             room
         };
@@ -353,7 +364,7 @@ impl WsHub {
             let sessions = room.kick(&EmitTarget::All, KICK_ROOM_CLOSED);
             if room.kind() == RoomKind::Fixed {
                 let fresh = RoomHandle::new(room.name(), RoomKind::Fixed, room.settings().clone());
-                fresh.redeclared(room.tick());
+                fresh.redeclared(room.tick(), room.session_idle());
                 rooms.insert(key, fresh);
             } else {
                 rooms.remove(&key);

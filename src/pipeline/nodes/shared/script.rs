@@ -109,7 +109,7 @@ pub fn definition(language: &Language) -> NodeDefinition {
                 .output(json!({ "query": { "rows": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z" }], "row_count": 1 }, "script": { "posts": [{ "title": "Hi", "created_at": "2026-09-13T04:00:00Z", "when": "2026-09-13" }], "total": 1 } }))
                 .note("The next node reads `input.script.posts`."),
             NodeExample::dsl("Combine two earlier nodes", &format!(r#"{kind} -- "return {{ user: $nodes.b.query.rows[0], orders: $nodes.c.query.rows }}""#))
-                .note("Anywhere in graph mode downstream of `b` and `c`: wired from both, it runs once, when both have answered (a `$nodes` reference must point upstream)."),
+                .note("Anywhere in graph mode downstream of `b` and `c`: wired from both, it runs once, when both have answered (each `$nodes` reference names an upstream node of this pipeline by a literal id; a computed `$nodes[name]` is refused at save)."),
         ],
         ..Default::default()
     }
@@ -129,7 +129,7 @@ fn sidebar() -> Vec<SidebarSection> {
             items: vec![
                 SidebarItem { label: "ctx.pipeline".to_string(), type_hint: Some("string".to_string()), description: Some("Current pipeline id.".to_string()) },
                 SidebarItem { label: "ctx.request_id".to_string(), type_hint: Some("string".to_string()), description: Some("Unique execution request id.".to_string()) },
-                SidebarItem { label: "ctx.nodes".to_string(), type_hint: Some("object".to_string()), description: Some("Map of all previous node outputs. Access by node id: ctx.nodes['a'].".to_string()) },
+                SidebarItem { label: "ctx.nodes".to_string(), type_hint: Some("object".to_string()), description: Some("Upstream nodes' outputs, by a literal id: ctx.nodes['a']. A computed id is refused at save.".to_string()) },
                 SidebarItem { label: "ctx.placeholder".to_string(), type_hint: Some("object".to_string()), description: Some("Resolved placeholder values (credentials, config).".to_string()) },
             ],
         },

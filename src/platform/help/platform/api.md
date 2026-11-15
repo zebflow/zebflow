@@ -104,7 +104,7 @@ index types: `hash` · `range` · `fulltext` · `vector` · `spatial`.
 ## Credentials and files
 
 ```
-GET|POST /credentials  ·  GET|PUT|DELETE /credentials/{id}  ·  GET /credentials/{id}/oauth/authorize  ·  GET /credential-types
+GET|POST /credentials  ·  GET|PUT|PATCH|DELETE /credentials/{id}  ·  GET /credentials/{id}/oauth/authorize  ·  GET /credential-types
 GET    /files/list  ·  POST /files/upload  ·  /files/mkdir  ·  /files/rm  ·  GET /files/exposure
 PUT    /files/access   {path, access: private|public_read|public_execute, scope: object|prefix, serve?: [origins]}
 GET    /files/object?ref=<path>                   one object's bytes, private or exposed, with the session or the MCP bearer; inline, sandboxed, never cached
@@ -114,6 +114,14 @@ GET    <project-host>/_files/<path>           the same gateway on a project host
 ```
 
 Credential values are returned only to the owner's session (`GET /credentials/{id}`, for the Studio's edit form); the list carries `has_secret` only, and MCP, pipelines and pages never see a value — nodes reference a credential by id.
+
+`GET /credentials/{id}` shows plain fields (an algorithm, a redirect) and puts
+`__zebflow_secret_unchanged__` in place of each secret; that mask sent back in
+a save keeps the stored value. A `POST` or `PUT` with no `secret` changes the
+title and notes and keeps the stored secret. To change one field, `PATCH`
+with only it: `{"secret": {"auth_redirect": "/signin"}}` changes that key and
+keeps the rest; `null` removes a key (a JSON merge patch, RFC 7396).
+`{"secret": null}` is refused: replace a whole secret with `PUT`.
 
 ## Project services
 

@@ -133,6 +133,9 @@ fn common_tailwind_variants_transform_selectors_and_at_rules() {
         &[".group:hover ", "color:#ffffff"],
     );
     assert_rule("peer-checked:block", &[".peer:checked ~ ", "display:block"]);
+    // `peer-checked:block` outranks `lg:hidden`; an open drawer's backdrop
+    // left on a widened window is hidden by the stacked variant.
+    assert_rule("lg:peer-checked:hidden", &["@media (min-width: 1024px)", ".peer:checked ~ ", "display:none"]);
     assert_rule("has-[:checked]:ring-2", &[":has(:checked)"]);
     // Rich text: `prose` styles what is inside it, with the theme's roles.
     assert_rule(
@@ -777,4 +780,22 @@ fn the_preflight_resets_composable_variables_per_element() {
     let css = stylesheet("rotate-45");
     assert!(css.contains("--tw-rotate:0"), "children would inherit a parent's rotation");
     assert!(css.contains("--tw-content:''"), "before/after need an empty content by default");
+}
+
+/// The docs template's drawer on phones: a checkbox peer opens it, with no
+/// script, and every class it uses compiles.
+#[test]
+fn the_docs_drawer_classes_compile() {
+    assert_rule("peer-checked:translate-x-0", &[".peer:checked ~ ", "--tw-translate-x:0"]);
+    assert_rule("peer-checked:block", &[".peer:checked ~ ", "display:block"]);
+    // `peer-checked:block` outranks `lg:hidden`; an open drawer's backdrop
+    // left on a widened window is hidden by the stacked variant.
+    assert_rule("lg:peer-checked:hidden", &["@media (min-width: 1024px)", ".peer:checked ~ ", "display:none"]);
+    assert_rule("-translate-x-full", &["--tw-translate-x:-100%"]);
+    assert_rule("max-w-[85vw]", &["max-width:85vw"]);
+    assert_rule("bg-black/40", &["background-color"]);
+    assert_rule("inset-y-0", &["top:0", "bottom:0"]);
+    assert_rule("lg:static", &["@media (min-width: 1024px)", "position:static"]);
+    assert_rule("lg:translate-x-0", &["@media (min-width: 1024px)", "--tw-translate-x:0"]);
+    assert_rule("w-80", &["width:20rem"]);
 }

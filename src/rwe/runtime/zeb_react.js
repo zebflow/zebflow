@@ -428,6 +428,23 @@
       cursor = node.nextSibling;
     }
   }
+  // A portal's nodes follow what its container already holds, as in React:
+  // a node not yet in the container goes to its end (after the page root, so
+  // an overlay is drawn above it), one already there stays where it is, and
+  // each next node goes right after the one before. Moving nodes on every
+  // render would reset focus, scroll and iframes.
+  function orderPortalChildren(container, list) {
+    const ordered = list.flatMap(child => nodes(child));
+    let previous = null;
+    for (const node of ordered) {
+      if (previous) {
+        if (previous.nextSibling !== node) container.insertBefore(node, previous.nextSibling);
+      } else if (node.parentNode !== container) {
+        container.appendChild(node);
+      }
+      previous = node;
+    }
+  }
   function reconcile(parentDom, vnode, instance, context, svg, claim) {
     try { return reconcileInstance(parentDom, vnode, instance, context, svg, claim); }
     catch (error) { throw failure(error, instance); }
@@ -458,7 +475,7 @@
         instance.children = [];
       }
       reconcileChildren(props.container, instance, props.children, context, false, null);
-      orderChildren(props.container, instance.children);
+      orderPortalChildren(props.container, instance.children);
     } else if (type === ErrorBoundary) {
       reconcileBoundary(parentDom, instance, context, svg, claim);
     } else if (type === Fragment || typeof type === 'function') {
@@ -582,12 +599,25 @@
   function escape(value) {
     return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+  // Inside <style> and <script> the HTML parser reads text raw: an entity is
+  // not decoded, so `li > ul` must arrive as written. Only what would end
+  // the element early is broken up, on the element's whole text, since two
+  // pieces (`</sty` and `le>`) join: its own end tag, and in a script `<!--`,
+  // after which a nested `<script>` would stop `</script>` ending it. Both
+  // replacements read the same in a JS or JSON string.
+  function rawText(value, type) {
+    const text = String(value);
+    return type === 'script'
+      ? text.replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '\\u003c!--')
+      : text.replace(/<\/style/gi, '<\\/style');
+  }
   function renderToString(value, options = {}) {
     const root = { ssr: true, nextId: 0 };
+    let raw = 0;
     function visit(value, context, svg, selected, parent = null, boundaryDepth = 0) {
       const vnode = normalize(value), { type, props } = vnode;
       if (type === Empty) return '';
-      if (type === Text) return escape(props.value);
+      if (type === Text) return raw ? String(props.value) : escape(props.value);
       if (type === Portal) return '';
       if (type === Fragment) return children(props.children).map(v => visit(v, context, svg, selected, parent, boundaryDepth)).join('');
       if (type === ErrorBoundary) {
@@ -626,8 +656,16 @@
       }
       if (voidTags.has(type)) return '<' + type + attrs + '>';
       const content = type === 'textarea' ? (props.value ?? props.defaultValue ?? props.children) : props.children;
-      let inner = props.dangerouslySetInnerHTML != null ? String(props.dangerouslySetInnerHTML.__html ?? '')
-        : children(content).map(v => visit(v, context, svg && type !== 'foreignObject', selected, parent, boundaryDepth)).join('');
+      const rawElement = !svg && (type === 'style' || type === 'script');
+      if (rawElement) raw++;
+      let inner;
+      try {
+        inner = props.dangerouslySetInnerHTML != null ? String(props.dangerouslySetInnerHTML.__html ?? '')
+          : children(content).map(v => visit(v, context, svg && type !== 'foreignObject', selected, parent, boundaryDepth)).join('');
+      } finally {
+        if (rawElement) raw--;
+      }
+      if (rawElement && props.dangerouslySetInnerHTML == null) inner = rawText(inner, type);
       if ((type === 'textarea' || type === 'pre' || type === 'listing') && inner.startsWith('\n')) inner = '\n' + inner;
       return '<' + type + attrs + '>' + inner + '</' + type + '>';
     }

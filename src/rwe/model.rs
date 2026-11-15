@@ -73,6 +73,20 @@ impl Default for ReactiveWebOptions {
     }
 }
 
+impl ReactiveWebOptions {
+    /// The options a project page compiles with: `template_root` (the
+    /// project's source folder) for `@/` imports and `library_roots` for
+    /// `zeb/*`. A page render, a site generation, the preview and the
+    /// editor's check all start here, so the check never passes or refuses
+    /// what the render would not.
+    pub fn for_project_page(template_root: Option<PathBuf>, library_roots: BTreeMap<String, PathBuf>) -> Self {
+        Self {
+            templates: TemplateOptions { template_root, library_roots, style_entries: Vec::new() },
+            ..Self::default()
+        }
+    }
+}
+
 /// Compile-scoped template resolution settings.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TemplateOptions {

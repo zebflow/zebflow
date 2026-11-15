@@ -9,7 +9,8 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CredentialFieldDef, CredentialFieldOption, CredentialTypeDef, ProjectCredential,
-    ProjectCredentialListItem, SecureRequestVariableDefinition, UpsertProjectCredentialRequest,
+    PatchProjectCredentialRequest, ProjectCredentialListItem, SecureRequestVariableDefinition,
+    UpsertProjectCredentialRequest,
     now_ts, slug_segment,
 };
 
@@ -92,6 +93,27 @@ fn restore_masked(incoming: &Value, stored: Option<&Value>, path: &str) -> Resul
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
         other => Ok(other.clone()),
+    }
+}
+
+/// A JSON merge patch (RFC 7396) applied to `target`: an object patch
+/// merges key by key, `null` removes a key, any other value replaces what
+/// was there.
+fn merge_patch(target: &mut Value, patch: &Value) {
+    let Value::Object(patch) = patch else {
+        *target = patch.clone();
+        return;
+    };
+    if !target.is_object() {
+        *target = Value::Object(serde_json::Map::new());
+    }
+    let Some(map) = target.as_object_mut() else { return };
+    for (key, value) in patch {
+        if value.is_null() {
+            map.remove(key);
+        } else {
+            merge_patch(map.entry(key.clone()).or_insert(Value::Null), value);
+        }
     }
 }
 
@@ -198,6 +220,10 @@ pub struct CredentialService {
     http_client: reqwest::Client,
     /// Prevents concurrent token refresh for the same credential.
     refreshing: tokio::sync::Mutex<HashSet<String>>,
+    /// Held from the read to the write of a save, so two saves of one
+    /// credential at once cannot undo each other (a PATCH bringing back the
+    /// key a rotation replaced).
+    saving: std::sync::Mutex<()>,
 }
 
 impl CredentialService {
@@ -207,6 +233,7 @@ impl CredentialService {
             data,
             http_client,
             refreshing: tokio::sync::Mutex::new(HashSet::new()),
+            saving: std::sync::Mutex::new(()),
         }
     }
 
@@ -298,6 +325,17 @@ impl CredentialService {
         project: &str,
         req: &UpsertProjectCredentialRequest,
     ) -> Result<ProjectCredential, PlatformError> {
+        let _saving = self.saving.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.save_credential(owner, project, req)
+    }
+
+    /// The save itself; the caller holds `saving`.
+    fn save_credential(
+        &self,
+        owner: &str,
+        project: &str,
+        req: &UpsertProjectCredentialRequest,
+    ) -> Result<ProjectCredential, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.ensure_project_exists(&owner, &project)?;
@@ -322,7 +360,14 @@ impl CredentialService {
             .data
             .get_project_credential(&owner, &project, &credential_id)?;
         let created_at = existing.as_ref().map(|row| row.created_at).unwrap_or(now);
-        let secret = restore_masked(&req.secret, existing.as_ref().map(|row| &row.secret), "secret")?;
+        // A save without `secret` keeps the stored one, of the same kind. A
+        // client that sent only what it meant to change (a title, a redirect)
+        // used to save a credential with no signing key, and every session
+        // was signed out.
+        let secret = match (&req.secret, existing.as_ref()) {
+            (Value::Null, Some(row)) if row.kind == kind => row.secret.clone(),
+            _ => restore_masked(&req.secret, existing.as_ref().map(|row| &row.secret), "secret")?,
+        };
         // An hmac credential is a whole signature check: a setting it cannot
         // use is refused here, by name, not on the vendor's first delivery.
         if kind == "hmac" {
@@ -346,6 +391,49 @@ impl CredentialService {
         };
         self.data.put_project_credential(&credential)?;
         Ok(credential)
+    }
+
+    /// Changes the parts of one stored credential that `req` names and keeps
+    /// the rest (`PatchProjectCredentialRequest`), so changing
+    /// `auth_redirect` never touches the signing key beside it. The result
+    /// is saved through [`Self::upsert_project_credential`], with its checks.
+    pub fn patch_project_credential(
+        &self,
+        owner: &str,
+        project: &str,
+        credential_id: &str,
+        req: &PatchProjectCredentialRequest,
+    ) -> Result<ProjectCredential, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let credential_id = slug_segment(credential_id);
+        self.ensure_project_exists(&owner, &project)?;
+        if matches!(req.secret, Some(Value::Null)) {
+            return Err(PlatformError::new(
+                "PLATFORM_CREDENTIAL_INVALID",
+                "a PATCH changes the keys of `secret` it names, and `null` on a key removes that key; to replace the whole secret, save it with PUT",
+            ));
+        }
+        let _saving = self.saving.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let existing = self
+            .data
+            .get_project_credential(&owner, &project, &credential_id)?
+            .ok_or_else(|| PlatformError::new("PLATFORM_CREDENTIAL_MISSING", format!("credential '{credential_id}' not found")))?;
+        let mut secret = existing.secret.clone();
+        if let Some(patch) = &req.secret {
+            merge_patch(&mut secret, patch);
+        }
+        self.save_credential(
+            &owner,
+            &project,
+            &UpsertProjectCredentialRequest {
+                credential_id,
+                title: req.title.clone().unwrap_or(existing.title),
+                kind: existing.kind,
+                secret,
+                notes: req.notes.clone().unwrap_or(existing.notes),
+            },
+        )
     }
 
     /// Rewrites each `hmac` credential of one project saved before 0.11.28
@@ -1245,5 +1333,66 @@ mod tests {
         assert!(restore_masked(&renamed, Some(&stored), "secret").is_err());
         // A new credential cannot be saved holding the mask text.
         assert!(restore_masked(&json!({"password": SECRET_MASK}), None, "secret").is_err());
+    }
+
+    fn signing_key(platform: &crate::platform::services::PlatformService, key: &str) {
+        let req = UpsertProjectCredentialRequest {
+            credential_id: "session-key".into(),
+            title: "Session key".into(),
+            kind: "jwt_signing_key".into(),
+            secret: json!({ "algorithm": "HS256", "secret": key, "auth_redirect": "/login", "auth_forbidden_redirect": "/403" }),
+            notes: "signs sessions".into(),
+        };
+        platform.credentials.upsert_project_credential("superadmin", "default", &req).expect("saved");
+    }
+
+    #[test]
+    fn a_save_without_a_secret_keeps_the_stored_one() {
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let key = format!("k-{}", uuid::Uuid::new_v4().simple());
+        signing_key(&platform, &key);
+        let retitled = UpsertProjectCredentialRequest {
+            credential_id: "session-key".into(),
+            title: "Renamed".into(),
+            kind: "jwt_signing_key".into(),
+            secret: Value::Null,
+            notes: String::new(),
+        };
+        let saved = platform.credentials.upsert_project_credential("superadmin", "default", &retitled).expect("saved");
+        assert_eq!(saved.title, "Renamed");
+        assert_eq!(saved.secret["secret"], json!(key), "the signing key survives a save that sent no secret");
+    }
+
+    #[test]
+    fn a_patch_changes_only_what_it_names() {
+        let platform = crate::pipeline::nodes::shared::test_platform::test_platform();
+        let key = format!("k-{}", uuid::Uuid::new_v4().simple());
+        signing_key(&platform, &key);
+        let patch = PatchProjectCredentialRequest { secret: Some(json!({ "auth_redirect": "/signin", "auth_forbidden_redirect": null })), ..Default::default() };
+        let saved = platform.credentials.patch_project_credential("superadmin", "default", "session-key", &patch).expect("patched");
+        assert_eq!(saved.secret, json!({ "algorithm": "HS256", "secret": key, "auth_redirect": "/signin" }), "named keys change, null removes, the rest stays");
+        assert_eq!((saved.title.as_str(), saved.notes.as_str()), ("Session key", "signs sessions"));
+
+        let renamed = PatchProjectCredentialRequest { title: Some("Sessions".into()), ..Default::default() };
+        let saved = platform.credentials.patch_project_credential("superadmin", "default", "session-key", &renamed).expect("patched");
+        assert_eq!(saved.title, "Sessions");
+        assert_eq!(saved.secret["secret"], json!(key));
+
+        let missing = platform.credentials.patch_project_credential("superadmin", "default", "nothing", &renamed).expect_err("no such credential");
+        assert_eq!(missing.code, "PLATFORM_CREDENTIAL_MISSING");
+
+        // `secret: null` would wipe every key at once: refused, with what to send instead.
+        let wipe: PatchProjectCredentialRequest = serde_json::from_value(json!({ "secret": null })).expect("parses");
+        let refused = platform.credentials.patch_project_credential("superadmin", "default", "session-key", &wipe).expect_err("refused");
+        assert_eq!(refused.code, "PLATFORM_CREDENTIAL_INVALID");
+        let kept = platform.credentials.get_project_credential("superadmin", "default", "session-key").expect("read").expect("there");
+        assert_eq!(kept.secret["secret"], json!(key));
+    }
+
+    #[test]
+    fn a_merge_patch_merges_objects_and_removes_on_null() {
+        let mut target = json!({ "a": 1, "b": { "c": 2, "d": 3 }, "e": [1, 2] });
+        merge_patch(&mut target, &json!({ "a": null, "b": { "c": 4 }, "e": [3], "f": "new" }));
+        assert_eq!(target, json!({ "b": { "c": 4, "d": 3 }, "e": [3], "f": "new" }));
     }
 }

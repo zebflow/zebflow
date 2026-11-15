@@ -795,6 +795,18 @@ export default function DocsTemplate(input) {{
   const [results, setResults] = useState([]);
   const [searchState, setSearchState] = useState("idle");
   const [activeHeading, setActiveHeading] = useState("");
+  // Below lg the contents are a drawer. A label opens it through the
+  // checkbox, so it works before the script runs; once it runs, Escape and
+  // following a link close it.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {{
+    if (!navOpen) return;
+    const onKey = (event) => {{
+      if (event.key === "Escape") setNavOpen(false);
+    }};
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }}, [navOpen]);
   const manifestHref = input.site?.search_manifest_href || null;
   const jumpToHeading = useCallback((event, id) => {{
     if (!id) return;
@@ -883,12 +895,29 @@ export default function DocsTemplate(input) {{
     <Page>
       <style>{{DOCS_MARKDOWN_CSS}}</style>
       <div class="min-h-screen bg-white text-slate-900 lg:h-screen lg:overflow-hidden">
-        <div class="border-b border-slate-200 px-4 py-3 lg:hidden">
-          <a href={{input.site?.home_path || input.site?.deploy_base_path || input.site?.base_path || "/"}} class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{{{fallback_title}}}</a>
-          <div class="mt-1 text-lg font-bold tracking-tight">{{page.title || input.site?.title || "Docs"}}</div>
+        <div class="sticky top-0 z-20 flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
+          <label for="docs-nav" class="inline-flex h-9 shrink-0 cursor-pointer items-center rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700">Contents</label>
+          <div class="min-w-0">
+            <a href={{input.site?.home_path || input.site?.deploy_base_path || input.site?.base_path || "/"}} class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{{{fallback_title}}}</a>
+            <div class="truncate text-base font-bold tracking-tight">{{page.title || input.site?.title || "Docs"}}</div>
+          </div>
         </div>
         <div class="lg:grid lg:h-screen lg:grid-cols-12">
-          <aside class="border-b border-slate-200 px-4 py-4 lg:col-span-3 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:px-5 lg:py-5">
+          <input
+            id="docs-nav"
+            type="checkbox"
+            class="peer sr-only"
+            checked={{navOpen}}
+            onChange={{(event) => setNavOpen(event.currentTarget.checked)}}
+          />
+          <label for="docs-nav" aria-hidden="true" class="fixed inset-0 z-30 hidden bg-black/40 peer-checked:block lg:hidden lg:peer-checked:hidden"></label>
+          <aside
+            class="fixed inset-y-0 left-0 z-40 w-80 max-w-[85vw] -translate-x-full overflow-y-auto border-r border-slate-200 bg-white px-4 py-4 transition-transform peer-checked:translate-x-0 lg:static lg:w-auto lg:max-w-none lg:translate-x-0 lg:col-span-3 lg:px-5 lg:py-5"
+            onClick={{(event) => {{ if (event.target.closest && event.target.closest("a")) setNavOpen(false); }}}}
+          >
+            <div class="mb-3 flex justify-end lg:hidden">
+              <label for="docs-nav" class="cursor-pointer rounded-md px-2 py-1 text-sm text-slate-500 hover:text-slate-900">Close</label>
+            </div>
             <div class="text-xs font-semibold uppercase tracking-[0.22em] text-orange-600">{{{fallback_title}}}</div>
             <VersionSwitch version={{input.site?.version}} routePath={{page.route_path}} />
               <div class="mt-3">

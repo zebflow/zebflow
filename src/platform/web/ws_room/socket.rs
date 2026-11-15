@@ -13,7 +13,14 @@ use crate::infra::transport::ws::{Attached, Counter, RoomHandle, Seat};
 
 pub(super) async fn close_with(socket: &mut WebSocket, code: u16, reason: &str) {
     let frame = axum::extract::ws::CloseFrame { code, reason: reason.to_string().into() };
-    let _ = socket.send(Message::Close(Some(frame))).await;
+    send_within(socket, Message::Close(Some(frame))).await;
+}
+
+/// Sends one message, or answers false when the client has not taken it
+/// within SEND_LIMIT. A client that stopped reading fills its TCP buffer, and
+/// a send left to wait would stop every timer of the loop with it.
+async fn send_within(socket: &mut WebSocket, message: Message) -> bool {
+    matches!(tokio::time::timeout(SEND_LIMIT, socket.send(message)).await, Ok(Ok(())))
 }
 
 /// Seconds from now until `exp`, never negative.
@@ -115,7 +122,7 @@ async fn pump(
     let Attached { mut frames, wake, view } = attached;
     let session_id = ctx.session_id.as_str();
     let Seat { queue, kicks, .. } = seat;
-    if socket.send(Message::Text(joined_frame(ctx, &view, resume).into())).await.is_err() {
+    if !send_within(socket, Message::Text(joined_frame(ctx, &view, resume).into())).await {
         return "dropped";
     }
     room.count(Counter::MessagesOut);
@@ -123,16 +130,39 @@ async fn pump(
     // A login that never expires waits on a timer that never fires.
     let expiry = tokio::time::sleep(expires_at.map(until).unwrap_or(std::time::Duration::from_secs(u32::MAX as u64)));
     tokio::pin!(expiry);
+    // A connection that died without a close (a phone off the network, a
+    // half-open TCP) would keep its seat: the server pings, and a socket that
+    // stays silent past SILENT_LIMIT counts as dropped, as a lost connection
+    // does (`$away` under `--hold`, else `$disconnect { reason: "dropped" }`).
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut heard = tokio::time::Instant::now();
+    // `--session-idle`: a session that sends no event for that long is closed.
+    let session_idle = room.session_idle();
+    let idle = tokio::time::sleep(session_idle.unwrap_or(std::time::Duration::from_secs(u32::MAX as u64)));
+    tokio::pin!(idle);
     let mut seated = true;
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if heard.elapsed() >= SILENT_LIMIT {
+                    return "dropped";
+                }
+                if !send_within(socket, Message::Ping(Vec::new().into())).await {
+                    return "dropped";
+                }
+            }
+            _ = &mut idle, if session_idle.is_some() => {
+                close_with(socket, KICK_IDLE.code, KICK_IDLE.reason).await;
+                return KICK_IDLE.reason;
+            }
             frame = frames.recv(), if seated => {
                 // The queue ends only when the seat is gone, and a kick says why.
                 let Some(frame) = frame else {
                     seated = false;
                     continue;
                 };
-                if socket.send(Message::Text(frame.to_string().into())).await.is_err() {
+                if !send_within(socket, Message::Text(frame.to_string().into())).await {
                     return "dropped";
                 }
                 room.count(Counter::MessagesOut);
@@ -145,7 +175,7 @@ async fn pump(
                 while frames.try_recv().is_ok() {}
                 let Some(state) = room.resync(session_id) else { continue };
                 let resync = json!({ "type": "resync", "state": state });
-                if socket.send(Message::Text(resync.to_string().into())).await.is_err() {
+                if !send_within(socket, Message::Text(resync.to_string().into())).await {
                     return "dropped";
                 }
                 room.count(Counter::MessagesOut);
@@ -158,37 +188,46 @@ async fn pump(
                 close_with(socket, KICK_EXPIRED.code, KICK_EXPIRED.reason).await;
                 return KICK_EXPIRED.reason;
             }
-            incoming = socket.recv() => match incoming {
-                Some(Ok(Message::Text(text))) => {
-                    let Ok(val) = serde_json::from_str::<Value>(text.as_str()) else { continue };
-                    let event = val.get("event").and_then(Value::as_str).unwrap_or("message").to_string();
-                    if event.starts_with('$') {
-                        continue; // reserved for the server
-                    }
-                    room.count(Counter::MessagesIn);
-                    room.touch();
-                    let payload = val.get("payload").cloned().unwrap_or_else(|| json!({}));
-                    if !queue.push(event, payload) {
-                        // A client sending faster than the room runs is
-                        // closed, not given an unbounded queue of runs.
-                        room.count(Counter::FloodCloses);
-                        close_with(socket, KICK_FLOOD.code, "too many pending events").await;
-                        return KICK_FLOOD.reason;
-                    }
+            incoming = socket.recv() => {
+                // Anything the client sends, a pong included, says it is there.
+                if matches!(incoming, Some(Ok(_))) {
+                    heard = tokio::time::Instant::now();
                 }
-                Some(Ok(Message::Close(_))) => {
-                    // The socket library queues the answering close frame
-                    // and sends it on the next write, flush or read. Returning
-                    // without one dropped it, so the client never got a close
-                    // frame back (RFC 6455 §5.5.1) and a browser reported
-                    // 1006 instead of the code it sent.
-                    let _ = futures::SinkExt::flush(socket).await;
-                    return "left";
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        let Ok(val) = serde_json::from_str::<Value>(text.as_str()) else { continue };
+                        let event = val.get("event").and_then(Value::as_str).unwrap_or("message").to_string();
+                        if event.starts_with('$') {
+                            continue; // reserved for the server
+                        }
+                        room.count(Counter::MessagesIn);
+                        room.touch();
+                        if let Some(limit) = session_idle {
+                            idle.as_mut().reset(tokio::time::Instant::now() + limit);
+                        }
+                        let payload = val.get("payload").cloned().unwrap_or_else(|| json!({}));
+                        if !queue.push(event, payload) {
+                            // A client sending faster than the room runs is
+                            // closed, not given an unbounded queue of runs.
+                            room.count(Counter::FloodCloses);
+                            close_with(socket, KICK_FLOOD.code, "too many pending events").await;
+                            return KICK_FLOOD.reason;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        // The socket library queues the answering close frame
+                        // and sends it on the next write, flush or read. Returning
+                        // without one dropped it, so the client never got a close
+                        // frame back (RFC 6455 §5.5.1) and a browser reported
+                        // 1006 instead of the code it sent.
+                        let _ = tokio::time::timeout(SEND_LIMIT, futures::SinkExt::flush(socket)).await;
+                        return "left";
+                    }
+                    // The socket ended without a close frame: a drop.
+                    None | Some(Err(_)) => return "dropped",
+                    _ => {}
                 }
-                // The socket ended without a close frame: a drop.
-                None | Some(Err(_)) => return "dropped",
-                _ => {}
-            },
+            }
         }
     }
 }

@@ -69,6 +69,24 @@ A credential type declares each field:
   The author overrides deliberately or fixes it. Name matching decides nothing
   once the type is registered.
 
+## Changing a credential
+
+A save never drops a secret the caller did not name.
+
+- **A read masks every secret** with `__zebflow_secret_unchanged__`; the mask
+  sent back in a save keeps the stored value, and a mask with nothing stored
+  behind it is refused.
+- **A save with no `secret`** changes the title and notes and keeps the
+  stored secret.
+- **`PATCH /credentials/{id}`** changes only what it names: `secret` is a JSON
+  merge patch (RFC 7396) onto the stored secret, where `null` removes a key;
+  `{"secret": null}` is refused. A save holds a lock from its read to its
+  write, so two at once cannot undo each other.
+
+Evidence: `services/credential.rs` tests `a_save_without_a_secret_keeps_the_stored_one`,
+`a_patch_changes_only_what_it_names`; `tests/platform/smoke.rs`
+`platform_credential_change_keeps_the_signing_key`.
+
 ## At rest
 
 The whole secret half is encrypted regardless of what the type declared. A

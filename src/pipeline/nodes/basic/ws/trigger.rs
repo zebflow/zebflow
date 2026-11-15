@@ -132,6 +132,17 @@ pub fn tick_of(config: &serde_json::Value) -> Result<Option<TickSpec>, PipelineE
     Ok(Some(TickSpec { every_ms: every.as_millis() as u64, max_inputs }))
 }
 
+/// How long a session may send nothing before the room closes it.
+const SESSION_IDLE_RANGE: (std::time::Duration, std::time::Duration) =
+    (std::time::Duration::from_secs(5), std::time::Duration::from_secs(24 * 60 * 60));
+
+/// `--session-idle`: a session that sends no event for this long is closed
+/// with `$disconnect { reason: "idle" }`. Absent is no limit.
+pub fn session_idle_of(config: &serde_json::Value) -> Result<Option<std::time::Duration>, PipelineError> {
+    let null = serde_json::Value::Null;
+    super::duration_flag(config.get("session_idle").unwrap_or(&null), "--session-idle", CONFIG_CODE, SESSION_IDLE_RANGE.0, SESSION_IDLE_RANGE.1)
+}
+
 /// Return the [`NodeDefinition`] for `trigger.room`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
@@ -268,6 +279,13 @@ pub fn definition() -> NodeDefinition {
                 "max_inputs",
                 "With --event $tick: per session, the most inputs that wait for one tick (default 30); extras are dropped and counted.",
                 "number",
+                false,
+            ),
+            super::flag(
+                "--session-idle",
+                "session_idle",
+                "Close a session that sends no event for this long, 5s to 24h, with $disconnect { reason: \"idle\" }. Absent is no limit.",
+                "duration",
                 false,
             ),
             DslFlag {

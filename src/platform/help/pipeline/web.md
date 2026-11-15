@@ -25,6 +25,27 @@ same rows with their schemas and examples.
 Quote any value that contains `{{ }}` or a space as one argument;
 `--header Location={{ input.url }}` unquoted is cut at the first space and refused.
 
+## Pages on other sites (CORS)
+
+A browser page on another host may call a webhook, with the visitor's
+sign-in cookie, when that host is one of the project's own hosts or is listed
+in Settings → Addressing → other sites (`origins`). The platform does the rest:
+it answers the browser's preflight (`OPTIONS`) itself, before any pipeline
+runs, and adds `Access-Control-Allow-Origin` (the page's origin),
+`Access-Control-Allow-Credentials: true` and `Vary: Origin` to every answer,
+a `401` from `--auth` included, so the page can tell "not signed in" from a
+network failure. The page calls with `credentials: "include"`.
+
+A project host counts on `https` (or on `http` when the request itself came
+over `http`, as on a dev server) and on the request's own port; a plain-`http`
+page calling over `https` is another site. A listed origin names its own
+scheme and port.
+
+A page on any other site gets `403` on the preflight and no allow headers. The
+platform address (`/wh/{owner}/{project}/…`) answers no CORS. A pipeline that
+sets `--header "Access-Control-Allow-Origin=…"` itself keeps its own value:
+the platform never adds a second one.
+
 ## Redirects, cookies, bodies
 
 A redirect is a 3xx `--status` with a `Location` header; a `Location` without

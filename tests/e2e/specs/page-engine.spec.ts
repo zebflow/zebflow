@@ -18,7 +18,10 @@ import type { APIRequestContext, Page } from "@playwright/test";
  * - `<Markdown className="prose">` styles its headings and lists in a project
  *   page, with no stylesheet of the project's own;
  * - `bg-overlay` dims in light and dark, and on a page whose theme predates
- *   the `overlay` role.
+ *   the `overlay` role;
+ * - a portal into `<body>` lands after the page root, so an overlay at the
+ *   same z-index as a page layer is drawn above it, and a re-render leaves
+ *   the node where it is.
  */
 
 const DEMO = `import "@/globals.css";
@@ -39,6 +42,25 @@ export default function Demo() {
       <div className="dark"><div id="scrim-dark" className="bg-overlay">dark scrim</div></div>
       <div style={{ height: "3000px" }} />
       <h2 id="far">far</h2>
+    </main>
+  );
+}
+`;
+
+// A page layer and a portal overlay at the same z-index.
+const PORTAL = `import { createPortal, useEffect, useState } from "zeb/react";
+export default function Portal() {
+  const [open, setOpen] = useState(false);
+  const [n, setN] = useState(0);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return (
+    <main>
+      <div id="layer" className="fixed inset-0 z-50 bg-white">
+        <button id="open" onClick={() => setOpen(true)}>open</button>
+        <button id="bump" onClick={() => setN(n + 1)}>{n}</button>
+      </div>
+      {mounted && open ? createPortal(<div id="overlay" className="fixed inset-0 z-50 bg-white">overlay {n}</div>, document.body) : null}
     </main>
   );
 }
@@ -66,11 +88,11 @@ test.describe("page engine", () => {
     request = await playwright.request.newContext({ baseURL: BASE_URL, storageState: STORAGE_STATE });
     const created = await request.post("/home/projects/create", { form: { project, title: "Page engine" }, maxRedirects: 0 });
     expect(created.status(), `create ${project}`).toBeLessThan(400);
-    for (const [rel, source] of [["pages/demo.tsx", DEMO], ["pages/bare.tsx", BARE]]) {
+    for (const [rel, source] of [["pages/demo.tsx", DEMO], ["pages/bare.tsx", BARE], ["pages/portal.tsx", PORTAL]]) {
       const put = await request.put(`${api}/repo/file?path=${rel}`, { data: source, headers: { "Content-Type": "text/plain" } });
       expect(put.ok(), `write ${rel}`).toBeTruthy();
     }
-    for (const name of ["demo", "bare"]) {
+    for (const name of ["demo", "bare", "portal"]) {
       for (const dsl of [
         `register pipelines/sandbox/${name} -- | trigger.webhook --route /${name} --method GET | web.response.send --template pages/${name}.tsx`,
         `activate pipeline pipelines/sandbox/${name}`,
@@ -138,6 +160,25 @@ test.describe("page engine", () => {
     await hydrated(page, "/demo");
     await expect(page.locator("#merged")).toHaveClass("px-0 text-muted-foreground");
     await expect(page.locator("#ringed")).toHaveClass("focus-visible:ring-0 ring-blue-500");
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("a portal lands after the page root and stays put on a re-render", async ({ page, consoleErrors }) => {
+    await hydrated(page, "/portal");
+    await page.locator("#open").click();
+    const overlay = page.locator("#overlay");
+    await expect(overlay).toHaveText("overlay 0");
+    expect(await page.evaluate(() => document.body.lastElementChild?.id)).toBe("overlay");
+    const onTop = await page.evaluate(() => {
+      const el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+      return el?.closest("#overlay") ? "overlay" : el?.closest("#layer") ? "layer" : String(el?.id);
+    });
+    expect(onTop).toBe("overlay");
+    // A re-render updates the same node in the same place.
+    await page.evaluate(() => { (document.getElementById("overlay") as any).__mark = 1; (document.getElementById("bump") as HTMLButtonElement).click(); });
+    await expect(overlay).toHaveText("overlay 1");
+    expect(await page.evaluate(() => (document.getElementById("overlay") as any).__mark)).toBe(1);
+    expect(await page.evaluate(() => document.body.lastElementChild?.id)).toBe("overlay");
     expect(consoleErrors).toEqual([]);
   });
 

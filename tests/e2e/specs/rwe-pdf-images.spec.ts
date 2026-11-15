@@ -8,7 +8,9 @@ import type { APIRequestContext } from "@playwright/test";
  * - two JPEGs whose data URLs share their first 242 characters (and their
  *   length) stay two images, each with its own pixel size;
  * - a PNG with transparency gets its alpha as a separate /SMask image;
- * - webp is refused with a message that says what to do.
+ * - webp is refused with a message that says what to do;
+ * - a document's title and author are in an /Info dictionary the trailer
+ *   points to, which is where PDF readers look for them.
  */
 
 // An 8x6 and a 12x10 JPEG from the same encoder, a 6x4 PNG whose left half is transparent, a 4x4 webp.
@@ -20,10 +22,14 @@ const WEBP = "data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAABQAQCdASoEAAQAAgA
 const PAGE = `import { useState } from "zeb/react";
 import { createDocument } from "zeb/pdf";
 
-function images(bytes) {
+function latin(bytes) {
   let text = "";
   for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
-  return text.match(new RegExp("/Subtype /Image[^>]*", "g")) || [];
+  return text;
+}
+
+function images(bytes) {
+  return latin(bytes).match(new RegExp("/Subtype /Image[^>]*", "g")) || [];
 }
 
 export default function PdfImages() {
@@ -36,7 +42,10 @@ export default function PdfImages() {
       .toBytes());
     let refused = "";
     try { createDocument().page().image({ data: "${WEBP}", x: 0, y: 0, width: 10 }).toBytes(); } catch (e) { refused = e.message; }
-    setOut(JSON.stringify({ found, refused }));
+    const titled = latin(createDocument({ meta: { title: "Quarter report", author: "Site A" } }).page().text("x").toBytes());
+    const trailer = titled.slice(titled.lastIndexOf("trailer"));
+    const info = { trailer: trailer.includes("/Info "), title: titled.includes("/Title (Quarter report)"), author: titled.includes("/Author (Site A)") };
+    setOut(JSON.stringify({ found, refused, info }));
   }
   return <main><button id="run" onClick={run}>run</button><pre id="out">{out}</pre></main>;
 }
@@ -70,12 +79,12 @@ test.describe("zeb/pdf images", () => {
     await request.dispose();
   });
 
-  test("each image keeps its own bytes and size; PNG transparency becomes a mask; webp is refused", async ({ page, consoleErrors }) => {
+  test("each image keeps its own bytes and size; PNG transparency becomes a mask; webp is refused; the title is readable", async ({ page, consoleErrors }) => {
     await page.goto(`${host}/pdf`);
     await page.waitForFunction(() => typeof (window as any).rweNavigate === "function");
     await page.locator("#run").click();
     await expect(page.locator("#out")).not.toBeEmpty();
-    const { found, refused } = JSON.parse(await page.locator("#out").textContent() ?? "{}");
+    const { found, refused, info } = JSON.parse(await page.locator("#out").textContent() ?? "{}");
     const dicts: string[] = found.map((d: string) => d.replace(/\s+/g, " "));
     expect(dicts, "two JPEGs, the PNG and its mask").toHaveLength(4);
     expect(dicts.filter((d) => d.includes("/Width 8 /Height 6") && d.includes("/DCTDecode"))).toHaveLength(1);
@@ -83,6 +92,7 @@ test.describe("zeb/pdf images", () => {
     expect(dicts.filter((d) => d.includes("/Width 6 /Height 4") && /\/SMask \d+ 0 R/.test(d))).toHaveLength(1);
     expect(dicts.filter((d) => d.includes("/Width 6 /Height 4") && d.includes("/DeviceGray"))).toHaveLength(1);
     expect(refused).toContain("convert the image to PNG or JPEG");
+    expect(info, "the trailer points to /Info, which holds the title and author").toEqual({ trailer: true, title: true, author: true });
     expect(consoleErrors).toEqual([]);
   });
 });

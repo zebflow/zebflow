@@ -161,6 +161,12 @@ fn header_first_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str>
         .filter(|value| !value.is_empty())
 }
 
+/// The scheme the visitor's request came in on: the proxy's
+/// `X-Forwarded-Proto`, else `http`, which is what the server itself speaks.
+fn request_scheme(headers: &HeaderMap) -> String {
+    header_first_value(headers, "x-forwarded-proto").unwrap_or("http").to_ascii_lowercase()
+}
+
 fn platform_base_url(headers: &HeaderMap) -> String {
     if let Ok(value) = std::env::var("ZEBFLOW_PLATFORM_BASE_URL") {
         let value = value.trim().trim_end_matches('/');
@@ -1019,6 +1025,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/credentials/{credential_id}",
             get(api_get_credential)
                 .put(api_upsert_credential_by_path)
+                .patch(api_patch_credential)
                 .delete(api_delete_credential),
         )
         .route(
@@ -4833,42 +4840,45 @@ async fn proxy_websocket_to_worker(
         }
     };
 
-    let (mut client_tx, mut client_rx) = client_socket.split();
     let (mut worker_tx, mut worker_rx) = worker_socket.split();
-
-    let client_to_worker = async {
-        while let Some(message) = client_rx.next().await {
-            let Ok(message) = message else {
-                break;
-            };
-            let Some(message) = axum_ws_to_worker_ws(message) else {
-                continue;
-            };
-            let is_close = matches!(message, WorkerMessage::Close(_));
-            if worker_tx.send(message).await.is_err() || is_close {
-                break;
+    // The worker's pings reach this socket's library, which answers them
+    // itself: they say the controller is there, not the visitor. So this side
+    // pings the visitor on the room clock, and a visitor silent past
+    // SILENT_LIMIT, or one a send cannot reach within SEND_LIMIT, ends the
+    // proxy without a close frame, which the worker counts as dropped.
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + ws_room::PING_EVERY, ws_room::PING_EVERY);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut heard = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if heard.elapsed() >= ws_room::SILENT_LIMIT {
+                    break;
+                }
+                let ping = client_socket.send(Message::Ping(Vec::new().into()));
+                if !matches!(tokio::time::timeout(ws_room::SEND_LIMIT, ping).await, Ok(Ok(()))) {
+                    break;
+                }
+            }
+            message = client_socket.recv() => {
+                let Some(Ok(message)) = message else { break };
+                heard = tokio::time::Instant::now();
+                let Some(message) = axum_ws_to_worker_ws(message) else { continue };
+                let is_close = matches!(message, WorkerMessage::Close(_));
+                if worker_tx.send(message).await.is_err() || is_close {
+                    break;
+                }
+            }
+            message = worker_rx.next() => {
+                let Some(Ok(message)) = message else { break };
+                let Some(message) = worker_ws_to_axum_ws(message) else { continue };
+                let is_close = matches!(message, Message::Close(_));
+                let sent = tokio::time::timeout(ws_room::SEND_LIMIT, client_socket.send(message)).await;
+                if !matches!(sent, Ok(Ok(()))) || is_close {
+                    break;
+                }
             }
         }
-    };
-
-    let worker_to_client = async {
-        while let Some(message) = worker_rx.next().await {
-            let Ok(message) = message else {
-                break;
-            };
-            let Some(message) = worker_ws_to_axum_ws(message) else {
-                continue;
-            };
-            let is_close = matches!(message, Message::Close(_));
-            if client_tx.send(message).await.is_err() || is_close {
-                break;
-            }
-        }
-    };
-
-    tokio::select! {
-        _ = client_to_worker => {}
-        _ = worker_to_client => {}
     }
 }
 
@@ -17474,6 +17484,41 @@ async fn api_upsert_credential_by_path(
     }
 }
 
+/// PATCH /api/projects/{owner}/{project}/credentials/{credential_id}
+///
+/// Changes what the body names and keeps the rest; `secret` is a JSON merge
+/// patch onto the stored secret (`PatchProjectCredentialRequest`).
+async fn api_patch_credential(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, credential_id)): Path<(String, String, String)>,
+    uri: Uri,
+    Json(req): Json<crate::platform::model::PatchProjectCredentialRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsWrite,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_json_to_worker(&state, &uri, &headers, Method::PATCH, &req, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    match state
+        .platform
+        .credentials
+        .patch_project_credential(&owner, &project, &credential_id, &req)
+    {
+        Ok(credential) => Json(json!({"ok": true, "credential": crate::platform::services::credential::redacted(credential)})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_delete_credential(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -24461,8 +24506,33 @@ async fn public_webhook_ingress(
     let head = method == Method::HEAD;
     let visitor_path = visitor.map(|axum::Extension(VisitorPath(path))| path);
     let section = section.map(|axum::Extension(arrival)| arrival);
+    // A browser page on another site (`addressing.md` §2a `origins`): only on
+    // the project's own hosts — a visitor path or a section arrival says the
+    // request came through one — never on the platform address.
+    let (owner, project, tail) = (path.0.0.clone(), path.0.1.clone(), path.0.2.clone());
+    let cors = if visitor_path.is_some() || section.is_some() {
+        cors_caller(&state, &owner, &project, &headers)
+    } else {
+        CorsCaller::None
+    };
+    if method == Method::OPTIONS && headers.contains_key("access-control-request-method") {
+        match &cors {
+            CorsCaller::Allowed(origin) => return cors_preflight(&state, &owner, &project, &tail, origin, &headers),
+            CorsCaller::Refused(origin) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "ok": false, "error": { "code": "WEBHOOK_ORIGIN_REFUSED", "message": format!("pages on {origin} may not call this project; list the origin in Settings, Addressing") } })),
+                )
+                    .into_response();
+            }
+            CorsCaller::None => {}
+        }
+    }
     let mut response =
         public_webhook_ingress_run(state, path, method, uri, headers, body, request_id.clone(), visitor_path, section).await;
+    if let CorsCaller::Allowed(origin) = &cors {
+        allow_cors(&mut response, origin);
+    }
     if let Ok(v) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert("x-request-id", v);
     }
@@ -24470,6 +24540,86 @@ async fn public_webhook_ingress(
         response = without_body(response).await;
     }
     response
+}
+
+/// Who is calling across sites, for CORS (`addressing.md` §2a `origins`).
+enum CorsCaller {
+    /// No `Origin`, or the page is on the very host it calls: no CORS.
+    None,
+    /// A page on one of the project's hosts or a listed origin.
+    Allowed(String),
+    /// A page on any other site.
+    Refused(String),
+}
+
+/// The calling page's origin against the project's own hosts and its
+/// `origins` list — the same rule as its room sockets. The host compared is
+/// the `Host` the request was routed by.
+fn cors_caller(state: &PlatformAppState, owner: &str, project: &str, headers: &HeaderMap) -> CorsCaller {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).map(str::trim).filter(|o| !o.is_empty()) else {
+        return CorsCaller::None;
+    };
+    let host = headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("").trim().to_ascii_lowercase();
+    let scheme = request_scheme(headers);
+    // The page's own origin: the same scheme and authority the request has.
+    if origin.trim_end_matches('/').eq_ignore_ascii_case(&format!("{scheme}://{host}")) {
+        return CorsCaller::None;
+    }
+    let addressing = state.platform.addressing.read(owner, project).unwrap_or_default();
+    if crate::platform::services::addressing::origin_allowed(&addressing, owner, project, origin, &host, &scheme) {
+        CorsCaller::Allowed(origin.to_string())
+    } else {
+        CorsCaller::Refused(origin.to_string())
+    }
+}
+
+/// A preflight from an allowed page, answered by the platform before any
+/// pipeline: the methods the path's active webhooks take, the headers asked
+/// for, the visitor's sign-in allowed, cached by the browser for ten minutes.
+/// A path no webhook answers is a 404.
+fn cors_preflight(state: &PlatformAppState, owner: &str, project: &str, tail: &str, origin: &str, request: &HeaderMap) -> Response {
+    let path = format!("/{}", tail.trim_start_matches('/'));
+    let owner = crate::platform::model::slug_segment(owner);
+    let project = crate::platform::model::slug_segment(project);
+    let methods: Vec<&str> = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+        .into_iter()
+        .filter(|method| !state.platform.pipeline_runtime.webhook_matches(&owner, &project, method, &path).is_empty())
+        .collect();
+    if methods.is_empty() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "ok": false, "error": { "code": "WEBHOOK_NOT_FOUND", "message": "no webhook answers this path" } }))).into_response();
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(origin) {
+        headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+    }
+    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, HeaderValue::from_static("true"));
+    if let Ok(v) = HeaderValue::from_str(&methods.join(", ")) {
+        headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_METHODS, v);
+    }
+    if let Some(asked) = request.get(axum::http::header::ACCESS_CONTROL_REQUEST_HEADERS) {
+        headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS, asked.clone());
+    }
+    headers.insert(axum::http::header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+    headers.insert(axum::http::header::VARY, HeaderValue::from_static("Origin, Access-Control-Request-Method, Access-Control-Request-Headers"));
+    response
+}
+
+/// Every answer to an allowed page carries the allow headers, the platform's
+/// own refusals (401, 403, 404, 500) included, so a page can tell "not signed
+/// in" from a network failure. An answer whose pipeline set its own
+/// `Access-Control-Allow-Origin` is left as it is: two of them make a browser
+/// refuse the answer.
+fn allow_cors(response: &mut Response, origin: &str) {
+    let headers = response.headers_mut();
+    if headers.contains_key(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN) {
+        return;
+    }
+    if let Ok(v) = HeaderValue::from_str(origin) {
+        headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+    }
+    headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, HeaderValue::from_static("true"));
+    headers.append(axum::http::header::VARY, HeaderValue::from_static("Origin"));
 }
 
 /// A `HEAD` answer: every header the `GET` would carry, `Content-Length`
@@ -28045,23 +28195,17 @@ fn compile_template_buffer(
         };
     }
 
-    let options = ReactiveWebOptions {
-        load_scripts: vec!["/assets/platform/*".to_string()],
-        allow_list: crate::rwe::ResourceAllowList {
-            scripts: vec!["/assets/platform/*".to_string()],
-            urls: vec!["/assets/platform/*".to_string()],
-            ..Default::default()
-        },
-        templates: TemplateOptions {
-            template_root: Some(template_root.to_path_buf()),
-            // The editor checks a buffer with the same resolution a render
-            // uses, or `zeb/ui/button` would fail here and work in the page.
-            library_roots: state.platform.library.source_roots(),
-            style_entries: Vec::new(),
-        },
-        processors: vec!["tailwind".to_string()],
-        ..Default::default()
-    };
+    // A component file has no default export and is never compiled alone:
+    // it is checked as a module, for what breaks it inside a page. A file
+    // under `pages/` is a page whatever it holds, and its render needs the
+    // default export, so it gets the full compile and that refusal.
+    if kind != "page" && !crate::rwe::core::source_check::has_default_export(&req.content) {
+        return module_check(rel, &req.content);
+    }
+
+    // The same options a page render uses: the check must not pass or refuse
+    // what the render would not.
+    let options = ReactiveWebOptions::for_project_page(Some(template_root.to_path_buf()), state.platform.library.source_roots());
 
     let source = TemplateSource {
         id: format!("platform.editor.{}", rel.replace('/', ".")),
@@ -28099,6 +28243,34 @@ fn compile_template_buffer(
             }],
         },
     }
+}
+
+/// A component file checked as a module (`rwe::core::source_check`): it
+/// parses, it declares or imports every name it uses, and a `.tsx` file has
+/// no binding named `h`. Each problem is an error at its place in the buffer.
+fn module_check(rel: &str, content: &str) -> TemplateCompileResponse {
+    let diagnostics: Vec<TemplateDiagnostic> =
+        crate::rwe::core::source_check::check_template_source(content, rel.ends_with(".tsx"))
+            .into_iter()
+            .map(|problem| {
+                let from = char_offset(content, problem.line, problem.column);
+                TemplateDiagnostic {
+                    code: "template_source_problem".to_string(),
+                    message: format!("{rel}:{problem}"),
+                    severity: "error".to_string(),
+                    from: Some(from),
+                    to: Some(from + 1),
+                }
+            })
+            .collect();
+    TemplateCompileResponse { ok: diagnostics.is_empty(), diagnostics }
+}
+
+/// The character offset of a 1-based line and column (counted in
+/// characters, as `source_check` counts them).
+fn char_offset(source: &str, line: usize, column: usize) -> usize {
+    let before: usize = source.split('\n').take(line.saturating_sub(1)).map(|l| l.chars().count() + 1).sum();
+    before + column.saturating_sub(1)
 }
 
 async fn api_get_mcp_session(
@@ -28392,7 +28564,8 @@ fn internal_error(err: PlatformError) -> Response {
         | "PLATFORM_PIPELINE_ACTIVE_SNAPSHOT_MISSING"
         // A repository file that is not there is the caller's question
         // answered, not the server breaking.
-        | "PLATFORM_REPO_MISSING" => StatusCode::NOT_FOUND,
+        | "PLATFORM_REPO_MISSING"
+        | "PLATFORM_CREDENTIAL_MISSING" => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
@@ -29699,13 +29872,8 @@ async fn preview_page(
     };
 
     let options = crate::rwe::ReactiveWebOptions {
-        templates: crate::rwe::TemplateOptions {
-            template_root: Some(layout.repo_source_dir()),
-            library_roots: state.platform.library.source_roots(),
-            style_entries: Vec::new(),
-        },
         processors: vec!["tailwind".to_string()],
-        ..Default::default()
+        ..crate::rwe::ReactiveWebOptions::for_project_page(Some(layout.repo_source_dir()), state.platform.library.source_roots())
     };
 
     let compiled = match state.frontend.rwe.compile_template(

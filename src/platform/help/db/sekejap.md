@@ -138,6 +138,19 @@ SELECT _key, name FROM contacts WHERE (name, _key) > ($1, $2) ORDER BY name, _ke
 SELECT _key, name FROM contacts WHERE _key < $1 ORDER BY _key DESC LIMIT 20               -- newest first by ULID key
 ```
 
+**Never written is not NULL.** A column a row never wrote is MISSING; a
+column written as NULL is NULL. `SELECT` shows both as `null`, but
+`WHERE c IS NULL` matches only a stored NULL and `WHERE c IS MISSING` only a
+column never written. The two cannot be joined with `OR` (refused, below),
+so give each "not set yet" column one shape: never write it until it has a
+value and test `IS MISSING`, or always write it (NULL in the `INSERT`) and
+test `IS NULL`.
+
+```sql
+INSERT INTO links (_key, email) VALUES ($1, $2)                                -- used_at never written
+UPDATE links SET used_at = now() WHERE _key = $1 AND used_at IS MISSING         -- use the link once
+```
+
 **Also fine since 0.19.2**: `now()`, `current_timestamp` and `current_date`
 in `INSERT … VALUES` and `UPDATE … SET`; `meta->>'k'` in a select list; a
 quoted JSON literal into a `JSONB` column is parsed (non-JSON is refused by
@@ -322,6 +335,7 @@ Each of these fails the node at request time, never at register time, so
 | Written | Answer | Instead |
 |---|---|---|
 | `a ILIKE $1 OR b ILIKE $2` | a LIKE inside OR/AND/NOT is a row check, so there is no set to combine — even with trigram indexes | one `LIKE` per query, or a `fulltext` index and `search()` |
+| `c IS NULL OR c IS MISSING` | NULL and MISSING share one index key, so the two tests cannot be combined | one shape per column, tested one way (Reading, above) |
 | `OFFSET n` | keyset continuation only; the message shows the rewrite | `WHERE (name, _key) > ($1, $2)` (Reading, above) |
 | `COUNT(*)` on an edge table | its select list is `*` or its columns | walk the edges in `GRAPH_TABLE` and `COUNT(*)` the outer select |
 | a value over 1024 bytes in an indexed `TEXT` column | the btree cannot hold it as a key; the message names the index | leave the column out of the automatic indexes: `CREATE TABLE … WITH (index: [...])`, or `DROP INDEX <name>` |

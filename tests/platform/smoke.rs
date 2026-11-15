@@ -5067,6 +5067,117 @@ async fn platform_template_diagnostics_reports_compile_errors() {
     assert!(json.contains("\"severity\":\"error\""));
 }
 
+/// A component file has no default export: the check reads it as a module
+/// (it parses, it declares what it uses) rather than refusing it as a page
+/// without one. A page is compiled with the options its render uses, so a
+/// fetch the render allows is allowed here too.
+#[tokio::test]
+async fn platform_template_diagnostics_checks_a_component_as_a_module() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("template-diagnostics-module").to_path_buf();
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    let check = |rel_path: &str, content: &str| {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        let body = serde_json::json!({ "rel_path": rel_path, "content": content }).to_string();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/projects/superadmin/default/templates/diagnostics")
+                        .method("POST")
+                        .header(header::COOKIE, &cookie)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+        }
+    };
+
+    let card = "import { cx } from \"zeb/react\";\nexport function Card({ title }) {\n  return <div className={cx(\"p-2\")}>{title}</div>;\n}\n";
+    let answer = check("components/card.tsx", card).await;
+    assert_eq!(answer["ok"], true, "a component with no default export is fine: {answer}");
+    assert_eq!(answer["diagnostics"], serde_json::json!([]));
+
+    let borrowed = "export function Card({ title }) {\n  return <div className={cx(\"p-2\")}>{title}</div>;\n}\n";
+    let answer = check("components/card.tsx", borrowed).await;
+    assert_eq!(answer["ok"], false, "{answer}");
+    let found = &answer["diagnostics"][0];
+    assert!(found["message"].as_str().is_some_and(|m| m.contains("components/card.tsx:2:") && m.contains("`cx`")), "{answer}");
+    let from = found["from"].as_u64().expect("from") as usize;
+    assert_eq!(&borrowed[from..from + 2], "cx", "the offset points at the name");
+
+    let broken = "export function Card() {\n  return <div>;\n}\n";
+    let answer = check("components/card.tsx", broken).await;
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(answer["diagnostics"][0]["message"].as_str().is_some_and(|m| m.contains("does not parse")), "{answer}");
+
+    // A file under pages/ is a page: without a default export the render
+    // refuses it, and so does the check.
+    let answer = check("pages/about.tsx", "export function About() {\n  return <main />;\n}\n").await;
+    assert_eq!(answer["ok"], false, "a page with no default export: {answer}");
+
+    // The render allows a literal fetch to its default hosts; so does the check.
+    let page = "export default function Page() {\n  fetch(\"https://registry.npmjs.org/x\");\n  return <main>ok</main>;\n}\n";
+    let answer = check("pages/home.tsx", page).await;
+    assert_eq!(answer["ok"], true, "{answer}");
+}
+
+/// Changing one plain field of a credential keeps its signing key: a save
+/// that sends no `secret` keeps the stored one, and `PATCH` changes only the
+/// keys it names.
+#[tokio::test]
+async fn platform_credential_change_keeps_the_signing_key() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("credential-patch").to_path_buf();
+    config.default_password = "test-pass".to_string();
+    let app = build_router(config).await.expect("platform router");
+    let cookie = login_cookie(app.clone(), "superadmin", "test-pass").await;
+    let call = |method: &str, uri: &str, body: Value| {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        let app = app.clone();
+        async move {
+            let response = app.oneshot(request).await.expect("response");
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+    let base = "/api/projects/superadmin/default/credentials";
+    let key = format!("k-{}", uuid::Uuid::new_v4().simple());
+    let secret = json!({ "algorithm": "HS256", "secret": key, "auth_redirect": "/login" });
+    let saved = json!({ "credential_id": "session-key", "title": "Session key", "kind": "jwt_signing_key", "secret": secret });
+    assert_eq!(call("POST", base, saved).await.0, StatusCode::OK);
+
+    let (status, body) = call("PATCH", &format!("{base}/session-key"), json!({ "secret": { "auth_redirect": "/signin" } })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["credential"]["secret"]["auth_redirect"], "/signin");
+    let retitled = json!({ "title": "Sessions", "kind": "jwt_signing_key" });
+    assert_eq!(call("PUT", &format!("{base}/session-key"), retitled).await.0, StatusCode::OK);
+    assert_eq!(call("PATCH", &format!("{base}/nothing"), json!({ "title": "x" })).await.0, StatusCode::NOT_FOUND);
+
+    // A read masks the key, so it shows only that one is still stored (the
+    // service test checks it is the same one).
+    let (_, body) = call("GET", &format!("{base}/session-key"), Value::Null).await;
+    let shown = &body["credential"]["secret"];
+    assert_eq!(shown["secret"], zebflow::platform::services::credential::SECRET_MASK, "the signing key survived both changes: {body}");
+    assert_eq!(shown["auth_redirect"], "/signin");
+    assert_eq!(body["credential"]["title"], "Sessions");
+}
+
 #[tokio::test]
 async fn platform_registry_is_hierarchical_from_virtual_path() {
     let mut config = PlatformConfig::default();

@@ -19,8 +19,8 @@
         "entry": "0.1/runtime/pdf.bundle.mjs",
         "source": "offline",
         "package_version": "0.1",
-        "size_bytes": 51287,
-        "integrity": "sha256:950908f509105b3509287dfb0ad8e372a3daf14cbffaf6307087fab1925a5239"
+        "size_bytes": 51350,
+        "integrity": "sha256:c7da59cf13721f7cb2f9c8743724097ab3a7ba355f3d865d5b9bc414070978e7"
       }
     },
     "license": {

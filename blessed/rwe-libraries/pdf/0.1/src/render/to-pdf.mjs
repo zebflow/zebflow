@@ -117,6 +117,7 @@ export class IrRenderer {
       Pages: pRef(pagesNodeId),
     }));
 
+    let infoId = null;
     if (irDoc.meta) {
       const infoEntries = [];
       if (irDoc.meta.title) infoEntries.push(['Title', pStr(irDoc.meta.title)]);
@@ -127,11 +128,11 @@ export class IrRenderer {
       if (irDoc.meta.producer) infoEntries.push(['Producer', pStr(irDoc.meta.producer)]);
       
       if (infoEntries.length > 0) {
-        writer.add(pDict(Object.fromEntries(infoEntries)));
+        infoId = writer.add(pDict(Object.fromEntries(infoEntries)));
       }
     }
 
-    return writer.serialize(catalogId);
+    return writer.serialize(catalogId, infoId);
   }
 
   renderPage(pageNode, context, parentPagesId, pageIndex, totalPages) {

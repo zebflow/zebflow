@@ -900,24 +900,38 @@ fn split_origin(origin: &str) -> Option<(String, String, Option<u16>)> {
 }
 
 /// Whether a browser page from `origin` (its `Origin` header) may open one of
-/// this project's room sockets, reached at `request_host` (the `Host` the
-/// visitor's browser named). The rule most socket servers follow: the page's
-/// own site, one of the project's hosts or its dev host, or an origin the
-/// project lists (`origins`). Anything else, `null` included, is refused:
-/// a page elsewhere must not open a socket that carries this site's visitor's
-/// login. A request with no `Origin` is not a browser's and never reaches here.
-pub fn origin_allowed(addressing: &ProjectAddressing, owner: &str, project: &str, origin: &str, request_host: &str) -> bool {
+/// this project's room sockets or call its webhooks with the visitor's login,
+/// reached at `request_host` (the `Host` the visitor's browser named) over
+/// `request_scheme`. The rule most socket servers follow: the page's own
+/// site, one of the project's hosts or its dev host, or an origin the project
+/// lists (`origins`). Anything else, `null` included, is refused: a page
+/// elsewhere must not borrow this site's visitor's login. A request with no
+/// `Origin` is not a browser's and never reaches here.
+///
+/// The project's own hosts count on `https`, or on the scheme the request
+/// came in on (a dev server speaks `http`), and on the request's own port: a
+/// plain-`http` page anyone on the network path can forge, or another
+/// service on the same host, is not the project's page. A listed origin
+/// names its scheme and port itself.
+pub fn origin_allowed(
+    addressing: &ProjectAddressing,
+    owner: &str,
+    project: &str,
+    origin: &str,
+    request_host: &str,
+    request_scheme: &str,
+) -> bool {
     let Some((scheme, host, port)) = split_origin(origin) else {
         return false;
     };
-    let authority = match port {
-        Some(port) => format!("{host}:{port}"),
-        None => host.clone(),
-    };
-    if authority == request_host.trim().to_ascii_lowercase() {
-        return true;
-    }
-    if host == AddressingService::dev_host(owner, project) || addressing.hosts.iter().any(|h| normalize_host(h) == host) {
+    let request_host = request_host.trim().to_ascii_lowercase();
+    let request_port = request_host.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok());
+    let own_page = (scheme == "https" || scheme == request_scheme) && without_default(port) == without_default(request_port);
+    if own_page
+        && (host == normalize_host(&request_host)
+            || host == AddressingService::dev_host(owner, project)
+            || addressing.hosts.iter().any(|h| normalize_host(h) == host))
+    {
         return true;
     }
     addressing.origins.iter().any(|entry| {
@@ -932,6 +946,11 @@ pub fn origin_allowed(addressing: &ProjectAddressing, owner: &str, project: &str
             split_origin(&entry).is_some_and(|(s, h, p)| s == scheme && h == host && p == port)
         }
     })
+}
+
+/// A port as an origin compares it: 80 and 443 are what no port means.
+fn without_default(port: Option<u16>) -> Option<u16> {
+    port.filter(|p| *p != 80 && *p != 443)
 }
 
 pub fn normalize_host(raw: &str) -> String {
@@ -1057,11 +1076,16 @@ mod tests {
     #[test]
     fn a_room_socket_takes_pages_from_its_own_sites_and_the_listed_ones() {
         let mut a = ProjectAddressing { hosts: vec!["site-a.example".to_string()], ..Default::default() };
-        let ok = |a: &ProjectAddressing, origin: &str, host: &str| origin_allowed(a, "owner-a", "demo", origin, host);
+        let ok = |a: &ProjectAddressing, origin: &str, host: &str| origin_allowed(a, "owner-a", "demo", origin, host, "https");
+        let on_http = |a: &ProjectAddressing, origin: &str, host: &str| origin_allowed(a, "owner-a", "demo", origin, host, "http");
         assert!(ok(&a, "https://studio.example", "studio.example"), "the same site as the socket");
-        assert!(ok(&a, "http://localhost:10610", "localhost:10610"), "with its port");
+        assert!(on_http(&a, "http://localhost:10610", "localhost:10610"), "with its port, on a plain-http server");
         assert!(ok(&a, "https://site-a.example", "rooms.example"), "one of the project's hosts");
-        assert!(ok(&a, "http://demo.owner-a.localhost:10610", "localhost:10610"), "its dev host");
+        assert!(ok(&a, "https://site-a.example", "rooms.example:443"), "a default port is no port");
+        assert!(on_http(&a, "http://demo.owner-a.localhost:10610", "localhost:10610"), "its dev host");
+        assert!(!ok(&a, "http://site-a.example", "rooms.example"), "a project host on plain http, when the request came on https");
+        assert!(!ok(&a, "https://site-a.example:8443", "rooms.example"), "a project host on another port");
+        assert!(!ok(&a, "http://studio.example", "studio.example"), "its own host on http calling https is another origin");
         assert!(!ok(&a, "https://other.example", "site-a.example"), "another site");
         assert!(!ok(&a, "null", "site-a.example"), "a sandboxed page");
         assert!(!ok(&a, "https://site-a.example.other.example", "rooms.example"), "a look-alike");

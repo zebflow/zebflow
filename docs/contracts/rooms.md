@@ -75,8 +75,10 @@ The client connects to `/_ws/rooms/match-…?ticket=…`.
 - **Which pages may connect, checked before the upgrade:** a browser names the
   page's origin on every socket (`Origin`). It must be the page's own site (the
   host the socket was reached on), one of the project's hosts or its dev host,
-  or an origin the project lists in `origins` (`addressing.md` §2a);
-  anything else, `null` included, answers `403` and never upgrades. This stops
+  or an origin the project lists in `origins` (`addressing.md` §2a). The
+  first three count on `https`, or on the scheme the request came in on, and
+  on the request's own port; anything else, `null` included, answers `403`
+  and never upgrades. This stops
   a page elsewhere from opening a socket that carries a visitor's login. A
   client that names no origin is not a browser and is let through; the join
   rule still applies to it.
@@ -166,7 +168,19 @@ A room runs in one of two modes, chosen by its triggers.
 | `ws.session.close --room <room> --session <id>` or `--user <sub>` | `4409` | `$disconnect` `{ reason: "closed" }` |
 | `ws.room.close --room <name or pattern>` (state dropped) | `4410` | `$disconnect` `{ reason: "room_closed" }` |
 | login expires | `4408` | `$disconnect` `{ reason: "expired" }` |
+| no event for the room's `--session-idle` | `4411` | `$disconnect` `{ reason: "idle" }` |
 | flooding | `1008` | `$disconnect` `{ reason: "flood" }` |
+
+- **Liveness.** The server pings every socket every 20 s. A socket from which
+  nothing arrives for 40 s, pongs included, or to which a frame cannot be
+  sent within 10 s, is a dropped connection: `$away` under `--hold`, else
+  `$disconnect { reason: "dropped" }`. A connection that died without a close
+  no longer keeps its seat. Every WebSocket client answers a ping on its own;
+  a browser always does.
+- **`--session-idle`** on `trigger.room` (5 s to 24 h) closes a session that
+  sends no event for that long. Receiving broadcasts and answering pings do
+  not count. The first trigger that matches a room and sets it decides; a
+  room without it has no limit.
 
 - A resume token is used once, works only for that session during its hold,
   and the `joined` of the resumed socket carries a new one; the session keeps
