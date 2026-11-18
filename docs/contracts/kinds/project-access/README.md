@@ -38,7 +38,7 @@ is written once and inherited upward.
 | `guest` | read the project, templates, pipelines, files, libraries, members | 6 |
 | `reporter` | read data and settings | 8 |
 | `developer` | write templates, pipelines and files; **run pipelines** | 20 |
-| `maintainer` | members, credentials, **write data**, libraries, settings, MCP sessions, **serve a folder as a site** (`files.publish`) | 30 |
+| `maintainer` | members, credentials, **write data**, libraries, settings, MCP keys, **serve a folder as a site** (`files.publish`) | 30 |
 | `owner` | delete the project | 31 |
 
 Two lines are deliberate:
@@ -96,6 +96,41 @@ maintainer editing their own row cannot clear or widen it.
 `project_members` row for that user. Ownership alone left an accepted
 invitation reachable by URL and absent from the only page that lists projects.
 
+## MCP keys
+
+An MCP key lets an agent use a project's MCP as one person.
+
+| | |
+| --- | --- |
+| Stored in | platform metadata: `mcp_keys` |
+| Adapter | `src/platform/services/mcp_key.rs` |
+| Gate | the MCP handler's middleware; `require_project_api_capability_or_mcp_bearer` |
+
+- **One key, one project, one person.** A project holds any number of keys.
+  There is no project-wide key.
+- **A key acts as its person.** It carries the rights listed when it was made,
+  never more than the person holds. Every use checks again: a person removed,
+  demoted, or given a narrower MCP ceiling loses the key at its next use.
+- **Making a key** needs `mcp.session.create`. Making one for another member
+  also needs `members.write`, and the maker must hold every right listed. The
+  person is a member or the project's owner.
+- **The secret is shown once.** `zfk_` and 64 hex characters; the store keeps
+  only its SHA-256. A lost secret is replaced by a new key.
+- **Revoking** needs `mcp.session.revoke`, or being the key's person. No other
+  key changes.
+- **Swept** with the person's membership, the person, and the project: removal,
+  deletion, rename and transfer all take the affected keys.
+- **Recorded:** `made_by`, `created_at`, `expires_at` (optional),
+  `last_used_at` (written at most once a minute).
+- `mcp.session.create` and `mcp.session.revoke` keep their names; they make
+  and revoke keys.
+
+The single project session (`/mcp/session`, its toggle and token reset) is
+gone, and every token it issued stopped working with it.
+
+Evidence: `mcp_key` unit tests; `tests/platform/migration.rs`
+`mcp_keys_act_as_their_person_and_never_exceed_them`.
+
 ## Surface
 
 ```
@@ -109,6 +144,10 @@ DELETE /api/projects/{o}/{p}/invites/{id}        members.write
 GET    /api/invites                              session-scoped
 POST   /api/invites/{o}/{p}/{id}/accept          the invitee only
 POST   /api/invites/{o}/{p}/{id}/decline         the invitee only
+
+GET    /api/projects/{o}/{p}/mcp/keys            mcp.session.create   every key, no secret
+POST   /api/projects/{o}/{p}/mcp/keys            mcp.session.create   the secret, once
+DELETE /api/projects/{o}/{p}/mcp/keys/{key_id}   mcp.session.revoke, or the key's person
 ```
 
 Answering is session-scoped rather than project-scoped: the invitee is not yet
@@ -149,7 +188,7 @@ Refused outright:
 
 What deletion sweeps: memberships they hold in other people's projects,
 invitations addressed to them, hub grants naming them, their platform-level
-hub repositories, their MCP sessions, their live browser sessions, their
+hub repositories, their MCP keys, their live browser sessions, their
 local auth, and their directory on disk. The `users` row goes last inside one
 transaction, so every remaining foreign key verifies the sweep — a surviving
 reference fails the delete loudly instead of orphaning rows.

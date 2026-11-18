@@ -2923,6 +2923,9 @@ impl PlatformOps {
                     overwrite.unwrap_or(false),
                 ) {
                     Ok(report) => {
+                        for (path, before, existed) in &report.written {
+                            crate::platform::services::change_log::record_file_at(&self.platform.config.data_root, path, before.clone(), *existed);
+                        }
                         OpsResult::ok(serde_json::to_string_pretty(&report).unwrap_or_default())
                     }
                     Err(e) => OpsResult::err(e),

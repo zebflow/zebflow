@@ -21,7 +21,7 @@ use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
     ClusterJoinTokenService, ClusterPlacementService, ClusterRegistryService,
     ClusterRuntimeSyncService, CredentialService, DbConnectionService, DbRuntimeService,
-    DependencyLockService, GitIdentityService, HubService, LibraryService, McpSessionService,
+    DependencyLockService, GitIdentityService, HubService, LibraryService, McpKeyService,
     NodeRegistryService, OfficeLocalAuthorityService, PipelineHitsService, PipelineRuntimeService,
     ProjectConfigurationService, ProjectInviteService, ProjectMembershipService,
     ProjectOperationService, ProjectService, ProjectTransferService, UserService,
@@ -88,7 +88,9 @@ pub struct PlatformService {
     /// Lightweight execution hit/error counters per pipeline.
     pub pipeline_hits: Arc<PipelineHitsService>,
     /// MCP session management (in-memory tokens for project-scoped remote control).
-    pub mcp_sessions: Arc<McpSessionService>,
+    pub mcp_keys: Arc<McpKeyService>,
+    /// Who changed what in each project's `repo/` (`project.md` § Change record).
+    pub changes: Arc<crate::platform::services::change_log::ChangeLog>,
     /// WebSocket hub — real-time room management for WS pipelines.
     pub ws_hub: Arc<WsHub>,
     /// In-memory KV + pub/sub hub for kv.* pipeline nodes.
@@ -205,6 +207,11 @@ impl PlatformService {
             zebflow_cfg.clone(),
             dependency_lock.clone(),
         ));
+        let changes = Arc::new(crate::platform::services::change_log::ChangeLog::new(data.clone()));
+        crate::platform::services::change_log::register(&config.data_root, &changes);
+        projects.attach_change_log(changes.clone());
+        zebflow_cfg.attach_change_log(changes.clone());
+        dependency_lock.attach_change_log(changes.clone());
         // Built before `auth`, because `auth` is gated on it. Read from disk
         // on every attempt rather than captured here, so a break-glass or a
         // detach performed against this data root takes effect without anything
@@ -274,7 +281,7 @@ impl PlatformService {
             ws_hub.clone(),
         ));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
-        let mcp_sessions = Arc::new(McpSessionService::new(
+        let mcp_keys = Arc::new(McpKeyService::new(
             data.clone(),
             authz.clone(),
             config.secret_rotation_epoch,
@@ -375,7 +382,8 @@ impl PlatformService {
             pipeline_runtime,
             node_registry,
             pipeline_hits,
-            mcp_sessions,
+            mcp_keys,
+            changes,
             ws_hub,
             mem_hub,
             published_oauth: Arc::new(crate::platform::services::PublishedOAuthService::new(state_bus.clone())),
@@ -797,8 +805,10 @@ impl PlatformService {
             // new one. Refreshing the old would make its folders again.
             self.pipeline_runtime.refresh_project(chosen, &project.project)?;
             self.zebflow_cfg.forget_project(&owner, &project.project);
-            let _ = self.mcp_sessions.revoke_for_project(&owner, &project.project);
+            self.mcp_keys.forget(&owner, &project.project, None);
         }
+        // A key names the account it acts as; the catalog row went with the rename.
+        self.mcp_keys.forget_person(&owner);
         // Its folder is empty now that its project has moved out.
         let _ = std::fs::remove_dir(self.config.data_root.join("users").join(&owner));
         if let Err(err) = crate::platform::services::bootstrap::remove_generated_password_file(&self.config.data_root) {

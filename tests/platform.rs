@@ -54,3 +54,5 @@ mod mcp_delete;
 mod webhook_signatures;
 #[path = "platform/webhook_cors.rs"]
 mod webhook_cors;
+#[path = "platform/change_record.rs"]
+mod change_record;

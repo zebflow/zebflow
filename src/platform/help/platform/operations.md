@@ -115,12 +115,12 @@ everywhere.
 
 ## Capabilities
 
-An MCP session token carries a set of capabilities; a tool outside the set
-is refused with the missing capability named.
+An MCP key carries a set of capabilities, never more than its person holds;
+a tool outside the set is refused with the missing capability named.
 
 | Capability key | Tools |
 |---|---|
-| `project.read` | `start_here`, `help`, `help_search`, `skill_list`, `skill_read`, `theme_generate` |
+| `project.read` | `start_here`, `help`, `help_search`, `skill_list`, `skill_read`, `theme_generate`, `change_list` |
 | `pipelines.read` | `pipeline_list`, `pipeline_get`, `pipeline_describe`, `pipeline_search`, `pipeline_get_invocations`, `list_ui_catalog`, `hub_search`, `hub_review` |
 | `pipelines.write` | `pipeline_register`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `git_command`, `install_ui_components`, `hub_add`, `move_resource` |
 | `pipelines.delete` | `pipeline_delete` |
@@ -132,11 +132,12 @@ is refused with the missing capability named.
 | `credentials.read` | `credential_list` |
 | `settings.read` / `settings.write` | `docs_agent_list`, `docs_agent_read` / `docs_agent_write` |
 
-These keys are what `POST /mcp/session { "capabilities": [...] }` takes.
+These are what `POST /mcp/keys { "name", "person", "capabilities": [...] }` takes.
 
-`version` needs no capability. The project owner sets the session's
-capabilities in the Studio's session panel (the MCP button in the project
-shell), which also shows the endpoint, the token and a client setup guide.
+`version` needs no capability. A maintainer makes keys in the Studio's MCP
+panel (the MCP button in the project shell): who the key acts as, what it may
+do, and when it ends. The panel shows the secret once, with the endpoint and a
+client setup guide.
 
 ---
 

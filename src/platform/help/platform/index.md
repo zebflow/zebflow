@@ -8,7 +8,7 @@ project and lives in `help` and the skills.
 
 A **project** is one site or app built on it: a git repository of pipelines
 and the files they use, plus the store and databases those pipelines create,
-its own credentials and its own hosts. An agent's MCP session is scoped to
+its own credentials and its own hosts. An agent's MCP key is scoped to
 one project; everything it does goes through the same API the Studio uses.
 Project knowledge — what the site is, its rules, its decisions — lives in the
 project's own files (`docs/`, `AGENTS.md`, `MEMORY.md`), not in this help.
@@ -71,7 +71,7 @@ way. Other layout keys and their defaults: `static` = `static`, `docs` =
 - **Owner** — the user or organisation namespace: `/projects/{owner}/{project}`.
 - **Activation** — a registered pipeline is a draft until activated; live traffic runs the activated snapshot, so edits after activation make it `stale` until activated again.
 - **Webhook ingress** — `{method} /wh/{owner}/{project}{path}` for every active `trigger.webhook`.
-- **MCP session** — a per-project token (`GET /api/projects/{o}/{p}/mcp/session`) that gives an agent the project's tools at `POST /api/projects/{o}/{p}/mcp`, narrowed by capabilities. `help("platform/agent")` is what that agent reads first.
+- **MCP key** — one person's key to one project (`POST /api/projects/{o}/{p}/mcp/keys`) that gives their agent the project's tools at `POST /api/projects/{o}/{p}/mcp`, narrowed by capabilities and never above that person. `help("platform/agent")` is what that agent reads first.
 - **Hub** — clonable packages (pipeline, template, folder and project bundles) and installable ones (node bundles, `zeb/*` libraries, recorded in `zeb.lock`). `help("guide/hub")`.
 - **Sections** — one project serving several sites on their own domains, sharing its data: a host's `/` pages route with a `root`. `help("guide/sections")`.
 - **Offices and controller** — one instance is standalone; several form a cluster where a controller vouches for offices. `help("guide/federated-offices")`.

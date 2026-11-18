@@ -9,7 +9,7 @@ import PlatformSidebar from "@/pages/project-studio/components/platform-sidebar"
 import Button from "@/components/ui/button";
 import { HelpIcon, HomeIcon, MoonIcon, PreferencesIcon, SunIcon, TerminalIcon, UserIcon } from "@/pages/project-studio/components/icons";
 import { GitRepoPanel } from "@/pages/project-studio/components/git-repo-panel";
-import { SessionPanel } from "@/pages/project-studio/components/session-panel";
+import { McpKeysPanel } from "@/pages/project-studio/components/mcp-keys-panel";
 import { AutoOverlay } from "@/pages/project-studio/components/auto-overlay";
 import { StudioChromeProvider, useStudioChrome } from "@/pages/project-studio/components/studio-chrome-context";
 import { FileSearchProvider } from "@/pages/project-studio/components/file-search-context";
@@ -306,7 +306,7 @@ export default function ProjectStudioShell(props) {
                 </nav>
 
                 <div className="flex items-center gap-0.5">
-                  <SessionPanel owner={owner} project={project} />
+                  <McpKeysPanel owner={owner} project={project} />
                   <GitRepoPanel owner={owner} project={project} />
                   <TerminalToggleButton />
                   <button

@@ -347,6 +347,8 @@ pub struct ProjectService {
     /// service that switches pipelines does it exactly as the pipeline API
     /// does. The latest attachment holds.
     pipeline_switch: std::sync::RwLock<Option<std::sync::Weak<dyn crate::platform::services::migration::PipelineSwitch>>>,
+    /// Where each change in `repo/` is written down.
+    changes: crate::platform::services::change_log::ChangeSink,
     #[cfg(test)]
     fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool,
 }
@@ -388,9 +390,16 @@ impl ProjectService {
             dependency_lock,
             node_catalog: std::sync::OnceLock::new(),
             pipeline_switch: std::sync::RwLock::new(None),
+            changes: Default::default(),
             #[cfg(test)]
             fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Records every change this service makes in a `repo/` from now on
+    /// (`project.md` § Change record).
+    pub fn attach_change_log(&self, log: Arc<crate::platform::services::change_log::ChangeLog>) {
+        self.changes.attach(log);
     }
 
     /// The configuration reader/writer this service resolves layouts through,
@@ -1167,6 +1176,15 @@ impl ProjectService {
                 ));
             }
             return Err(error);
+        }
+        if let Ok(rel) = file_abs_path.strip_prefix(&layout.repo_dir) {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            self.changes.record(&meta.owner, &meta.project, crate::platform::services::change_log::Change::write(
+                &rel,
+                previous_source.as_deref().and_then(crate::platform::services::change_log::bytes_digest),
+                previous_source.is_some(),
+                crate::platform::services::change_log::bytes_digest(canonical_source.as_bytes()),
+            ));
         }
         Ok(meta)
     }
@@ -2058,6 +2076,7 @@ impl ProjectService {
             let path = layout.repo_dir.join(name);
             if !path.exists() {
                 atomic_write(&path, content.as_bytes())?;
+                self.changes.record(&owner, &project, crate::platform::services::change_log::Change::write(name, None, false, crate::platform::services::change_log::bytes_digest(content.as_bytes())));
             }
         }
 
@@ -2238,7 +2257,14 @@ impl ProjectService {
             .find(|(_, line)| line.contains(old_string))
             .map(|(index, _)| index + 1)
             .unwrap_or(0);
-        atomic_write(&abs, content.replace(old_string, new_string).as_bytes())?;
+        let next = content.replace(old_string, new_string);
+        atomic_write(&abs, next.as_bytes())?;
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change::write(
+            &rel,
+            crate::platform::services::change_log::bytes_digest(content.as_bytes()),
+            true,
+            crate::platform::services::change_log::bytes_digest(next.as_bytes()),
+        ));
         Ok(line_number)
     }
 
@@ -2354,7 +2380,14 @@ impl ProjectService {
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
+        let (existed, before) = (abs.is_file(), crate::platform::services::change_log::file_digest(&abs));
         atomic_write(&abs, content.as_bytes())?;
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change::write(
+            &rel,
+            before,
+            existed,
+            crate::platform::services::change_log::bytes_digest(content.as_bytes()),
+        ));
         Ok(repo_payload_from_content(
             &layout.repo_layout,
             &rel,
@@ -2388,7 +2421,9 @@ impl ProjectService {
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
         }
+        let (existed, before) = (abs.is_file(), crate::platform::services::change_log::file_digest(&abs));
         atomic_write(&abs, bytes)?;
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change::write(&rel, before, existed, crate::platform::services::change_log::bytes_digest(bytes)));
         Ok(TemplateFilePayload {
             rel_path: rel.clone(),
             name: rel.rsplit('/').next().unwrap_or(&rel).to_string(),
@@ -2416,6 +2451,7 @@ impl ProjectService {
             ));
         }
         fs::create_dir_all(&abs)?;
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change::create_folder(&rel));
         Ok(rel)
     }
 
@@ -2483,6 +2519,7 @@ impl ProjectService {
                 ));
             }
             fs::remove_dir_all(&abs)?;
+            self.changes.record(&owner, &project, crate::platform::services::change_log::Change::delete(&rel, None));
             return Ok(());
         }
         if abs.is_dir() && !recursive && fs::read_dir(&abs).map(|mut entries| entries.next().is_some()).unwrap_or(true) {
@@ -2491,11 +2528,13 @@ impl ProjectService {
                 format!("'{rel}' is a folder that still holds files: delete them one by one first"),
             ));
         }
+        let before = crate::platform::services::change_log::file_digest(&abs);
         if abs.is_dir() {
             fs::remove_dir_all(&abs)?;
         } else {
             durable_remove_file(&abs)?;
         }
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change::delete(&rel, before));
         Ok(())
     }
 
@@ -2544,6 +2583,7 @@ impl ProjectService {
             fs::create_dir_all(parent)?;
         }
         fs::rename(&from_abs, &to_abs)?;
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change::moved(&from_rel, &to_rel));
         Ok(to_rel)
     }
 
@@ -2857,6 +2897,7 @@ impl ProjectService {
                 init_git_repo(&layout.repo_dir)?;
             }
         }
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change::step("git repair"));
 
         self.get_repo_git_health(&owner, &project)
     }
@@ -2947,6 +2988,11 @@ impl ProjectService {
                 String::from_utf8_lossy(&out.stderr).trim().to_string(),
             ));
         }
+        self.changes.record(&owner, &project, crate::platform::services::change_log::Change {
+            action: "git checkout".to_string(),
+            path: branch.to_string(),
+            ..Default::default()
+        });
         Ok(())
     }
 
@@ -2967,8 +3013,13 @@ impl ProjectService {
 
         // Remove source file from disk.
         if abs.is_file() {
+            let before = crate::platform::services::change_log::file_digest(&abs);
             fs::remove_file(&abs)
                 .map_err(|e| PlatformError::new("PLATFORM_PIPELINE_DELETE", e.to_string()))?;
+            if let Ok(rel) = abs.strip_prefix(&layout.repo_dir) {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                self.changes.record(&owner, &project, crate::platform::services::change_log::Change::delete(&rel, before));
+            }
         }
 
         // The stored row may still carry the source root, so it is matched

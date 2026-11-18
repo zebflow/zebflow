@@ -139,18 +139,28 @@ GET    /mapserver/{instance}/sources  ·  /layers  ·  /layers/{id}  ·  /layers
 POST   /assistant/chat   GET|PUT /assistant/config
 ```
 
-## MCP session
+## Change record
 
 ```
-GET    /mcp/session                → { "token", "mcp_url", "capabilities", "enabled", "created_at", "auto_reset_seconds" }
-POST   /mcp/session                { "capabilities": ["project.read", "pipelines.read", "pipelines.write", …], "auto_reset_seconds": 86400 }
-PUT    /mcp/session                { "enabled": false }
-POST   /mcp/session/reset-token
-DELETE /mcp/session
+GET    /changes?path=pages/&limit=100&before=<id>   → { "changes": [{ "id", "at", "person", "via", "action", "path", "to_path", "before", "after" }] }
 ```
 
-The agent then speaks MCP (streamable HTTP) at `mcp_url` with
-`Authorization: Bearer <token>` and `Accept: application/json, text/event-stream`.
+Who changed what in `repo/`, newest first, committed or not: `via` is
+`studio`, `mcp · <key name>` or `system`. Readable with `project.read`; the
+MCP tool `change_list` answers the same.
+
+## MCP keys
+
+```
+GET    /mcp/keys                   → { "keys": [{ "key_id", "name", "person", "capabilities", "made_by", "created_at", "expires_at", "last_used_at" }], "people", "mcp_url" }
+POST   /mcp/keys                   { "name": "laptop", "person": "dev-one", "capabilities": ["project.read", "pipelines.write", …], "expires_in_days": 90 }
+                                   → { "created": { "key", "secret", "mcp_url" } }   the secret, once
+DELETE /mcp/keys/{key_id}
+```
+
+A key acts as its person and never carries more than they hold. The agent
+then speaks MCP (streamable HTTP) at `mcp_url` with
+`Authorization: Bearer <secret>` and `Accept: application/json, text/event-stream`.
 Capabilities: `help("platform/operations")`.
 
 ## Platform administration (superadmin)

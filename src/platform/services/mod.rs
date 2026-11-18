@@ -30,7 +30,8 @@ pub mod hub;
 pub mod hub_repository;
 pub mod instance_settings;
 pub mod library;
-pub mod mcp_session;
+pub mod change_log;
+pub mod mcp_key;
 pub mod migration;
 pub mod node_registry;
 pub mod ops;
@@ -68,7 +69,7 @@ pub use dependency_lock::{
 pub use hub::HubService;
 pub use instance_settings::InstanceSettingsService;
 pub use library::LibraryService;
-pub use mcp_session::McpSessionService;
+pub use mcp_key::McpKeyService;
 pub use migration::MigrationService;
 pub use node_registry::NodeRegistryService;
 pub use ops::PlatformOps;

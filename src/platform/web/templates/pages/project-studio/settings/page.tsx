@@ -14,6 +14,7 @@ import RwePanel from "@/pages/project-studio/settings/components/rwe-panel";
 import GitPanel from "@/pages/project-studio/settings/components/git-panel";
 import MembersPanel from "@/pages/project-studio/settings/components/members-panel";
 import LoggingPanel from "@/pages/project-studio/settings/components/logging-panel";
+import ChangesPanel from "@/pages/project-studio/settings/components/changes-panel";
 import AddressingPanel from "@/pages/project-studio/settings/components/addressing/addressing-panel";
 
 export const page = {
@@ -57,7 +58,7 @@ export default function Page(input) {
   const tabFlags = input?.tab_flags ?? {};
   const settingsTabs = Array.isArray(input?.settings_tabs) ? input.settings_tabs : [];
   const assistant = input?.assistant ?? {};
-  const mcpCapabilities = Array.isArray(input?.mcp?.capabilities) ? input.mcp.capabilities : [];
+  const mcpPeople = Array.isArray(input?.mcp?.people) ? input.mcp.people : [];
 
   return (
     <>
@@ -191,6 +192,7 @@ export default function Page(input) {
               {tabFlags?.logs ? (
                 <section className="project-content-section">
                   <div className="project-content-body">
+                    <ChangesPanel api={input?.logging?.changes_api ?? ""} />
                     <LoggingPanel
                       api={input?.logging?.api ?? ""}
                       invocationsApi={input?.logging?.invocations_api ?? ""}
@@ -212,15 +214,15 @@ export default function Page(input) {
                     <article className="border border-border rounded-lg bg-card p-[0.85rem] mb-[0.9rem]">
                       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
                         <div>
-                          <h3 className="project-card-title">MCP Session</h3>
-                          <p className="project-card-copy">Remote control channel for external agents.</p>
+                          <h3 className="project-card-title">MCP keys</h3>
+                          <p className="project-card-copy">Each key lets one person's agent use this project, doing only what that person may. Make and revoke them from the MCP button at the top.</p>
                         </div>
-                        <span className="project-inline-chip">{input?.mcp?.status_label}</span>
+                        <span className="project-inline-chip">{Number(input?.mcp?.keys || 0)} keys</span>
                       </header>
                       <div className="flex flex-wrap items-center gap-[0.45rem]">
-                        <p className="project-card-copy">Allowed capabilities:</p>
-                        {mcpCapabilities.map((item, index) => (
-                          <span key={`${item}-${index}`} className="project-inline-chip">{item}</span>
+                        <p className="project-card-copy">Acting as:</p>
+                        {mcpPeople.map((person) => (
+                          <span key={person} className="project-inline-chip">{person}</span>
                         ))}
                       </div>
                     </article>

@@ -101,7 +101,7 @@ impl ProjectMembershipService {
 
     /// The rung `actor_user` acts from in one project: a superadmin acts as
     /// an Owner on every project, as `resolve_project_capabilities` and
-    /// `McpSessionService::validate_grant` already treat them.
+    /// `McpKeyService` already treat them.
     fn actor_role_of(
         &self,
         owner: &str,

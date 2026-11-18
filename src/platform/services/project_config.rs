@@ -98,6 +98,7 @@ pub struct ProjectConfigurationService {
     /// How long a cached read is trusted: [`STAMP_TRUST`], or zero for a
     /// caller that edits the file behind the service and reads at once.
     trust: std::time::Duration,
+    changes: crate::platform::services::change_log::ChangeSink,
 }
 
 impl ProjectConfigurationService {
@@ -110,7 +111,13 @@ impl ProjectConfigurationService {
             parsed: RwLock::new(HashMap::new()),
             shared: RwLock::new(HashMap::new()),
             trust: STAMP_TRUST,
+            changes: Default::default(),
         }
+    }
+
+    /// Records every `zebflow.yaml` write from now on (`project.md` § Change record).
+    pub fn attach_change_log(&self, log: Arc<crate::platform::services::change_log::ChangeLog>) {
+        self.changes.attach(log);
     }
 
     /// The same service, trusting a cached read for `trust` instead.
@@ -378,6 +385,8 @@ impl ProjectConfigurationService {
         config: &ZebflowJson,
     ) -> Result<(), PlatformError> {
         self.forget_layout(path);
+        let existed = path.is_file();
+        let before = crate::platform::services::change_log::file_digest(path);
         let written = write_contract_yaml::<ProjectConfigurationContract>(
             path,
             ContractMetadata::named(project),
@@ -392,6 +401,9 @@ impl ProjectConfigurationService {
         // Again after: a read between the first forget and the write cached
         // the old file, and would now be trusted for STAMP_TRUST.
         self.forget_layout(path);
+        if written.is_ok() {
+            self.changes.record_file_write(&self.users_root, path, before, existed);
+        }
         written
     }
 

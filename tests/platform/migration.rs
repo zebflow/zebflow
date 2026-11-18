@@ -331,6 +331,24 @@ fn seed_one(platform: &PlatformService, file_rel_path: &str, doc: &Value, trigge
 }
 
 /// One MCP tool call; the result's text.
+/// The status a key's call gets at the door, before any tool runs.
+async fn mcp_door(app: &axum::Router, token: &str) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/projects/{OWNER}/{PROJECT}/mcp"))
+                .method("POST")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .body(Body::from(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("mcp response")
+        .status()
+}
+
 async fn mcp_call(app: &axum::Router, token: &str, tool: &str, arguments: Value) -> Result<String, String> {
     let response = app
         .clone()
@@ -367,20 +385,20 @@ async fn mcp_token(app: &axum::Router, cookie: &str) -> String {
             app,
             cookie,
             "POST",
-            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
-            Some(json!({ "capabilities": ["pipelines.read", "pipelines.write"] })),
+            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys"),
+            Some(json!({ "name": "test", "capabilities": ["pipelines.read", "pipelines.write"] })),
         )
         .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    body["session"]["token"].as_str().expect("token").to_string()
+    body["created"]["secret"].as_str().expect("secret").to_string()
 }
 
 /// MCP apply switches pipelines exactly as the HTTP route does: a
 /// topic-triggered pipeline is subscribed again, so a message published
-/// after the apply runs it. And only the project's owner may apply: a
-/// session a maintainer created is refused, whatever capabilities it lists.
+/// after the apply runs it. And only the project's owner may apply: a key
+/// acting as a maintainer is refused, whatever capabilities it lists.
 #[tokio::test]
 async fn mcp_apply_reactivates_a_topic_pipeline_with_its_subscriber_and_is_the_owners() {
     let root = TestDir(std::env::temp_dir().join(format!(
@@ -449,8 +467,8 @@ async fn mcp_apply_reactivates_a_topic_pipeline_with_its_subscriber_and_is_the_o
     }
     assert_eq!(last, "hello", "the topic pipeline was not subscribed after the MCP apply");
 
-    // A maintainer's session holds the pipeline capabilities, but the
-    // maintainer is not the owner: the owner-only tools refuse it.
+    // A maintainer's key holds the pipeline capabilities, but its person is
+    // not the owner: the owner-only tools refuse it.
     let maintainer_password = uuid::Uuid::new_v4().to_string();
     platform
         .users
@@ -478,7 +496,7 @@ async fn mcp_apply_reactivates_a_topic_pipeline_with_its_subscriber_and_is_the_o
         .expect("member");
     let maintainer = login_as(&app, "maintainer-one", &maintainer_password).await;
     let token = mcp_token(&app, &maintainer).await;
-    let refused = mcp_call(&app, &token, "migration_plan", json!({})).await.expect_err("a maintainer's session is refused");
+    let refused = mcp_call(&app, &token, "migration_plan", json!({})).await.expect_err("a maintainer's key is refused");
     assert!(refused.contains("owner"), "{refused}");
     let refused = mcp_call(&app, &token, "migration_apply", json!({ "fingerprint": "x" })).await.expect_err("refused");
     assert!(refused.contains("owner"), "{refused}");
@@ -487,10 +505,13 @@ async fn mcp_apply_reactivates_a_topic_pipeline_with_its_subscriber_and_is_the_o
     assert_eq!(http.status(), StatusCode::FORBIDDEN);
 }
 
+/// `project-access` § MCP keys: a key acts as one person and never above them;
+/// a listing never carries a secret; a person may revoke their own key and
+/// nobody else's without `mcp.session.revoke`; the single project session is gone.
 #[tokio::test]
-async fn mcp_session_cannot_exceed_creator_capabilities_or_ceiling_and_gates_start_here() {
+async fn mcp_keys_act_as_their_person_and_never_exceed_them() {
     let root = TestDir(std::env::temp_dir().join(format!(
-        "zebflow-platform-mcp-session-cap-{}",
+        "zebflow-platform-mcp-keys-{}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     )));
     let mut config = PlatformConfig::default();
@@ -501,136 +522,108 @@ async fn mcp_session_cannot_exceed_creator_capabilities_or_ceiling_and_gates_sta
     let app = zebflow::platform::web::router(platform.clone()).await;
     let owner_cookie = login_as(&app, OWNER, &owner_pw).await;
 
-    let limited_pw = uuid::Uuid::new_v4().to_string();
-    platform
-        .users
-        .create_user(&zebflow::platform::CreateUserRequest {
-            owner: "maintainer-limited".into(),
-            password: limited_pw.clone(),
-            role: "member".into(),
-            git_name: String::new(),
-            git_email: String::new(),
-        })
-        .expect("create user");
-    platform
-        .project_members
-        .upsert_member(
-            OWNER,
-            OWNER,
-            PROJECT,
-            &zebflow::platform::model::UpsertProjectMemberRequest {
-                user_id: "maintainer-limited".into(),
-                role_preset: zebflow::platform::model::ProjectAccessRolePreset::Maintainer,
-                custom_policy_ids: Vec::new(),
-                mcp_capability_ceiling: vec![
-                    zebflow::platform::model::ProjectCapability::PipelinesRead,
-                ],
-            },
-        )
-        .expect("upsert member");
+    let person = |name: &str, role, ceiling: Vec<zebflow::platform::model::ProjectCapability>| {
+        let password = uuid::Uuid::new_v4().to_string();
+        platform
+            .users
+            .create_user(&zebflow::platform::CreateUserRequest {
+                owner: name.into(),
+                password: password.clone(),
+                role: "member".into(),
+                git_name: String::new(),
+                git_email: String::new(),
+            })
+            .expect("create user");
+        platform
+            .project_members
+            .upsert_member(
+                OWNER,
+                OWNER,
+                PROJECT,
+                &zebflow::platform::model::UpsertProjectMemberRequest {
+                    user_id: name.into(),
+                    role_preset: role,
+                    custom_policy_ids: Vec::new(),
+                    mcp_capability_ceiling: ceiling,
+                },
+            )
+            .expect("upsert member");
+        password
+    };
+    let limited_pw = person(
+        "maintainer-limited",
+        zebflow::platform::model::ProjectAccessRolePreset::Maintainer,
+        vec![zebflow::platform::model::ProjectCapability::PipelinesRead],
+    );
+    let dev_pw = person("dev-one", zebflow::platform::model::ProjectAccessRolePreset::Developer, Vec::new());
+    let limited = login_as(&app, "maintainer-limited", &limited_pw).await;
+    let dev = login_as(&app, "dev-one", &dev_pw).await;
+    let keys = format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys");
+    let make = |cookie: &str, body: Value| {
+        let (app, keys, cookie) = (app.clone(), keys.clone(), cookie.to_string());
+        async move { json_of(send(&app, &cookie, "POST", &keys, Some(body)).await).await }
+    };
 
-    let limited_cookie = login_as(&app, "maintainer-limited", &limited_pw).await;
+    // 1. Nobody gives a right they do not hold (`project.delete` is the owner's).
+    let (status, body) = make(&limited, json!({ "name": "x", "capabilities": ["project.delete"] })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("do not hold"), "{body}");
 
-    // 1. A maintainer cannot grant a capability they do not hold (`project.delete`
-    // is the Owner's alone): refused by the held-capability check, not the ceiling.
-    let (status, body) = json_of(
-        send(
-            &app,
-            &limited_cookie,
-            "POST",
-            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
-            Some(json!({ "capabilities": ["project.delete"] })),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "unheld capability must be refused: {body}");
-    assert!(body.to_string().contains("do not hold"), "the held-capability check refuses it: {body}");
+    // 2. Nor above the person's MCP ceiling.
+    let (status, body) = make(&limited, json!({ "name": "x", "capabilities": ["pipelines.read", "pipelines.write"] })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
-    // 2. A maintainer with mcp_capability_ceiling=[pipelines.read] cannot mint a session with pipelines.write.
-    let (status, body) = json_of(
-        send(
-            &app,
-            &limited_cookie,
-            "POST",
-            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
-            Some(json!({ "capabilities": ["pipelines.read", "pipelines.write"] })),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "capability exceeding ceiling must be refused: {body}");
-
-    // 3. Minting within the ceiling ([pipelines.read]) succeeds, and calling `start_here`
-    // without `project.read` is refused.
-    let (status, body) = json_of(
-        send(
-            &app,
-            &limited_cookie,
-            "POST",
-            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
-            Some(json!({ "capabilities": ["pipelines.read"] })),
-        )
-        .await,
-    )
-    .await;
+    // 3. Within it a key is made, and it can do only what it carries.
+    let (status, body) = make(&limited, json!({ "name": "narrow", "capabilities": ["pipelines.read"] })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let narrow_token = body["session"]["token"].as_str().expect("token").to_string();
-    let start_err = mcp_call(&app, &narrow_token, "start_here", json!({}))
-        .await
-        .expect_err("start_here without project.read must be refused");
-    assert!(
-        start_err.contains("project.read"),
-        "expected project.read requirement error, got: {start_err}"
-    );
+    let narrow = body["created"]["secret"].as_str().expect("secret").to_string();
+    assert!(narrow.starts_with("zfk_"), "{body}");
+    assert_eq!(body["created"]["key"]["person"], "maintainer-limited");
+    let refused = mcp_call(&app, &narrow, "start_here", json!({})).await.expect_err("start_here needs project.read");
+    assert!(refused.contains("project.read"), "{refused}");
 
-    // 4. When the owner replaces the session with broader capabilities, the ceiling-limited
-    // maintainer cannot rotate/steal that broader session via reset-token or read its token.
-    let (status, owner_body) = json_of(
-        send(
-            &app,
-            &owner_cookie,
-            "POST",
-            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
-            Some(json!({ "capabilities": ["project.read", "pipelines.read", "pipelines.write"] })),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{owner_body}");
+    // 4. The owner makes a key acting as a developer: not above the developer,
+    // and it works as them.
+    let (status, body) = make(&owner_cookie, json!({ "name": "laptop", "person": "dev-one", "capabilities": ["credentials.read"] })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a developer holds no credentials: {body}");
+    let (status, body) = make(&owner_cookie, json!({ "name": "laptop", "person": "dev-one", "capabilities": ["project.read", "pipelines.read", "pipelines.write"] })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let dev_key = body["created"]["secret"].as_str().expect("secret").to_string();
+    let dev_key_id = body["created"]["key"]["key_id"].as_str().expect("id").to_string();
+    mcp_call(&app, &dev_key, "start_here", json!({})).await.expect("the developer's key works");
 
-    let (reset_status, reset_body) = json_of(
-        send(
-            &app,
-            &limited_cookie,
-            "POST",
-            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session/reset-token"),
-            None,
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(
-        reset_status,
-        StatusCode::FORBIDDEN,
-        "reset-token must refuse when session capabilities exceed caller ceiling: {reset_body}"
-    );
+    // 5. A listing names every key and its person, and carries no secret.
+    let (status, listed) = json_of(send(&app, &limited, "GET", &keys, None).await).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["keys"].as_array().map(Vec::len), Some(2), "{listed}");
+    let text = listed.to_string();
+    assert!(!text.contains(&dev_key) && !text.contains(&narrow) && !text.contains("token_hash"), "{listed}");
+    assert!(listed["people"].as_array().is_some_and(|p| p.iter().any(|x| x["person"] == "dev-one" && x["role"] == "developer")), "{listed}");
+    // A developer may not list or make keys at all.
+    let (status, _) = json_of(send(&app, &dev, "GET", &keys, None).await).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let (get_status, get_body) = json_of(
-        send(
-            &app,
-            &limited_cookie,
-            "GET",
-            &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"),
-            None,
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(get_status, StatusCode::OK, "{get_body}");
-    assert!(
-        get_body["session"]["token"].is_null(),
-        "GET mcp/session must not expose token exceeding caller ceiling: {get_body}"
-    );
+    // 6. A developer revokes their own key, never someone else's.
+    let narrow_id = listed["keys"].as_array().unwrap().iter().find(|k| k["person"] == "maintainer-limited").unwrap()["key_id"].as_str().unwrap().to_string();
+    let (status, _) = json_of(send(&app, &dev, "DELETE", &format!("{keys}/{narrow_id}"), None).await).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = json_of(send(&app, &dev, "DELETE", &format!("{keys}/{dev_key_id}"), None).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(mcp_door(&app, &dev_key).await, StatusCode::UNAUTHORIZED, "a revoked key opens nothing");
+    mcp_call(&app, &narrow, "pipeline_list", json!({})).await.expect("the other key still works");
+
+    // 7. Removing a member takes their keys at once.
+    let (status, body) = make(&owner_cookie, json!({ "name": "again", "person": "dev-one", "capabilities": ["project.read"] })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let again = body["created"]["secret"].as_str().expect("secret").to_string();
+    let (status, _) = json_of(send(&app, &owner_cookie, "DELETE", &format!("/api/projects/{OWNER}/{PROJECT}/members/dev-one"), None).await).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, listed) = json_of(send(&app, &owner_cookie, "GET", &keys, None).await).await;
+    assert!(!listed.to_string().contains("dev-one\",\"capabilities"), "{listed}");
+    assert_eq!(mcp_door(&app, &again).await, StatusCode::UNAUTHORIZED, "removal took the key");
+
+    // 8. The single project session is gone.
+    let status = send(&app, &owner_cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"), Some(json!({ "capabilities": ["pipelines.read"] }))).await.status();
+    assert!(status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED, "{status}");
 }
 

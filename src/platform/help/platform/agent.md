@@ -172,7 +172,7 @@ kind:
 - **A 200 is not a rendered page.** A component that throws is replaced by `<!-- RWE component error: … -->` and the response is still 200. Search the body for it. A page whose hydration failed serves correct HTML and logs a browser console error — open it.
 - **Every file imports what it uses** from `"zeb/react"`, `"zeb/ui/<name>"` or `"@/…"`; nothing is inherited from the page.
 - **Locked resources** — an owner can lock a pipeline, a file or a folder. The lock holds at the service layer, so every write channel refuses (`PLATFORM_PIPELINE_LOCKED`, `PLATFORM_TEMPLATE_LOCKED`); MCP also refuses reads of locked items. `pipeline_list` and `file_list` still show they exist. You cannot unlock; tell the user.
-- **Capabilities** — the MCP session may be narrowed (read-only, no git…). A refused tool names the missing capability; do not work around it.
+- **Capabilities** — the MCP key may be narrowed (read-only, no git…), and acts as one person. A refused tool names the missing capability; do not work around it.
 
 ---
 

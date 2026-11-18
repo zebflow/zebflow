@@ -47,17 +47,17 @@ async fn get_status(app: &axum::Router, uri: &str) -> StatusCode {
 
 async fn mcp_token(app: &axum::Router, cookie: &str, capabilities: &[&str]) -> String {
     let request = Request::builder()
-        .uri(format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"))
+        .uri(format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys"))
         .method("POST")
         .header(header::COOKIE, cookie)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(json!({ "capabilities": capabilities }).to_string()))
+        .body(Body::from(json!({ "name": "test", "capabilities": capabilities }).to_string()))
         .expect("request");
     let response = app.clone().oneshot(request).await.expect("session");
     let status = response.status();
     let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.expect("body")).expect("json");
     assert_eq!(status, StatusCode::OK, "{body}");
-    body["session"]["token"].as_str().expect("token").to_string()
+    body["created"]["secret"].as_str().expect("token").to_string()
 }
 
 async fn mcp_call(app: &axum::Router, token: &str, tool: &str, arguments: Value) -> Result<String, String> {

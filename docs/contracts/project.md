@@ -197,6 +197,49 @@ Evidence (not yet written): `tests/platform/smoke.rs`
 absent on disk, commit and push from the Studio, assert the remote still holds
 them unchanged; then a project declaring nothing checks out everything.
 
+## Change record
+
+Every change Zebflow makes in a project's `repo/` is written down: who, through
+what, what, and when. Git keeps what was committed; this keeps every change,
+committed or not.
+
+| | |
+| --- | --- |
+| Stored in | platform metadata: `project_changes` |
+| Adapter | `src/platform/services/change_log.rs` |
+| Read | `GET /api/projects/{o}/{p}/changes` and MCP `change_list`, both `project.read` |
+
+```json
+{ "id": 1042, "at": 1795000000, "person": "dev-one", "via": "mcp · laptop",
+  "action": "edit", "path": "pages/home.tsx", "to_path": null,
+  "before": "sha256:4be1…", "after": "sha256:9c02…" }
+```
+
+- **`action`**: `create`, `edit`, `delete`, `move`, one git step (`git sync`,
+  `git resolve`, `git continue`, `git abort`, `git checkout`, `git repair`),
+  `import` or `import rollback`.
+- **`path`**: repository-relative; the branch for `git checkout`; empty for a
+  step that touches many files.
+- **`via`**: `studio` (a signed-in person's browser or API call),
+  `mcp · <key name>`, or `system` when no person asked: a pipeline run, a
+  start-up repair.
+- **`person`**: the signed-in person or the MCP key's person; empty for
+  `system`.
+- **`before` / `after`**: SHA-256 of the file's bytes, absent for a folder, a
+  move, or a file above 8 MB. A write that leaves the bytes as they were is not
+  a change and records nothing.
+- **Covered**: every write in `repo/`: files and folders, pipelines,
+  `zebflow.yaml`, `zeb.lock`, hub and component installs, schema files,
+  uploaded static files, the pipeline lock. A git step that touches many files
+  is one line naming the step; git holds which files.
+- **Not covered**: what pipelines write while they run outside `repo/` (data,
+  store, uploads), and edits made on disk outside Zebflow.
+- **Kept**: the newest 20,000 lines per project; taken with the project when it
+  is deleted, moved with it when it changes owner.
+
+Evidence: `change_log` unit tests; `tests/platform/smoke.rs`
+`every_change_names_who_made_it_and_how`.
+
 ## Data Movement
 
 Small JSON values may move directly between nodes. Files and large values use a

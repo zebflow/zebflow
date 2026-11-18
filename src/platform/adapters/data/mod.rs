@@ -12,7 +12,7 @@ use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{ErrorGroupBounds, PipelineErrorGroup, 
     CredentialKeyringReport, CredentialSweepReport, DataAdapterKind, HubAccessGrant,
-    HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, McpSession,
+    HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, McpKey, ProjectChange,
     PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta, PlatformHubRepository,
     PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
     PlatformOfficeLocalAuthorityEvent, PlatformOfficeNode, PlatformOfficeVouchRedemption,
@@ -805,12 +805,35 @@ pub trait DataAdapter: Send + Sync {
         let _ = (owner, project, limit);
         Ok(vec![])
     }
-    /// List all persisted MCP sessions.
-    fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError>;
-    /// Persist one MCP session.
-    fn put_mcp_session(&self, session: &McpSession) -> Result<(), PlatformError>;
-    /// Delete a persisted MCP session by token.
-    fn delete_mcp_session(&self, token: &str) -> Result<(), PlatformError>;
+    /// Append one line to a project's change record; answers its id.
+    fn put_project_change(&self, change: &ProjectChange) -> Result<i64, PlatformError> {
+        let _ = change;
+        Ok(0)
+    }
+    /// A project's change record, newest first: only lines about `path` or
+    /// under it when given, only lines older than `before_id` when given.
+    fn list_project_changes(
+        &self,
+        owner: &str,
+        project: &str,
+        path: Option<&str>,
+        before_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<ProjectChange>, PlatformError> {
+        let _ = (owner, project, path, before_id, limit);
+        Ok(vec![])
+    }
+    /// Drop all but the newest `keep` lines of a project's change record.
+    fn prune_project_changes(&self, owner: &str, project: &str, keep: usize) -> Result<(), PlatformError> {
+        let _ = (owner, project, keep);
+        Ok(())
+    }
+    /// Every stored MCP key.
+    fn list_all_mcp_keys(&self) -> Result<Vec<McpKey>, PlatformError>;
+    /// Store one MCP key (insert or replace by `key_id`).
+    fn put_mcp_key(&self, key: &McpKey) -> Result<(), PlatformError>;
+    /// Delete one MCP key by `key_id`.
+    fn delete_mcp_key(&self, key_id: &str) -> Result<(), PlatformError>;
     /// Admin: list collection names with counts. Default impl returns unsupported error.
     fn admin_list_collections(&self) -> Result<Vec<(String, usize)>, PlatformError> {
         Err(PlatformError::new(

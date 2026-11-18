@@ -25,7 +25,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, schemars, tool, tool_router};
 
 use crate::infra::execution::placement::ProjectRuntimePlacementTarget;
-use crate::platform::model::{McpSession, mcp_tool_capability};
+use crate::platform::model::{McpKey, mcp_tool_capability};
 use crate::platform::services::{PlatformOps, PlatformService};
 
 const INTERNAL_CLUSTER_TOKEN_HEADER: &str = "x-zebflow-cluster-token";
@@ -38,6 +38,22 @@ const MCP_PROXY_BODY_LIMIT: usize = 16 * 1024 * 1024;
 struct PipelineGetParams {
     /// Source-relative path of the pipeline (e.g. "my-pipeline.zf.json").
     file_rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct ChangeListParams {
+    /// A file or folder, repository-relative; omit for the whole project.
+    #[schemars(with = "String")]
+    #[serde(default)]
+    path: Option<String>,
+    /// How many lines, newest first (default 50, at most 500).
+    #[schemars(with = "u32")]
+    #[serde(default)]
+    limit: Option<u32>,
+    /// Only lines older than this id, to page back through the record.
+    #[schemars(with = "i64")]
+    #[serde(default)]
+    before: Option<i64>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -509,9 +525,9 @@ struct MoveParams {
 
 /// Zebflow MCP handler with project-scoped tools.
 ///
-/// Sessions are injected via HTTP request extensions by the middleware layer.
-/// Tools access the session via `Extension<http::request::Parts>` and extract
-/// the `McpSession` from `parts.extensions`.
+/// The caller's key is injected via HTTP request extensions by the middleware
+/// layer. Tools reach it via `Extension<http::request::Parts>` and take the
+/// `McpKey` from `parts.extensions`; a tool acts as the key's person.
 #[derive(Clone)]
 pub struct ZebflowMcpHandler {
     platform: Arc<PlatformService>,
@@ -1538,6 +1554,32 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
+    #[tool(
+        description = "Who changed what in this project's repository, newest first: the person, how (studio, an MCP key, or system), the action, the path and when, in unix seconds. It includes changes not yet committed to git. `path` narrows it to one file or folder."
+    )]
+    async fn change_list(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ChangeListParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "change_list")?;
+        let lines = self
+            .platform
+            .changes
+            .list(
+                &session.owner,
+                &session.project,
+                params.path.as_deref(),
+                params.before,
+                params.limit.unwrap_or(50) as usize,
+            )
+            .map_err(|err| McpError::internal_error(err.message, None))?;
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&lines).unwrap_or_default(),
+        )]))
+    }
+
     // ── Git ──────────────────────────────────────────────────────────────────
 
     #[tool(description = "Run a git command on the project repository. \
@@ -1782,39 +1824,32 @@ impl ZebflowMcpHandler {
     fn get_session_from_http_parts(
         &self,
         parts: &http::request::Parts,
-    ) -> Result<McpSession, McpError> {
+    ) -> Result<McpKey, McpError> {
         parts
             .extensions
-            .get::<McpSession>()
+            .get::<McpKey>()
             .cloned()
             .ok_or_else(|| {
                 McpError::invalid_params(
-                    "No active MCP session; ensure Authorization header is set with valid session token",
+                    "No MCP key; send the Authorization header with this project's key",
                     None,
                 )
             })
     }
 
-    /// Extract session from RequestContext extensions (used by manual ServerHandler impl).
-    fn session_from_context(&self, context: &RequestContext<RoleServer>) -> Option<McpSession> {
+    /// Extract the key from RequestContext extensions (used by manual ServerHandler impl).
+    fn session_from_context(&self, context: &RequestContext<RoleServer>) -> Option<McpKey> {
         context
             .extensions
             .get::<http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<McpSession>().cloned())
+            .and_then(|parts| parts.extensions.get::<McpKey>().cloned())
     }
 
-    /// An owner-only tool: a session's capabilities are whatever its creator
-    /// listed, so the creator must hold the capability itself, as the HTTP
-    /// route asks of the signed-in user (`ProjectDelete`: the owner, or a
-    /// superadmin).
-    fn check_owner_grant(&self, session: &McpSession) -> Result<(), McpError> {
-        if session.granted_by.trim().is_empty() {
-            return Err(McpError::invalid_params(
-                "This session does not record who created it; create the MCP session again as the project owner to use this tool.",
-                None,
-            ));
-        }
-        let subject = crate::platform::model::ProjectAccessSubject::user(&session.granted_by);
+    /// An owner-only tool: the key's person must hold the capability itself,
+    /// as the HTTP route asks of the signed-in user (`ProjectDelete`: the
+    /// owner, or a superadmin). A key cannot carry it for them.
+    fn check_owner_grant(&self, session: &McpKey) -> Result<(), McpError> {
+        let subject = crate::platform::model::ProjectAccessSubject::user(&session.person);
         self.platform
             .authz
             .ensure_project_capability(
@@ -1825,13 +1860,13 @@ impl ZebflowMcpHandler {
             )
             .map_err(|_| {
                 McpError::invalid_params(
-                    "This tool is the project owner's: the user who created this MCP session is not the owner of the project.",
+                    "This tool is the project owner's: this MCP key's person is not the owner of the project.",
                     None,
                 )
             })
     }
 
-    fn check_tool_capability(&self, session: &McpSession, tool_name: &str) -> Result<(), McpError> {
+    fn check_tool_capability(&self, session: &McpKey, tool_name: &str) -> Result<(), McpError> {
         let required_capability = mcp_tool_capability(tool_name)
             .ok_or_else(|| McpError::invalid_params(format!("Unknown tool '{tool_name}'"), None))?;
 
@@ -1840,7 +1875,7 @@ impl ZebflowMcpHandler {
         }
         Err(McpError::invalid_params(
             format!(
-                "Tool '{tool_name}' requires capability '{}' which is not allowed in this session",
+                "Tool '{tool_name}' requires capability '{}', which this MCP key does not carry",
                 required_capability.key()
             ),
             None,
@@ -1980,8 +2015,15 @@ impl ServerHandler for ZebflowMcpHandler {
         if !self.tool_router.has_route(&request.name) {
             return Err(McpError::invalid_params(format!("Unknown tool '{}'", request.name), None));
         }
+        // `project.md` § Change record: a tool changes the project as its key's person.
+        let actor = self
+            .session_from_context(&context)
+            .map(|key| crate::platform::services::change_log::ChangeActor::mcp(&key.person, &key.name));
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.tool_router.call(tcc).await
+        match actor {
+            Some(actor) => crate::platform::services::change_log::scope(actor, self.tool_router.call(tcc)).await,
+            None => self.tool_router.call(tcc).await,
+        }
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -2048,7 +2090,7 @@ pub fn build_mcp_service<S: Clone + Send + Sync + 'static>(
                         return StatusCode::BAD_REQUEST.into_response();
                     };
 
-                    let session = match mcp_session_from_request(&platform, req.headers()) {
+                    let session = match mcp_key_from_request(&platform, req.headers()) {
                         Some(session) => session,
                         None => return StatusCode::UNAUTHORIZED.into_response(),
                     };
@@ -2084,14 +2126,14 @@ pub fn build_mcp_service<S: Clone + Send + Sync + 'static>(
         ))
 }
 
-fn mcp_session_from_request(platform: &PlatformService, headers: &HeaderMap) -> Option<McpSession> {
+fn mcp_key_from_request(platform: &PlatformService, headers: &HeaderMap) -> Option<McpKey> {
     if let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .and_then(parse_bearer_token)
-        && let Some(session) = platform.mcp_sessions.lookup(token)
+        && let Some(key) = platform.mcp_keys.lookup(token)
     {
-        return Some(session);
+        return Some(key);
     }
 
     if !is_controller_call(platform, headers) {
@@ -2103,8 +2145,7 @@ fn mcp_session_from_request(platform: &PlatformService, headers: &HeaderMap) -> 
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .ok()?;
-    let session: McpSession = serde_json::from_slice(&bytes).ok()?;
-    if session.enabled { Some(session) } else { None }
+    serde_json::from_slice::<McpKey>(&bytes).ok()
 }
 
 /// Whether this request is **this office's controller** proxying an MCP call.
@@ -2155,7 +2196,7 @@ async fn forward_mcp_request_to_worker(
     platform: &PlatformService,
     req: axum::extract::Request,
     worker_id: &str,
-    session: &McpSession,
+    session: &McpKey,
 ) -> Result<Response, Response> {
     let worker = platform
         .cluster_registry

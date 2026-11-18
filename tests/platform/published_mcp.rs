@@ -195,11 +195,11 @@ fn app_token(roles: &[&str], ttl: i64, secret: &str) -> String {
     jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes())).expect("token")
 }
 
-/// The dev MCP token of a fresh session, as a bearer header.
+/// A fresh dev MCP key's secret, as a bearer header.
 async fn dev_bearer(app: &axum::Router, cookie: &str) -> String {
-    let (status, session) = send(app, cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"), json!({ "capabilities": ["pipelines.read", "pipelines.write"] })).await;
+    let (status, session) = send(app, cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys"), json!({ "name": "test", "capabilities": ["pipelines.read", "pipelines.write"] })).await;
     assert_eq!(status, StatusCode::OK, "{session}");
-    format!("Bearer {}", session["session"]["token"].as_str().expect("token"))
+    format!("Bearer {}", session["created"]["secret"].as_str().expect("token"))
 }
 
 /// Two routes are two servers: each lists and calls only its own tools; `none`
@@ -390,9 +390,9 @@ async fn the_dev_mcp_never_lists_or_calls_a_published_tool() {
     let cookie = login(&app).await;
     two_servers(&app, &cookie).await;
 
-    let (status, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"), json!({ "capabilities": ["pipelines.read", "pipelines.write"] })).await;
+    let (status, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys"), json!({ "name": "test", "capabilities": ["pipelines.read", "pipelines.write"] })).await;
     assert_eq!(status, StatusCode::OK, "{session}");
-    let bearer = format!("Bearer {}", session["session"]["token"].as_str().expect("token"));
+    let bearer = format!("Bearer {}", session["created"]["secret"].as_str().expect("token"));
     let dev = format!("/api/projects/{OWNER}/{PROJECT}/mcp");
     let (status, listed) = rpc(&app, &dev, None, &[("authorization", &bearer)], list()).await;
     assert_eq!(status, StatusCode::OK, "{listed}");
@@ -445,9 +445,9 @@ async fn a_published_server_answers_only_on_the_mcp_surface_and_only_when_it_is_
     let (status, _) = rpc(&app, &format!("/mcp/{OWNER}/{PROJECT}/shop"), None, &[("x-api-key", SHOP_KEY)], list()).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "a right key does not switch it on");
 
-    let (status, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"), json!({ "capabilities": ["pipelines.read"] })).await;
+    let (status, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys"), json!({ "name": "test", "capabilities": ["pipelines.read"] })).await;
     assert_eq!(status, StatusCode::OK, "{session}");
-    let bearer = format!("Bearer {}", session["session"]["token"].as_str().expect("token"));
+    let bearer = format!("Bearer {}", session["created"]["secret"].as_str().expect("token"));
     let dev = format!("/api/projects/{OWNER}/{PROJECT}/mcp");
     let (status, _) = rpc(&app, &dev, None, &[("authorization", &bearer)], list()).await;
     assert_eq!(status, StatusCode::OK, "the platform address serves the dev MCP");

@@ -410,20 +410,15 @@ impl DataAdapter for DynamoDbDataAdapter {
         ))
     }
 
-    fn list_all_mcp_sessions(
-        &self,
-    ) -> Result<Vec<crate::platform::model::McpSession>, PlatformError> {
+    fn list_all_mcp_keys(&self) -> Result<Vec<crate::platform::model::McpKey>, PlatformError> {
         Ok(vec![])
     }
 
-    fn put_mcp_session(
-        &self,
-        _session: &crate::platform::model::McpSession,
-    ) -> Result<(), PlatformError> {
+    fn put_mcp_key(&self, _key: &crate::platform::model::McpKey) -> Result<(), PlatformError> {
         Ok(())
     }
 
-    fn delete_mcp_session(&self, _token: &str) -> Result<(), PlatformError> {
+    fn delete_mcp_key(&self, _key_id: &str) -> Result<(), PlatformError> {
         Ok(())
     }
 }

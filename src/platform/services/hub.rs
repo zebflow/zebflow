@@ -3929,6 +3929,16 @@ impl HubService {
                 ));
             }
         }
+        // `project.md` § Change record: written once the install held, so a
+        // rolled-back install leaves no line.
+        for entry in &prepared {
+            crate::platform::services::change_log::record_file_at(
+                &self.data_root,
+                &entry.destination,
+                entry.previous.as_deref().and_then(crate::platform::services::change_log::bytes_digest),
+                entry.previous.is_some(),
+            );
+        }
         Ok(HubInstallResult {
             package_id: package_id.to_string(),
             version: version.to_string(),
@@ -5013,6 +5023,8 @@ impl HubService {
             self.projects
                 .activate_pipeline_definition(&target_owner, &project, identity)?;
         }
+        // A project made whole from a bundle is one line, as an import is.
+        crate::platform::services::change_log::record_at(&self.data_root, &target_owner, &project, crate::platform::services::change_log::Change::step("import"));
         Ok(ProjectBundleInstallResult {
             owner: target_owner,
             project,

@@ -1504,14 +1504,18 @@ pub fn sync_schema_to_repo(
         // applying it changes nothing, and it kept its folder from being
         // deleted while the repository tree showed the folder empty.
         if schema_path.is_file() {
+            let before = crate::platform::services::change_log::file_digest(&schema_path);
             std::fs::remove_file(&schema_path)?;
+            crate::platform::services::change_log::record_removal_at(data_root, &schema_path, before);
             files_removed.push(layout.schema_document_rel());
             changed = true;
         }
     } else {
         std::fs::create_dir_all(&schema_root)?;
         let schema_bytes = encode_schema_export(export.clone())?;
+        let (existed, before) = (schema_path.is_file(), crate::platform::services::change_log::file_digest(&schema_path));
         if write_bytes_if_changed(&schema_path, &schema_bytes)? {
+            crate::platform::services::change_log::record_file_at(data_root, &schema_path, before, existed);
             changed = true;
         }
         files_written.push(layout.schema_document_rel());
@@ -1532,6 +1536,7 @@ pub fn sync_schema_to_repo(
             }
         }
         std::fs::remove_dir_all(&tables_dir)?;
+        crate::platform::services::change_log::record_removal_at(data_root, &tables_dir, None);
         changed = true;
     }
 

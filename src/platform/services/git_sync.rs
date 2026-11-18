@@ -220,11 +220,18 @@ impl GitSyncService {
         let (_, _, remote_branch) = self.remote(owner, project)?;
         // A project always has uncommitted files (its scaffold, a draft page);
         // `--autostash` sets them aside for the rebase and brings them back.
-        match run_env(&repo, &identity, &["rebase", "--autostash", "--end-of-options", &format!("origin/{remote_branch}")], &[("GIT_EDITOR", "true")]) {
-            Ok(_) => Ok(SyncOutcome::Ok { state: self.state(owner, project)? }),
+        let outcome = run_env(&repo, &identity, &["rebase", "--autostash", "--end-of-options", &format!("origin/{remote_branch}")], &[("GIT_EDITOR", "true")]);
+        // The rebase changed files whether it finished or stopped at a conflict.
+        let step = || self.platform.changes.record(owner, project, crate::platform::services::change_log::Change::step("git sync"));
+        match outcome {
+            Ok(_) => {
+                step();
+                Ok(SyncOutcome::Ok { state: self.state(owner, project)? })
+            }
             Err(err) => {
                 let state = self.state(owner, project)?;
                 if state.rebase_in_progress && !state.conflicts.is_empty() {
+                    step();
                     Ok(SyncOutcome::Conflict { state })
                 } else {
                     let _ = run(&repo, &[], &["rebase", "--abort"]);
@@ -286,6 +293,11 @@ impl GitSyncService {
             }
         }
         run(&repo, &[], &["add", "--", &rel])?;
+        self.platform.changes.record(owner, project, crate::platform::services::change_log::Change {
+            action: "git resolve".to_string(),
+            path: rel.clone(),
+            ..Default::default()
+        });
         self.state(owner, project)
     }
 
@@ -300,11 +312,17 @@ impl GitSyncService {
             return Err(PlatformError::new("GIT_CONFLICT", format!("{} file(s) still conflicted: {}", state.conflicts.len(), state.conflicts.join(", "))));
         }
         let identity = self.identity_args(actor, project);
-        match run_env(&repo, &identity, &["rebase", "--continue"], &[("GIT_EDITOR", "true")]) {
-            Ok(_) => Ok(SyncOutcome::Ok { state: self.state(owner, project)? }),
+        let outcome = run_env(&repo, &identity, &["rebase", "--continue"], &[("GIT_EDITOR", "true")]);
+        let step = || self.platform.changes.record(owner, project, crate::platform::services::change_log::Change::step("git continue"));
+        match outcome {
+            Ok(_) => {
+                step();
+                Ok(SyncOutcome::Ok { state: self.state(owner, project)? })
+            }
             Err(err) => {
                 let state = self.state(owner, project)?;
                 if state.rebase_in_progress && !state.conflicts.is_empty() {
+                    step();
                     Ok(SyncOutcome::Conflict { state })
                 } else {
                     Err(err.with_code("GIT_REBASE"))
@@ -318,6 +336,7 @@ impl GitSyncService {
         let repo = self.repo_dir(owner, project)?;
         if self.state(owner, project)?.rebase_in_progress {
             run(&repo, &[], &["rebase", "--abort"])?;
+            self.platform.changes.record(owner, project, crate::platform::services::change_log::Change::step("git abort"));
         }
         self.state(owner, project)
     }

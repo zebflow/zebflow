@@ -579,6 +579,7 @@ impl ProjectTransferService {
                 commit_imported_tree(&layout.repo_dir, &project, &staging.document.metadata.name)?;
             }
         }
+        crate::platform::services::change_log::record_at(&self.data_root, &owner, &project, crate::platform::services::change_log::Change::step("import"));
         Ok(ProjectImportOutcome {
             provenance: staging.document.metadata.name.clone(),
             classes: staging.document.spec.classes.clone(),
@@ -640,6 +641,7 @@ impl ProjectTransferService {
         }
         self.file.forget_project(&owner, &project);
         let _ = self.file.ensure_project_layout(&owner, &project)?;
+        crate::platform::services::change_log::record_at(&self.data_root, &owner, &project, crate::platform::services::change_log::Change::step("import rollback"));
         Ok(displaced)
     }
 

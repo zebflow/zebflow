@@ -228,10 +228,10 @@ async fn nobody_becomes_superadmin_without_signing_in_as_one() {
     let app_token = token(json!({ "sub": "superadmin", "roles": ["superadmin"], "role": "superadmin", "exp": 4_102_444_800i64 }));
     let (status, _, _) = call(&app, "POST", "/api/platform/users", &[("authorization", &format!("Bearer {app_token}"))], Some(new_user.clone())).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // A project's MCP token builds that project; it never manages the instance.
-    let (status, session) = studio(&app, &cookie, "POST", "/mcp/session", json!({ "capabilities": ["pipelines.read", "pipelines.write"] })).await;
+    // A project's MCP key builds that project; it never manages the instance.
+    let (status, session) = studio(&app, &cookie, "POST", "/mcp/keys", json!({ "name": "test", "capabilities": ["pipelines.read", "pipelines.write"] })).await;
     assert_eq!(status, StatusCode::OK, "{session}");
-    let mcp = format!("Bearer {}", session["session"]["token"].as_str().expect("token"));
+    let mcp = format!("Bearer {}", session["created"]["secret"].as_str().expect("token"));
     let (status, _, _) = call(&app, "POST", "/api/platform/users", &[("authorization", &mcp)], Some(new_user.clone())).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     // A wrong password is not a session.

@@ -866,7 +866,7 @@ mod tests {
     use crate::infra::cluster::registry::WorkerRegistryRecord;
     use crate::infra::execution::placement::ProjectRuntimePlacement;
     use crate::platform::model::{
-        McpSession, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential,
+        McpKey, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential,
         ProjectDbConnection, ProjectInvite, ProjectMember, ProjectPolicy, ProjectPolicyBinding,
         StoredUser,
     };
@@ -1371,14 +1371,14 @@ mod tests {
         ) -> Result<(), PlatformError> {
             self.inner.delete_project_runtime_placement(owner, project)
         }
-        fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError> {
-            self.inner.list_all_mcp_sessions()
+        fn list_all_mcp_keys(&self) -> Result<Vec<McpKey>, PlatformError> {
+            self.inner.list_all_mcp_keys()
         }
-        fn put_mcp_session(&self, session: &McpSession) -> Result<(), PlatformError> {
-            self.inner.put_mcp_session(session)
+        fn put_mcp_key(&self, key: &McpKey) -> Result<(), PlatformError> {
+            self.inner.put_mcp_key(key)
         }
-        fn delete_mcp_session(&self, token: &str) -> Result<(), PlatformError> {
-            self.inner.delete_mcp_session(token)
+        fn delete_mcp_key(&self, key_id: &str) -> Result<(), PlatformError> {
+            self.inner.delete_mcp_key(key_id)
         }
     }
 

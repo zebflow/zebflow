@@ -75,8 +75,7 @@ use crate::platform::model::{
     IDENTITY_WRITE_ACTION_CREATED,
     IDENTITY_WRITE_ACTION_LINKED,
     LoginRequest,
-    McpSessionCreateRequest,
-    McpSessionToggleRequest,
+    McpKeyCreateRequest,
     PipelineExecuteTrigger,
     PipelineInvocationEntry,
     PipelineLocateRequest,
@@ -1167,6 +1166,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_project_members).post(api_upsert_project_member),
         )
         .route(
+            "/api/projects/{owner}/{project}/changes",
+            get(api_list_project_changes),
+        )
+        .route(
             "/api/projects/{owner}/{project}/members/{user_id}",
             delete(api_remove_project_member),
         )
@@ -1319,15 +1322,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_read_agent_doc).put(api_upsert_agent_doc_file),
         )
         .route(
-            "/api/projects/{owner}/{project}/mcp/session",
-            get(api_get_mcp_session)
-                .post(api_create_mcp_session)
-                .put(api_toggle_mcp_session)
-                .delete(api_revoke_mcp_session),
+            "/api/projects/{owner}/{project}/mcp/keys",
+            get(api_list_mcp_keys).post(api_make_mcp_key),
         )
         .route(
-            "/api/projects/{owner}/{project}/mcp/session/reset-token",
-            post(api_reset_mcp_session_token),
+            "/api/projects/{owner}/{project}/mcp/keys/{key_id}",
+            delete(api_revoke_mcp_key),
         )
         .route(
             "/api/projects/{owner}/{project}/assets",
@@ -1486,6 +1486,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     let router = router.layer(axum::middleware::from_fn_with_state(
         app_state.clone(),
         credential_change_gate,
+    ));
+    // `project.md` § Change record: whatever a request changes in a project's
+    // repository is written down as the person who sent it.
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        app_state.clone(),
+        change_actor_scope,
     ));
 
     let router = router.with_state(app_state.clone());
@@ -7225,10 +7231,7 @@ async fn render_settings_tab_page(
                 Err(err) => return internal_error(err),
             };
 
-            let mcp_session = state
-                .platform
-                .mcp_sessions
-                .get_for_project(&owner, &project);
+            let mcp_keys = state.platform.mcp_keys.list(&owner, &project);
             let transfer_operations = state
                 .platform
                 .project_operations
@@ -7305,6 +7308,7 @@ async fn render_settings_tab_page(
                 "logging": {
                     "api": format!("/api/projects/{owner}/{project}/settings/logging"),
                     "invocations_api": format!("/api/projects/{owner}/{project}/settings/logs/invocations"),
+                    "changes_api": format!("/api/projects/{owner}/{project}/changes"),
                     "config": zebflow_cfg.configs.pipelines.logging
                 },
                 "addressing": {
@@ -7371,12 +7375,11 @@ async fn render_settings_tab_page(
                     "operations": transfer_operations,
                 },
                 "mcp": {
-                    "active": mcp_session.as_ref().map(|session| session.enabled).unwrap_or(false),
-                    "status_label": if mcp_session.as_ref().map(|session| session.enabled).unwrap_or(false) { "active" } else { "inactive" },
-                    "capabilities": mcp_session
-                        .as_ref()
-                        .map(|session| session.capabilities.iter().map(|cap| cap.key()).collect::<Vec<_>>())
-                        .unwrap_or_default()
+                    "keys": mcp_keys.len(),
+                    "people": mcp_keys
+                        .iter()
+                        .map(|key| key.person.as_str())
+                        .collect::<std::collections::BTreeSet<_>>(),
                 },
                 "nav": nav,
             });
@@ -9517,10 +9520,10 @@ async fn api_delete_user(
                 .platform
                 .pipeline_runtime
                 .refresh_project(&successor, &project.project);
-            let _ = state
+            state
                 .platform
-                .mcp_sessions
-                .revoke_for_project(&target, &project.project);
+                .mcp_keys
+                .forget(&target, &project.project, None);
         }
     } else {
         // Purging: refuse first, delete second, so a refusal halfway through
@@ -9577,16 +9580,17 @@ async fn api_delete_user(
                     eprintln!("WARN: Failed to remove project dir {project_root:?}: {e}");
                 }
             }
-            let _ = state
+            state
                 .platform
-                .mcp_sessions
-                .revoke_for_project(&target, &project.project);
+                .mcp_keys
+                .forget(&target, &project.project, None);
         }
     }
 
     if let Err(e) = state.platform.data.delete_user(&target, &target_user_id) {
         return internal_error(e);
     }
+    state.platform.mcp_keys.forget_person(&target);
 
     // Their directory goes too. Transferred projects have already moved out,
     // purged ones are already deleted — what remains is an empty shell that
@@ -12316,11 +12320,8 @@ async fn api_transfer_project_owner(
         cache.clear();
     }
 
-    // Revoke in-memory MCP sessions for the old owner/project.
-    let _ = state
-        .platform
-        .mcp_sessions
-        .revoke_for_project(&owner, &project);
+    // A key names its project; under the new owner it is made again.
+    state.platform.mcp_keys.forget(&owner, &project, None);
 
     Json(json!({
         "ok": true,
@@ -13046,6 +13047,7 @@ async fn api_pipeline_lock_toggle(
                 .into_response();
         }
     };
+    let before = crate::platform::services::change_log::file_digest(&pipeline_path);
     if let Err(e) = crate::infra::io::durable::atomic_write(&pipeline_path, &serialized) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -13053,6 +13055,7 @@ async fn api_pipeline_lock_toggle(
         )
             .into_response();
     }
+    crate::platform::services::change_log::record_file_at(&state.platform.config.data_root, &pipeline_path, before, true);
     // Auto-commit
     let name = req
         .file_rel_path
@@ -15752,14 +15755,14 @@ fn studio_file_object_url(owner: &str, project: &str, path: &str) -> String {
     )
 }
 
-/// Like [`require_project_api_capability`], and also accepts the bearer token
-/// of this project's MCP session when that session carries the capability.
+/// Like [`require_project_api_capability`], and also accepts one of this
+/// project's MCP keys when it carries the capability, acting as its person.
 ///
 /// An agent that only has MCP follows a preview it built with `route_fetch`;
 /// the Studio sends its cookie. Both are a signed-in reader of the same
-/// project. A token for another project, a disabled or expired one, or one
-/// without the capability is not a session here: the cookie path decides
-/// then, and answers 401 when there is none.
+/// project. A key for another project, an expired one, or one without the
+/// capability is not a session here: the cookie path decides then, and
+/// answers 401 when there is none.
 fn require_project_api_capability_or_mcp_bearer(
     state: &PlatformAppState,
     headers: &HeaderMap,
@@ -15768,12 +15771,12 @@ fn require_project_api_capability_or_mcp_bearer(
     capability: ProjectCapability,
 ) -> Result<ProjectAccessSubject, Response> {
     if let Some(token) = bearer_token_from_headers(headers)
-        && let Some(session) = state.platform.mcp_sessions.lookup(&token)
-        && session.owner == owner
-        && session.project == project
-        && session.capabilities.contains(&capability)
+        && let Some(key) = state.platform.mcp_keys.lookup(&token)
+        && key.owner == owner
+        && key.project == project
+        && key.capabilities.contains(&capability)
     {
-        return Ok(ProjectAccessSubject::user(&session.owner));
+        return Ok(ProjectAccessSubject::user(&key.person));
     }
     require_project_api_capability(state, headers, owner, project, capability)
 }
@@ -27367,6 +27370,30 @@ fn forced_change_applies_to(path: &str) -> bool {
 
 /// Redirects browser page requests to the change-password screen while the
 /// session owner's credential is still `generated`.
+/// Who a request changes things as (`project.md` § Change record): the
+/// signed-in person, or the person of the MCP key it carries on the HTTP API.
+/// The MCP endpoint itself names its caller per tool call, in the MCP handler.
+async fn change_actor_scope(
+    State(state): State<PlatformAppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use crate::platform::services::change_log::{ChangeActor, scope};
+    let on_mcp = request.uri().path().ends_with("/mcp");
+    let actor = session_owner(&state, request.headers())
+        .map(|owner| ChangeActor::studio(&owner))
+        .or_else(|| {
+            bearer_token_from_headers(request.headers())
+                .filter(|token| !on_mcp && token.starts_with("zfk_"))
+                .and_then(|token| state.platform.mcp_keys.lookup(&token))
+                .map(|key| ChangeActor::mcp(&key.person, &key.name))
+        });
+    match actor {
+        Some(actor) => scope(actor, next.run(request)).await,
+        None => next.run(request).await,
+    }
+}
+
 async fn credential_change_gate(
     State(state): State<PlatformAppState>,
     request: axum::extract::Request,
@@ -27643,7 +27670,11 @@ async fn api_remove_project_member(
         .project_members
         .remove_member(&actor, &owner, &project, &user_id)
     {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Ok(()) => {
+            // `project-access` § MCP keys: a key goes with its person's membership.
+            state.platform.mcp_keys.forget(&owner, &project, Some(&user_id));
+            Json(json!({"ok": true})).into_response()
+        }
         Err(err) if err.code == "PLATFORM_MEMBER_ROLE_ABOVE_ACTOR" => (
             StatusCode::FORBIDDEN,
             Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
@@ -28273,223 +28304,143 @@ fn char_offset(source: &str, line: usize, column: usize) -> usize {
     before + column.saturating_sub(1)
 }
 
-async fn api_get_mcp_session(
-    State(state): State<PlatformAppState>,
-    Path((owner, project)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    let viewer = match require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::McpSessionCreate,
-    ) {
-        Ok(subject) => subject,
-        Err(resp) => return resp,
-    };
-
-    let base_url = platform_base_url(&headers);
-
-    match state
-        .platform
-        .mcp_sessions
-        .get_for_project(&owner, &project)
-    {
-        Some(session) => {
-            let can_read_token = state
-                .platform
-                .mcp_sessions
-                .validate_grant(&owner, &project, &viewer.id, &session.capabilities)
-                .is_ok();
-            let mcp_url = can_read_token.then(|| {
-                format!(
-                    "{}/api/projects/{}/{}/mcp",
-                    base_url.trim_end_matches('/'),
-                    owner,
-                    project
-                )
-            });
-            let token = can_read_token.then(|| session.token.clone());
-            Json(json!({
-                "ok": true,
-                "session": {
-                    "active": session.enabled,
-                    "enabled": session.enabled,
-                    "token": token,
-                    "mcp_url": mcp_url,
-                    "capabilities": session.capabilities.iter().map(|c| c.key()).collect::<Vec<_>>(),
-                    "created_at": session.created_at,
-                    "auto_reset_seconds": session.auto_reset_seconds,
-                    "rotation_epoch": state.platform.mcp_sessions.min_created_at(),
-                }
-            }))
-            .into_response()
-        }
-        None => Json(json!({
-            "ok": true,
-            "session": {
-                "active": false,
-                "enabled": false,
-                "token": null,
-                "mcp_url": null,
-                "capabilities": Vec::<String>::new(),
-                "created_at": null,
-                "auto_reset_seconds": null,
-                "rotation_epoch": state.platform.mcp_sessions.min_created_at(),
-            }
-        }))
-        .into_response(),
-    }
+#[derive(Deserialize)]
+struct ChangesQuery {
+    path: Option<String>,
+    before: Option<i64>,
+    limit: Option<usize>,
 }
 
-async fn api_create_mcp_session(
+/// `GET /api/projects/{o}/{p}/changes` — who changed what in the project's
+/// repository, newest first (`project.md` § Change record).
+async fn api_list_project_changes(
     State(state): State<PlatformAppState>,
-    Path((owner, project)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(req): Json<McpSessionCreateRequest>,
-) -> Response {
-    let creator = match require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::McpSessionCreate,
-    ) {
-        Ok(subject) => subject,
-        Err(resp) => return resp,
-    };
-
-    let capabilities: Vec<ProjectCapability> = req
-        .capabilities
-        .iter()
-        .filter_map(|key| ProjectCapability::from_key(key))
-        .collect();
-
-    if capabilities.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "ok": false,
-                "error": {"code": "INVALID_REQUEST", "message": "At least one valid capability must be specified"}
-            })),
-        )
-            .into_response();
-    }
-
-    let base_url = platform_base_url(&headers);
-
-    match state.platform.mcp_sessions.create(
-        &owner,
-        &project,
-        capabilities,
-        &base_url,
-        req.auto_reset_seconds,
-        &creator.id,
-    ) {
-        Ok(response) => Json(json!({"ok": true, "session": response})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_toggle_mcp_session(
-    State(state): State<PlatformAppState>,
     Path((owner, project)): Path<(String, String)>,
-    headers: HeaderMap,
-    Json(req): Json<McpSessionToggleRequest>,
-) -> Response {
-    let actor = match require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::McpSessionCreate,
-    ) {
-        Ok(subject) => subject,
-        Err(resp) => return resp,
-    };
-
-    if req.enabled
-        && state
-            .platform
-            .mcp_sessions
-            .get_for_project(&owner, &project)
-            .is_none()
-    {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "ok": false,
-                "error": {
-                    "code": "MCP_SESSION_NOT_FOUND",
-                    "message": "Create an MCP session before enabling it"
-                }
-            })),
-        )
-            .into_response();
-    }
-
-    match state
-        .platform
-        .mcp_sessions
-        .set_enabled(&owner, &project, req.enabled, &actor.id)
-    {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_reset_mcp_session_token(
-    State(state): State<PlatformAppState>,
-    Path((owner, project)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    let actor = match require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::McpSessionCreate,
-    ) {
-        Ok(subject) => subject,
-        Err(resp) => return resp,
-    };
-
-    let base_url = platform_base_url(&headers);
-
-    match state
-        .platform
-        .mcp_sessions
-        .reset_token(&owner, &project, &base_url, &actor.id)
-    {
-        Ok(response) => Json(json!({"ok": true, "session": response})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_revoke_mcp_session(
-    State(state): State<PlatformAppState>,
-    Path((owner, project)): Path<(String, String)>,
-    headers: HeaderMap,
+    Query(query): Query<ChangesQuery>,
 ) -> Response {
     if let Err(resp) = require_project_api_capability(
         &state,
         &headers,
         &owner,
         &project,
-        ProjectCapability::McpSessionRevoke,
+        ProjectCapability::ProjectRead,
     ) {
         return resp;
     }
-
-    match state
-        .platform
-        .mcp_sessions
-        .revoke_for_project(&owner, &project)
-    {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
+    match state.platform.changes.list(
+        &owner,
+        &project,
+        query.path.as_deref(),
+        query.before,
+        query.limit.unwrap_or(100),
+    ) {
+        Ok(changes) => Json(json!({"ok": true, "changes": changes})).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+/// `GET /api/projects/{o}/{p}/mcp/keys` — every key, never a secret.
+async fn api_list_mcp_keys(
+    State(state): State<PlatformAppState>,
+    Path((owner, project)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let caller = match require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::McpSessionCreate,
+    ) {
+        Ok(subject) => subject,
+        Err(resp) => return resp,
+    };
+    let people = match state.platform.mcp_keys.people(&owner, &project, &caller.id) {
+        Ok(people) => people,
+        Err(err) => return internal_error(err),
+    };
+    Json(json!({
+        "ok": true,
+        "keys": state.platform.mcp_keys.list(&owner, &project),
+        "people": people,
+        "mcp_url": format!(
+            "{}/api/projects/{}/{}/mcp",
+            platform_base_url(&headers).trim_end_matches('/'),
+            owner,
+            project
+        ),
+    }))
+    .into_response()
+}
+
+/// `POST /api/projects/{o}/{p}/mcp/keys` — the only answer that holds the secret.
+async fn api_make_mcp_key(
+    State(state): State<PlatformAppState>,
+    Path((owner, project)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(req): Json<McpKeyCreateRequest>,
+) -> Response {
+    let maker = match require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::McpSessionCreate,
+    ) {
+        Ok(subject) => subject,
+        Err(resp) => return resp,
+    };
+    let base_url = platform_base_url(&headers);
+    match state
+        .platform
+        .mcp_keys
+        .make(&owner, &project, &maker.id, &req, &base_url)
+    {
+        Ok(created) => Json(json!({"ok": true, "created": created})).into_response(),
+        Err(err) => mcp_key_error(err),
+    }
+}
+
+/// `DELETE /api/projects/{o}/{p}/mcp/keys/{key_id}` — `mcp.session.revoke`, or
+/// the key's own person.
+async fn api_revoke_mcp_key(
+    State(state): State<PlatformAppState>,
+    Path((owner, project, key_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let actor = match require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::ProjectRead,
+    ) {
+        Ok(subject) => subject,
+        Err(resp) => return resp,
+    };
+    match state
+        .platform
+        .mcp_keys
+        .revoke(&owner, &project, &key_id, &actor.id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => mcp_key_error(err),
+    }
+}
+
+fn mcp_key_error(err: PlatformError) -> Response {
+    let status = match err.code {
+        "INVALID_REQUEST" => StatusCode::BAD_REQUEST,
+        "PLATFORM_AUTHZ_FORBIDDEN" => StatusCode::FORBIDDEN,
+        "MCP_KEY_NOT_FOUND" => StatusCode::NOT_FOUND,
+        _ => return internal_error(err),
+    };
+    (
+        status,
+        Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+    )
+        .into_response()
 }
 
 async fn run_platform_blocking<T, F>(f: F) -> Result<T, PlatformError>
@@ -28497,7 +28448,9 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, PlatformError> + Send + 'static,
 {
-    tokio::task::spawn_blocking(f).await.map_err(|err| {
+    // The blocking pool is another thread: the change record's actor goes with it.
+    let actor = crate::platform::services::change_log::carried();
+    tokio::task::spawn_blocking(move || crate::platform::services::change_log::carry(actor, f)).await.map_err(|err| {
         PlatformError::new(
             "PLATFORM_BLOCKING_TASK_JOIN",
             format!("blocking platform task failed: {err}"),
@@ -29000,7 +28953,12 @@ async fn api_install_ui_components(
         &shared_ui_dir,
         req.overwrite,
     ) {
-        Ok(report) => Json(json!({ "ok": true, "report": report })).into_response(),
+        Ok(report) => {
+            for (path, before, existed) in &report.written {
+                crate::platform::services::change_log::record_file_at(&state.platform.config.data_root, path, before.clone(), *existed);
+            }
+            Json(json!({ "ok": true, "report": report })).into_response()
+        }
         Err(e) => Json(json!({ "ok": false, "error": e })).into_response(),
     }
 }
@@ -29548,9 +29506,11 @@ async fn api_upload_asset(
     }
 
     let dest = assets_dir.join(&filename);
+    let (existed, before) = (dest.is_file(), crate::platform::services::change_log::file_digest(&dest));
     if let Err(e) = std::fs::write(&dest, &bytes) {
         return internal_error(PlatformError::new("ASSET_WRITE", e.to_string()));
     }
+    crate::platform::services::change_log::record_file_at(&state.platform.config.data_root, &dest, before, existed);
 
     let url = if subfolder.is_empty() {
         format!("/assets/{owner_slug}/{project_slug}/{filename}")
@@ -29634,9 +29594,11 @@ async fn api_delete_asset(
             .into_response();
     }
 
+    let before = crate::platform::services::change_log::file_digest(&abs);
     if let Err(e) = std::fs::remove_file(&abs) {
         return internal_error(PlatformError::new("ASSET_DELETE", e.to_string()));
     }
+    crate::platform::services::change_log::record_removal_at(&state.platform.config.data_root, &abs, before);
 
     Json(json!({ "ok": true })).into_response()
 }

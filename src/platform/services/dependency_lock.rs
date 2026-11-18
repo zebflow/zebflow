@@ -79,6 +79,7 @@ pub struct DependencyLockService {
     /// path. See [`DependencyLockService::verified_rwe_library_root`] for what
     /// invalidates a record.
     verified_library_entries: Mutex<HashMap<PathBuf, VerifiedLibraryEntry>>,
+    changes: crate::platform::services::change_log::ChangeSink,
 }
 
 /// One remembered integrity check of an installed RWE library entry file.
@@ -108,7 +109,13 @@ impl DependencyLockService {
             configs: None,
             update_locks: Mutex::new(HashMap::new()),
             verified_library_entries: Mutex::new(HashMap::new()),
+            changes: Default::default(),
         }
+    }
+
+    /// Records every `zeb.lock` write from now on (`project.md` § Change record).
+    pub fn attach_change_log(&self, log: Arc<crate::platform::services::change_log::ChangeLog>) {
+        self.changes.attach(log);
     }
 
     /// Attaches the reader that answers where a project keeps its source.
@@ -259,12 +266,16 @@ impl DependencyLockService {
                     format!("{} ({})", error, error.category()),
                 )
             })?;
+        let existed = path.is_file();
+        let before = crate::platform::services::change_log::file_digest(path);
         atomic_write(path, &bytes).map_err(|error| {
             PlatformError::new(
                 "ZEB_LOCK_WRITE",
                 format!("failed writing '{}': {error}", path.display()),
             )
-        })
+        })?;
+        self.changes.record_file_write(&self.users_root, path, before, existed);
+        Ok(())
     }
 
     /// Writes `zeb.lock` only if the file does not already exist.

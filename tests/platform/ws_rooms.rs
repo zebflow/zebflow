@@ -329,8 +329,8 @@ async fn an_opened_private_room_admits_ticket_holders_up_to_its_cap_and_closes()
     let room = &list["rooms"][0];
     assert_eq!(room["members"], json!([ { "session": a_id, "sub": "u-17", "tags": [], "away": false } ]));
     assert!(room["counters"]["messages_in"].as_u64() >= Some(1) && room["counters"]["pipeline_runs"].as_u64() >= Some(1), "{room}");
-    let (_, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/session"), json!({ "capabilities": ["pipelines.read", "pipelines.execute"] })).await;
-    let bearer = format!("Bearer {}", session["session"]["token"].as_str().expect("token"));
+    let (_, session) = send(&app, &cookie, "POST", &format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys"), json!({ "name": "test", "capabilities": ["pipelines.read", "pipelines.execute"] })).await;
+    let bearer = format!("Bearer {}", session["created"]["secret"].as_str().expect("token"));
     let mcp = format!("/api/projects/{OWNER}/{PROJECT}/mcp");
     let (_, listed) = rpc(&app, &mcp, None, &[("authorization", &bearer)], call("ws_rooms_list", json!({ "room": "match-*" }))).await;
     let listed: Value = serde_json::from_str(&text_of(&listed)).unwrap_or_else(|_| panic!("{listed}"));

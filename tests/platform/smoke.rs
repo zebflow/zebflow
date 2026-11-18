@@ -3868,7 +3868,9 @@ async fn platform_templates_workspace_renders_seeded_tree_and_editor_bootstrap()
         .expect("templates body bytes");
     let html = String::from_utf8(body.to_vec()).expect("utf8");
     assert!(html.contains("Root"));
-    assert!(html.contains("Templates"));
+    // The seeded tree itself, rather than the word "Templates", which only the
+    // old MCP panel's checkbox labels ever put on this page.
+    assert!(html.contains("sample_web_page.tsx"), "the seeded tree lists the starter page");
     assert!(html.contains("Editor"));
     assert!(html.contains("Registry"));
     assert!(html.contains("Add+"));

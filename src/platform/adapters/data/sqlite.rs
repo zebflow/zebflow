@@ -22,7 +22,7 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CREDENTIAL_STATE_CHOSEN, CredentialKeyGeneration, CredentialKeyringReport, ErrorGroupBounds, PipelineErrorGroup,
     CredentialSweepReport, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority,
-    HubPublisher, HubToken, LOCAL_AUTHORITY_EVENT_BREAK_GLASS, McpSession, PipelineInvocationEntry,
+    HubPublisher, HubToken, LOCAL_AUTHORITY_EVENT_BREAK_GLASS, McpKey, PipelineInvocationEntry, ProjectChange,
     PipelineInvocationLogPipelineStats, PipelineInvocationLogStats, PipelineMeta,
     PlatformHubRepository, PlatformOffice, PlatformOfficeIdentityWrite, PlatformOfficeJoinToken,
     PlatformOfficeLocalAuthorityEvent, PlatformOfficeNode, PlatformOfficeVouchRedemption,
@@ -1244,7 +1244,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 24] {
+    fn migrations() -> [MigrationDef; 26] {
         [
             MigrationDef {
                 version: 1,
@@ -1365,6 +1365,16 @@ impl SqliteDataAdapter {
                 version: 24,
                 name: "project_hidden_from_home",
                 apply: Self::apply_migration_0024_project_hidden_from_home,
+            },
+            MigrationDef {
+                version: 25,
+                name: "mcp_keys",
+                apply: Self::apply_migration_0025_mcp_keys,
+            },
+            MigrationDef {
+                version: 26,
+                name: "project_changes",
+                apply: Self::apply_migration_0026_project_changes,
             },
         ]
     }
@@ -3349,8 +3359,56 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         Self::ensure_table_column(tx, "worker_registry", "projects_json", "TEXT NOT NULL DEFAULT '[]'")
     }
 
-    /// Who created an MCP session: an owner-only tool asks whether that user
-    /// may do what the session's capabilities claim.
+    /// The change record (`project.md` § Change record): one line per change
+    /// Zebflow makes in a project's `repo/`.
+    fn apply_migration_0026_project_changes(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS project_changes (
+                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                 owner     TEXT NOT NULL,
+                 project   TEXT NOT NULL,
+                 at        INTEGER NOT NULL,
+                 person    TEXT NOT NULL DEFAULT '',
+                 via       TEXT NOT NULL DEFAULT '',
+                 action    TEXT NOT NULL,
+                 path      TEXT NOT NULL DEFAULT '',
+                 to_path   TEXT,
+                 before    TEXT,
+                 after     TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_project_changes_project ON project_changes (owner, project, id DESC);",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
+    }
+
+    /// MCP keys (`project-access` § MCP keys): many per project, each acting as
+    /// one person, stored as a hash. The single project session goes with every
+    /// token it issued, and so do the policies it bound to them, which nothing
+    /// ever resolved.
+    fn apply_migration_0025_mcp_keys(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS mcp_sessions;
+             DELETE FROM project_policy_bindings WHERE subject_kind = 'mcp_session';
+             DELETE FROM project_policies WHERE policy_id LIKE 'mcp.session.%';
+             CREATE TABLE IF NOT EXISTS mcp_keys (
+                 key_id            TEXT PRIMARY KEY,
+                 owner             TEXT NOT NULL,
+                 project           TEXT NOT NULL,
+                 person            TEXT NOT NULL,
+                 name              TEXT NOT NULL DEFAULT '',
+                 capabilities_json TEXT NOT NULL DEFAULT '[]',
+                 token_hash        TEXT NOT NULL UNIQUE,
+                 made_by           TEXT NOT NULL DEFAULT '',
+                 created_at        INTEGER NOT NULL DEFAULT 0,
+                 expires_at        INTEGER,
+                 last_used_at      INTEGER
+             );
+             CREATE INDEX IF NOT EXISTS idx_mcp_keys_project ON mcp_keys (owner, project);
+             CREATE INDEX IF NOT EXISTS idx_mcp_keys_person ON mcp_keys (person);",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
+    }
+
     /// *Hide from home* (`project.md` § Home listing). Every existing project
     /// reads as shown: the flag is a person's choice, never inferred.
     fn apply_migration_0024_project_hidden_from_home(
@@ -3359,6 +3417,8 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         Self::ensure_table_column(tx, "projects", "hidden", "INTEGER NOT NULL DEFAULT 0")
     }
 
+    /// Who created an MCP session: an owner-only tool asks whether that user
+    /// may do what the session's capabilities claim.
     fn apply_migration_0023_mcp_session_granted_by(tx: &Transaction<'_>) -> Result<(), PlatformError> {
         Self::ensure_table_column(tx, "mcp_sessions", "granted_by", "TEXT NOT NULL DEFAULT ''")
     }
@@ -3961,8 +4021,8 @@ impl DataAdapter for SqliteDataAdapter {
         if renamed == 0 {
             return Err(PlatformError::new("PLATFORM_USER_NOT_FOUND", format!("user '{old_owner}' not found")));
         }
-        // A session token names the account it was issued to.
-        tx.execute("DELETE FROM mcp_sessions WHERE owner = ?1", params![old_owner]).map_err(Self::qe)?;
+        // A key names the account it acts as, and the namespace of its project.
+        tx.execute("DELETE FROM mcp_keys WHERE owner = ?1 OR person = ?1", params![old_owner]).map_err(Self::qe)?;
         tx.commit().map_err(Self::qe)
     }
 
@@ -3996,7 +4056,7 @@ impl DataAdapter for SqliteDataAdapter {
             params![owner],
         )
         .map_err(Self::qe)?;
-        tx.execute("DELETE FROM mcp_sessions WHERE owner = ?1", params![owner])
+        tx.execute("DELETE FROM mcp_keys WHERE owner = ?1 OR person = ?1", params![owner])
             .map_err(Self::qe)?;
         tx.execute(
             "DELETE FROM user_local_auth WHERE user_id = ?1",
@@ -4189,7 +4249,8 @@ impl DataAdapter for SqliteDataAdapter {
             "project_hub_repositories",
             "pipeline_invocations",
             "pipeline_meta",
-            "mcp_sessions",
+            "mcp_keys",
+            "project_changes",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE owner = ?1 AND project = ?2"),
@@ -7566,76 +7627,150 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(out)
     }
 
-    // ──────────────────────── MCP Sessions ────────────────────────
+    // ──────────────────────── Change record ────────────────────────
 
-    fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError> {
+    fn put_project_change(&self, change: &ProjectChange) -> Result<i64, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO project_changes (owner, project, at, person, via, action, path, to_path, before, after)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                &change.owner,
+                &change.project,
+                change.at,
+                &change.person,
+                &change.via,
+                &change.action,
+                &change.path,
+                &change.to_path,
+                &change.before,
+                &change.after,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn list_project_changes(
+        &self,
+        owner: &str,
+        project: &str,
+        path: Option<&str>,
+        before_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<ProjectChange>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // A folder is itself or anything under it, never a neighbour that
+        // shares its prefix: `pages` is not `pages-old`.
+        let under = path.map(|p| format!("{}/%", p.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, owner, project, at, person, via, action, path, to_path, before, after
+                 FROM project_changes
+                 WHERE owner = ?1 AND project = ?2
+                   AND (?3 IS NULL OR path = ?3 OR path LIKE ?4 ESCAPE '\\' OR to_path = ?3 OR to_path LIKE ?4 ESCAPE '\\')
+                   AND (?5 IS NULL OR id < ?5)
+                 ORDER BY id DESC
+                 LIMIT ?6",
+            )
+            .map_err(Self::qe)?;
+        let rows = stmt
+            .query_map(params![owner, project, path, under, before_id, limit as i64], |row| {
+                Ok(ProjectChange {
+                    id: row.get(0)?,
+                    owner: row.get(1)?,
+                    project: row.get(2)?,
+                    at: row.get(3)?,
+                    person: row.get(4)?,
+                    via: row.get(5)?,
+                    action: row.get(6)?,
+                    path: row.get(7)?,
+                    to_path: row.get(8)?,
+                    before: row.get(9)?,
+                    after: row.get(10)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    fn prune_project_changes(&self, owner: &str, project: &str, keep: usize) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM project_changes WHERE owner = ?1 AND project = ?2 AND id <= (
+                 SELECT id FROM project_changes WHERE owner = ?1 AND project = ?2
+                 ORDER BY id DESC LIMIT 1 OFFSET ?3)",
+            params![owner, project, keep as i64],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    // ──────────────────────── MCP keys ────────────────────────
+
+    fn list_all_mcp_keys(&self) -> Result<Vec<McpKey>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT token, owner, project, capabilities_json, created_at, auto_reset_seconds, enabled, granted_by
-                 FROM mcp_sessions",
+                "SELECT key_id, owner, project, person, name, capabilities_json, token_hash, made_by,
+                        created_at, expires_at, last_used_at
+                 FROM mcp_keys",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, String>(7)?,
-                ))
+                let caps_json: String = row.get(5)?;
+                Ok(McpKey {
+                    key_id: row.get(0)?,
+                    owner: row.get(1)?,
+                    project: row.get(2)?,
+                    person: row.get(3)?,
+                    name: row.get(4)?,
+                    capabilities: serde_json::from_str(&caps_json).unwrap_or_default(),
+                    token_hash: row.get(6)?,
+                    made_by: row.get(7)?,
+                    created_at: row.get(8)?,
+                    expires_at: row.get(9)?,
+                    last_used_at: row.get(10)?,
+                })
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
-            .filter_map(
-                |(token, owner, project, caps_json, created_at, auto_reset_seconds, enabled, granted_by)| {
-                    let capabilities: Vec<ProjectCapability> =
-                        serde_json::from_str(&caps_json).unwrap_or_default();
-                    Some(McpSession {
-                        token,
-                        owner,
-                        project,
-                        capabilities,
-                        created_at,
-                        auto_reset_seconds: auto_reset_seconds.map(|s| s as u64),
-                        enabled: enabled != 0,
-                        granted_by,
-                    })
-                },
-            )
             .collect();
         Ok(items)
     }
 
-    fn put_mcp_session(&self, session: &McpSession) -> Result<(), PlatformError> {
-        let caps_json = serde_json::to_string(&session.capabilities)?;
+    fn put_mcp_key(&self, key: &McpKey) -> Result<(), PlatformError> {
+        let caps_json = serde_json::to_string(&key.capabilities)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO mcp_sessions
-             (token, owner, project, capabilities_json, created_at, auto_reset_seconds, enabled, granted_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO mcp_keys
+             (key_id, owner, project, person, name, capabilities_json, token_hash, made_by,
+              created_at, expires_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                &session.token,
-                &session.owner,
-                &session.project,
+                &key.key_id,
+                &key.owner,
+                &key.project,
+                &key.person,
+                &key.name,
                 &caps_json,
-                session.created_at,
-                session.auto_reset_seconds.map(|s| s as i64),
-                session.enabled as i64,
-                &session.granted_by,
+                &key.token_hash,
+                &key.made_by,
+                key.created_at,
+                key.expires_at,
+                key.last_used_at,
             ],
         )
         .map_err(Self::qe)?;
         Ok(())
     }
 
-    fn delete_mcp_session(&self, token: &str) -> Result<(), PlatformError> {
+    fn delete_mcp_key(&self, key_id: &str) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute("DELETE FROM mcp_sessions WHERE token = ?1", params![token])
+        conn.execute("DELETE FROM mcp_keys WHERE key_id = ?1", params![key_id])
             .map_err(Self::qe)?;
         Ok(())
     }
@@ -7652,7 +7787,7 @@ impl DataAdapter for SqliteDataAdapter {
             "pipeline_meta",
             "project_policies",
             "project_policy_bindings",
-            "mcp_sessions",
+            "mcp_keys",
             "pipeline_invocations",
         ];
         let mut out = Vec::with_capacity(tables.len());
@@ -8173,10 +8308,16 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?;
         }
 
-        // Invalidate MCP sessions — force re-auth under new owner.
+        // A key names its project; under a new owner it is made again.
         tx.execute(
-            "DELETE FROM mcp_sessions WHERE owner = ?1 AND project = ?2",
+            "DELETE FROM mcp_keys WHERE owner = ?1 AND project = ?2",
             params![old_owner, project],
+        )
+        .map_err(Self::qe)?;
+        // The change record is the project's history and moves with it.
+        tx.execute(
+            "UPDATE project_changes SET owner = ?1 WHERE owner = ?2 AND project = ?3",
+            params![new_owner, old_owner, project],
         )
         .map_err(Self::qe)?;
 

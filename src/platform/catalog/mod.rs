@@ -37,6 +37,10 @@ pub struct CatalogEntry {
 pub struct CloneReport {
     pub installed: Vec<String>,
     pub skipped: Vec<String>,
+    /// Each file written, with its digest before and whether it was there,
+    /// for the caller's change record (`project.md` § Change record).
+    #[serde(skip)]
+    pub written: Vec<(PathBuf, Option<String>, bool)>,
 }
 
 /// Policy review for installing built-in UI components through Add+.
@@ -345,7 +349,9 @@ impl CatalogService {
             let cloned = format!(
                 "// cloned from zeb/ui — {name}. Edit freely; `zeb/ui/*` imports still resolve to the library.\n{src}"
             );
+            let (existed, before) = (dest.is_file(), crate::platform::services::change_log::file_digest(&dest));
             std::fs::write(&dest, cloned).map_err(|e| format!("Failed to write {filename}: {e}"))?;
+            report.written.push((dest, before, existed));
             report.installed.push(name.clone());
         }
 

@@ -1477,7 +1477,6 @@ pub struct ProjectPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum ProjectSubjectKind {
     User,
-    McpSession,
     AssistantProfile,
 }
 
@@ -1486,7 +1485,6 @@ impl ProjectSubjectKind {
     pub fn key(self) -> &'static str {
         match self {
             Self::User => "user",
-            Self::McpSession => "mcp_session",
             Self::AssistantProfile => "assistant_profile",
         }
     }
@@ -1502,7 +1500,7 @@ pub struct ProjectPolicyBinding {
     pub owner: String,
     /// Project slug.
     pub project: String,
-    /// Subject kind (`user`, `mcp_session`, `assistant_profile`).
+    /// Subject kind (`user`, `assistant_profile`).
     pub subject_kind: ProjectSubjectKind,
     /// Stable subject id.
     pub subject_id: String,
@@ -1530,14 +1528,6 @@ impl ProjectAccessSubject {
         Self {
             kind: ProjectSubjectKind::User,
             id: slug_segment(owner),
-        }
-    }
-
-    /// Creates an MCP session subject.
-    pub fn mcp_session(token: &str) -> Self {
-        Self {
-            kind: ProjectSubjectKind::McpSession,
-            id: token.to_string(),
         }
     }
 }
@@ -4432,69 +4422,115 @@ fn default_true() -> bool {
     true
 }
 
-/// MCP session record (in-memory and persisted per-project).
+/// One line of a project's change record (`project.md` § Change record): who
+/// changed what in `repo/`, through what, and when.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectChange {
+    /// Rising number, also the order of the record.
+    #[serde(default)]
+    pub id: i64,
+    #[serde(skip_serializing)]
+    #[serde(default)]
+    pub owner: String,
+    #[serde(skip_serializing)]
+    #[serde(default)]
+    pub project: String,
+    /// Unix seconds.
+    pub at: i64,
+    /// The signed-in person or the MCP key's person; empty for `system`.
+    pub person: String,
+    /// `studio`, `mcp · <key name>` or `system`.
+    pub via: String,
+    /// `create`, `edit`, `delete`, `move`, a git step, or `import`.
+    pub action: String,
+    /// Repository-relative; empty for a step that touches many files.
+    pub path: String,
+    #[serde(default)]
+    pub to_path: Option<String>,
+    /// `sha256:<hex>` of the bytes before the change.
+    #[serde(default)]
+    pub before: Option<String>,
+    /// `sha256:<hex>` of the bytes after it.
+    #[serde(default)]
+    pub after: Option<String>,
+}
+
+/// One MCP key: an agent uses a project's MCP as one person
+/// (`project-access` § MCP keys). The secret itself is never stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpSession {
-    /// Owner identifier.
+pub struct McpKey {
+    /// Public id, shown in lists and used to revoke.
+    pub key_id: String,
+    /// Project namespace owner.
     pub owner: String,
     /// Project slug.
     pub project: String,
-    /// Capabilities allowed for this session.
+    /// The person the key acts as.
+    pub person: String,
+    /// What the key is called, e.g. "laptop".
+    pub name: String,
+    /// The rights listed when the key was made.
     pub capabilities: Vec<ProjectCapability>,
-    /// Opaque session token.
-    pub token: String,
-    /// Unix timestamp seconds when session was created.
-    #[serde(default)]
+    /// SHA-256 of the secret, hex.
+    pub token_hash: String,
+    /// Who made it.
+    pub made_by: String,
+    /// Unix seconds.
     pub created_at: i64,
-    /// Optional seconds after which this session auto-expires.
+    /// Unix seconds after which the key stops working.
     #[serde(default)]
-    pub auto_reset_seconds: Option<u64>,
-    /// Whether this session is active. Token persists even when disabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// The user who created the session (or last granted it capabilities).
-    /// A session's capabilities are whatever its creator listed, so an act
-    /// reserved to the project's owner also asks whether this user may do
-    /// it. Empty for a session created before this was recorded.
+    pub expires_at: Option<i64>,
+    /// Unix seconds of the last use, written at most once a minute.
     #[serde(default)]
-    pub granted_by: String,
+    pub last_used_at: Option<i64>,
 }
 
-/// Request to create an MCP session for a project.
+/// `POST /api/projects/{o}/{p}/mcp/keys`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpSessionCreateRequest {
-    /// Capabilities to allow for this session (can be specified as strings or capability keys).
+pub struct McpKeyCreateRequest {
+    /// What the key is called.
+    #[serde(default)]
+    pub name: String,
+    /// Who the key acts as; the caller when absent.
+    #[serde(default)]
+    pub person: Option<String>,
+    /// Capability keys, e.g. `pipelines.write`.
     pub capabilities: Vec<String>,
-    /// Optional seconds after which this session auto-expires (None = no expiry).
+    /// Days until the key stops working; never when absent.
     #[serde(default)]
-    pub auto_reset_seconds: Option<u64>,
+    pub expires_in_days: Option<u32>,
 }
 
-/// Request to toggle an MCP session enabled/disabled.
+/// A key as listed: everything but its hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpSessionToggleRequest {
-    /// Whether to enable or disable the session.
-    pub enabled: bool,
+pub struct McpKeyView {
+    pub key_id: String,
+    pub name: String,
+    pub person: String,
+    pub capabilities: Vec<String>,
+    pub made_by: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub last_used_at: Option<i64>,
 }
 
-/// Response after creating an MCP session.
+/// Someone a key can act as, with the rights they hold on the project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpSessionResponse {
-    /// Opaque session token for Authorization header.
-    pub token: String,
+pub struct McpKeyPerson {
+    pub person: String,
+    /// Their role preset, or `owner` / `superadmin`.
+    pub role: String,
+    pub rights: Vec<String>,
+}
+
+/// The answer to making a key, and the only time its secret is shown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpKeyCreated {
+    pub key: McpKeyView,
+    /// `zfk_` and 64 hex characters, for the `Authorization: Bearer` header.
+    pub secret: String,
     /// Full MCP endpoint URL for this project.
     pub mcp_url: String,
-    /// Allowed capabilities echoed back.
-    pub capabilities: Vec<String>,
-    /// Whether the session is currently accepted by the MCP handler.
-    pub enabled: bool,
-    /// Session creation timestamp.
-    pub created_at: i64,
-    /// Optional seconds after which this session auto-expires.
-    #[serde(default)]
-    pub auto_reset_seconds: Option<u64>,
-    /// Global minimum creation timestamp required for persisted MCP sessions.
-    pub rotation_epoch: i64,
 }
 
 /// Maps MCP tool name to required project capability.
@@ -4574,6 +4610,9 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "connection_list" => Some(ProjectCapability::TablesRead),
         "connection_describe" => Some(ProjectCapability::TablesRead),
         "credential_list" => Some(ProjectCapability::CredentialsRead),
+        // `project.md` § Change record: who changed what, readable by anyone
+        // who may read the project.
+        "change_list" => Some(ProjectCapability::ProjectRead),
         "docs_agent_list" => Some(ProjectCapability::SettingsRead),
         "docs_agent_read" => Some(ProjectCapability::SettingsRead),
         "docs_agent_write" => Some(ProjectCapability::SettingsWrite),
