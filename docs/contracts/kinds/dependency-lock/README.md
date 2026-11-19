@@ -126,7 +126,9 @@ level.
 ## RWE Library Rules
 
 `spec.rwe.libraries` is keyed by a lowercase namespaced library name such as
-`zeb/deckgl`. In `zebflow.com/v1` an RWE source is `hub.local`, `hub.public`,
+`zeb/deckgl`, or, for a library uploaded to this project (source `direct.file`),
+one lowercase word such as `site-a-lib` (`rwe-library-manifest` § Project
+libraries). In `zebflow.com/v1` an RWE source is `hub.local`, `hub.public`,
 `hub.static`, `direct.npm`, or `direct.file` (restructured 2026-08-27,
 pre-release, replacing `embedded`/`hub`/`file`). All five resolve identically:
 against the installed copy at `data/hub/rwe-libraries/{package}/`, with `entry`
@@ -354,6 +356,7 @@ rules above apply literally.
 | 2026-08-27 | Source vocabulary restructured: `embedded`/`hub`/`file` replaced by `hub.local`, `hub.public`, `hub.static`, `direct.npm`, `direct.file`, `project` | Pre-release, nothing shipped; old values refuse and the lock regenerates through ordinary resolution — no converter for documents that never existed. |
 | 2026-08-27 | Node-bundle key fixed to the package coordinate (`publisher.package`, e.g. `zebflow.sim-des`), replacing the slash form the canonical example used | Pre-release, nothing shipped; no lock with a slash-form bundle key exists outside test instances. |
 | 2026-08-27 | Node-bundle sources widened to `hub.*`, `direct.file`, or `project` | Pre-release, nothing shipped; the local-file node install already exists and had no lockable source value. |
+| 2026-11-19 | An RWE library with source `direct.file` may be named by one word (`[a-z][a-z0-9-]*`, not `zeb…`) | The owner chose plain import names for a project's own uploaded library (`site-a-lib/world`). Every existing lock stays valid: the rule only widens, and only for `direct.file`. |
 
 ## Frozen Implementation Guarantees
 

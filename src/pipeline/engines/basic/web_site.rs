@@ -109,10 +109,12 @@ impl BasicPipelineEngine {
         node_id: &str,
         source: &TemplateSource,
         processors: Vec<String>,
+        ctx: &PipelineContext,
     ) -> Result<Arc<web::response::CompiledPage>, PipelineError> {
         let options = crate::rwe::ReactiveWebOptions {
             processors,
             ..crate::rwe::ReactiveWebOptions::for_project_page(self.template_root.clone(), self.library_roots())
+                .with_runtime_libraries(self.runtime_libraries(&ctx.owner, &ctx.project))
         };
         let root = self.template_root.as_deref().map(|r| r.display().to_string()).unwrap_or_default();
         let identity = format!("site|{root}|{}|{}", source.id, options.processors.join(","));
@@ -199,7 +201,7 @@ impl BasicPipelineEngine {
     ) -> Result<Vec<NodeExecutionOutput>, PipelineError> {
         let (node_store, zebfs) = self.site_store(ctx, config)?;
         let template_source = site::page::resolve_template_source(node_id, config, self.template_root.as_deref())?;
-        let compiled = self.compile_site_template(node_id, &template_source, Vec::new())?;
+        let compiled = self.compile_site_template(node_id, &template_source, Vec::new(), ctx)?;
 
         let folder = config.folder_rel(site::Mode::Page)?;
         let page_path = site::page::page_path(config)?;
@@ -412,6 +414,7 @@ impl BasicPipelineEngine {
             node_id,
             &docs.template_source,
             vec!["tailwind".to_string(), "markdown".to_string()],
+            ctx,
         )?;
 
         let asset_group = static_site::asset_group_id(&docs.template_rel_path, &docs.template_source.markup);

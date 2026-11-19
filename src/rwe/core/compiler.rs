@@ -98,18 +98,20 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
-    let (bundled_server, _, server_deps, inline_styles) = bundle_for_client(
+    let (bundled_server, server_libs, server_deps, inline_styles) = bundle_for_client(
         &normalized_page_source,
         &imports,
         options.template_root.as_deref(),
         &options.library_roots,
+        &options.runtime_libraries,
     )?;
-    let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
+    let transformed_server = format!("{}{}{}", JSX_PRELUDE, server_stand_ins(&server_libs, &options.runtime_libraries), bundled_server);
     let (bundled_client, detected_zeb_libs, client_deps, _) = bundle_for_client(
         &normalized_page_source,
         &imports,
         options.template_root.as_deref(),
         &options.library_roots,
+        &options.runtime_libraries,
     )?;
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let mut dependency_paths = server_deps;
@@ -264,6 +266,13 @@ fn runtime_import_refusal(import: &str) -> Option<EngineError> {
     })
 }
 
+/// A specifier the page loads as a runtime library: a `zeb/*` bundle, or an
+/// entry of a library uploaded to this project (`site-a-lib/world`), which
+/// the platform passes in as `runtime_libraries`.
+fn is_runtime_library(specifier: &str, runtime: &std::collections::BTreeMap<String, String>) -> bool {
+    specifier.starts_with("zeb/") || runtime.contains_key(specifier)
+}
+
 fn validate_import_allowlist(
     imports: &[String],
     options: &CompileOptions,
@@ -302,6 +311,21 @@ fn validate_import_allowlist(
                 &options.library_roots,
             )?;
             continue;
+        }
+        if options.runtime_libraries.contains_key(import.as_str()) {
+            continue;
+        }
+        let library = import.split('/').next().unwrap_or_default();
+        let entries: Vec<&str> = options
+            .runtime_libraries
+            .keys()
+            .filter_map(|key| key.strip_prefix(library).and_then(|rest| rest.strip_prefix('/')))
+            .collect();
+        if !entries.is_empty() {
+            return Err(EngineError::new(
+                "RWE_IMPORT_UNRESOLVED",
+                format!("'{import}' is not an entry of the project library {library}; its entries are {}", entries.join(", ")),
+            ));
         }
         return Err(EngineError::new(
             "RWE_IMPORT_NOT_ALLOWED",
@@ -514,7 +538,9 @@ fn rewrite_imports(
         }
         // A source library (`zeb/ui/button`) resolves to a file and is inlined;
         // every other `zeb/*` is a runtime bundle the preamble loads.
-        if import.starts_with("zeb/") && resolve_library_import(import, &options.library_roots)?.is_none() {
+        if (options.runtime_libraries.contains_key(import.as_str()))
+            || (import.starts_with("zeb/") && resolve_library_import(import, &options.library_roots)?.is_none())
+        {
             continue;
         }
 
@@ -839,6 +865,7 @@ fn bundle_for_client(
     imports: &[ImportEdge],
     template_root: Option<&str>,
     library_roots: &std::collections::BTreeMap<String, String>,
+    runtime: &std::collections::BTreeMap<String, String>,
 ) -> Result<(String, Vec<String>, HashSet<String>, Vec<String>), EngineError> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut inlined_parts: Vec<String> = Vec::new();
@@ -858,8 +885,8 @@ fn bundle_for_client(
     let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     // Collect rwe + zeb imports from the main page itself
-    rwe_names.extend(extract_rwe_import_names(page_source));
-    zeb_libs.extend(extract_zeb_lib_specifiers(page_source));
+    rwe_names.extend(extract_rwe_import_names(page_source, runtime));
+    zeb_libs.extend(extract_zeb_lib_specifiers(page_source, runtime));
 
     // Depth-first: inline all filesystem imports from the page.
     for edge in imports {
@@ -877,6 +904,7 @@ fn bundle_for_client(
                 &mut zeb_libs,
                 template_root,
                 library_roots,
+                runtime,
                 &mut declared,
                 &mut sources,
             )?;
@@ -896,7 +924,7 @@ fn bundle_for_client(
     }
 
     // Strip filesystem imports + rwe imports from the main page source
-    let clean_main = strip_local_imports(page_source, &sources)?;
+    let clean_main = strip_local_imports(page_source, &sources, runtime)?;
 
     // Build: inlined components first, then main page
     let mut result = inlined_parts.join("\n\n");
@@ -929,6 +957,7 @@ fn collect_inlined_module(
     zeb_libs: &mut HashSet<String>,
     template_root: Option<&str>,
     library_roots: &std::collections::BTreeMap<String, String>,
+    runtime: &std::collections::BTreeMap<String, String>,
     declared: &mut std::collections::HashMap<String, String>,
     sources: &mut std::collections::HashMap<String, String>,
 ) -> Result<(), EngineError> {
@@ -972,8 +1001,8 @@ fn collect_inlined_module(
     validate_zeb_hook_imports(&content)?;
 
     // Collect rwe + zeb imports from this file before stripping them
-    rwe_names.extend(extract_rwe_import_names(&content));
-    zeb_libs.extend(extract_zeb_lib_specifiers(&content));
+    rwe_names.extend(extract_rwe_import_names(&content, runtime));
+    zeb_libs.extend(extract_zeb_lib_specifiers(&content, runtime));
 
     // Recursively inline this file's own filesystem imports first (depth-first)
     let sub_paths = extract_filesystem_import_paths(&content);
@@ -991,6 +1020,7 @@ fn collect_inlined_module(
                 zeb_libs,
                 template_root,
                 library_roots,
+                runtime,
                 declared,
                 sources,
             )?;
@@ -1010,7 +1040,7 @@ fn collect_inlined_module(
     }
 
     // Strip import lines on original content (import paths must be visible to the filter).
-    let stripped = strip_local_imports(&content, sources)?;
+    let stripped = strip_local_imports(&content, sources, runtime)?;
 
     // Mask string/template literal contents before line-based transforms.
     // This prevents code-like text inside strings (e.g. `import x from 'y'` inside a
@@ -1349,7 +1379,7 @@ fn is_rwe_runtime_path(path: &str) -> bool {
 /// Collect all named imports from `"rwe"` across a source file using OXC AST.
 /// e.g. `import { useState, cx } from "rwe"` → ["useState", "cx"]
 /// Handles multi-line imports correctly.
-fn extract_rwe_import_names(source: &str) -> Vec<String> {
+fn extract_rwe_import_names(source: &str, runtime: &std::collections::BTreeMap<String, String>) -> Vec<String> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
         .with_module(true)
@@ -1363,7 +1393,7 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            if specifier.starts_with("zeb/") {
+            if is_runtime_library(specifier, runtime) {
                 if let Some(ref specifiers) = import.specifiers {
                     for s in specifiers {
                         match s {
@@ -1385,8 +1415,31 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
     names
 }
 
+/// The server has no browser to run a project library in: each entry the page
+/// imports is filed as one inert value that can be called, constructed, read
+/// and awaited (`then`, `toJSON` and the iterator and primitive symbols are
+/// `undefined`), as `zeb/world`'s stand-in does. A library that works in
+/// effects renders on the server and runs in the browser.
+fn server_stand_ins(libs: &[String], runtime: &std::collections::BTreeMap<String, String>) -> String {
+    let keys: Vec<String> = libs
+        .iter()
+        .filter(|lib| runtime.contains_key(lib.as_str()))
+        .map(|lib| serde_json::to_string(lib).unwrap_or_default())
+        .collect();
+    if keys.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{{ const __undef = (k) => k === 'then' || k === 'toJSON' || k === Symbol.iterator || k === Symbol.toPrimitive;\n\
+         const __inert = new Proxy(function () {{}}, {{ get: (_t, k) => (__undef(k) ? undefined : __inert), apply: () => __inert, construct: () => __inert }});\n\
+         {registry} ??= {{}};\n{files}}}\n",
+        registry = super::zeb_lib::REGISTRY,
+        files = keys.iter().map(|key| format!("{}[{key}] ??= __inert;\n", super::zeb_lib::REGISTRY)).collect::<String>(),
+    )
+}
+
 /// Extract all `zeb/*` library specifiers (e.g. `"zeb/use"`, `"zeb/d3"`) from import declarations.
-fn extract_zeb_lib_specifiers(source: &str) -> Vec<String> {
+fn extract_zeb_lib_specifiers(source: &str, runtime: &std::collections::BTreeMap<String, String>) -> Vec<String> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
         .with_module(true)
@@ -1401,7 +1454,7 @@ fn extract_zeb_lib_specifiers(source: &str) -> Vec<String> {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
             // A type-only import names nothing at runtime, so it loads nothing.
-            if specifier.starts_with("zeb/")
+            if is_runtime_library(specifier, runtime)
                 && specifier != super::zeb_react::SPECIFIER
                 && !import.import_kind.is_type()
             {
@@ -1577,6 +1630,7 @@ fn default_export_name(
 fn strip_local_imports(
     source: &str,
     sources: &std::collections::HashMap<String, String>,
+    runtime: &std::collections::BTreeMap<String, String>,
 ) -> Result<String, EngineError> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()
@@ -1593,7 +1647,7 @@ fn strip_local_imports(
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            let should_strip = specifier.starts_with("zeb/") || super::is_file_specifier(specifier);
+            let should_strip = is_runtime_library(specifier, runtime) || super::is_file_specifier(specifier);
             if should_strip {
                 let start = import.span.start as usize;
                 let mut end = import.span.end as usize;

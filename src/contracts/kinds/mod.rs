@@ -61,7 +61,7 @@ pub use project_bundle::{
 pub use project_configuration::{
     LEGACY_PROJECT_CONFIGURATION_FILE, PROJECT_CONFIGURATION_BACKUP_FILE,
     PROJECT_CONFIGURATION_FILE, ProjectConfigurationContract, ProjectConfigurationSpec,
-    ProjectInitialDataDirSpec, ProjectLayoutSpec, decode_legacy_project_configuration,
+    ProjectInitialDataDirSpec, ProjectLayoutSpec, decode_legacy_project_configuration, is_project_library_name,
     is_git_branch_name,
 };
 pub use rwe_library_manifest::RweLibraryManifestContract;

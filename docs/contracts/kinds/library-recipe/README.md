@@ -27,9 +27,11 @@ metadata:
   name: site-a-lib            # pages import site-a-lib/<entry>
 spec:
   version: 0.1.0
-  entries:                    # subpath -> a source file, or npm:<module> re-exported whole
-    world: src/world.ts
-    orbit: npm:three/addons/controls/OrbitControls.js
+  description: Shared 3D pieces for site A   # optional; else "<name> <version>"
+  entries:                    # import subpath -> a source file, or npm:<module> re-exported whole
+    world: src/world.ts       # site-a-lib/world: own code, own name
+    three: npm:three          # site-a-lib/three: an original package under its own name
+    three/addons/controls/OrbitControls.js: npm:three/addons/controls/OrbitControls.js
   bundle: all                 # optional: also site-a-lib/all, re-exporting every entry
   all_prefer: {}              # name -> entry, when two entries export one name
   workers:                    # name -> source file, built as <name>.worker.mjs
@@ -49,7 +51,8 @@ spec:
 | --- | --- |
 | `metadata.name` | `[a-z][a-z0-9-]*`, at most 40; never `zeb` or `zeb-*`, `npm`, `node`, `http`, `https`, `data`, `blob`, `file` |
 | `version` | `x.y.z`, numbers only |
-| `entries` / `workers` keys | `[a-z][a-z0-9-]*`; at least one entry; `all` is taken when `bundle: all` |
+| `entries` keys | an import subpath: letters, digits, `-`, `_`, `.` and `/`, no empty, `.` or `..` segment, at most 200; so an original module keeps its own name (`three`, `three/addons/controls/OrbitControls.js`); at least one entry; `all` is taken when `bundle: all` |
+| `workers` keys | `[a-z][a-z0-9-]*` |
 | source paths | relative, inside the recipe folder after links are resolved; no `..`, no leading `/` |
 | `npm:` entries | the module must come from a package in `packages` |
 | `packages` | an exact version (`1.2.3`, `1.2.3-rc.1`); never a range, tag, git, URL, `file:`, `link:` or `workspace:` |

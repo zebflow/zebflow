@@ -89,6 +89,7 @@ fn recipe(root: &Path, identity: String, rel: &str, markup: String) -> PageRecip
     let options = crate::rwe::ReactiveWebOptions {
         templates: TemplateOptions {
             template_root: Some(root.to_path_buf()),
+            runtime_libraries: Default::default(),
             library_roots: Default::default(),
             style_entries: Vec::new(),
         },

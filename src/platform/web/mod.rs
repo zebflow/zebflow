@@ -1068,6 +1068,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             delete(api_remove_rwe_library),
         )
         .route(
+            "/api/projects/{owner}/{project}/rwe/libraries/upload",
+            post(api_upload_project_library).layer(axum::extract::DefaultBodyLimit::max(
+                crate::platform::services::project_library::MAX_UPLOAD_BYTES,
+            )),
+        )
+        .route(
             "/api/projects/{owner}/{project}/dependencies",
             get(api_project_dependency_status).post(api_repair_project_dependencies),
         )
@@ -1831,6 +1837,7 @@ fn build_frontend(
             // The gallery at /dev/design-system renders `zeb/ui` next to the
             // studio primitives; nothing else in the studio imports it.
             library_roots: library_roots.clone(),
+            runtime_libraries: Default::default(),
             style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],
@@ -2699,6 +2706,27 @@ async fn project_scoped_library_asset(
     // of the path resolves inside that package directory. Anything not
     // locked falls back to the embedded bytes, so the platform's own pages
     // keep working unchanged.
+    // A library uploaded to this project (`site-a-lib/0.1.0/runtime/world.mjs`):
+    // every file it lists is checked against its own digest before it is
+    // served; one it does not list is not served at all.
+    if !normalized.split('/').any(|segment| segment == ".." || segment == ".")
+        && let Some((name, rel)) = normalized.split_once('/')
+        && crate::contracts::kinds::is_project_library_name(name)
+    {
+        let platform = state.platform.clone();
+        let (owner, project, name, rel) = (owner.clone(), project.clone(), name.to_string(), rel.to_string());
+        let found = tokio::task::spawn_blocking(move || {
+            crate::platform::services::project_library::verified_file(&platform, &owner, &project, &name, &rel)
+        })
+        .await;
+        return match found {
+            Ok(Ok(Some(bytes))) => asset_response(content_type_for_path(FsPath::new(&normalized)), &bytes),
+            Ok(Ok(None)) => (StatusCode::NOT_FOUND, "asset not found").into_response(),
+            Ok(Err(err)) if err.code == "PLATFORM_DEPENDENCY_INTEGRITY" => (StatusCode::CONFLICT, err.message).into_response(),
+            Ok(Err(err)) => internal_error(err),
+            Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        };
+    }
     if !normalized.split('/').any(|segment| segment == "..")
         && let Some(rest) = normalized.strip_prefix("zeb/")
         && let Some((lib_slug, lib_rest)) = rest.split_once('/')
@@ -6340,6 +6368,7 @@ async fn project_hub_tab_page(
                     "dependencies": format!("/api/projects/{owner}/{project}/dependencies"),
                     // Undoing an install: the lock entry and the bytes.
                     "libraries_remove": format!("/api/projects/{owner}/{project}/rwe/libraries/remove"),
+                    "libraries_upload": format!("/api/projects/{owner}/{project}/rwe/libraries/upload"),
                     // Which libraries this project actually has, re-read after a write.
                     "libraries": format!("/api/projects/{owner}/{project}/rwe/libraries"),
                 }
@@ -15580,7 +15609,7 @@ async fn api_template_diagnostics(
         Err(err) => return internal_error(err),
     };
 
-    let response = compile_template_buffer(&state, &layout.repo_source_dir(), &req);
+    let response = compile_template_buffer(&state, &layout.repo_source_dir(), &req, (&owner, &project));
     Json(response).into_response()
 }
 
@@ -19255,6 +19284,26 @@ async fn api_list_rwe_libraries(
             })
         })
         .collect::<Vec<_>>();
+    // The project's own uploaded libraries, with what pages may import.
+    let mut items = items;
+    let runtime = crate::platform::services::project_library::runtime_libraries(&state.platform, &owner, &project);
+    let lock = state.platform.dependency_lock.read(&owner, &project).unwrap_or_default();
+    for (name, locked) in &lock.rwe.libraries {
+        let prefix = format!("{name}/");
+        let imports: Vec<&String> = runtime.keys().filter(|key| key.starts_with(&prefix)).collect();
+        if locked.source != crate::contracts::kinds::DependencyLockSource::DirectFile || imports.is_empty() {
+            continue;
+        }
+        items.push(json!({
+            "name": name,
+            "description": "Uploaded to this project",
+            "enabled": true,
+            "installed_version": locked.version,
+            "source": "upload",
+            "project_library": true,
+            "imports": imports,
+        }));
+    }
     Json(items).into_response()
 }
 
@@ -19264,6 +19313,49 @@ struct EnableRweLibraryRequest {
     name: String,
     version: String,
     source: String,
+}
+
+/// A project's own library, as one `.tar.gz` built by zeb-bundler
+/// (`rwe-library-manifest/README.md` § Project libraries): scanned, checked
+/// file by file and installed for this project only, or refused whole.
+async fn api_upload_project_library(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::LibrariesInstall) {
+        return response;
+    }
+    match maybe_forward_project_api_to_worker(&state, &uri, &Method::POST, &headers, body.clone(), &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let platform = state.platform.clone();
+    let (o, p) = (owner.clone(), project.clone());
+    let actor = crate::platform::services::change_log::carried();
+    let installed = tokio::task::spawn_blocking(move || {
+        crate::platform::services::change_log::carry(actor, || {
+            crate::platform::services::project_library::install_upload(&platform, &o, &p, &body)
+        })
+    })
+    .await;
+    match installed {
+        Ok(Ok(library)) => {
+            // Pages compiled before the upload bound the old library.
+            state.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+            Json(json!({ "ok": true, "library": library })).into_response()
+        }
+        Ok(Err(err)) if err.code == "PROJECT_LIBRARY_INVALID" => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "ok": false, "error": { "code": err.code, "message": err.message } })),
+        )
+            .into_response(),
+        Ok(Err(err)) => internal_error(err),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
 }
 
 /// `POST /api/projects/{owner}/{project}/rwe/libraries/enable`
@@ -28203,6 +28295,7 @@ fn compile_template_buffer(
     state: &PlatformAppState,
     template_root: &FsPath,
     req: &TemplateCompileRequest,
+    project: (&str, &str),
 ) -> TemplateCompileResponse {
     let rel = req.rel_path.trim();
     if rel.is_empty() {
@@ -28236,7 +28329,8 @@ fn compile_template_buffer(
 
     // The same options a page render uses: the check must not pass or refuse
     // what the render would not.
-    let options = ReactiveWebOptions::for_project_page(Some(template_root.to_path_buf()), state.platform.library.source_roots());
+    let options = ReactiveWebOptions::for_project_page(Some(template_root.to_path_buf()), state.platform.library.source_roots())
+        .with_runtime_libraries(crate::platform::services::project_library::runtime_libraries(&state.platform, project.0, project.1));
 
     let source = TemplateSource {
         id: format!("platform.editor.{}", rel.replace('/', ".")),
@@ -29836,6 +29930,7 @@ async fn preview_page(
     let options = crate::rwe::ReactiveWebOptions {
         processors: vec!["tailwind".to_string()],
         ..crate::rwe::ReactiveWebOptions::for_project_page(Some(layout.repo_source_dir()), state.platform.library.source_roots())
+            .with_runtime_libraries(crate::platform::services::project_library::runtime_libraries(&state.platform, &owner_slug, &project_slug))
     };
 
     let compiled = match state.frontend.rwe.compile_template(

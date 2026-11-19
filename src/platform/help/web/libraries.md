@@ -25,6 +25,9 @@ render. Components the libraries provide (`DeckMap`, `ThreeScene`, `CodeEditor`,
 `Markdown`, `VrmViewer`, `PotoPlayer`, `PotoSnapshot`, `PotoEditor`, `World`) render a placeholder on the server and mount in the
 browser, so they may appear in JSX directly.
 
+A project can also carry its own library, built from npm packages and its own
+code and imported as `site-a-lib/<entry>`: `help("web/project-libraries")`.
+
 A project can restrict which libraries its pages may load under
 `rwe.libraries` in `zebflow.yaml` (`POST /api/projects/{o}/{p}/rwe/libraries/enable`);
 with no list, any of them loads on demand.

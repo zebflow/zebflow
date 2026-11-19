@@ -40,6 +40,7 @@ pub mod pipeline_runtime;
 pub mod platform;
 pub mod project;
 pub mod project_config;
+pub mod project_library;
 pub mod project_operation;
 pub mod project_transfer;
 pub mod published_oauth;

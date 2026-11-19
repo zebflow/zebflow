@@ -1169,6 +1169,14 @@ impl BasicPipelineEngine {
             .unwrap_or_default()
     }
 
+    /// The libraries uploaded to this project, by import specifier.
+    pub(crate) fn runtime_libraries(&self, owner: &str, project: &str) -> std::collections::BTreeMap<String, String> {
+        self.platform
+            .as_ref()
+            .map(|p| crate::platform::services::project_library::runtime_libraries(p, owner, project))
+            .unwrap_or_default()
+    }
+
     /// Attach a shared template compile cache to this engine.
     /// Same cache instance should be passed on every request so hits accumulate.
     pub fn with_template_cache(mut self, cache: TemplateCache) -> Self {
@@ -2510,7 +2518,8 @@ impl BasicPipelineEngine {
                             let options = crate::rwe::ReactiveWebOptions::for_project_page(
                                 self.template_root.clone(),
                                 self.library_roots(),
-                            );
+                            )
+                            .with_runtime_libraries(self.runtime_libraries(&ctx.owner, &ctx.project));
 
                             let root = self.template_root.as_deref().map(|r| r.display().to_string()).unwrap_or_default();
                             let identity = match &source_path {

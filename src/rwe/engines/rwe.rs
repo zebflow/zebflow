@@ -36,6 +36,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.display().to_string()))
                 .collect(),
+            runtime_libraries: options.templates.runtime_libraries.clone(),
             file_path: template
                 .source_path
                 .as_ref()

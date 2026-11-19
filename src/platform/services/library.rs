@@ -59,6 +59,8 @@ pub struct RweLibraryLicense {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RweLibraryVersionSpec {
+    /// The main entry: the only one of a `zeb/*` library, and for a project
+    /// library one of `entries` (its `all` bundle, or the first entry).
     pub entry: String,
     pub source: String,
     pub package_version: String,
@@ -66,6 +68,40 @@ pub struct RweLibraryVersionSpec {
     pub integrity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// A project library's import subpaths: `site-a-lib/world` loads
+    /// `entries["world"]` (`rwe-library-manifest/README.md` § Project libraries).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub entries: BTreeMap<String, RweLibraryEntrySpec>,
+    /// Worker modules by name, each a file listed in `files`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workers: BTreeMap<String, String>,
+    /// Every file of the version with its own size and digest; a file not
+    /// listed is not served.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, RweLibraryFileSpec>,
+    /// Digest of the recipe folder and lockfile that built it; shown, never trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<String>,
+}
+
+/// One import subpath of a project library.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RweLibraryEntrySpec {
+    pub file: String,
+    pub exports: Vec<String>,
+    /// The entry's type declarations (`.d.ts`), a file listed in `files`;
+    /// read by the editor and a type check, never by a page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub types: Option<String>,
+}
+
+/// One file of a project library version.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RweLibraryFileSpec {
+    pub size_bytes: u64,
+    pub integrity: String,
 }
 
 /// One available version entry from a library manifest.

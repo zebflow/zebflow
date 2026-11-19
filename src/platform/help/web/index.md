@@ -201,5 +201,6 @@ imported with `@/scripts/<name>`; see `help("web/custom-scripts")`.
 - `help("web/editor")` — rich text: the editor's extensions (callout, table, figure, embed, mention, citation), writing your own, server-rendered HTML
 - `help("web/tailwind")` — the Tailwind subset, theme tokens, `tw-variants`
 - `help("web/libraries")` — `zeb/*` runtime libraries: d3, deckgl, codemirror, markdown, pdf, prosemirror, threejs, graphui, rooms, world
+- `help("web/project-libraries")` — the project's own library: npm packages and its own code, built by zeb-bundler, uploaded, imported as `site-a-lib/<entry>`
 - `help("web/custom-scripts")` — `.ts` modules and the compiler's refusals
 - `help("web/design-system")` — the platform's own theme and component conventions

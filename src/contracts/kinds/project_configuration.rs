@@ -121,9 +121,12 @@ impl ProjectConfigurationSpec {
             validate_http_or_root_path("spec.rwe.deployment_asset_base", base)?;
         }
         for (name, library) in &self.rwe.libraries {
-            if !name.starts_with("zeb/") || !is_safe_logical_name(name, true) {
+            // `zeb/<name>`, or one word: a library uploaded to this project
+            // (amendment 2026-11-19, `rwe-library-manifest` § Project libraries).
+            let zeb = name.starts_with("zeb/") && is_safe_logical_name(name, true);
+            if !zeb && !is_project_library_name(name) {
                 return Err(ContractError::invalid(format!(
-                    "spec.rwe.libraries key '{name}' must use the zeb/<name> form"
+                    "spec.rwe.libraries key '{name}' must use the zeb/<name> form, or be one lowercase word for a project's own library"
                 )));
             }
             validate_text("spec.rwe.libraries.*.version", &library.version, 128, false)?;
@@ -314,6 +317,18 @@ fn validate_identifier(path: &str, value: &str) -> Result<(), ContractError> {
         )));
     }
     Ok(())
+}
+
+/// A project library's name: one word, `[a-z][a-z0-9-]*`, at most 40, never
+/// `zeb`-anything nor a word an import specifier already means.
+pub fn is_project_library_name(value: &str) -> bool {
+    const RESERVED: [&str; 8] = ["npm", "node", "jsr", "http", "https", "data", "blob", "file"];
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z'))
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && value.len() <= 40
+        && !value.starts_with("zeb")
+        && !RESERVED.contains(&value)
 }
 
 fn is_safe_logical_name(value: &str, allow_slash: bool) -> bool {

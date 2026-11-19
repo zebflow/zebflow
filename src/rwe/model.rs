@@ -81,9 +81,16 @@ impl ReactiveWebOptions {
     /// what the render would not.
     pub fn for_project_page(template_root: Option<PathBuf>, library_roots: BTreeMap<String, PathBuf>) -> Self {
         Self {
-            templates: TemplateOptions { template_root, library_roots, style_entries: Vec::new() },
+            templates: TemplateOptions { template_root, library_roots, runtime_libraries: Default::default(), style_entries: Vec::new() },
             ..Self::default()
         }
+    }
+
+    /// These options with the project's own runtime libraries
+    /// (`services::project_library::runtime_libraries`).
+    pub fn with_runtime_libraries(mut self, runtime_libraries: BTreeMap<String, String>) -> Self {
+        self.templates.runtime_libraries = runtime_libraries;
+        self
     }
 }
 
@@ -97,6 +104,10 @@ pub struct TemplateOptions {
     /// `.tsx` files. Resolved and inlined at compile time like `@/` imports.
     #[serde(default)]
     pub library_roots: std::collections::BTreeMap<String, PathBuf>,
+    /// Runtime libraries uploaded to the project: import specifier
+    /// (`site-a-lib/world`) → the address its entry module loads from.
+    #[serde(default)]
+    pub runtime_libraries: std::collections::BTreeMap<String, String>,
     /// Optional explicit stylesheet entry paths, relative to `template_root`.
     ///
     /// When empty, RWE probes deterministic defaults:

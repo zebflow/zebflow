@@ -167,7 +167,13 @@ impl DependencyLockSpec {
 
         for (name, entry) in &self.rwe.libraries {
             let path = format!("spec.rwe.libraries[{name:?}]");
-            validate_namespaced_name(&path, name)?;
+            // A library uploaded to this project is named by one word
+            // (amendment 2026-11-19); every other library keeps its namespace.
+            let project_library = entry.source == DependencyLockSource::DirectFile
+                && crate::contracts::kinds::project_configuration::is_project_library_name(name);
+            if !project_library {
+                validate_namespaced_name(&path, name)?;
+            }
             // `project` is reserved for RWE libraries: no channel produces it
             // for a library in zebflow.com/v1 (the resolver behavior is not
             // defined until a later contract version).

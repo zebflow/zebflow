@@ -48,6 +48,10 @@ pub struct CompileOptions {
     /// resolves to `<root>/button.tsx` and is inlined like an `@/` import — the
     /// page's Tailwind scan and SSR see it as source, not as a runtime bundle.
     pub library_roots: std::collections::BTreeMap<String, String>,
+    /// Runtime libraries uploaded to the project: each entry's import
+    /// specifier (`site-a-lib/world`) mapped to the address its module loads
+    /// from. Bound and loaded like a `zeb/*` bundle.
+    pub runtime_libraries: std::collections::BTreeMap<String, String>,
     pub file_path: Option<String>,
     pub security: SecurityPolicy,
     pub runtime_mode: RuntimeMode,
@@ -59,6 +63,7 @@ impl Default for CompileOptions {
         Self {
             template_root: None,
             library_roots: std::collections::BTreeMap::new(),
+            runtime_libraries: std::collections::BTreeMap::new(),
             file_path: None,
             security: SecurityPolicy::default(),
             runtime_mode: RuntimeMode::Inline,

@@ -1,7 +1,7 @@
 use std::path::{Component, Path};
 
 use crate::contracts::{ContractError, ContractKind, ContractMetadata, PlatformContract};
-use crate::platform::services::library::RweLibraryManifestSpec;
+use crate::platform::services::library::{RweLibraryManifestSpec, RweLibraryVersionSpec};
 
 /// Canonical manifest for one RWE library: an opaque pre-built runtime bundle
 /// plus typed wrappers, loaded at runtime and never compiled by the RWE
@@ -66,8 +66,67 @@ impl PlatformContract for RweLibraryManifestContract {
                     spec.name
                 )));
             }
+            validate_project_files(&spec.name, key, version)?;
         }
         Ok(())
+    }
+}
+
+/// A project library's `entries`, `workers` and `files` (amendment
+/// 2026-11-19): every path descends, every entry and worker is a listed file,
+/// every file carries its own digest and size, and the main `entry` is one of
+/// the entries with the same digest. A version without `files` is a `zeb/*`
+/// library and carries none of the three.
+fn validate_project_files(name: &str, key: &str, version: &RweLibraryVersionSpec) -> Result<(), ContractError> {
+    if version.files.is_empty() {
+        if !version.entries.is_empty() || !version.workers.is_empty() {
+            return Err(ContractError::invalid(format!(
+                "library '{name}' version '{key}' names entries or workers but lists no files"
+            )));
+        }
+        return Ok(());
+    }
+    if version.entries.is_empty() {
+        return Err(ContractError::invalid(format!("library '{name}' version '{key}' lists files but no entries")));
+    }
+    for (path, file) in &version.files {
+        validate_descending_entry(name, key, path)?;
+        validate_integrity(name, key, &file.integrity)?;
+    }
+    let listed = |path: &str, what: &str| -> Result<(), ContractError> {
+        if version.files.contains_key(path) {
+            Ok(())
+        } else {
+            Err(ContractError::invalid(format!("library '{name}' version '{key}' {what} '{path}' is not in files")))
+        }
+    };
+    for (subpath, entry) in &version.entries {
+        // An npm-style path, so an original module keeps its own name
+        // (`three/addons/controls/OrbitControls.js`).
+        let path_like = !subpath.is_empty()
+            && subpath.len() <= 200
+            && subpath.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+            && subpath.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+        if !path_like || entry.exports.is_empty() {
+            return Err(ContractError::invalid(format!(
+                "library '{name}' version '{key}' entry '{subpath}' needs a path of letters, digits, '-', '_', '.' and '/' (no '..'), and at least one export"
+            )));
+        }
+        listed(&entry.file, "entry")?;
+        if let Some(types) = &entry.types {
+            listed(types, "types of entry")?;
+        }
+    }
+    for (worker, path) in &version.workers {
+        listed(path, &format!("worker '{worker}'"))?;
+    }
+    let main = version.files.get(&version.entry).filter(|_| version.entries.values().any(|entry| entry.file == version.entry));
+    match main {
+        Some(file) if file.integrity == version.integrity && file.size_bytes == version.size_bytes => Ok(()),
+        _ => Err(ContractError::invalid(format!(
+            "library '{name}' version '{key}' entry '{}' must be one of its entries, with that file's digest and size",
+            version.entry
+        ))),
     }
 }
 

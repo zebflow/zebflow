@@ -158,7 +158,7 @@ impl DependencyLockService {
     /// by that split — and was unchanged again by the `data/nodes` →
     /// `data/hub/nodes` move; only the base directory it resolves against
     /// differs.
-    fn node_root(&self, owner: &str, project: &str) -> PathBuf {
+    pub(crate) fn node_root(&self, owner: &str, project: &str) -> PathBuf {
         self.data_path(owner, project).join("hub")
     }
 

@@ -194,7 +194,11 @@ pub fn render(
         }
     };
     // Use detected_zeb_libs collected at compile time (includes libs from all inlined components).
-    let mut zeb_preamble = build_zeb_preamble(&compiled.detected_zeb_libs, enabled_libraries);
+    let mut zeb_preamble = build_zeb_preamble_with(
+        &compiled.detected_zeb_libs,
+        enabled_libraries,
+        &compiled.compile_options.runtime_libraries,
+    );
     zeb_preamble.push_str(&build_markup_loaders(
         &compiled.detected_zeb_libs,
         enabled_libraries,
@@ -291,7 +295,20 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
 /// This runs in the outer script (a real URL context), so absolute-path
 /// imports like `/assets/libraries/…` resolve correctly. The inner user bundle
 /// (loaded as a `data:` URL) is imported after the whole preamble has run.
+#[cfg(test)]
 fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) -> String {
+    build_zeb_preamble_with(detected_libs, enabled_libraries, &Default::default())
+}
+
+/// [`build_zeb_preamble`], with the project's own runtime libraries: an entry
+/// of one (`site-a-lib/world`) loads from the address the platform resolved
+/// from the project's lock, and is always loadable, since only an installed
+/// library has an address.
+fn build_zeb_preamble_with(
+    detected_libs: &[String],
+    enabled_libraries: &[String],
+    runtime_libraries: &std::collections::BTreeMap<String, String>,
+) -> String {
     let libs = detected_libs;
     if libs.is_empty() {
         return String::new();
@@ -308,7 +325,8 @@ fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) ->
         // library that is not loaded still gets an entry, so naming it binds
         // `undefined` rather than failing the whole page module.
         let loadable = enabled_libraries.is_empty() || enabled_libraries.contains(lib);
-        let Some(url) = zeb_bundle_url(lib).filter(|_| loadable) else {
+        let project_url = runtime_libraries.get(lib).map(String::as_str);
+        let Some(url) = project_url.or(zeb_bundle_url(lib).filter(|_| loadable)) else {
             out.push_str(&format!("{registry}[{key}] ??= {{}};\n"));
             continue;
         };
@@ -329,6 +347,11 @@ fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) ->
                  }} }};\n\
                  }}\n"
             ));
+        } else if project_url.is_some() {
+            // A project library's address comes from an uploaded manifest:
+            // written as a JSON string, so no character in it ends the string.
+            let quoted = serde_json::to_string(url).unwrap_or_default();
+            out.push_str(&format!("{registry}[{key}] = await import({quoted});\n"));
         } else {
             out.push_str(&format!("{registry}[{key}] = await import('{url}');\n"));
         }

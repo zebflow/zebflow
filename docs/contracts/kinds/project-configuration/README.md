@@ -106,7 +106,10 @@ The full canonical example is the golden fixture linked above.
 Credential and connection IDs are references. Their secret values remain in the
 project credential store.
 
-`spec.rwe.libraries` is the requested project state. `zeb.lock` owns resolved
+`spec.rwe.libraries` is keyed by `zeb/<name>`, or by one lowercase word for a
+library uploaded to this project (`[a-z][a-z0-9-]*`, at most 40, never
+`zeb…`, `npm`, `node`, `jsr`, `http`, `https`, `data`, `blob`, `file`;
+amendment 2026-11-19). It is the requested project state. `zeb.lock` owns resolved
 entry paths and integrity hashes. They may repeat a requested version and source
 for verification, but they do not own the same decision.
 
@@ -406,6 +409,7 @@ schema stops being a draft and starts being a promise.
 | 2026-09-24 | `spec.files.backend` accepts `s3` | Additive: `zebfs` and an absent entry mean exactly what they did. The word alone is committed; the bucket and its keys are an instance selection in the STORE tier, so a repository declaring `s3` restored on another instance refuses by name until that instance selects its own credential, and never resolves to a store it did not choose. |
 | 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
 | 2026-09-03 | `spec.layout.assets` renamed to `spec.layout.static`, default `static` | `assets` was the wrong word: in Vite, Astro, Rails and Hugo it names files that are processed and content-hashed, while this directory is served byte-for-byte -- which those same projects call `static`. `public` was not taken because it is the *state* the exposure inventory reports, and a folder claiming that word would collide with it. |
+| 2026-11-19 | `spec.rwe.libraries` also takes one lowercase word: a project's own uploaded library | The owner chose plain import names (`site-a-lib/world`). Only widens; every existing configuration stays valid. |
 | 2026-09-03 | `spec.layout.source` defaults to the repository itself | It was `pipelines`, and every layout entry was also a directory the platform created on every request -- so a folder an author deleted returned on the next page load. A project now starts as an empty repository and a layout entry only says where a kind is looked for. An empty declaration is legal and names the repository root; `static` is the one entry that may not be empty, because its route serves everything beneath it unauthenticated. |
 
 ## Freeze Evidence

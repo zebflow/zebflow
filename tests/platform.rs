@@ -58,3 +58,5 @@ mod webhook_cors;
 mod change_record;
 #[path = "platform/zebflow_command.rs"]
 mod zebflow_command;
+#[path = "platform/project_library.rs"]
+mod project_library;
