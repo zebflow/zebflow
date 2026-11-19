@@ -71,7 +71,7 @@ logic.<verb>          control node   logic.if              logic.foreach
 
 | Families | |
 | --- | --- |
-| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `javascript` `mail` `mapserver` `mcp` `pipeline` `postgres` `sekejap` `sqlite` `table` `trigger` `typescript` `web` `ws` |
+| Now | `ai` `auth` `browser` `crypto` `fs` `function` `geo` `http` `input` `kv` `logic` `javascript` `mail` `mapserver` `mcp` `pipeline` `postgres` `sekejap` `sqlite` `table` `trigger` `typescript` `web` `ws` `zebflow` |
 | Brands | `telegram` (now, from the curated bundle) · `whatsapp` `slack` `discord` (when built) |
 | Reserved | `cloud` (provider-neutral resources: queue, function, bucket — `--provider aws\|gcp\|azure`) · `job` (external commands) · `sec` (scanning, detection) |
 
@@ -261,6 +261,7 @@ postgres.query.run     → query:   { rows, columns, row_count }
 kv.entry.get           → entry:   { key, value, found }
 auth.token.create      → token:   { access_token, token_type, expires_in, profile }
 auth.oauth.approve     → oauth:   { approved, client, redirect_host }
+zebflow.command.run    → command: { ok, results }
 fs.folder.list         → folder:  { path, items, count }
 javascript.script.run  → script:  <what the code returned>
 ```

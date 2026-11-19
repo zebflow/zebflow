@@ -57,6 +57,7 @@ pub mod trigger;
 pub mod typescript;
 pub mod web;
 pub mod ws;
+pub mod zebflow;
 
 /// The nodes that answer the caller (`node-conventions.md` §4): the first
 /// one a run reaches is the response, at once, and later nodes keep running.
@@ -94,6 +95,7 @@ fn family_definitions() -> Vec<NodeDefinition> {
     items.extend(typescript::definitions());
     items.extend(web::definitions());
     items.extend(ws::definitions());
+    items.extend(zebflow::definitions());
     items
 }
 

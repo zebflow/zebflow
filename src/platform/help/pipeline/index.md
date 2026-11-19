@@ -55,6 +55,8 @@ The token comes from `Authorization: Bearer …` or, for browsers, the
 required roles. A browser that fails is redirected (303) to the credential's
 `auth_redirect`; a `fetch` gets 401/403 JSON. Claims minted with `:public`
 reach a page as `input.auth`. Recipe: `help("pipeline/examples/cookie-jwt-auth")`.
+An app that adds pipelines and files to itself through a fenced door:
+`help("pipeline/examples/app-control-door")`.
 
 ---
 

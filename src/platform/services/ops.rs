@@ -981,6 +981,34 @@ impl PlatformOps {
         )
     }
 
+    /// Removes one pipeline: switched off first if it is live (so a schedule
+    /// or a subscription is disarmed, not left firing at a missing file), then
+    /// its file and catalog row, then the runtime's copy. A path that names
+    /// nothing is said so: a typo must not read as done.
+    pub async fn pipeline_delete(&self, file_rel_path: &str) -> Result<Value, String> {
+        let projects = &self.platform.projects;
+        let meta = projects
+            .get_pipeline_meta_by_file_id(&self.owner, &self.project, file_rel_path)
+            .ok()
+            .flatten();
+        let has_source = projects.read_pipeline_source(&self.owner, &self.project, file_rel_path).is_ok();
+        if meta.is_none() && !has_source {
+            return Err(format!("no pipeline at '{file_rel_path}': pipeline_list shows what there is"));
+        }
+        let was_active = meta.is_some_and(|meta| meta.active_hash.is_some());
+        if was_active {
+            self.platform
+                .switch_off(&self.owner, &self.project, file_rel_path)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        projects
+            .delete_pipeline(&self.owner, &self.project, file_rel_path)
+            .map_err(|err| err.to_string())?;
+        self.platform.pipeline_runtime.evict(&self.owner, &self.project, file_rel_path);
+        Ok(serde_json::json!({ "ok": true, "file_rel_path": file_rel_path, "was_active": was_active }))
+    }
+
     pub async fn pipeline_activate(&self, file_rel_path: &str) -> OpsResult {
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(),

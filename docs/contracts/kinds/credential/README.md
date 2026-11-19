@@ -69,6 +69,58 @@ A credential type declares each field:
   The author overrides deliberately or fixes it. Name matching decides nothing
   once the type is registered.
 
+## The `zebflow_control` fence
+
+A `zebflow_control` credential is not a secret. It is the fence a
+`zebflow.command.run` node works inside, kept as a credential so that only a
+maintainer in Studio makes or changes it, and nothing the node does can widen
+it.
+
+```yaml
+scope: modules/            # files and pipelines are written only here
+routes: /m/                # a webhook it makes answers only under this
+tools: [file_write, pipeline_register, pipeline_activate]
+delegate: [pg_modules]     # credentials its pipelines may use, by id
+nodes_mode: deny           # deny: all but `nodes` · allow: only `nodes`
+nodes: []                  # kinds or families; empty in deny = the shared stores
+record_as: site-a-app      # how the change record names it
+```
+
+- **`scope`** is a folder inside the repository, never the root. A path is
+  inside only under it: `modules-old/` is not inside `modules/`, and `..` never
+  is.
+- **`tools`** opens operations from a closed list: `file_list` `file_read`
+  `file_write` `file_edit` `file_delete` `pipeline_get` `pipeline_register`
+  `pipeline_activate` `pipeline_deactivate` `pipeline_delete`.
+- **Files and pipelines are separate doors.** The file operations refuse a
+  pipeline file (`.zf.json`); a pipeline changes only through
+  `pipeline_register` and `pipeline_delete`. A path with `..`, a leading `/` or
+  a backslash is refused, not repaired, and no link inside `scope` is followed
+  out of it. `scope` itself cannot be deleted.
+- **A made pipeline** is checked from its body before it is saved, again from
+  the saved file right after (a check that fails takes it back out), and again
+  when it is switched on. Every node is a kind in the catalogue exactly as
+  written. It starts with `trigger.webhook`, `trigger.schedule` or
+  `trigger.manual` (not `trigger.function`: a function's name is project-wide);
+  a webhook route lies under `routes` and carries no `%`, `\`, `?`, `#`, space
+  or `.`/`..` segment; every credential it names — under any key its node's
+  definition marks, or any key spelled with "credential", however nested — is
+  in `delegate`, written out, never an expression; and it never uses
+  `zebflow.*`, whatever the list says.
+- **`nodes`** decides the rest. In `deny` mode (the default) a made pipeline
+  may use every node but those listed; an empty list denies the project's
+  shared stores (`sekejap.*`, `sqlite.*`, `kv.*`, `fs.*`, `table.*`,
+  `function.*`), which have no fence of their own. In `allow` mode it may use
+  only the nodes listed, its trigger included. An entry is a kind or a family (`kv.*`); one naming no
+  node in the catalogue is refused. A made pipeline's data lives in a delegated
+  database, fenced by that database's own permissions.
+- **Delegated credentials are used, never read**: their secrets are not shown
+  to the node or to anything it makes.
+- **The change record** names every change `control · <record_as>` and the
+  person the node passes with `--as`.
+
+Evidence: `zebflow::command` unit tests; `tests/platform/zebflow_command.rs`.
+
 ## Changing a credential
 
 A save never drops a secret the caller did not name.

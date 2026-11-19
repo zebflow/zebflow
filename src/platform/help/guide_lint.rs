@@ -121,9 +121,15 @@ fn names_a_node(word: &str, defs: &[NodeDefinition]) -> bool {
     defs.iter().any(|d| d.kind == word)
         || (kind_shaped(word) && {
             let family = word.split('.').next().unwrap_or("");
-            family == "n" || (family != "input" && defs.iter().any(|d| d.kind.split('.').next() == Some(family)))
+            family == "n" || (!SHARED_WORD_FAMILIES.contains(&family) && defs.iter().any(|d| d.kind.split('.').next() == Some(family)))
         })
 }
+
+/// Families whose word means something else too, so a name under them that
+/// is not a kind is that other thing, not a typo: `input` is the flowing
+/// payload (`input.rows`), `zebflow` the product's own name in files and
+/// packages (`zebflow.yaml`, `zebflow.d3`, `zebflow.rooms.v1`).
+pub(super) const SHARED_WORD_FAMILIES: [&str; 2] = ["input", "zebflow"];
 
 /// Whether a one-line text reads as DSL: `| kind …`, `kind --flag …`, or a
 /// console `register … | …`.

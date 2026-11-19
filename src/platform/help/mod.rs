@@ -585,9 +585,11 @@ mod help_lint {
                     if name.ends_with(".*") { continue; }
                     if !families.contains(family) { continue; }
                     // `input` is both a node family and the name of the flowing
-                    // payload in every expression: `input.rows`, `input.body.x`.
-                    // An `input.…` that is not a kind is the payload, not a typo.
-                    if family == "input" && !exists(&name) { continue; }
+                    // payload in every expression (`input.rows`); `zebflow` is
+                    // also the product's name in files and packages
+                    // (`zebflow.yaml`). A name under them that is not a kind is
+                    // that other thing, not a typo.
+                    if guide_lint::SHARED_WORD_FAMILIES.contains(&family) && !exists(&name) { continue; }
                     checked += 1;
                     if !exists(&name) {
                         failures.push(format!("{}:{}: `{name}`", page.path, i + 1));

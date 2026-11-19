@@ -1035,6 +1035,30 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
             ..Default::default()
         },
         CredentialTypeDef {
+            kind: "zebflow_control".into(),
+            title: "Zebflow Control Fence".into(),
+            description: "The fence a zebflow.command.run node works inside: one folder, one route prefix, the operations it may run and the credentials it may hand to the pipelines it makes.".into(),
+            fields: vec![
+                F { placeholder: Some("modules/".into()), help: Some("Repository folder: files and pipelines are written only here.".into()), ..f("scope", "Folder") },
+                F { placeholder: Some("/m/".into()), help: Some("Route prefix: a webhook it makes answers only under this.".into()), ..f("routes", "Route prefix") },
+                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. file_write".into()), help: Some("Operations it may run: file_list, file_read, file_write, file_edit, file_delete, pipeline_get, pipeline_register, pipeline_activate, pipeline_deactivate, pipeline_delete.".into()), ..f("tools", "Operations") },
+                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. pg_modules".into()), help: Some("Credentials the pipelines it makes may use, by id. Their secrets are never shown to it.".into()), ..f("delegate", "Delegated credentials") },
+                F {
+                    field_type: "select".into(),
+                    default: Some("deny".into()),
+                    options: vec![
+                        O { value: "deny".into(), label: "Deny — every node except those listed".into() },
+                        O { value: "allow".into(), label: "Allow — only the nodes listed".into() },
+                    ],
+                    help: Some("How the node list reads. zebflow.* is never allowed either way.".into()),
+                    ..f("nodes_mode", "Node list mode")
+                },
+                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. kv.* or postgres.query.run".into()), help: Some("Kinds or families. In deny mode an empty list denies the project's shared stores: sekejap.*, sqlite.*, kv.*, fs.*, table.*, function.*.".into()), ..f("nodes", "Nodes") },
+                F { placeholder: Some("the credential id".into()), help: Some("How the change record names changes made through this fence.".into()), ..f("record_as", "Recorded as") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
             kind: "oauth2".into(),
             title: "OAuth2".into(),
             description: "OAuth2 authorization code flow with automatic token refresh.".into(),

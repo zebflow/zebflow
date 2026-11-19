@@ -1026,41 +1026,11 @@ impl ZebflowMcpHandler {
                 None,
             ));
         }
-        let meta = self
-            .platform
-            .projects
-            .get_pipeline_meta_by_file_id(&session.owner, &session.project, &params.file_rel_path)
-            .ok()
-            .flatten();
-        // A path that names nothing is said so: a typo must not read as done.
-        let has_source = self
-            .platform
-            .projects
-            .read_pipeline_source(&session.owner, &session.project, &params.file_rel_path)
-            .is_ok();
-        if meta.is_none() && !has_source {
-            return Err(McpError::invalid_params(
-                format!("no pipeline at '{}': pipeline_list shows what there is", params.file_rel_path),
-                None,
-            ));
-        }
-        let was_active = meta.is_some_and(|meta| meta.active_hash.is_some());
-        // Switched off the way every other door does it, so a schedule or a
-        // subscription is disarmed rather than left firing at a missing file.
-        if was_active {
-            self.platform
-                .switch_off(&session.owner, &session.project, &params.file_rel_path)
-                .await
-                .map_err(|err| McpError::invalid_params(err.to_string(), None))?;
-        }
-        self.platform
-            .projects
-            .delete_pipeline(&session.owner, &session.project, &params.file_rel_path)
-            .map_err(|err| McpError::invalid_params(err.to_string(), None))?;
-        self.platform
-            .pipeline_runtime
-            .evict(&session.owner, &session.project, &params.file_rel_path);
-        let answer = serde_json::json!({ "ok": true, "file_rel_path": params.file_rel_path, "was_active": was_active });
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let answer = ops
+            .pipeline_delete(&params.file_rel_path)
+            .await
+            .map_err(|message| McpError::invalid_params(message, None))?;
         Ok(CallToolResult::success(vec![Content::text(answer.to_string())]))
     }
 
