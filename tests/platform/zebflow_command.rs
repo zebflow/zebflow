@@ -251,3 +251,178 @@ async fn a_credential_that_is_not_a_fence_opens_nothing() {
     assert!(answer.contains("not zebflow_control"), "{answer}");
     assert!(!root.0.join("users/superadmin/default/repo/modules/a.md").exists());
 }
+
+/// The credential with `id` in the project's credential list, as Studio reads it.
+async fn listed_credential(app: &axum::Router, cookie: &str, id: &str) -> Option<Value> {
+    let (status, body) = call(app, Some(cookie), "GET", &format!("/api/projects/{OWNER}/{PROJECT}/credentials"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let body: Value = serde_json::from_str(&body).expect("json");
+    let items = body.get("items").or_else(|| body.get("credentials")).and_then(Value::as_array).cloned().unwrap_or_default();
+    items.into_iter().find(|item| item["credential_id"] == id)
+}
+
+/// `app-control.md` § Rules 5 to 8: a door sees what it was given and what it
+/// made, creates only the kinds its fence names and only outside addresses,
+/// changes and deletes only its own, and a made pipeline may use both.
+#[tokio::test]
+async fn a_door_manages_only_its_own_credentials() {
+    let root = TestDir(std::env::temp_dir().join(format!(
+        "zebflow-platform-zebflow-command-creds-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    )));
+    let mut config = PlatformConfig::default();
+    config.data_root = root.0.clone();
+    config.default_password = "test-pass".to_string();
+    let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
+    let app = zebflow::platform::web::router(platform.clone()).await;
+    let cookie = login(&app).await;
+    let password = uuid::Uuid::new_v4().to_string();
+    let pg = |host: &str| json!({ "host": host, "port": "5432", "database": "app", "user": "reader", "password": password, "sslmode": "require" });
+
+    credential(
+        &app,
+        &cookie,
+        "zf_lab",
+        "zebflow_control",
+        json!({
+            "scope": "modules/",
+            "routes": "/m/",
+            "tools": ["credential_list", "credential_create", "credential_update", "credential_delete", "pipeline_register"],
+            "delegate": ["pg_given"],
+            "manage_kinds": ["postgres"],
+            "manage_limit": 2,
+            "record_as": "lab-app"
+        }),
+    )
+    .await;
+    credential(&app, &cookie, "pg_given", "postgres", pg("203.0.113.20")).await;
+    credential(&app, &cookie, "main_pg", "postgres", pg("203.0.113.21")).await;
+    let ops = PlatformOps::new(platform.clone(), OWNER, PROJECT);
+    ops.pipeline_register(&door("zf_lab"), Some("pipelines/control.zf.json"), None, None, None, None).await;
+    let activated = ops.pipeline_activate("pipelines/control.zf.json").await;
+    assert!(!activated.text.starts_with("Error:"), "{}", activated.text);
+
+    let create = |id: &str, kind: &str, secret: Value| json!({ "tool": "credential_create", "arguments": { "credential_id": id, "kind": kind, "secret": secret } });
+    let (status, answer) = command(&app, create("ext_a", "postgres", pg("203.0.113.10"))).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert!(!answer.contains(&password), "a password is never answered: {answer}");
+
+    for (body, word) in [
+        (create("ext_local", "postgres", pg("localhost")), "not an outside address"),
+        (create("ext_private", "postgres", pg("10.1.2.3")), "not an outside address"),
+        (create("ext_my", "mysql", pg("203.0.113.11")), "outside what this door manages"),
+        (create("ext_fence", "zebflow_control", json!({ "scope": "x/", "routes": "/x/", "tools": ["file_read"] })), "may never create"),
+        (create("main_pg", "postgres", pg("203.0.113.12")), "already exists"),
+        (json!({ "tool": "credential_update", "arguments": { "credential_id": "ext_a", "secret": { "host": "127.0.0.1" } } }), "not an outside address"),
+        (json!({ "tool": "credential_update", "arguments": { "credential_id": "pg_given", "title": "mine now" } }), "delegated to this door"),
+        (json!({ "tool": "credential_update", "arguments": { "credential_id": "main_pg", "title": "mine now" } }), "not managed by this door"),
+        (json!({ "tool": "credential_delete", "arguments": { "credential_id": "main_pg" } }), "not managed by this door"),
+    ] {
+        let (status, answer) = command(&app, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {answer}");
+        assert!(answer.contains(word), "{body} should say '{word}': {answer}");
+    }
+
+    // The limit is two: a second fits, a third does not.
+    let (status, answer) = command(&app, create("ext_b", "postgres", pg("203.0.113.11"))).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (status, answer) = command(&app, create("ext_c", "postgres", pg("203.0.113.13"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert!(answer.contains("its limit"), "{answer}");
+
+    // The list: given and made, never the rest, never a password.
+    let (status, answer) = command(&app, json!({ "tool": "credential_list" })).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let listed: Value = serde_json::from_str(&answer).expect("json");
+    let rows = listed["results"][0]["answer"]["credentials"].as_array().expect("rows").clone();
+    let ids: Vec<&str> = rows.iter().filter_map(|row| row["credential_id"].as_str()).collect();
+    assert_eq!(ids, vec!["ext_a", "ext_b", "pg_given"], "{answer}");
+    assert!(!answer.contains(&password) && !answer.contains("main_pg"), "{answer}");
+    assert_eq!(rows[0]["fields"]["host"], "203.0.113.10");
+
+    // Its own: changed, deleted.
+    let (status, answer) = command(&app, json!({ "tool": "credential_update", "arguments": { "credential_id": "ext_a", "title": "Census", "secret": { "host": "203.0.113.30" } } })).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (status, answer) = command(&app, json!({ "tool": "credential_delete", "arguments": { "credential_id": "ext_b" } })).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert!(listed_credential(&app, &cookie, "ext_b").await.is_none());
+    assert!(listed_credential(&app, &cookie, "main_pg").await.is_some(), "the rest is untouched");
+
+    // A made pipeline may use the made and the given, not the rest.
+    let made = |cred: &str| json!({ "tool": "pipeline_register", "arguments": { "file_rel_path": format!("modules/q-{cred}.zf.json"),
+        "body": format!("| trigger.webhook --route /m/{cred} --method GET | postgres.query.run --credential {cred} -- \"SELECT 1\" | web.response.send --body ok") } });
+    for cred in ["ext_a", "pg_given"] {
+        let (status, answer) = command(&app, made(cred)).await;
+        assert_eq!(status, StatusCode::OK, "{cred}: {answer}");
+    }
+    let (status, answer) = command(&app, made("main_pg")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert!(answer.contains("not delegated"), "{answer}");
+
+    // Studio shows the mark, and a person editing it does not take it away.
+    assert_eq!(listed_credential(&app, &cookie, "ext_a").await.expect("ext_a")["managed_by"], "zf_lab");
+    credential(&app, &cookie, "ext_a", "postgres", pg("203.0.113.31")).await;
+    assert_eq!(listed_credential(&app, &cookie, "ext_a").await.expect("ext_a")["managed_by"], "zf_lab");
+    assert!(listed_credential(&app, &cookie, "pg_given").await.expect("pg_given").get("managed_by").is_none());
+
+    // The change record names the door for its own, and the person for theirs.
+    let (status, body) = call(&app, Some(&cookie), "GET", &format!("/api/projects/{OWNER}/{PROJECT}/changes?path=credential:ext_a"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let changes: Value = serde_json::from_str(&body).expect("json");
+    let lines: Vec<(String, String)> = changes["changes"]
+        .as_array()
+        .expect("changes")
+        .iter()
+        .map(|line| (line["via"].as_str().unwrap_or_default().to_string(), line["action"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            ("studio".to_string(), "credential edit".to_string()),
+            ("control · lab-app".to_string(), "credential edit".to_string()),
+            ("control · lab-app".to_string(), "credential create".to_string()),
+        ],
+        "{body}"
+    );
+    assert!(!body.contains(&password));
+}
+
+/// The same door published as an MCP tool: an outside agent calls it, and the
+/// fence holds exactly as it does behind a webhook.
+#[tokio::test]
+async fn a_door_can_be_a_published_mcp_tool() {
+    use super::published_mcp::{addressing, call as mcp_call, rpc, text_of};
+    let root = TestDir(std::env::temp_dir().join(format!(
+        "zebflow-platform-zebflow-command-mcp-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    )));
+    let mut config = PlatformConfig::default();
+    config.data_root = root.0.clone();
+    config.default_password = "test-pass".to_string();
+    let platform = Arc::new(PlatformService::from_config(config).expect("platform"));
+    let app = zebflow::platform::web::router(platform.clone()).await;
+    let cookie = login(&app).await;
+    credential(&app, &cookie, "zf_lab", "zebflow_control", json!({ "scope": "modules/", "routes": "/m/", "tools": ["file_write"], "record_as": "lab-agent" })).await;
+    addressing(&app, &cookie, json!({ "hosts": [], "routes": [], "disabled": ["files", "ms"] })).await;
+    let door = "[t] trigger.mcp --route /lab --name zebflow_command --description \"Run commands in the lab.\" --parameter commands:array! \"The commands, each a tool and its arguments.\" --auth none\n\
+                [c] zebflow.command.run --credential zf_lab --command \"{{ input.mcp.arguments.commands }}\" --as agent\n\
+                [ok] web.response.send --body \"{{ input.command }}\"\n\
+                [no] web.response.send --status 403 --body \"{{ input.command }}\"\n\
+                [t] -> [c]\n[c] -> [ok]\n[c]:error -> [no]";
+    let ops = PlatformOps::new(platform.clone(), OWNER, PROJECT);
+    let registered = ops.pipeline_register(door, Some("pipelines/mcp-door.zf.json"), None, None, None, None).await;
+    assert!(!registered.text.starts_with("Error:") && !registered.text.starts_with("Parse error:"), "{}", registered.text);
+    let activated = ops.pipeline_activate("pipelines/mcp-door.zf.json").await;
+    assert!(!activated.text.starts_with("Error:"), "{}", activated.text);
+
+    let route = format!("/mcp/{OWNER}/{PROJECT}/lab");
+    let write = |path: &str| json!({ "commands": [{ "tool": "file_write", "arguments": { "rel_path": path, "content": "hello" } }] });
+    let (status, answer) = rpc(&app, &route, None, &[], mcp_call("zebflow_command", write("modules/note.md"))).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["result"]["isError"], json!(false), "{answer}");
+    assert!(root.0.join("users/superadmin/default/repo/modules/note.md").exists());
+    let (_, answer) = rpc(&app, &route, None, &[], mcp_call("zebflow_command", write("pages/x.md"))).await;
+    assert_eq!(answer["result"]["isError"], json!(true), "{answer}");
+    assert!(text_of(&answer).contains("outside modules/"), "{answer}");
+    assert!(!root.0.join("users/superadmin/default/repo/pages/x.md").exists());
+}

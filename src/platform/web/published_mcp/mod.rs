@@ -339,11 +339,12 @@ async fn answer(state: PlatformAppState, owner: String, project: String, tail: S
         issuer: issuer.as_ref(),
         limit: limit.as_deref(),
     };
-    if let Err(response) = door.check() {
-        return response;
-    }
+    let auth = match door.check() {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
 
-    let server = PublishedServer { state: state.clone(), owner, project, route, tools: Arc::new(tools) };
+    let server = PublishedServer { state: state.clone(), owner, project, route, tools: Arc::new(tools), auth };
     serve(server, request.method, request.uri, request.headers, request.body).await
 }
 

@@ -59,6 +59,60 @@ the package or fetched at install; the lock's is **provenance** of the package
 (`hub.*` | `direct.*`). Every installed library loads from its installed copy.
 They were coherent by accident before this line existed.
 
+## Project libraries (amendment 2026-11-19, candidate)
+
+A library a project built itself from a `LibraryRecipe`
+(`library-recipe/README.md`). It is private to the one project it is uploaded
+to, and is imported without the `zeb/` prefix: `site-a-lib/world`.
+
+```json
+"versions": {
+  "0.1.0": {
+    "source": "offline",
+    "package_version": "0.1.0",
+    "recipe": "sha256:…",
+    "entries": {
+      "world": { "file": "0.1.0/runtime/world.mjs", "exports": ["World", "useWorld"] },
+      "all":   { "file": "0.1.0/runtime/all.mjs",   "exports": ["World", "useWorld", "OrbitControls"] }
+    },
+    "workers": { "geometry": "0.1.0/runtime/geometry.worker.mjs" },
+    "files": {
+      "0.1.0/runtime/world.mjs":           { "size_bytes": 21430,  "integrity": "sha256:…" },
+      "0.1.0/runtime/chunk-3f2a9c.mjs":    { "size_bytes": 265343, "integrity": "sha256:…" },
+      "0.1.0/runtime/geometry.worker.mjs": { "size_bytes": 193,    "integrity": "sha256:…" },
+      "0.1.0/data/terrain.bin":            { "size_bytes": 812000, "integrity": "sha256:…" }
+    }
+  }
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `entries` | replaces `entry`; a version has one or the other. Each key is an import subpath; `file` is listed in `files`; `exports` non-empty. `spec.exports` is the union. |
+| `workers` | name -> a file listed in `files`; served beside the entries, so `new URL("./<name>.worker.mjs", import.meta.url)` finds it |
+| `files` | **every** file of the version: entries, chunks, workers, styles, data. Each with `size_bytes` and `integrity`. A file not listed is not served. |
+| `recipe` | digest of the recipe folder and `bun.lock` that built it; shown in Studio, never trusted for anything |
+| `integrity` / `size_bytes` at version level | absent when `entries` is used; each file carries its own |
+| name | `metadata.name` and `spec.name` follow the recipe's name rule; never `zeb/…` |
+
+**Upload.** Studio, project Settings → Libraries → Upload library takes one
+zip: `manifest.json` plus the version folder. Zebflow refuses the whole zip
+unless every file is listed, every listed file is present, and every digest and
+size match; then it installs to the project's `data/hub/rwe-libraries/`,
+locks it in `zeb.lock` (source `direct.file`), and enables it. A name already
+installed in the project is replaced only by a higher version, or by the same
+version with the same digests. Maintainers only.
+
+**Serving.** Every listed file is served from the page's own host, under the
+project's library path, with its content type (`.mjs` as JavaScript). Each
+file is checked against its own digest before it is served, not only the entry.
+
+**On the page.** `import { World } from "site-a-lib/world"` lowers to
+`globalThis.__zebLibs["site-a-lib/world"]["World"]`, the same as a `zeb/*`
+library; the page loads only the entries it imports. On the server each entry
+is an inert stand-in (callable, constructible, `undefined` for `then`), so a
+library that only runs in effects renders; its real code runs in the browser.
+
 ## Rejections
 
 Unknown root fields, unknown spec fields, wrong kind, future `apiVersion`,

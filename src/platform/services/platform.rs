@@ -226,6 +226,7 @@ impl PlatformService {
         let project_members = Arc::new(ProjectMembershipService::new(data.clone(), authz.clone()));
         let project_invites = Arc::new(ProjectInviteService::new(data.clone()));
         let credentials = Arc::new(CredentialService::new(data.clone(), reqwest::Client::new()));
+        credentials.attach_change_log(changes.clone());
         let addressing = Arc::new(crate::platform::services::addressing::AddressingService::new(
             data.clone(),
             file.clone(),

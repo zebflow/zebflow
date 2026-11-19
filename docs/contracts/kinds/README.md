@@ -30,6 +30,7 @@ explicitly.
 | 18 | [`OfficeTopology`](./office-topology/README.md) | Database records plus one provisioning file | Review |
 | 19 | [`HubRepositoryIndex`](./hub-repository-index/README.md) | Envelope, transferred index | Candidate |
 | 20 | [`ProcessRef`](./process-ref/README.md) | Inline payload, with a per-project process record | Candidate |
+| 21 | [`LibraryRecipe`](./library-recipe/README.md) | Envelope, persisted file (`library.yaml`) | Candidate |
 
 ## Required Contents
 

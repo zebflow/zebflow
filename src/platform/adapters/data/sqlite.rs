@@ -1244,7 +1244,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 26] {
+    fn migrations() -> [MigrationDef; 27] {
         [
             MigrationDef {
                 version: 1,
@@ -1375,6 +1375,11 @@ impl SqliteDataAdapter {
                 version: 26,
                 name: "project_changes",
                 apply: Self::apply_migration_0026_project_changes,
+            },
+            MigrationDef {
+                version: 27,
+                name: "credential_managed_by",
+                apply: Self::apply_migration_0027_credential_managed_by,
             },
         ]
     }
@@ -3359,6 +3364,14 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         Self::ensure_table_column(tx, "worker_registry", "projects_json", "TEXT NOT NULL DEFAULT '[]'")
     }
 
+    /// Which door's fence manages a credential (`app-control.md`): empty for
+    /// every credential a person made.
+    fn apply_migration_0027_credential_managed_by(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        tx.execute_batch("ALTER TABLE project_credentials ADD COLUMN managed_by TEXT NOT NULL DEFAULT '';")
+            .map_err(Self::qe)?;
+        Ok(())
+    }
+
     /// The change record (`project.md` § Change record): one line per change
     /// Zebflow makes in a project's `repo/`.
     fn apply_migration_0026_project_changes(tx: &Transaction<'_>) -> Result<(), PlatformError> {
@@ -4278,7 +4291,7 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<Option<ProjectCredential>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at
+            "SELECT owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at, managed_by
              FROM project_credentials WHERE owner = ?1 AND project = ?2 AND credential_id = ?3",
             params![owner, project, credential_id],
             |row| {
@@ -4292,6 +4305,7 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             },
         );
@@ -4306,6 +4320,7 @@ impl DataAdapter for SqliteDataAdapter {
                 notes,
                 created_at,
                 updated_at,
+                managed_by,
             )) => {
                 let secret = self.open_secret_json(&secret_json)?;
                 Ok(Some(ProjectCredential {
@@ -4316,6 +4331,7 @@ impl DataAdapter for SqliteDataAdapter {
                     kind,
                     secret,
                     notes,
+                    managed_by,
                     created_at,
                     updated_at,
                 }))
@@ -4330,8 +4346,8 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO project_credentials
-             (owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at, managed_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 &cred.owner,
                 &cred.project,
@@ -4342,6 +4358,7 @@ impl DataAdapter for SqliteDataAdapter {
                 &cred.notes,
                 cred.created_at,
                 cred.updated_at,
+                &cred.managed_by,
             ],
         )
         .map_err(Self::qe)?;
@@ -4356,7 +4373,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at
+                "SELECT owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at, managed_by
                  FROM project_credentials WHERE owner = ?1 AND project = ?2
                  ORDER BY credential_id ASC",
             )
@@ -4373,6 +4390,7 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             })
             .map_err(Self::qe)?
@@ -4388,6 +4406,7 @@ impl DataAdapter for SqliteDataAdapter {
                     notes,
                     created_at,
                     updated_at,
+                    managed_by,
                 )| {
                     Ok(ProjectCredential {
                         owner,
@@ -4397,6 +4416,7 @@ impl DataAdapter for SqliteDataAdapter {
                         kind,
                         secret: self.open_secret_json(&secret_json)?,
                         notes,
+                        managed_by,
                         created_at,
                         updated_at,
                     })
@@ -8439,6 +8459,7 @@ mod tests {
             kind: "postgres".to_string(),
             secret,
             notes: String::new(),
+            managed_by: String::new(),
             created_at: 1,
             updated_at: 1,
         }
@@ -8781,6 +8802,7 @@ mod tests {
                 kind: "postgres".to_string(),
                 secret: json!({"password": "hunter2"}),
                 notes: String::new(),
+                managed_by: String::new(),
                 created_at: 1,
                 updated_at: 1,
             })

@@ -99,7 +99,7 @@ fn restore_masked(incoming: &Value, stored: Option<&Value>, path: &str) -> Resul
 /// A JSON merge patch (RFC 7396) applied to `target`: an object patch
 /// merges key by key, `null` removes a key, any other value replaces what
 /// was there.
-fn merge_patch(target: &mut Value, patch: &Value) {
+pub(crate) fn merge_patch(target: &mut Value, patch: &Value) {
     let Value::Object(patch) = patch else {
         *target = patch.clone();
         return;
@@ -224,6 +224,9 @@ pub struct CredentialService {
     /// credential at once cannot undo each other (a PATCH bringing back the
     /// key a rotation replaced).
     saving: std::sync::Mutex<()>,
+    /// Where each create, change and delete is recorded (`project.md`
+    /// § Change record) — the credential's id, never its secret.
+    changes: crate::platform::services::change_log::ChangeSink,
 }
 
 impl CredentialService {
@@ -234,7 +237,22 @@ impl CredentialService {
             http_client,
             refreshing: tokio::sync::Mutex::new(HashSet::new()),
             saving: std::sync::Mutex::new(()),
+            changes: Default::default(),
         }
+    }
+
+    /// Records every credential create, change and delete from now on.
+    pub fn attach_change_log(&self, log: Arc<crate::platform::services::change_log::ChangeLog>) {
+        self.changes.attach(log);
+    }
+
+    fn record(&self, owner: &str, project: &str, action: &str, credential_id: &str) {
+        let change = crate::platform::services::change_log::Change {
+            action: format!("credential {action}"),
+            path: format!("credential:{credential_id}"),
+            ..Default::default()
+        };
+        self.changes.record(owner, project, change);
     }
 
     /// Lists safe project credential summaries.
@@ -280,6 +298,7 @@ impl CredentialService {
                     auth_roles,
                     secure_request_vars,
                     oauth2_status,
+                    managed_by: credential.managed_by,
                     created_at: credential.created_at,
                     updated_at: credential.updated_at,
                 }
@@ -326,15 +345,32 @@ impl CredentialService {
         req: &UpsertProjectCredentialRequest,
     ) -> Result<ProjectCredential, PlatformError> {
         let _saving = self.saving.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.save_credential(owner, project, req)
+        self.save_credential(owner, project, req, None)
     }
 
-    /// The save itself; the caller holds `saving`.
+    /// Creates or updates one credential on behalf of a control door: the
+    /// saved credential is marked as managed by the fence `managed_by`
+    /// (`app-control.md`). The door's own rules are checked by the caller.
+    pub fn upsert_managed_credential(
+        &self,
+        owner: &str,
+        project: &str,
+        managed_by: &str,
+        req: &UpsertProjectCredentialRequest,
+    ) -> Result<ProjectCredential, PlatformError> {
+        let _saving = self.saving.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.save_credential(owner, project, req, Some(managed_by))
+    }
+
+    /// The save itself; the caller holds `saving`. `managed_by` sets the
+    /// door mark; `None` keeps the stored one, so a person editing a door's
+    /// credential in Studio does not take it away from the door.
     fn save_credential(
         &self,
         owner: &str,
         project: &str,
         req: &UpsertProjectCredentialRequest,
+        managed_by: Option<&str>,
     ) -> Result<ProjectCredential, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
@@ -374,6 +410,16 @@ impl CredentialService {
             crate::platform::services::webhook_signature::validate(&secret)
                 .map_err(|err| PlatformError::new("PLATFORM_CREDENTIAL_INVALID", err))?;
         }
+        // A fence that draws no real boundary is refused when it is saved,
+        // not when a door first runs.
+        if kind == crate::pipeline::nodes::basic::zebflow::command::CREDENTIAL_KIND {
+            crate::pipeline::nodes::basic::zebflow::command::Fence::from_secret(&credential_id, &secret)
+                .map_err(|err| PlatformError::new("PLATFORM_CREDENTIAL_INVALID", err.message))?;
+        }
+        let managed_by = match managed_by {
+            Some(fence) => fence.to_string(),
+            None => existing.as_ref().map(|row| row.managed_by.clone()).unwrap_or_default(),
+        };
         let credential = ProjectCredential {
             owner: owner.clone(),
             project: project.clone(),
@@ -386,10 +432,13 @@ impl CredentialService {
             kind,
             secret,
             notes: req.notes.trim().to_string(),
+            managed_by,
             created_at,
             updated_at: now,
         };
         self.data.put_project_credential(&credential)?;
+        let action = if existing.is_some() { "edit" } else { "create" };
+        self.record(&owner, &project, action, &credential.credential_id);
         Ok(credential)
     }
 
@@ -433,6 +482,7 @@ impl CredentialService {
                 secret,
                 notes: req.notes.clone().unwrap_or(existing.notes),
             },
+            None,
         )
     }
 
@@ -486,7 +536,9 @@ impl CredentialService {
             ));
         }
         self.data
-            .delete_project_credential(&owner, &project, &credential_id)
+            .delete_project_credential(&owner, &project, &credential_id)?;
+        self.record(&owner, &project, "delete", &credential_id);
+        Ok(())
     }
 
     // ── OAuth2 token management ─────────────────────────────────────────────
@@ -1041,7 +1093,7 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
             fields: vec![
                 F { placeholder: Some("modules/".into()), help: Some("Repository folder: files and pipelines are written only here.".into()), ..f("scope", "Folder") },
                 F { placeholder: Some("/m/".into()), help: Some("Route prefix: a webhook it makes answers only under this.".into()), ..f("routes", "Route prefix") },
-                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. file_write".into()), help: Some("Operations it may run: file_list, file_read, file_write, file_edit, file_delete, pipeline_get, pipeline_register, pipeline_activate, pipeline_deactivate, pipeline_delete.".into()), ..f("tools", "Operations") },
+                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. file_write".into()), help: Some("Operations it may run: file_list, file_read, file_write, file_edit, file_delete, pipeline_get, pipeline_register, pipeline_activate, pipeline_deactivate, pipeline_delete, credential_list, credential_create, credential_update, credential_delete.".into()), ..f("tools", "Operations") },
                 F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. pg_modules".into()), help: Some("Credentials the pipelines it makes may use, by id. Their secrets are never shown to it.".into()), ..f("delegate", "Delegated credentials") },
                 F {
                     field_type: "select".into(),
@@ -1054,6 +1106,8 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
                     ..f("nodes_mode", "Node list mode")
                 },
                 F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. kv.* or postgres.query.run".into()), help: Some("Kinds or families. In deny mode an empty list denies the project's shared stores: sekejap.*, sqlite.*, kv.*, fs.*, table.*, function.*.".into()), ..f("nodes", "Nodes") },
+                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. postgres".into()), help: Some("Credential kinds the door may create, change and delete for itself; never zebflow_control. Needed by credential_create.".into()), ..f("manage_kinds", "Kinds it may create") },
+                F { field_type: "number".into(), placeholder: Some("50".into()), help: Some("At most this many credentials made through the door; empty for no limit.".into()), ..f("manage_limit", "Limit") },
                 F { placeholder: Some("the credential id".into()), help: Some("How the change record names changes made through this fence.".into()), ..f("record_as", "Recorded as") },
             ],
             ..Default::default()
@@ -1260,6 +1314,7 @@ mod tests {
             kind: kind.into(),
             secret,
             notes: String::new(),
+            managed_by: String::new(),
             created_at: 1,
             updated_at: 1,
         }

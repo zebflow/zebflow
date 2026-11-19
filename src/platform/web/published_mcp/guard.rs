@@ -158,12 +158,13 @@ pub(super) struct Door<'a> {
 }
 
 impl Door<'_> {
-    /// Admits the request, or answers the refusal. The caller has checked
+    /// Admits the request with the caller's verified token claims (none for
+    /// `none` and `api_key`), or answers the refusal. The caller has checked
     /// that the route has tools and that they declare the same guard.
-    pub(super) fn check(&self) -> Result<(), Response> {
+    pub(super) fn check(&self) -> Result<Option<Value>, Response> {
         let (auth_type, credential, roles, _) = self.tools[0].spec.guard();
         if auth_type == "none" {
-            return Ok(());
+            return Ok(None);
         }
         let verified = if auth_type == "oauth" {
             self.oauth(&credential, &roles)
@@ -183,7 +184,7 @@ impl Door<'_> {
             )
         };
         let (response, reason, counted) = match verified {
-            Ok(_) => return Ok(()),
+            Ok(claims) => return Ok(claims),
             Err(AuthError::Unauthenticated { message, .. }) => (self.challenge(unauthenticated()), message, true),
             Err(AuthError::Forbidden { message, .. }) => (forbidden(), message, true),
             // The operator's mistake (a credential gone or of the wrong

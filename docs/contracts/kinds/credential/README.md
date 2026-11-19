@@ -42,6 +42,11 @@ Survey behind these decisions:
 | `fields` | the values the type declares public; stored as they are |
 | `secret` | every other value, encrypted as one blob |
 | `notes` | the operator's own note, not a secret |
+| `managed_by` | the `zebflow_control` fence whose door created it (`app-control.md`); empty when a person made it. A person's edit keeps it |
+
+Every create, change and delete is a line in the change record
+(`project.md` § Change record): action `credential create|edit|delete`, path
+`credential:<id>`, never a secret.
 
 ## Which fields are secret
 
@@ -72,52 +77,27 @@ A credential type declares each field:
 ## The `zebflow_control` fence
 
 A `zebflow_control` credential is not a secret. It is the fence a
-`zebflow.command.run` node works inside, kept as a credential so that only a
-maintainer in Studio makes or changes it, and nothing the node does can widen
-it.
+`zebflow.command.run` door works inside, kept as a credential so that only a
+maintainer in Studio makes or changes it, and nothing a door does can widen
+it. What each field means and every rule a door follows: `app-control.md`.
 
 ```yaml
 scope: modules/            # files and pipelines are written only here
 routes: /m/                # a webhook it makes answers only under this
-tools: [file_write, pipeline_register, pipeline_activate]
-delegate: [pg_modules]     # credentials its pipelines may use, by id
+tools: [file_write, pipeline_register, pipeline_activate, credential_create]
+delegate: [pg_modules]     # credentials handed to the door, by id
 nodes_mode: deny           # deny: all but `nodes` · allow: only `nodes`
 nodes: []                  # kinds or families; empty in deny = the shared stores
+manage_kinds: [postgres]   # kinds the door may create
+manage_limit: 50           # optional; empty = no limit
 record_as: site-a-app      # how the change record names it
 ```
 
-- **`scope`** is a folder inside the repository, never the root. A path is
-  inside only under it: `modules-old/` is not inside `modules/`, and `..` never
-  is.
-- **`tools`** opens operations from a closed list: `file_list` `file_read`
-  `file_write` `file_edit` `file_delete` `pipeline_get` `pipeline_register`
-  `pipeline_activate` `pipeline_deactivate` `pipeline_delete`.
-- **Files and pipelines are separate doors.** The file operations refuse a
-  pipeline file (`.zf.json`); a pipeline changes only through
-  `pipeline_register` and `pipeline_delete`. A path with `..`, a leading `/` or
-  a backslash is refused, not repaired, and no link inside `scope` is followed
-  out of it. `scope` itself cannot be deleted.
-- **A made pipeline** is checked from its body before it is saved, again from
-  the saved file right after (a check that fails takes it back out), and again
-  when it is switched on. Every node is a kind in the catalogue exactly as
-  written. It starts with `trigger.webhook`, `trigger.schedule` or
-  `trigger.manual` (not `trigger.function`: a function's name is project-wide);
-  a webhook route lies under `routes` and carries no `%`, `\`, `?`, `#`, space
-  or `.`/`..` segment; every credential it names — under any key its node's
-  definition marks, or any key spelled with "credential", however nested — is
-  in `delegate`, written out, never an expression; and it never uses
-  `zebflow.*`, whatever the list says.
-- **`nodes`** decides the rest. In `deny` mode (the default) a made pipeline
-  may use every node but those listed; an empty list denies the project's
-  shared stores (`sekejap.*`, `sqlite.*`, `kv.*`, `fs.*`, `table.*`,
-  `function.*`), which have no fence of their own. In `allow` mode it may use
-  only the nodes listed, its trigger included. An entry is a kind or a family (`kv.*`); one naming no
-  node in the catalogue is refused. A made pipeline's data lives in a delegated
-  database, fenced by that database's own permissions.
-- **Delegated credentials are used, never read**: their secrets are not shown
-  to the node or to anything it makes.
-- **The change record** names every change `control · <record_as>` and the
-  person the node passes with `--as`.
+Saved only when it draws a real boundary: `scope` a folder that is not the
+root, `routes` a prefix that is not the whole site, `tools` from the closed
+list, `nodes` naming real kinds or families, `manage_kinds` real kinds and
+never `zebflow_control`, `credential_create` only with `manage_kinds`,
+`manage_limit` from 1 to 10000. A refused fence is refused when it is saved.
 
 Evidence: `zebflow::command` unit tests; `tests/platform/zebflow_command.rs`.
 

@@ -606,3 +606,25 @@ async fn an_mcp_client_round_trip_over_http_on_two_routes() {
     assert_eq!(seen[0], seen[1]);
     server.abort();
 }
+
+/// A run knows who called: the verified token's claims are `mcp.auth`, as
+/// `webhook.auth` is for a webhook, so a tool can act for that person. A route
+/// with no token has none.
+#[tokio::test]
+async fn a_run_receives_the_callers_verified_claims() {
+    let root = temp_dir("published-mcp-claims");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    two_servers(&app, &cookie).await;
+    staff_server(&app, &cookie).await;
+    publish(&app, &cookie, "staff-whoami", r#"| trigger.mcp --route /staff --name whoami --description "Who is calling." --auth jwt --credential staff-signing --role staff | web.response.send --body "{{ { sub: input.mcp.auth.sub, roles: input.mcp.auth.roles, trigger: $trigger.auth.sub } }}""#).await;
+    let staff = format!("/mcp/{OWNER}/{PROJECT}/staff");
+    let bearer = format!("Bearer {}", app_token(&["staff"], 3600, SIGNING_SECRET));
+    let (status, called) = rpc(&app, &staff, None, &[("authorization", bearer.as_str())], call("whoami", json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{called}");
+    assert_eq!(serde_json::from_str::<Value>(&text_of(&called)).expect("json"), json!({ "sub": "agent-1", "roles": ["staff"], "trigger": "agent-1" }));
+
+    publish(&app, &cookie, "library-whoami", r#"| trigger.mcp --route /library --name whoami --description "Who is calling." --auth none | web.response.send --body "{{ { auth: input.mcp.auth } }}""#).await;
+    let (_, called) = rpc(&app, &format!("/mcp/{OWNER}/{PROJECT}/library"), None, &[], call("whoami", json!({}))).await;
+    assert_eq!(serde_json::from_str::<Value>(&text_of(&called)).expect("json"), json!({}), "no token, no auth: {called}");
+}

@@ -229,6 +229,9 @@ fn every_mcp_tool_the_help_names_exists() {
         rest = &rest[fn_at + 9..];
     }
     assert!(tools.contains("start_here") && tools.contains("pipeline_register"), "tool scan is broken: {tools:?}");
+    // A control door's operations (`zebflow.command.run`, `app-control.md`)
+    // share the tool names' shape; help naming one of them names a real thing.
+    tools.extend(zebflow::pipeline::nodes::basic::zebflow::command::TOOLS.iter().map(|tool| tool.to_string()));
 
     let domains = ["pipeline_", "file_", "template_", "docs_", "connection_", "credential_", "help_", "list_ui", "install_ui", "git_", "move_", "start_", "run_", "read_", "write_", "list_", "describe_"];
     // Field, flag and event names that share a prefix with a tool domain but

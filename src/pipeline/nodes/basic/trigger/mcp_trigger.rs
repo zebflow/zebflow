@@ -23,10 +23,11 @@
 //! | `--role` | no | a role of the token (`jwt`, `oauth`) allowed in, repeated |
 //! | `--errors` | no | `show` or `hide`: what a failed run reveals in the tool error |
 //!
-//! # The answer: `mcp: { route, tool_name, arguments }`
+//! # The answer: `mcp: { route, tool_name, arguments, auth }`
 //!
 //! The route's server builds the envelope before the run; `$trigger` is the
-//! same envelope. The tool result is what `web.response.send` answers (its
+//! same envelope. `auth` is the caller's verified token claims on a `jwt` or
+//! `oauth` route, as `webhook.auth` is; absent otherwise. The tool result is what `web.response.send` answers (its
 //! `--body`); a status of 400 or more is a tool error with that body, and a
 //! run that reaches none answers an empty result.
 //!
@@ -181,14 +182,14 @@ pub fn definition() -> NodeDefinition {
             The server answers on the mcp surface, off by default — `/_mcp/ROUTE` on the project's hosts, `/mcp/{owner}/{project}/ROUTE` on the platform — \
             and never on the project's dev MCP. `--auth` is required (`none` publishes openly) and is the app's own — a key or a token from its credentials, never a Zebflow account or session; \
             `--auth oauth --login /auth/login` lets ChatGPT and claude.ai connectors sign people in through the app's own login page (which ends in `auth.oauth.approve`). \
-            Answers one key, `mcp`: `{ route, tool_name, arguments }` — an argument is `input.mcp.arguments.<name>` \
-            (`$trigger.arguments.<name>` later). The tool result is what `web.response.send` answers (its `--body`); a status of 400 or more \
+            Answers one key, `mcp`: `{ route, tool_name, arguments, auth }` — an argument is `input.mcp.arguments.<name>` \
+            (`$trigger.arguments.<name>` later); `auth` is the caller's verified token claims on a jwt or oauth route (`input.mcp.auth.sub`), as `webhook.auth` is. The tool result is what `web.response.send` answers (its `--body`); a status of 400 or more \
             is a tool error with that body, and a run that reaches no `web.response.send` answers an empty result — the run's value is never sent. \
             A refused credential is 401 (403 for a role the route does not admit), and 20 refusals a minute from one client answer 429."
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "description": "The envelope the route's server builds: route, tool_name, arguments."
+            "description": "The envelope the route's server builds: route, tool_name, arguments, and auth (the caller's verified token claims, jwt and oauth routes)."
         }),
         output_schema: json!({
             "type": "object",
@@ -198,7 +199,8 @@ pub fn definition() -> NodeDefinition {
                     "properties": {
                         "route": { "type": "string" },
                         "tool_name": { "type": "string" },
-                        "arguments": { "type": "object" }
+                        "arguments": { "type": "object" },
+                        "auth": { "type": "object", "description": "The caller's verified token claims (sub, roles, …); absent on none and api_key routes." }
                     }
                 }
             }
@@ -327,7 +329,7 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        // The route's server built `{ route, tool_name, arguments }`.
+        // The route's server built `{ route, tool_name, arguments, auth }`.
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: super::answer_under(ANSWER_KEY, input.payload),

@@ -263,6 +263,10 @@ pub struct ProjectCredential {
     pub secret: serde_json::Value,
     /// Optional freeform notes.
     pub notes: String,
+    /// The `zebflow_control` fence whose door created this credential and
+    /// alone may change it (`app-control.md`); empty when a person made it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub managed_by: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
@@ -292,6 +296,9 @@ pub struct ProjectCredentialListItem {
     /// Values: "" (non-oauth2), "not_configured", "authorized", "expired".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub oauth2_status: String,
+    /// The fence whose door manages this credential; empty when a person made it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub managed_by: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.

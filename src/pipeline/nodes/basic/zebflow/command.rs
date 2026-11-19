@@ -65,6 +65,10 @@ pub const TOOLS: &[&str] = &[
     "pipeline_activate",
     "pipeline_deactivate",
     "pipeline_delete",
+    "credential_list",
+    "credential_create",
+    "credential_update",
+    "credential_delete",
 ];
 
 /// What a fence in deny mode refuses when it names nothing itself: the
@@ -118,6 +122,9 @@ fn pattern_names(pattern: &str, kind: &str) -> bool {
 /// What a `zebflow_control` credential allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fence {
+    /// The fence credential's own id: what its door's credentials are marked
+    /// as managed by.
+    pub id: String,
     /// Repository folder, ending in `/`: files and pipelines live only here.
     pub scope: String,
     /// Route prefix, ending in `/`: a made webhook answers only under it.
@@ -132,8 +139,15 @@ pub struct Fence {
     /// Kinds (`kv.entry.get`) or families (`kv.*`); in deny mode an empty list
     /// means [`DEFAULT_DENY`].
     pub nodes: Vec<String>,
+    /// Credential kinds the door may create; empty means none.
+    pub manage_kinds: Vec<String>,
+    /// How many credentials the door may manage at once; `None` is no limit.
+    pub manage_limit: Option<u32>,
     /// How the change record names this fence.
     pub record_as: String,
+    /// The credentials this door manages now, read when it runs; never from
+    /// the secret.
+    pub managed: Vec<String>,
 }
 
 fn config_error(message: impl Into<String>) -> PipelineError {
@@ -208,15 +222,40 @@ impl Fence {
         if nodes_mode == NodesMode::Allow && nodes.is_empty() {
             return Err(config_error(format!("credential '{credential_id}': `nodes_mode: allow` needs `nodes`, the nodes a made pipeline may use")));
         }
+        let manage_kinds = list_field(secret, "manage_kinds");
+        let kinds = crate::platform::services::credential::builtin_credential_types();
+        if let Some(kind) = manage_kinds.iter().find(|kind| kind.as_str() == CREDENTIAL_KIND || !kinds.iter().any(|def| &def.kind == *kind)) {
+            let why = if kind == CREDENTIAL_KIND { "a door may never create another fence" } else { "it is not a credential kind" };
+            return Err(config_error(format!("credential '{credential_id}': `manage_kinds` names '{kind}'; {why}")));
+        }
+        if tools.iter().any(|tool| tool == "credential_create") && manage_kinds.is_empty() {
+            return Err(config_error(format!("credential '{credential_id}': `credential_create` needs `manage_kinds`, the kinds the door may create")));
+        }
+        let manage_limit = match secret.get("manage_limit") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) if text.trim().is_empty() => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+                    .filter(|limit| (1..=10_000).contains(limit))
+                    .ok_or_else(|| config_error(format!("credential '{credential_id}': `manage_limit` is a whole number from 1 to 10000, or empty for no limit")))?
+                    as u32,
+            ),
+        };
         let record_as = text_field(secret, "record_as");
         Ok(Self {
+            id: credential_id.to_string(),
             scope: format!("{scope}/"),
             routes: format!("{routes}/"),
             tools,
             delegate: list_field(secret, "delegate"),
             nodes_mode,
             nodes,
+            manage_kinds,
+            manage_limit,
             record_as: if record_as.is_empty() { credential_id.to_string() } else { record_as },
+            managed: Vec::new(),
         })
     }
 
@@ -309,17 +348,18 @@ fn credential_refs(config: &Value, marked: &[String]) -> Vec<String> {
 /// under the prefix, delegated credentials only.
 pub fn check_graph(graph: &PipelineGraph, fence: &Fence) -> Result<(), String> {
     let catalogue = crate::pipeline::nodes::basic::builtin_node_definitions();
-    for node in &graph.nodes {
+    for (index, node) in graph.nodes.iter().enumerate() {
+        let who = node_name(index, &node.id);
         let kind = node.kind.as_str();
         let family = kind.split('.').next().unwrap_or_default();
         if !catalogue.iter().any(|def| def.kind == kind) {
-            return Err(format!("node '{}' is '{kind}', which may not be used: it is not in the catalogue exactly as written", node.id));
+            return Err(format!("{who} is '{kind}', which may not be used: it is not in the catalogue exactly as written"));
         }
         if family == NEVER_FAMILY {
-            return Err(format!("node '{}' is {kind}; a made pipeline may never use {NEVER_FAMILY}.*", node.id));
+            return Err(format!("{who} is {kind}; a made pipeline may never use {NEVER_FAMILY}.*"));
         }
         if family == "trigger" && !ALLOWED_TRIGGERS.contains(&kind) {
-            return Err(format!("node '{}' is {kind}; a made pipeline starts with {}", node.id, ALLOWED_TRIGGERS.join(", ")));
+            return Err(format!("{who} is {kind}; a made pipeline starts with {}", ALLOWED_TRIGGERS.join(", ")));
         }
         // In allow mode a trigger is listed like any node; in deny mode the
         // list governs the nodes after it.
@@ -332,12 +372,12 @@ pub fn check_graph(graph: &PipelineGraph, fence: &Fence) -> Result<(), String> {
                         fence.nodes.iter().map(String::as_str).collect()
                     };
                     if let Some(pattern) = denied.iter().find(|pattern| pattern_names(pattern, kind)) {
-                        return Err(format!("node '{}' is {kind}; this fence denies {pattern}", node.id));
+                        return Err(format!("{who} is {kind}; this fence denies {pattern}"));
                     }
                 }
                 NodesMode::Allow => {
                     if !fence.nodes.iter().any(|pattern| pattern_names(pattern, kind)) {
-                        return Err(format!("node '{}' is {kind}; this fence allows only {}", node.id, fence.nodes.join(", ")));
+                        return Err(format!("{who} is {kind}; this fence allows only {}", fence.nodes.join(", ")));
                     }
                 }
             }
@@ -345,19 +385,25 @@ pub fn check_graph(graph: &PipelineGraph, fence: &Fence) -> Result<(), String> {
         if kind == "trigger.webhook" {
             let route = node.config.get("route").and_then(Value::as_str).unwrap_or_default();
             if !fence.holds_route(route) {
-                return Err(format!("node '{}' answers at '{route}', outside {}", node.id, fence.routes));
+                return Err(format!("{who} answers at '{route}', outside {}", fence.routes));
             }
         }
         for id in credential_refs(&node.config, &credential_keys(kind, &catalogue)) {
             if id.contains("{{") {
-                return Err(format!("node '{}' names its credential with an expression; a made pipeline names a delegated credential as written", node.id));
+                return Err(format!("{who} names its credential with an expression; a made pipeline names a delegated credential as written"));
             }
-            if !fence.delegate.contains(&id) {
-                return Err(format!("node '{}' uses credential '{id}', which is not delegated to this fence", node.id));
+            if !fence.delegate.contains(&id) && !fence.managed.contains(&id) {
+                return Err(format!("{who} uses credential '{id}', which is not delegated to this fence"));
             }
         }
     }
     Ok(())
+}
+
+/// How a refusal names a node: its place in the pipeline as written, and the
+/// author's label when there is one (pipe mode labels nodes `n0`, `n1`, …).
+fn node_name(index: usize, id: &str) -> String {
+    if id == format!("n{index}") { format!("node {}", index + 1) } else { format!("node {} ('{id}')", index + 1) }
 }
 
 /// The commands `--command` carries, each a tool and its arguments.
@@ -529,7 +575,10 @@ impl Node {
             "file_write" => {
                 let path = self.fenced_file(fence, owner, project, arguments, "rel_path")?;
                 let content = arguments.get("content").and_then(Value::as_str).ok_or("`content` is required")?;
-                answered(ops.file_write(&path, content))
+                // The app sent the content; answering it back doubles a
+                // large file for nothing.
+                answered(ops.file_write(&path, content))?;
+                Ok(json!({ "ok": true, "rel_path": path, "bytes": content.len() }))
             }
             "file_edit" => {
                 let path = self.fenced_file(fence, owner, project, arguments, "rel_path")?;
@@ -589,6 +638,10 @@ impl Node {
                 let identity = self.fenced_pipeline(fence, owner, project, arguments)?;
                 ops.pipeline_delete(&identity).await
             }
+            "credential_list" => super::managed::list(&self.platform, owner, project, fence),
+            "credential_create" => super::managed::create(&self.platform, owner, project, fence, arguments),
+            "credential_update" => super::managed::update(&self.platform, owner, project, fence, arguments),
+            "credential_delete" => super::managed::delete(&self.platform, owner, project, fence, arguments),
             other => Err(format!("`{other}` is not an operation this node runs")),
         }
     }
@@ -699,7 +752,8 @@ impl NodeHandler for Node {
                 credential.credential_id, credential.kind
             )));
         }
-        let fence = Fence::from_secret(&credential.credential_id, &credential.secret)?;
+        let mut fence = Fence::from_secret(&credential.credential_id, &credential.secret)?;
+        fence.managed = super::managed::managed_ids(&self.platform, &owner, &project, &fence).map_err(|err| PipelineError::new(CODE, err))?;
         let commands = parse_commands(&self.config.command)?;
         let person = match &self.config.as_person {
             Value::String(text) => text.trim().chars().filter(|c| !c.is_control()).take(80).collect(),
@@ -714,7 +768,7 @@ impl NodeHandler for Node {
                 match self.run_one(&fence, &owner, &project, tool, arguments).await {
                     Ok(answer) => results.push(json!({ "tool": tool, "ok": true, "answer": answer })),
                     Err(reason) => {
-                        let code = if ["outside", "not opened", "may never", "denies", "allows only", "not delegated", "starts with", "pipeline file", "a link", "own folder", "not a plain path", "expression", "not in the catalogue", "failed the check"].iter().any(|word| reason.contains(word)) {
+                        let code = if ["outside", "not opened", "may never", "denies", "allows only", "not delegated", "starts with", "pipeline file", "a link", "own folder", "not a plain path", "expression", "not in the catalogue", "failed the check", "not managed by", "door manages", "may never create", "not an outside address", "its limit", "already exists", "delegated to this door"].iter().any(|word| reason.contains(word)) {
                             REFUSED_CODE
                         } else {
                             CODE
@@ -757,7 +811,11 @@ mod tests {
             json!({ "scope": "../other", "routes": "/m", "tools": ["file_write"] }),
             json!({ "scope": "modules", "routes": "/", "tools": ["file_write"] }),
             json!({ "scope": "modules", "routes": "/m", "tools": [] }),
-            json!({ "scope": "modules", "routes": "/m", "tools": ["credential_list"] }),
+            json!({ "scope": "modules", "routes": "/m", "tools": ["credential_rotate"] }),
+            json!({ "scope": "modules", "routes": "/m", "tools": ["credential_create"] }),
+            json!({ "scope": "modules", "routes": "/m", "tools": ["file_read"], "manage_kinds": ["zebflow_control"] }),
+            json!({ "scope": "modules", "routes": "/m", "tools": ["file_read"], "manage_kinds": ["no_such_kind"] }),
+            json!({ "scope": "modules", "routes": "/m", "tools": ["file_read"], "manage_limit": 0 }),
         ] {
             assert!(Fence::from_secret("x", &bad).is_err(), "{bad}");
         }

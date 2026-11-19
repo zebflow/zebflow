@@ -30,7 +30,11 @@ pub(super) async fn run(server: &PublishedServer, tool: &PublishedTool, argument
     {
         return tool_error(&json!({ "ok": false, "error": { "code": err.code, "message": err.message } }));
     }
-    let envelope = json!({ "route": server.route, "tool_name": tool.spec.tool_name, "arguments": arguments });
+    let mut envelope = json!({ "route": server.route, "tool_name": tool.spec.tool_name, "arguments": arguments });
+    // Who called, as verified at the door: the same claims `webhook.auth` carries.
+    if let Some(claims) = &server.auth {
+        envelope["auth"] = claims.clone();
+    }
     let ctx = PipelineContext {
         owner: owner.clone(),
         project: project.clone(),

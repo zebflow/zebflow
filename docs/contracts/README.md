@@ -13,6 +13,7 @@ rely on them.
 - [Policy contract](./policy.md)
 - [Addressing contract](./addressing.md)
 - [Rooms contract](./rooms.md)
+- [App control contract](./app-control.md)
 - [Discoverability contract](./discoverability.md)
 - [UX contract](./ux.md)
 - [Interface contract](./interface.md)

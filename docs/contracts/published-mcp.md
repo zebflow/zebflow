@@ -35,8 +35,11 @@ A project has two MCPs, and they are never mixed:
   `trigger.webhook`. Every `trigger.mcp` on one route declares the same auth,
   or activation refuses the route. `oauth` (below) signs people in through the
   app's own login, for the ChatGPT and claude.ai connectors.
-- It answers `mcp: { route, tool_name, arguments }` (§6 of
+- It answers `mcp: { route, tool_name, arguments, auth }` (§6 of
   [Node Conventions](./node-conventions.md)); `$trigger` is that envelope.
+  `auth` is the caller's token claims as the door verified them (`sub`,
+  `roles`, …), the same as `webhook.auth`, on a `jwt` or `oauth` route; it is
+  absent on `none` and `api_key` routes (amended 2026-11-19).
 - **The tool result** is what `web.response.send` answers (its `--body`); a
   status of 400 or more is a tool error with that body. A run that reaches no
   `web.response.send` answers an empty result, `{ content: [], isError: false }`

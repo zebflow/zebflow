@@ -22,10 +22,12 @@ app admin ─▶ POST /zf/control   { tool, arguments }
 ```yaml
 scope: modules/
 routes: /m/
-tools: [file_read, file_write, pipeline_register, pipeline_activate, pipeline_deactivate]
+tools: [file_read, file_write, pipeline_register, pipeline_activate, pipeline_deactivate, credential_list, credential_create]
 delegate: [pg_modules]
 nodes_mode: allow
 nodes: [trigger.webhook, trigger.schedule, postgres.query.run, http.response.fetch, javascript.script.run, web.response.send, logic.*]
+manage_kinds: [postgres]
+manage_limit: 50
 record_as: app-builder
 ```
 
@@ -61,8 +63,50 @@ One command, or a list run in order, in the shape the MCP tools take:
 
 The answer is `{ ok: true, results: [...] }`, one result per command. A refused
 command answers 403 with its index, tool and reason, for example
-`command 0 (pipeline_register): node 't' answers at '/admin/x', outside /m/`.
-The commands before it stay done.
+`command 0 (pipeline_register): node 1 ('t') answers at '/admin/x', outside /m/`.
+The commands before it stay done. A `file_write` answers the path and size,
+not the content.
+
+Routes are paths, not hosts: a made webhook answers on the hosts whose routes
+reach its prefix (`help("web")`, Addressing), not on every host of the project.
+
+## 4. Credentials the door manages
+
+With `credential_create` opened and `manage_kinds` set, the app adds its own
+connections, for example ten outside PostgreSQL databases:
+
+```json
+{ "tool": "credential_create", "arguments": {
+    "credential_id": "ext-census", "kind": "postgres", "title": "Census",
+    "secret": { "host": "db.example.com", "port": "5432", "database": "census",
+                "user": "reader", "password": "…", "sslmode": "require" } } }
+```
+
+- `credential_list` answers the delegated credentials and the ones this door
+  made: id, kind, title, the fields that are not passwords. Never a secret.
+- `credential_update` (`secret` is the fields to change) and
+  `credential_delete` touch only the ones this door made.
+- Only kinds in `manage_kinds`, never `zebflow_control`, at most
+  `manage_limit`. Every address must be outside the machine and the private
+  networks, as for `http.response.fetch`.
+- A made pipeline may use the delegated credentials and the ones its door made.
+
+## 5. The same door as a published MCP tool
+
+```
+[t] trigger.mcp --route /admin --name zebflow_command --description "Run commands in the app's lab." --parameter commands:array! "The commands, each a tool and its arguments." --auth oauth --credential app_session --login /auth/login --role admin
+[c] zebflow.command.run --credential zf_modules --command "{{ input.mcp.arguments.commands }}" --as "{{ input.mcp.auth.sub }}"
+[ok] web.response.send --body "{{ input.command }}"
+[no] web.response.send --status 403 --body "{{ input.command }}"
+[t] -> [c]
+[c] -> [ok]
+[c]:error -> [no]
+```
+
+`input.mcp.auth` is the caller's verified token (`sub`, `roles`), so `--as`
+names the person. An outside agent connects to `/_mcp/admin` on the app's host (the `mcp`
+surface must be on, `help("guide/agentic/mcp-by-project")`); the fence holds exactly as it does
+behind the webhook.
 
 ## What a made pipeline may not do
 

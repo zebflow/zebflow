@@ -49,6 +49,8 @@ pub(super) struct PublishedServer {
     pub(super) project: String,
     pub(super) route: String,
     pub(super) tools: Arc<Vec<PublishedTool>>,
+    /// The caller's verified token claims, as `mcp.auth` (`jwt`, `oauth`).
+    pub(super) auth: Option<Value>,
 }
 
 fn tool_of(spec: &McpTriggerSpec) -> Tool {
