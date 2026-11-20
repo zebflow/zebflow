@@ -60,3 +60,5 @@ mod change_record;
 mod zebflow_command;
 #[path = "platform/project_library.rs"]
 mod project_library;
+#[path = "platform/linux_command.rs"]
+mod linux_command;

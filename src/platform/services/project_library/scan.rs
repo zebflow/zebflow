@@ -76,6 +76,32 @@ fn check_svg(path: &str, bytes: &[u8]) -> Result<(), String> {
     if scripted { Err("the image carries script".to_string()) } else { Ok(()) }
 }
 
+/// Whether `text` holds a path of the machine that built it: a file path
+/// below a home folder (`<home>/<name>/<more>`), or one in the system's
+/// temporary folders. A bare home folder with nothing below it is not a file
+/// path: code compiled to WebAssembly with Emscripten carries the home of the
+/// pretend Linux it runs in, and every such build has that text.
+fn machine_path_in(text: &str) -> Option<&'static str> {
+    const HOMES: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
+    let ends_name = |c: char| matches!(c, '"' | '\'' | '`' | ' ' | ',' | ')' | '}' | ']' | ';' | '\n');
+    for leak in MACHINE_PATHS {
+        let is_home = HOMES.contains(leak);
+        for (at, _) in text.match_indices(leak) {
+            if !is_home {
+                return Some(leak);
+            }
+            let rest = &text[at + leak.len()..];
+            let name_len = rest.find(|c: char| c == '/' || c == '\\' || ends_name(c)).unwrap_or(rest.len());
+            let after = &rest[name_len..];
+            let more = after.starts_with('/') || after.starts_with('\\');
+            if name_len > 0 && more && after.len() > 1 && !ends_name(after[1..].chars().next().unwrap_or('"')) {
+                return Some(leak);
+            }
+        }
+    }
+    None
+}
+
 /// Code and data must not name the machine that built them.
 fn check_machine_paths(path: &str, bytes: &[u8]) -> Result<(), String> {
     let ext = extension_of(path);
@@ -83,7 +109,7 @@ fn check_machine_paths(path: &str, bytes: &[u8]) -> Result<(), String> {
         return Ok(());
     }
     let text = String::from_utf8_lossy(bytes);
-    match MACHINE_PATHS.iter().find(|leak| text.contains(*leak)) {
+    match machine_path_in(&text) {
         Some(leak) => Err(format!("it names a path of the machine that built it ({leak}…); rebuild it")),
         None => Ok(()),
     }
@@ -178,9 +204,15 @@ mod tests {
             let err = one(path, bytes).expect_err(path);
             assert!(err.message.contains(word), "{path}: {}", err.message);
         }
+        // A bare home folder (Emscripten's pretend Linux) is not a file path;
+        // a file below a home beside it still is.
+        let bare = format!("var ENV={{USER:\"someone\",HOME:\"{}someone\"}};", MACHINE_PATHS[1]);
+        one("0.1.0/runtime/w.mjs", bare.as_bytes()).expect("a bare home folder");
+        let both = format!("{bare}const p=\"{}someone/src/a.ts\";", MACHINE_PATHS[1]);
+        assert!(one("0.1.0/runtime/w.mjs", both.as_bytes()).is_err(), "a file below a home is still refused");
         // Every path a build machine leaks, built from the list itself.
         for leak in MACHINE_PATHS {
-            let code = format!("const p = \"{leak}src/a.ts\";");
+            let code = format!("const p = \"{leak}someone/src/a.ts\";");
             let err = one("0.1.0/runtime/a.mjs", code.as_bytes()).expect_err(leak);
             assert!(err.message.contains("machine"), "{leak}: {}", err.message);
         }

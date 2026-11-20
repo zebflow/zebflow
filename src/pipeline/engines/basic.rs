@@ -39,7 +39,7 @@ use crate::pipeline::nodes::basic::{
         function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
         webhook, ws_client as trigger_ws_client,
     },
-    web, ws, zebflow,
+    linux, web, ws, zebflow,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::pipeline::trace_capture::{TraceCapture, redact_literal_secrets};
@@ -1547,6 +1547,14 @@ impl BasicPipelineEngine {
                     config,
                 )))
             }
+            linux::command::NODE_KIND => {
+                let config: linux::command::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
+                    .map_err(|err| PipelineError::new(linux::command::CONFIG_CODE, err.to_string()))?;
+                let Some(credentials) = &self.credentials else {
+                    return Err(PipelineError::new(linux::command::CODE, "credentials are not available in this engine context"));
+                };
+                Ok(NodeDispatch::LinuxCommand(linux::command::Node::new(config, credentials.clone())?))
+            }
             zebflow::command::NODE_KIND => {
                 let config: zebflow::command::Config = crate::pipeline::nodes::shared::util::typed_config(&node.config)
                     .map_err(|err| PipelineError::new(zebflow::command::CONFIG_CODE, err.to_string()))?;
@@ -2627,6 +2635,7 @@ impl BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::ZebflowCommand(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::LinuxCommand(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::FilePut(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::FsObject(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::MapserverCrud(node) => {
@@ -5924,6 +5933,7 @@ enum NodeDispatch {
     TriggerFunction(trigger_function::Node),
     FunctionCall(function::call::Node),
     ZebflowCommand(zebflow::command::Node),
+    LinuxCommand(linux::command::Node),
     FilePut(fs::put::Node),
     FsObject(fs::object::Node),
     MapserverCrud(mapserver::crud::Node),

@@ -66,12 +66,19 @@ fn check_addresses(secret: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a form field holds a secret: a password box, or a field named like
+/// one whatever box it uses (an SSH private key is a multi-line text box).
+fn is_secret_field(key: &str, field_type: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    field_type == "password" || ["key", "secret", "password", "token", "passphrase"].iter().any(|word| key.contains(word))
+}
+
 /// The fields of a credential that are not secret, by its kind's form.
 fn public_fields(kind: &str, secret: &Value) -> Value {
     let types = crate::platform::services::credential::builtin_credential_types();
     let mut out = Map::new();
     if let Some(def) = types.iter().find(|def| def.kind == kind) {
-        for field in def.fields.iter().filter(|field| field.field_type != "password") {
+        for field in def.fields.iter().filter(|field| !is_secret_field(&field.key, &field.field_type)) {
             if let Some(value) = secret.get(&field.key) {
                 out.insert(field.key.clone(), value.clone());
             }
@@ -221,5 +228,8 @@ mod tests {
         let shown = public_fields("postgres", &json!({ "host": "db.example.com", "user": "reader", "password": hidden }));
         assert_eq!(shown, json!({ "host": "db.example.com", "user": "reader" }));
         assert_eq!(public_fields("no-such-kind", &json!({ "password": hidden })), json!({}));
+        // A secret in a text box is still a secret.
+        let shown = public_fields("ssh", &json!({ "host": "compute-1.example.com", "user": "app", "private_key": hidden, "host_key": "ssh-ed25519 AAAA" }));
+        assert_eq!(shown, json!({ "host": "compute-1.example.com", "user": "app" }));
     }
 }

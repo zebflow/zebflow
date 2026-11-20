@@ -410,6 +410,12 @@ impl CredentialService {
             crate::platform::services::webhook_signature::validate(&secret)
                 .map_err(|err| PlatformError::new("PLATFORM_CREDENTIAL_INVALID", err))?;
         }
+        // A machine that is not pinned, or a root login, is refused when it is
+        // saved (`linux-control.md`).
+        if kind == crate::pipeline::nodes::basic::linux::ssh::CREDENTIAL_KIND {
+            crate::pipeline::nodes::basic::linux::ssh::Target::from_secret(&credential_id, &secret)
+                .map_err(|err| PlatformError::new("PLATFORM_CREDENTIAL_INVALID", err))?;
+        }
         // A fence that draws no real boundary is refused when it is saved,
         // not when a door first runs.
         if kind == crate::pipeline::nodes::basic::zebflow::command::CREDENTIAL_KIND {
@@ -1109,6 +1115,21 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
                 F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. postgres".into()), help: Some("Credential kinds the door may create, change and delete for itself; never zebflow_control. Needed by credential_create.".into()), ..f("manage_kinds", "Kinds it may create") },
                 F { field_type: "number".into(), placeholder: Some("50".into()), help: Some("At most this many credentials made through the door; empty for no limit.".into()), ..f("manage_limit", "Limit") },
                 F { placeholder: Some("the credential id".into()), help: Some("How the change record names changes made through this fence.".into()), ..f("record_as", "Recorded as") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "ssh".into(),
+            title: "SSH (Linux machine)".into(),
+            description: "A Linux machine linux.command.run reaches over SSH, as one ordinary user. The machine's host key is pinned: a machine answering with another key is refused.".into(),
+            fields: vec![
+                F { placeholder: Some("compute-1.example.com".into()), help: Some("Host name or address of the machine.".into()), ..f("host", "Host") },
+                F { placeholder: Some("22".into()), help: Some("SSH port.".into()), ..f("port", "Port") },
+                F { placeholder: Some("app".into()), help: Some("The Linux user every command runs as. Never root.".into()), ..f("user", "User") },
+                F { field_type: "textarea".into(), rows: Some(6), full_width: true, help: Some("An OpenSSH private key without a passphrase (ssh-keygen -t ed25519). Never shown again.".into()), ..fp("private_key", "Private key") },
+                F { full_width: true, placeholder: Some("ssh-ed25519 AAAA…".into()), help: Some("The machine's public host key, as ssh-keyscan prints it without the host name. Required.".into()), ..f("host_key", "Host key") },
+                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. bun".into()), help: Some("Optional: the programs a command line may start with; then a line may not chain a second command. Empty: any, within the user's own permissions.".into()), ..f("commands", "Allowed programs") },
+                F { placeholder: Some("work".into()), help: Some("Optional: the folder commands start in, relative to the user's home or absolute.".into()), ..f("workdir", "Working folder") },
             ],
             ..Default::default()
         },

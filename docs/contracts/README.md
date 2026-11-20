@@ -14,6 +14,7 @@ rely on them.
 - [Addressing contract](./addressing.md)
 - [Rooms contract](./rooms.md)
 - [App control contract](./app-control.md)
+- [Linux control contract](./linux-control.md)
 - [Discoverability contract](./discoverability.md)
 - [UX contract](./ux.md)
 - [Interface contract](./interface.md)

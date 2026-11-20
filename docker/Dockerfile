@@ -51,6 +51,7 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3t64 \
         git \
+        openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/zebflow/data \
     && chown -R nonroot:nonroot /var/lib/zebflow
