@@ -2317,6 +2317,15 @@ fn externalize_rwe_scripts(
         if script.content_hash.trim().is_empty() {
             continue;
         }
+        // A worker is stored where its page's scripts are, under its own
+        // address, and gets no tag: the page starts it.
+        if script.id.starts_with("rwe.worker.") {
+            let _ = match project_scope {
+                Some((owner, project)) => cache.store_scoped(owner, project, script),
+                None => cache.store(script),
+            };
+            continue;
+        }
 
         // When `deployment_asset_base` is set, the HTML script-tag src is already
         // rewritten to `{base}/rwe/scripts/{hash}`. But the compiled script *content*

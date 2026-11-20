@@ -441,6 +441,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let encoded = STANDARD.encode(client_source.as_bytes());
     format!(
         "{tool_js}\n\
+         globalThis.__zebWorker = (hash) => new URL('./' + hash, import.meta.url).href;\n\
          import {{ h, Fragment, hydrate, render, createContext, createPortal, forwardRef, memo,\
            useCallback, useContext, useEffect, useId, useImperativeHandle,\
            useLayoutEffect, useMemo, useReducer, useRef, useState,\
@@ -1648,6 +1649,7 @@ mod tests {
             detected_zeb_libs: Vec::new(),
             inline_styles: vec![".editor-shell { color: red; }".to_string()],
             dependency_paths: Default::default(),
+            worker_scripts: Vec::new(),
         };
 
         let output = render(&compiled, &json!({}), &[]).expect("render");

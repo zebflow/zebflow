@@ -87,6 +87,8 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
 
     ensure_default_export(&parsed.program)?;
 
+    // Workers met while compiling this page are built once and travel with it.
+    let workers = super::worker::Session::begin(&options);
     let mut diagnostics = security::analyze(source, &options.security)?;
 
     let raw_imports = collect_imports(&parsed.program);
@@ -116,6 +118,8 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let mut dependency_paths = server_deps;
     dependency_paths.extend(client_deps);
+    let (worker_scripts, worker_deps) = workers.finish();
+    dependency_paths.extend(worker_deps);
     let hydrate_mode = detect_hydrate_mode(source);
 
     Ok(CompiledTemplate {
@@ -132,6 +136,7 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         detected_zeb_libs,
         inline_styles,
         dependency_paths,
+        worker_scripts,
     })
 }
 
@@ -165,6 +170,11 @@ fn ensure_default_export(program: &oxc_ast::ast::Program<'_>) -> Result<(), Engi
     }
 }
 
+
+/// [`replace_import_specifiers`], for the worker builder.
+pub(super) fn rewrite_specifiers(source: &str, map: impl FnMut(&str) -> Option<String>) -> String {
+    replace_import_specifiers(source, map)
+}
 
 /// Rewrite import specifiers in place, by span. Only the string literal of
 /// an `import … from "…"` changes; the same text inside a code sample, a
@@ -545,6 +555,12 @@ fn rewrite_imports(
         }
 
         let resolved = resolve_import(import, options)?;
+        // A worker is not inlined: its import becomes the address of its own
+        // script (`super::worker`), built here the first time it is met.
+        if let Some(path) = resolved.as_deref().filter(|path| super::worker::is_worker_path(path)) {
+            resolved_specs.insert(import.clone(), super::worker::marker_for(path)?);
+            continue;
+        }
         if let Some(path) = &resolved {
             resolved_specs.insert(import.clone(), path.clone());
         }
@@ -595,7 +611,7 @@ fn resolve_library_import(
     Ok(Some(super::js_path(&final_path)))
 }
 
-fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<String>, EngineError> {
+pub(super) fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<String>, EngineError> {
     if let Some(path) = resolve_library_import(import, &options.library_roots)? {
         return Ok(Some(path));
     }
@@ -821,7 +837,7 @@ fn rewrite_page_root_tag(source: &str) -> String {
 /// `extract_filesystem_import_paths` filter (which only matches paths starting
 /// with `/`). Resolving them here makes transitive inlining work correctly
 /// regardless of whether `prepare_template_root` has been called.
-fn rewrite_at_imports(
+pub(super) fn rewrite_at_imports(
     source: &str,
     template_root: &Path,
     library_roots: &std::collections::BTreeMap<String, String>,
@@ -840,6 +856,17 @@ fn rewrite_at_imports(
                 }
             };
         }
+        // A worker a component imports is not inlined either (`super::worker`).
+        let mut worker = |path: &str| match super::worker::marker_for(path) {
+            Ok(marker) => Some(marker),
+            Err(err) => {
+                failure.get_or_insert(err);
+                None
+            }
+        };
+        if super::is_file_specifier(spec) && super::worker::is_worker_path(spec) {
+            return worker(spec);
+        }
         let rel = spec.strip_prefix("@/")?;
         let joined = template_root.join(rel);
         let resolved = if spec.ends_with(".css") {
@@ -849,7 +876,11 @@ fn rewrite_at_imports(
         }
         .ok()?;
         let canonical = canonical_or_fallback(&resolved).ok()?;
-        Some(normalize_path(&canonical).to_string_lossy().to_string())
+        let path = normalize_path(&canonical).to_string_lossy().to_string();
+        if super::worker::is_worker_path(&path) {
+            return worker(&path);
+        }
+        Some(path)
     });
     match failure {
         Some(err) => Err(err),
@@ -860,7 +891,7 @@ fn rewrite_at_imports(
 /// At compile time, inline all filesystem-path imports into one self-contained
 /// module. The result has zero filesystem imports — only npm:/jsr:/https: imports
 /// (handled later by build_client_module in render.rs) and pure code.
-fn bundle_for_client(
+pub(super) fn bundle_for_client(
     page_source: &str,
     imports: &[ImportEdge],
     template_root: Option<&str>,
@@ -1627,6 +1658,28 @@ fn default_export_name(
     ))
 }
 
+/// `import heatWorker from "@/…/heat.worker.ts"` → `const heatWorker = "<address>";`.
+/// A worker has one value, its address, so only a default import binds it.
+fn bind_worker_import(import: &oxc_ast::ast::ImportDeclaration<'_>, url: &str) -> Result<String, EngineError> {
+    use oxc_ast::ast::ImportDeclarationSpecifier as S;
+    let specifiers = import.specifiers.as_ref().map(|list| list.iter().collect::<Vec<_>>()).unwrap_or_default();
+    match specifiers.as_slice() {
+        // The page script knows where it was served from; a worker is stored
+        // beside it (`globalThis.__zebWorker`, `render::build_client_module`).
+        // On the server, where no page script runs, the value is never used.
+        [S::ImportDefaultSpecifier(default)] => {
+            let hash = url.rsplit('/').next().unwrap_or(url);
+            let hash = serde_json::to_string(hash).unwrap_or_default();
+            let fallback = serde_json::to_string(url).unwrap_or_default();
+            Ok(format!("const {} = globalThis.__zebWorker ? globalThis.__zebWorker({hash}) : {fallback};\n", default.local.name))
+        }
+        _ => Err(EngineError::new(
+            "RWE_WORKER",
+            "a worker is imported by default only: `import heatWorker from \"@/…/heat.worker.ts\"`, then `new Worker(heatWorker, { type: \"module\" })`",
+        )),
+    }
+}
+
 fn strip_local_imports(
     source: &str,
     sources: &std::collections::HashMap<String, String>,
@@ -1647,6 +1700,15 @@ fn strip_local_imports(
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
+            if let Some(url) = specifier.strip_prefix(super::worker::MARKER) {
+                let start = import.span.start as usize;
+                let mut end = import.span.end as usize;
+                if end < source.len() && source.as_bytes()[end] == b'\n' {
+                    end += 1;
+                }
+                remove_ranges.push((start, end, bind_worker_import(import, url)?));
+                continue;
+            }
             let should_strip = is_runtime_library(specifier, runtime) || super::is_file_specifier(specifier);
             if should_strip {
                 let start = import.span.start as usize;

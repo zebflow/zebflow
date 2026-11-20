@@ -176,6 +176,18 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
         let (clean_html, extracted_css) = extract_generated_tailwind_style(&processed_html);
 
         let mut scripts = Vec::new();
+        // The page's workers first: stored before the page that names them.
+        for worker in &rwe_compiled.worker_scripts {
+            let path_key = stable_hash_hex(&worker.path);
+            scripts.push(CompiledScript {
+                id: format!("rwe.worker.{}", &path_key[..path_key.len().min(16)]),
+                scope: CompiledScriptScope::Page,
+                content_type: "text/javascript".to_string(),
+                content: worker.content.clone(),
+                content_hash: worker.hash.clone(),
+                suggested_file_name: format!("worker-{}.mjs", worker.hash),
+            });
+        }
         if !rendered.js.is_empty() {
             let hash = stable_hash_hex(&rendered.js);
             let script_id = format!("rwe.page.{}", compiled.template_id);

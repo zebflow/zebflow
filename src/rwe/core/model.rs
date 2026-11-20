@@ -56,6 +56,9 @@ pub struct CompiledTemplate {
     /// cache entries that depend on them are evicted.
     #[serde(default)]
     pub dependency_paths: std::collections::HashSet<String>,
+    /// The workers the page imports (`kinds/rwe-source` § Workers), built.
+    #[serde(default)]
+    pub worker_scripts: Vec<super::worker::WorkerScript>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

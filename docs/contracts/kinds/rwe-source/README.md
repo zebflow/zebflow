@@ -61,6 +61,31 @@ all work, and a type-only import binds nothing. A library's exports are never
 globals, so two libraries may export the same name and a name the page did not
 import is not in scope.
 
+A library uploaded to the project (`"site-a-lib/world"`,
+`rwe-library-manifest` § Project libraries) is bound the same way.
+
+### Workers (amendment 2026-11-20)
+
+A file whose name ends in `.worker.ts` is a **worker**: code a page runs in
+the background, off the page's thread. Importing one gives its address:
+
+```tsx
+import heatWorker from "@/modules/heat/heat.worker.ts";
+
+const worker = new Worker(heatWorker, { type: "module" });
+```
+
+| Rule | |
+| --- | --- |
+| The import | a default import of a `@/…*.worker.ts` file; its value is the address of the worker's script. Named or namespace imports of a worker are refused |
+| The worker's own imports | `"@/…"` project files, bundled into the worker's one script; `"site-a-lib/…"` project library entries, loaded from the page's own host. `"zeb/…"` is refused: those libraries live in a page |
+| What it may not do | the page rules (`eval`, `new Function`, code from other sites); `importScripts` |
+| Where it is served | from the page's own host, under an address made from its content, so a changed worker is a new address and an old page never runs a new worker by accident |
+| When it changes | a save of the worker, or of any file it imports, takes effect on the next page load |
+
+A worker has no page: no `document`, no `zeb/react`. It talks to the page with
+`postMessage` and `onmessage`.
+
 ### Why relative imports are refused
 
 Two reasons, and the second is the one that decides it.
