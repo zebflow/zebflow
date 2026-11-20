@@ -7828,20 +7828,13 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
 /// somewhere else" — and the Hub is where that question is asked, because the
 /// Hub is where the installing happens. Settings used to own all three, which
 /// meant the inventory lived in one place and the install button in another.
-fn installed_artifacts_payload(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-) -> Result<Value, PlatformError> {
-    let (node_count, node_groups) = settings_nodes();
-
-    // Merge the embedded manifests with this project's enabled state.
-    let rwe_libs = state
-        .platform
-        .zebflow_cfg
-        .get_rwe_libraries(owner, project)
-        .unwrap_or_default();
-    let libraries_available = state
+/// Every RWE library this project can use: the platform's `zeb/*` libraries
+/// with this project's enabled state, then the libraries uploaded to it
+/// (`project_library: true`, with the specifiers pages may import). One list
+/// for the Hub page's first render and for its refresh.
+fn rwe_library_inventory(state: &PlatformAppState, owner: &str, project: &str) -> Vec<Value> {
+    let rwe_libs = state.platform.zebflow_cfg.get_rwe_libraries(owner, project).unwrap_or_default();
+    let mut items: Vec<Value> = state
         .platform
         .library
         .list()
@@ -7857,7 +7850,42 @@ fn installed_artifacts_payload(
                 "source": enabled_entry.map(|e| e.source.clone())
             })
         })
-        .collect::<Vec<_>>();
+        .collect();
+    let runtime = crate::platform::services::project_library::runtime_libraries(&state.platform, owner, project);
+    let lock = state.platform.dependency_lock.read(owner, project).unwrap_or_default();
+    for (name, locked) in &lock.rwe.libraries {
+        let prefix = format!("{name}/");
+        let imports: Vec<&String> = runtime.keys().filter(|key| key.starts_with(&prefix)).collect();
+        if locked.source != crate::contracts::kinds::DependencyLockSource::DirectFile || imports.is_empty() {
+            continue;
+        }
+        items.push(json!({
+            "name": name,
+            "description": format!("Uploaded to this project. Pages import {}", imports.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
+            "packed_version": locked.version,
+            "enabled": true,
+            "installed_version": locked.version,
+            "source": "upload",
+            "project_library": true,
+            "imports": imports,
+        }));
+    }
+    items
+}
+
+fn installed_artifacts_payload(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<Value, PlatformError> {
+    let (node_count, node_groups) = settings_nodes();
+
+    let rwe_libs = state
+        .platform
+        .zebflow_cfg
+        .get_rwe_libraries(owner, project)
+        .unwrap_or_default();
+    let libraries_available = rwe_library_inventory(state, owner, project);
     let dependency_status = state
         .platform
         .dependency_lock
@@ -19262,49 +19290,7 @@ async fn api_list_rwe_libraries(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    let rwe_libs = state
-        .platform
-        .zebflow_cfg
-        .get_rwe_libraries(&owner, &project)
-        .unwrap_or_default();
-    let items = state
-        .platform
-        .library
-        .list()
-        .map(|m| {
-            let enabled_entry = rwe_libs.get(&m.name);
-            json!({
-                "name": m.name,
-                "description": m.description,
-                "packed_version": m.packed_version(),
-                "packed_kind": m.packed_kind(),
-                "enabled": enabled_entry.is_some(),
-                "installed_version": enabled_entry.map(|e| e.version.clone()),
-                "source": enabled_entry.map(|e| e.source.clone())
-            })
-        })
-        .collect::<Vec<_>>();
-    // The project's own uploaded libraries, with what pages may import.
-    let mut items = items;
-    let runtime = crate::platform::services::project_library::runtime_libraries(&state.platform, &owner, &project);
-    let lock = state.platform.dependency_lock.read(&owner, &project).unwrap_or_default();
-    for (name, locked) in &lock.rwe.libraries {
-        let prefix = format!("{name}/");
-        let imports: Vec<&String> = runtime.keys().filter(|key| key.starts_with(&prefix)).collect();
-        if locked.source != crate::contracts::kinds::DependencyLockSource::DirectFile || imports.is_empty() {
-            continue;
-        }
-        items.push(json!({
-            "name": name,
-            "description": "Uploaded to this project",
-            "enabled": true,
-            "installed_version": locked.version,
-            "source": "upload",
-            "project_library": true,
-            "imports": imports,
-        }));
-    }
-    Json(items).into_response()
+    Json(rwe_library_inventory(&state, &owner, &project)).into_response()
 }
 
 /// Request body for `POST /api/projects/{owner}/{project}/rwe/libraries/enable`.
@@ -28312,7 +28298,9 @@ fn compile_template_buffer(
     }
 
     let kind = template_kind_from_rel(rel);
-    if kind == "script" || kind == "style" {
+    // A library recipe's own source is compiled by zeb-bundler, not here.
+    let recipe_source = crate::platform::services::project_library::is_recipe_source(&state.platform, project.0, project.1, rel);
+    if kind == "script" || kind == "style" || recipe_source {
         return TemplateCompileResponse {
             ok: true,
             diagnostics: Vec::new(),

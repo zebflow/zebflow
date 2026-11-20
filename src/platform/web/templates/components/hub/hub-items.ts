@@ -49,8 +49,9 @@ export function buildHubItems({ assets, libraries, lock }) {
         asset_kind: "rwe_library",
         title: lib?.name,
         summary: lib?.description,
-        repository_title: "Blessed",
-        source: "local",
+        // A library built for this project and uploaded to it, or one Zebflow ships.
+        repository_title: lib?.project_library ? "Uploaded" : "Blessed",
+        source: lib?.project_library ? "upload" : "local",
       }),
       title: existing?.title || lib?.name,
       summary: existing?.summary || lib?.description,

@@ -37,6 +37,8 @@ export default function UploadLibraryDialog({ open, onClose, api, onUploaded }) 
         headers: { "Content-Type": "application/gzip" },
       });
       setResult(payload?.library || null);
+      // Done: the same file is not sent twice by a second click.
+      setFile(null);
       onUploaded();
     } catch (err: any) {
       setError(err?.message || String(err));
@@ -64,7 +66,11 @@ export default function UploadLibraryDialog({ open, onClose, api, onUploaded }) 
             onChange={(e) => { setFile(e.target.files?.[0] || null); setResult(null); setError(""); }}
             className="text-sm text-foreground"
           />
-          {error ? <p className="m-0 text-sm text-danger">Refused: {error}</p> : null}
+          {error ? (
+            <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+              Not installed. {error}
+            </div>
+          ) : null}
           {result ? (
             <div className="rounded-lg border border-border bg-accent/20 px-3 py-2 text-sm text-foreground">
               <p className="m-0">
@@ -78,8 +84,14 @@ export default function UploadLibraryDialog({ open, onClose, api, onUploaded }) 
           ) : null}
         </div>
         <DialogFooter>
-          <Button type="button" variant="outline" size="sm" onClick={close} disabled={busy}>Close</Button>
-          <Button type="button" size="sm" onClick={upload} disabled={!file || busy}>{busy ? "Checking…" : "Upload"}</Button>
+          {result ? (
+            <Button type="button" size="sm" onClick={close}>Done</Button>
+          ) : (
+            <>
+              <Button type="button" variant="outline" size="sm" onClick={close} disabled={busy}>Close</Button>
+              <Button type="button" size="sm" onClick={upload} disabled={!file || busy}>{busy ? "Checking…" : "Upload"}</Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

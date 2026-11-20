@@ -3264,6 +3264,11 @@ pub const DEFAULT_ALLOWED_FILE_EXTENSIONS: &[&str] = &[
 /// project -- so without these a project's own export could not come back. A
 /// project narrows extensions and never this list, because narrowing it is how
 /// a project would make its own bundles uninstallable.
+/// Files a person writes that are accepted by whole name whatever the
+/// extension set says. Unlike [`ALWAYS_ALLOWED_FILE_NAMES`], the platform does
+/// not own them: a library recipe's lockfile (`kinds/library-recipe`) sits
+/// beside its `library.yaml` and changes with it.
+pub const AUTHORED_FILE_NAMES: &[&str] = &["bun.lock"];
 pub const ALWAYS_ALLOWED_FILE_NAMES: &[&str] = &[
     ".gitkeep",
     "schema.json",
@@ -3520,7 +3525,8 @@ impl ResolvedProjectLayout {
     /// for, and "no extension" is as much an answer as `.sh`.
     pub fn refused_file_type(&self, rel: &str) -> Option<String> {
         let name = rel.rsplit('/').next().unwrap_or(rel);
-        if ALWAYS_ALLOWED_FILE_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+        let lower = name.to_ascii_lowercase();
+        if ALWAYS_ALLOWED_FILE_NAMES.contains(&lower.as_str()) || AUTHORED_FILE_NAMES.contains(&lower.as_str()) {
             return None;
         }
         match file_extension(name) {

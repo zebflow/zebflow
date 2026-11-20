@@ -213,6 +213,25 @@ pub fn installed_manifest(platform: &PlatformService, owner: &str, project: &str
         .map_err(|err| PlatformError::new("PLATFORM_DEPENDENCY_INTEGRITY", format!("installed library '{name}' has an invalid manifest: {err}")))
 }
 
+/// Whether a repository file is a library recipe's own source: it lies in a
+/// folder (or below one) holding a `library.yaml` of kind `LibraryRecipe`.
+/// zeb-bundler compiles that code, not the page compiler, so the page checks
+/// (borrowed bindings, a default export) do not apply to it.
+pub fn is_recipe_source(platform: &PlatformService, owner: &str, project: &str, rel_path: &str) -> bool {
+    let mut dir = Path::new(rel_path.trim_start_matches('/')).parent();
+    while let Some(folder) = dir {
+        let recipe = folder.join("library.yaml");
+        let recipe = recipe.to_string_lossy();
+        if let Ok(text) = platform.projects.read_repo_file_text(owner, project, &recipe)
+            && text.lines().any(|line| line.trim() == "kind: LibraryRecipe")
+        {
+            return true;
+        }
+        dir = folder.parent().filter(|parent| !parent.as_os_str().is_empty());
+    }
+    false
+}
+
 /// Every entry of every library uploaded to this project, as the compiler
 /// takes them: import specifier (`site-a-lib/world`) → the address its module
 /// loads from (`/assets/libraries/site-a-lib/0.1.0/runtime/world.mjs`, which a

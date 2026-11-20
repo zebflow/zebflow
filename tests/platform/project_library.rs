@@ -199,3 +199,29 @@ async fn an_uploaded_library_is_checked_installed_imported_and_served() {
     let body = String::from_utf8_lossy(&body);
     assert!(body.contains("not an entry of the project library site-a-lib"), "{body}");
 }
+
+/// A library recipe lives whole in the repository: its `bun.lock` is
+/// accepted, and its own source is not checked as a page template (a bare
+/// `addEventListener` is fine in library code), while the same file outside a
+/// recipe folder still is.
+#[tokio::test]
+async fn a_recipe_lives_whole_in_the_repository() {
+    let root = temp_dir("project-library-recipe");
+    let mut config = zebflow::platform::PlatformConfig::default();
+    config.data_root = root.0.clone();
+    config.default_password = "test-pass".to_string();
+    let platform = std::sync::Arc::new(zebflow::platform::PlatformService::from_config(config).expect("platform"));
+    let ops = zebflow::platform::services::ops::PlatformOps::new(platform.clone(), OWNER, PROJECT);
+    let recipe = "apiVersion: zebflow.com/v1\nkind: LibraryRecipe\nmetadata:\n  name: site-a-lib\nspec:\n  version: 0.1.0\n  entries:\n    world: src/world.ts\n";
+    let source = "export function start() {\n  addEventListener(\"resize\", () => {});\n}\n";
+    for (path, content) in [("libraries/site-a-lib/library.yaml", recipe), ("libraries/site-a-lib/bun.lock", "{}\n")] {
+        let written = ops.file_write(path, content);
+        assert!(!written.text.starts_with("Error"), "{path}: {}", written.text);
+    }
+    let inside = ops.file_write("libraries/site-a-lib/src/world.ts", source);
+    assert!(!inside.text.contains("template_problems"), "recipe source: {}", inside.text);
+    let outside = ops.file_write("components/world.ts", source);
+    assert!(outside.text.contains("template_problems"), "a component is still checked: {}", outside.text);
+    let stray = ops.file_write("notes/other.lock", "x");
+    assert!(stray.text.starts_with("Error"), "only bun.lock, not every .lock: {}", stray.text);
+}

@@ -1636,9 +1636,18 @@ impl PlatformOps {
     /// [`template_problems`] of a repository file as it is stored now.
     fn template_problems_on_disk(&self, rel_path: &str) -> Vec<String> {
         match self.platform.projects.read_repo_file_text(&self.owner, &self.project, rel_path) {
-            Ok(content) => template_problems(rel_path, &content),
+            Ok(content) => self.checked_template_problems(rel_path, &content),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// [`template_problems`], except for a library recipe's own source,
+    /// which zeb-bundler compiles and the page checks do not apply to.
+    fn checked_template_problems(&self, rel_path: &str, content: &str) -> Vec<String> {
+        if crate::platform::services::project_library::is_recipe_source(&self.platform, &self.owner, &self.project, rel_path) {
+            return Vec::new();
+        }
+        template_problems(rel_path, content)
     }
 
     /// Creates one file or folder at a path, with a starter body chosen by kind.
@@ -1720,7 +1729,7 @@ impl PlatformOps {
                 // A page or component is checked as it lands: the file is
                 // written either way, and the problems come back with their
                 // lines so they are fixed before the page is fetched.
-                add_template_problems(&mut answer, template_problems(rel_path, content));
+                add_template_problems(&mut answer, self.checked_template_problems(rel_path, content));
                 OpsResult::ok_nav(serde_json::to_string_pretty(&answer).unwrap_or_default(), nav)
             }
             Err(e) => OpsResult::err(e.to_string()),
