@@ -48,11 +48,14 @@ RUN BUILD_VERSION=${BUILD_VERSION} cargo build --release --bin zebflow
 FROM dhi.io/debian-base:trixie-debian13-dev
 
 USER root
+# Offices run as uid 1000 (the cluster's runAsUser). ssh refuses to start for
+# a uid with no account, so 1000 gets one, sharing nonroot's home.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3t64 \
         git \
         openssh-client \
     && rm -rf /var/lib/apt/lists/* \
+    && (getent passwd 1000 >/dev/null || echo "zebflow:x:1000:0:zebflow:/home/nonroot:/bin/sh" >> /etc/passwd) \
     && mkdir -p /var/lib/zebflow/data \
     && chown -R nonroot:nonroot /var/lib/zebflow
 
