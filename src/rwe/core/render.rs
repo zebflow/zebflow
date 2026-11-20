@@ -147,6 +147,12 @@ pub fn render(
     enabled_libraries: &[String],
 ) -> Result<RenderOutput, EngineError> {
     let started = Instant::now();
+    // Only `zeb/*` entries make the list strict. A project's own uploaded
+    // library is listed beside them (`site-a-lib`) and loads by its own
+    // address; listing it must not stop the `zeb/*` libraries a page imports
+    // from loading, as an empty list lets them.
+    let enabled_libraries: Vec<String> = zeb_entries(enabled_libraries);
+    let enabled_libraries = enabled_libraries.as_slice();
 
     // Template ID for circuit breaker and cache key derivation.
     let template_id = compiled.source_path.as_deref().unwrap_or("unknown");
@@ -295,6 +301,11 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
 /// This runs in the outer script (a real URL context), so absolute-path
 /// imports like `/assets/libraries/…` resolve correctly. The inner user bundle
 /// (loaded as a `data:` URL) is imported after the whole preamble has run.
+/// The `zeb/*` entries of a project's library list: the only ones that make it strict.
+fn zeb_entries(enabled_libraries: &[String]) -> Vec<String> {
+    enabled_libraries.iter().filter(|name| name.starts_with("zeb/")).cloned().collect()
+}
+
 #[cfg(test)]
 fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) -> String {
     build_zeb_preamble_with(detected_libs, enabled_libraries, &Default::default())
@@ -1540,6 +1551,18 @@ mod tests {
             .map(|lib| preamble.find(&format!("globalThis.__zebLibs[\"{lib}\"]")).unwrap())
             .collect();
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{preamble}");
+    }
+
+    /// A project's own library in the list does not make it strict: a page
+    /// still loads the `zeb/*` library it imports, as with an empty list.
+    #[test]
+    fn a_project_library_in_the_list_does_not_block_zeb_libraries() {
+        let only_project = zeb_entries(&["site-a-lib".to_string()]);
+        let preamble = build_zeb_preamble(&["zeb/d3".to_string()], &only_project);
+        assert!(preamble.contains("= await import('/assets/libraries/zeb/d3/"), "{preamble}");
+        let strict = zeb_entries(&["site-a-lib".to_string(), "zeb/use".to_string()]);
+        let preamble = build_zeb_preamble(&["zeb/d3".to_string()], &strict);
+        assert!(!preamble.contains("zeb/d3/0.1"), "a zeb/* entry still makes it strict: {preamble}");
     }
 
     /// `Markdown` is a component the loader builds around the library's own
