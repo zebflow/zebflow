@@ -123,6 +123,15 @@ struct FileWriteParams {
     rel_path: String,
     /// Full file content to write.
     content: String,
+    /// Write only if the file is still at this version: its `hash` from file_stat (or an earlier write), or "none" for a file that must not exist yet. Omitted: write regardless.
+    #[serde(default)]
+    expect_hash: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct FileStatParams {
+    /// Path relative to the project source root (e.g. "pages/home.tsx").
+    rel_path: String,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -175,6 +184,18 @@ struct FileEditParams {
     old_string: String,
     /// Replacement string.
     new_string: String,
+    /// Write only if the file is still at this version: its `hash` from file_stat (or an earlier write), or "none" for a file that must not exist yet. Omitted: write regardless.
+    #[serde(default)]
+    expect_hash: Option<String>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateCheckParams {
+    /// Relative path of the page or component (e.g. "pages/home.tsx"); the check reads its imports from there.
+    rel_path: String,
+    /// The content to check, unsaved. Omitted: the file as it is saved now.
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -259,6 +280,9 @@ struct PipelineRegisterParams {
     /// Example: "| trigger.webhook --route /blog --method GET | postgres.query.run --credential pg_main -- \"SELECT * FROM posts\" | web.response.send --template pages/blog.tsx"
     /// Each node adds one key, its noun (the rows are `input.query.rows`). help("pipeline/dsl") is the grammar; help("pipeline/nodes/<kind>") one node.
     body: String,
+    /// With file_rel_path: register only if the pipeline file is still at this version (its `hash` from file_stat), or "none" for a new pipeline.
+    #[serde(default)]
+    expect_hash: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -756,8 +780,18 @@ impl ZebflowMcpHandler {
             }
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops
-            .pipeline_register(
+        let expected_file = match (&params.expect_hash, &params.file_rel_path) {
+            (None, _) => None,
+            (Some(_), Some(frp)) => Some(
+                self.platform
+                    .projects
+                    .pipeline_identity(&session.owner, &session.project, frp)
+                    .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+            ),
+            (Some(_), None) => return Err(McpError::invalid_params("expect_hash needs file_rel_path: the version is the pipeline file's", None)),
+        };
+        let register = || {
+            ops.pipeline_register(
                 &params.body,
                 params.file_rel_path.as_deref(),
                 params.name.as_deref(),
@@ -765,7 +799,11 @@ impl ZebflowMcpHandler {
                 params.title.as_deref(),
                 params.description.as_deref(),
             )
-            .await;
+        };
+        let result = match expected_file {
+            Some(file) => ops.write_if_unchanged(&file, params.expect_hash.as_deref(), register).await,
+            None => register().await,
+        };
         // navigate is ignored for MCP
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
@@ -1196,7 +1234,9 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.file_write(&params.rel_path, &params.content);
+        let result = ops
+            .write_if_unchanged(&params.rel_path, params.expect_hash.as_deref(), || async { ops.file_write(&params.rel_path, &params.content) })
+            .await;
         if !result.text.starts_with("Error:") {
             if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
                 &session.owner,
@@ -1299,7 +1339,11 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.file_edit(&params.rel_path, &params.old_string, &params.new_string);
+        let result = ops
+            .write_if_unchanged(&params.rel_path, params.expect_hash.as_deref(), || async {
+                ops.file_edit(&params.rel_path, &params.old_string, &params.new_string)
+            })
+            .await;
         if !result.text.starts_with("Error:") {
             if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
                 &session.owner,
@@ -1314,6 +1358,36 @@ impl ZebflowMcpHandler {
             }
         }
         ok_or_err(result)
+    }
+
+    #[tool(description = "Whether a repository file exists, its size and its version: { rel_path, exists, size, hash }. \
+                       Pass the hash as expect_hash to file_write, file_edit or pipeline_register to write only if nobody \
+                       changed the file since; a write that finds another version is refused and names the current one.")]
+    async fn file_stat(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<FileStatParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "file_stat")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.file_stat(&params.rel_path))
+    }
+
+    #[tool(description = "Check whether a page or component compiles, without saving: the page with every file it imports \
+                       as saved now, with the options a render uses. Pass `content` to check an unsaved version; omit it to \
+                       check the file as saved. Answers { ok, diagnostics: [{ code, message, severity }] }; ok false means the \
+                       page would fail when opened. Use it before writing a page that other files import, or after changing a \
+                       component many pages use.")]
+    async fn template_check(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateCheckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_check")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.template_check(&params.rel_path, params.content.as_deref()))
     }
 
     #[tool(

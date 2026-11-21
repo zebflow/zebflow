@@ -11,10 +11,10 @@ use tower::ServiceExt;
 
 use zebflow::platform::{PlatformConfig, PlatformService};
 
-const OWNER: &str = "superadmin";
-const PROJECT: &str = "default";
+pub(super) const OWNER: &str = "superadmin";
+pub(super) const PROJECT: &str = "default";
 
-struct TestDir(std::path::PathBuf);
+pub(super) struct TestDir(pub(super) std::path::PathBuf);
 
 impl Drop for TestDir {
     fn drop(&mut self) {
@@ -22,7 +22,7 @@ impl Drop for TestDir {
     }
 }
 
-async fn login(app: &axum::Router) -> String {
+pub(super) async fn login(app: &axum::Router) -> String {
     let form = serde_urlencoded::to_string([("identifier", "superadmin"), ("password", "test-pass")]).expect("form");
     let response = app
         .clone()
@@ -45,7 +45,7 @@ async fn get_status(app: &axum::Router, uri: &str) -> StatusCode {
     app.clone().oneshot(request).await.expect("response").status()
 }
 
-async fn mcp_token(app: &axum::Router, cookie: &str, capabilities: &[&str]) -> String {
+pub(super) async fn mcp_token(app: &axum::Router, cookie: &str, capabilities: &[&str]) -> String {
     let request = Request::builder()
         .uri(format!("/api/projects/{OWNER}/{PROJECT}/mcp/keys"))
         .method("POST")
@@ -60,7 +60,7 @@ async fn mcp_token(app: &axum::Router, cookie: &str, capabilities: &[&str]) -> S
     body["created"]["secret"].as_str().expect("token").to_string()
 }
 
-async fn mcp_call(app: &axum::Router, token: &str, tool: &str, arguments: Value) -> Result<String, String> {
+pub(super) async fn mcp_call(app: &axum::Router, token: &str, tool: &str, arguments: Value) -> Result<String, String> {
     let response = app
         .clone()
         .oneshot(

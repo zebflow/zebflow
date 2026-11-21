@@ -39,6 +39,8 @@ app admin or agent ─▶ door pipeline (trigger.webhook or trigger.mcp, with au
 ## Tools
 
 `file_list`, `file_read`, `file_write`, `file_edit`, `file_delete`,
+`file_stat`, `template_check` (amendment 2026-11-21: `file_stat` answers a file's `hash`; `file_write`, `file_edit` and
+`pipeline_register` take `expect_hash` and refuse when the file changed since; `template_check` compiles a page in the folder without saving),
 `pipeline_get`, `pipeline_register`, `pipeline_activate`,
 `pipeline_deactivate`, `pipeline_delete`, `credential_list`,
 `credential_create`, `credential_update`, `credential_delete`.
@@ -51,7 +53,7 @@ at the first refusal; the ones before it stay done. The answer is
 
 1. Files and pipelines live only under `scope`. A path with `..`, a leading `/` or a backslash is refused, not repaired; no link inside `scope` is followed out of it; `scope` itself cannot be deleted.
 2. Pipeline files (`.zf.json`) change only through the pipeline tools.
-3. A made pipeline is checked from its body, again from the saved file (removed if it fails), and again when switched on. Every node is a catalogue kind exactly as written; it starts with `trigger.webhook`, `trigger.schedule` or `trigger.manual`; it never uses `zebflow.*`; a webhook route lies under `routes` and carries no `%`, `\`, `?`, `#`, space or `.`/`..` segment.
+3. A made pipeline is checked from its body, again from the saved file (removed if it fails), and again when switched on. Every node is a catalogue kind exactly as written; it starts with `trigger.webhook`, `trigger.schedule`, `trigger.manual` or `trigger.repo`; it never uses `zebflow.*`; a webhook route lies under `routes` and carries no `%`, `\`, `?`, `#`, space or `.`/`..` segment; a `trigger.repo` watches a path inside `scope`, never the whole repository (amendment 2026-11-21).
 4. A made pipeline names credentials written out by id, never by expression, and only those in `delegate` or managed by its own door.
 5. A door creates only kinds in `manage_kinds`, never `zebflow_control`, and no more than `manage_limit`. A created credential is marked as managed by its door's fence in the credential record, not by its name.
 6. `credential_list` answers the delegated and the managed credentials: id, kind, title and the non-secret fields. A secret value is never answered.

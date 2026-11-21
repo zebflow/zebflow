@@ -4617,6 +4617,8 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "file_search" => Some(ProjectCapability::TemplatesRead),
         "file_edit" => Some(ProjectCapability::TemplatesWrite),
         "file_outline" => Some(ProjectCapability::TemplatesRead),
+        "template_check" => Some(ProjectCapability::TemplatesRead),
+        "file_stat" => Some(ProjectCapability::TemplatesRead),
         "file_deps" => Some(ProjectCapability::TemplatesRead),
         "file_batch_edit" => Some(ProjectCapability::TemplatesWrite),
         "pipeline_search" => Some(ProjectCapability::PipelinesRead),

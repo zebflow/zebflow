@@ -60,6 +60,8 @@ pub const TOOLS: &[&str] = &[
     "file_write",
     "file_edit",
     "file_delete",
+    "file_stat",
+    "template_check",
     "pipeline_get",
     "pipeline_register",
     "pipeline_activate",
@@ -84,7 +86,7 @@ const NEVER_FAMILY: &str = "zebflow";
 /// Entry nodes a made pipeline may start with. Not `trigger.function`: a
 /// function's name is project-wide, so a made one could stand in for one the
 /// app's own pipelines call.
-const ALLOWED_TRIGGERS: &[&str] = &["trigger.webhook", "trigger.schedule", "trigger.manual"];
+const ALLOWED_TRIGGERS: &[&str] = &["trigger.webhook", "trigger.schedule", "trigger.manual", "trigger.repo"];
 
 /// The extension of a pipeline file, which only the pipeline operations touch.
 const PIPELINE_FILE: &str = ".zf.json";
@@ -388,6 +390,15 @@ pub fn check_graph(graph: &PipelineGraph, fence: &Fence) -> Result<(), String> {
                 return Err(format!("{who} answers at '{route}', outside {}", fence.routes));
             }
         }
+        // A made pipeline watches its own folder: what changes elsewhere in the
+        // repository is not the fence's to react to.
+        if kind == crate::pipeline::nodes::basic::trigger::repo::NODE_KIND {
+            let raw = node.config.get("path").and_then(Value::as_str).unwrap_or_default();
+            let path = crate::pipeline::nodes::basic::trigger::repo::watched_path(raw).map_err(|why| format!("{who}: {why}"))?;
+            if path.is_empty() || !fence.holds(&path) {
+                return Err(format!("{who} watches '{raw}', outside {}", fence.scope));
+            }
+        }
         for id in credential_refs(&node.config, &credential_keys(kind, &catalogue)) {
             if id.contains("{{") {
                 return Err(format!("{who} names its credential with an expression; a made pipeline names a delegated credential as written"));
@@ -577,12 +588,27 @@ impl Node {
                 let content = arguments.get("content").and_then(Value::as_str).ok_or("`content` is required")?;
                 // The app sent the content; answering it back doubles a
                 // large file for nothing.
-                answered(ops.file_write(&path, content))?;
+                answered(ops.write_if_unchanged(&path, opt(arguments, "expect_hash"), || async { ops.file_write(&path, content) }).await)?;
                 Ok(json!({ "ok": true, "rel_path": path, "bytes": content.len() }))
             }
             "file_edit" => {
                 let path = self.fenced_file(fence, owner, project, arguments, "rel_path")?;
-                answered(ops.file_edit(&path, arg(arguments, "old_string")?, arguments.get("new_string").and_then(Value::as_str).unwrap_or_default()))
+                let old_string = arg(arguments, "old_string")?;
+                let new_string = arguments.get("new_string").and_then(Value::as_str).unwrap_or_default();
+                answered(ops.write_if_unchanged(&path, opt(arguments, "expect_hash"), || async { ops.file_edit(&path, old_string, new_string) }).await)
+            }
+            "file_stat" => {
+                // Read-only, so a pipeline file inside the fence answers too:
+                // its hash is what pipeline_register's expect_hash names.
+                let raw = arg(arguments, "rel_path")?;
+                let path = clean_path(raw).filter(|path| fence.holds(path)).ok_or_else(|| format!("'{raw}' is outside {}", fence.scope))?;
+                self.really_inside(owner, project, fence, &path)?;
+                answered(ops.file_stat(&path))
+            }
+            "template_check" => {
+                let path = self.fenced_file(fence, owner, project, arguments, "rel_path")?;
+                let content = arguments.get("content").and_then(Value::as_str);
+                answered(ops.template_check(&path, content))
             }
             "file_delete" => {
                 let path = self.fenced_file(fence, owner, project, arguments, "rel_path")?;
@@ -604,7 +630,9 @@ impl Node {
                 let body = arg(arguments, "body")?;
                 let graph = crate::platform::shell::parser::build_pipeline_graph("check", body)?;
                 check_graph(&graph, fence)?;
-                let answer = answered(ops.pipeline_register(body, Some(&identity), None, None, opt(arguments, "title"), opt(arguments, "description")).await)?;
+                let (_, repo_path) = self.pipeline_path(owner, project, arg(arguments, "file_rel_path")?)?;
+                let register = || ops.pipeline_register(body, Some(&identity), None, None, opt(arguments, "title"), opt(arguments, "description"));
+                let answer = answered(ops.write_if_unchanged(&repo_path, opt(arguments, "expect_hash"), register).await)?;
                 if let Err(reason) = self.check_saved(fence, owner, project, &identity) {
                     // Saved, but not what was checked: take it back out.
                     let _ = ops.pipeline_delete(&identity).await;
@@ -772,7 +800,7 @@ impl NodeHandler for Node {
                 match self.run_one(&fence, &owner, &project, tool, arguments).await {
                     Ok(answer) => results.push(json!({ "tool": tool, "ok": true, "answer": answer })),
                     Err(reason) => {
-                        let code = if ["outside", "not opened", "may never", "denies", "allows only", "not delegated", "starts with", "pipeline file", "a link", "own folder", "not a plain path", "expression", "not in the catalogue", "failed the check", "not managed by", "door manages", "may never create", "not an outside address", "its limit", "already exists", "delegated to this door"].iter().any(|word| reason.contains(word)) {
+                        let code = if ["outside", "not opened", "may never", "denies", "allows only", "not delegated", "starts with", "pipeline file", "a link", "own folder", "not a plain path", "expression", "not in the catalogue", "failed the check", "not managed by", "door manages", "may never create", "not an outside address", "its limit", "already exists", "delegated to this door", "plain repository path", "--path is required"].iter().any(|word| reason.contains(word)) {
                             REFUSED_CODE
                         } else {
                             CODE
@@ -848,6 +876,7 @@ mod tests {
         check_graph(&graph("| trigger.webhook --route /m/rain/latest | postgres.query.run --credential pg_modules -- \"SELECT 1\" | web.response.send --body ok"), &f)
             .expect("a delegated credential under the prefix");
         check_graph(&graph("| trigger.schedule --cron \"0 * * * *\" | http.response.fetch --url https://api.example.com/x"), &f).expect("a schedule");
+        check_graph(&graph("| trigger.repo --path modules/rain | http.response.fetch --url https://api.example.com/x"), &f).expect("a watch inside the folder");
         let refusals = [
             ("| trigger.webhook --route /admin/x | web.response.send --body ok", "outside /m/"),
             ("| trigger.webhook --route /m/x | postgres.query.run --credential main_pg -- \"SELECT 1\"", "not delegated"),
@@ -855,6 +884,10 @@ mod tests {
             ("| trigger.webhook --route /m/x | zebflow.command.run --credential zf_modules --command \"{{ input.webhook.body }}\"", "may never use zebflow"),
             ("| trigger.webhook --route /m/x | function.result.call --function main-job", "denies function.*"),
             ("| trigger.mcp --route /tools --name t --description d", "starts with"),
+            ("| trigger.repo --path pages", "outside modules/"),
+            ("| trigger.repo --path /", "outside modules/"),
+            ("| trigger.repo --path modules-old/x", "outside modules/"),
+            ("| trigger.repo --path modules/../pages", "plain repository path"),
         ];
         for (dsl, why) in refusals {
             let err = check_graph(&graph(dsl), &f).expect_err(dsl);

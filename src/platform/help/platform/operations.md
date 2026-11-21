@@ -125,7 +125,7 @@ a tool outside the set is refused with the missing capability named.
 | `pipelines.write` | `pipeline_register`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `git_command`, `install_ui_components`, `hub_add`, `move_resource` |
 | `pipelines.delete` | `pipeline_delete` |
 | `pipelines.execute` | `pipeline_execute`, `pipeline_run`, `route_fetch` |
-| `templates.read` | `file_list`, `file_read`, `file_search`, `file_outline`, `file_deps` |
+| `templates.read` | `file_list`, `file_read`, `file_search`, `file_outline`, `file_deps`, `file_stat`, `template_check` |
 | `templates.create` / `templates.write` | `file_create` / `file_write`, `file_edit`, `file_batch_edit` |
 | `templates.delete` | `file_delete` |
 | `tables.read` | `connection_list`, `connection_describe` |

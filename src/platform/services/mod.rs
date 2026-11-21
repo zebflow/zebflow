@@ -44,6 +44,7 @@ pub mod project_library;
 pub mod project_operation;
 pub mod project_transfer;
 pub mod published_oauth;
+pub mod template_check;
 pub mod tsx_outline;
 pub mod user;
 pub mod webhook_signature;

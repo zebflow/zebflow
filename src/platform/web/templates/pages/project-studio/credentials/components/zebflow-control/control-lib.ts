@@ -10,6 +10,8 @@ export const TOOL_GROUPS = [
       { id: "file_write", label: "Write new files and replace files" },
       { id: "file_edit", label: "Edit part of a file" },
       { id: "file_delete", label: "Delete files" },
+      { id: "file_stat", label: "See a file's version (to write only if unchanged)" },
+      { id: "template_check", label: "Check a page compiles, without saving" },
     ],
   },
   {

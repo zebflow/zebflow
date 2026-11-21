@@ -1712,6 +1712,83 @@ impl PlatformOps {
         }
     }
 
+    /// A repository file's version: the fingerprint of its saved text
+    /// (`sha256:<hex>`, as the change record keeps it); none when there is no
+    /// file. Any other failure to read is an error, never "no file".
+    fn file_version(&self, rel_path: &str) -> Result<Option<String>, String> {
+        match self.platform.projects.read_repo_file_text(&self.owner, &self.project, rel_path) {
+            Ok(text) => Ok(Some(crate::platform::services::change_log::digest(text.as_bytes()))),
+            Err(e) if e.code == "PLATFORM_REPO_MISSING" => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Whether a file exists, its size and its version, for a write that
+    /// must not overwrite a change it has not seen (`expect_hash`).
+    pub fn file_stat(&self, rel_path: &str) -> OpsResult {
+        match self.platform.projects.read_repo_file_text(&self.owner, &self.project, rel_path) {
+            Ok(text) => OpsResult::ok(
+                json!({ "rel_path": rel_path, "exists": true, "size": text.len(), "hash": crate::platform::services::change_log::digest(text.as_bytes()) })
+                    .to_string(),
+            ),
+            Err(e) if e.code == "PLATFORM_REPO_MISSING" => OpsResult::ok(json!({ "rel_path": rel_path, "exists": false }).to_string()),
+            Err(e) => OpsResult::err(e.to_string()),
+        }
+    }
+
+    /// Runs `write` only if `rel_path` is still at the version `expect` names
+    /// — its `hash` from `file_stat` or an earlier write, or `none` for a file
+    /// that must not exist yet. Without `expect`, `write` just runs. Writes
+    /// that expect a version pass one at a time, so two of them cannot both
+    /// see the same version and both win.
+    pub async fn write_if_unchanged<F, Fut>(&self, rel_path: &str, expect: Option<&str>, write: F) -> OpsResult
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = OpsResult>,
+    {
+        let Some(expect) = expect.map(str::trim).filter(|e| !e.is_empty()) else {
+            return write().await;
+        };
+        static GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _one_at_a_time = GATE.lock().await;
+        let current = match self.file_version(rel_path) {
+            Ok(current) => current,
+            Err(e) => return OpsResult::err(e),
+        };
+        let matches = match (&current, expect) {
+            (None, "none") => true,
+            (Some(hash), expected) => hash == expected || hash.strip_prefix("sha256:") == Some(expected),
+            (None, _) => false,
+        };
+        if !matches {
+            let now = current.as_deref().unwrap_or("none");
+            return OpsResult::err(format!(
+                "{rel_path} changed since that version was read (expected {expect}, it is now {now}); read it again and redo the change"
+            ));
+        }
+        write().await
+    }
+
+    /// Whether a page or component would compile — `content` as given, or
+    /// the file as saved — without saving anything (`template_check.rs`).
+    pub fn template_check(&self, rel_path: &str, content: Option<&str>) -> OpsResult {
+        let saved;
+        let content = match content {
+            Some(content) => content,
+            None => match self.platform.projects.read_repo_file_text(&self.owner, &self.project, rel_path) {
+                Ok(text) => {
+                    saved = text;
+                    saved.as_str()
+                }
+                Err(e) => return OpsResult::err(e.to_string()),
+            },
+        };
+        match crate::platform::services::template_check::check(&self.platform, &self.owner, &self.project, rel_path, content) {
+            Ok(answer) => OpsResult::ok(serde_json::to_string_pretty(&answer).unwrap_or_default()),
+            Err(e) => OpsResult::err(e.to_string()),
+        }
+    }
+
     pub fn file_write(&self, rel_path: &str, content: &str) -> OpsResult {
         let req = TemplateSaveRequest {
             rel_path: rel_path.to_string(),

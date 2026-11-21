@@ -89,8 +89,6 @@ use crate::platform::model::{
     QueryProjectDbConnectionRequest,
     RepoTreeScope,
     TemplateCompileRequest,
-    TemplateCompileResponse,
-    TemplateDiagnostic,
     TestProjectDbConnectionRequest,
     UpdateSettingsSectionRequest,
     UpdateSimpleTableRequest,
@@ -8350,17 +8348,6 @@ fn db_connection_icon_class(database_kind: &str) -> &'static str {
     }
 }
 
-fn template_kind_from_rel(rel: &str) -> &'static str {
-    if rel.ends_with(".css") {
-        "style"
-    } else if rel.ends_with(".ts") {
-        "script"
-    } else if rel.contains("/pages/") || rel.starts_with("pages/") {
-        "page"
-    } else {
-        "component"
-    }
-}
 
 async fn api_meta(State(state): State<PlatformAppState>) -> Response {
     Json(json!({
@@ -15660,12 +15647,10 @@ async fn api_template_diagnostics(
 
     let owner = crate::platform::model::slug_segment(&owner);
     let project = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
-        Ok(layout) => layout,
+    let response = match crate::platform::services::template_check::check(&state.platform, &owner, &project, &req.rel_path, &req.content) {
+        Ok(response) => response,
         Err(err) => return internal_error(err),
     };
-
-    let response = compile_template_buffer(&state, &layout.repo_source_dir(), &req, (&owner, &project));
     Json(response).into_response()
 }
 
@@ -28305,114 +28290,8 @@ fn apply_zf_extras(resp: &mut axum::response::Response, headers: &[(String, Stri
     }
 }
 
-fn compile_template_buffer(
-    state: &PlatformAppState,
-    template_root: &FsPath,
-    req: &TemplateCompileRequest,
-    project: (&str, &str),
-) -> TemplateCompileResponse {
-    let rel = req.rel_path.trim();
-    if rel.is_empty() {
-        return TemplateCompileResponse {
-            ok: false,
-            diagnostics: vec![TemplateDiagnostic {
-                code: "template_path_missing".to_string(),
-                message: "template path must not be empty".to_string(),
-                severity: "error".to_string(),
-                from: Some(0),
-                to: Some(1),
-            }],
-        };
-    }
 
-    let kind = template_kind_from_rel(rel);
-    // A library recipe's own source is compiled by zeb-bundler, not here.
-    let recipe_source = crate::platform::services::project_library::is_recipe_source(&state.platform, project.0, project.1, rel);
-    if kind == "script" || kind == "style" || recipe_source {
-        return TemplateCompileResponse {
-            ok: true,
-            diagnostics: Vec::new(),
-        };
-    }
 
-    // A component file has no default export and is never compiled alone:
-    // it is checked as a module, for what breaks it inside a page. A file
-    // under `pages/` is a page whatever it holds, and its render needs the
-    // default export, so it gets the full compile and that refusal.
-    if kind != "page" && !crate::rwe::core::source_check::has_default_export(&req.content) {
-        return module_check(rel, &req.content);
-    }
-
-    // The same options a page render uses: the check must not pass or refuse
-    // what the render would not.
-    let options = ReactiveWebOptions::for_project_page(Some(template_root.to_path_buf()), state.platform.library.source_roots())
-        .with_runtime_libraries(crate::platform::services::project_library::runtime_libraries(&state.platform, project.0, project.1));
-
-    let source = TemplateSource {
-        id: format!("platform.editor.{}", rel.replace('/', ".")),
-        source_path: Some(template_root.join(rel)),
-        markup: req.content.clone(),
-    };
-
-    match state
-        .frontend
-        .rwe
-        .compile_template(&source, state.frontend.language.as_ref(), &options)
-    {
-        Ok(compiled) => TemplateCompileResponse {
-            ok: true,
-            diagnostics: compiled
-                .diagnostics
-                .into_iter()
-                .map(|diag| TemplateDiagnostic {
-                    code: diag.code,
-                    message: diag.message,
-                    severity: "warning".to_string(),
-                    from: None,
-                    to: None,
-                })
-                .collect(),
-        },
-        Err(err) => TemplateCompileResponse {
-            ok: false,
-            diagnostics: vec![TemplateDiagnostic {
-                code: err.code.to_string(),
-                message: err.message,
-                severity: "error".to_string(),
-                from: Some(0),
-                to: Some(1),
-            }],
-        },
-    }
-}
-
-/// A component file checked as a module (`rwe::core::source_check`): it
-/// parses, it declares or imports every name it uses, and a `.tsx` file has
-/// no binding named `h`. Each problem is an error at its place in the buffer.
-fn module_check(rel: &str, content: &str) -> TemplateCompileResponse {
-    let diagnostics: Vec<TemplateDiagnostic> =
-        crate::rwe::core::source_check::check_template_source(content, rel.ends_with(".tsx"))
-            .into_iter()
-            .map(|problem| {
-                let from = char_offset(content, problem.line, problem.column);
-                TemplateDiagnostic {
-                    code: "template_source_problem".to_string(),
-                    message: format!("{rel}:{problem}"),
-                    severity: "error".to_string(),
-                    from: Some(from),
-                    to: Some(from + 1),
-                }
-            })
-            .collect();
-    TemplateCompileResponse { ok: diagnostics.is_empty(), diagnostics }
-}
-
-/// The character offset of a 1-based line and column (counted in
-/// characters, as `source_check` counts them).
-fn char_offset(source: &str, line: usize, column: usize) -> usize {
-    let before: usize = source.split('\n').take(line.saturating_sub(1)).map(|l| l.chars().count() + 1).sum();
-    before + column.saturating_sub(1)
-}
 
 #[derive(Deserialize)]
 struct ChangesQuery {

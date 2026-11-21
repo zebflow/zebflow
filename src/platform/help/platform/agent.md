@@ -97,9 +97,16 @@ scripts, CSS, docs, pipelines); paths are relative to that root.
 | `file_create` | scaffold: `kind` = page · component · script · style · doc · folder; the file lands at `parent_rel_path/name.<ext>` — pass `parent_rel_path="pages"` for `pages/<name>.tsx` |
 | `file_write` | write the whole file (`rel_path`, `content`); a `.tsx` / `.ts` answers `template_problems` — parse errors, names used but never imported, a local `h` — each with its line |
 | `file_edit` / `file_batch_edit` | exact `old_string` → `new_string` replacement, one file or many |
+| `file_stat` | whether a file exists, its `size` and its version `hash` (`sha256:…`) |
+| `template_check` | compile a page or component without saving — `content` unsaved, or the file as saved — with every file it imports as they are now; `{ ok, diagnostics }`, `ok: false` = the page would fail when opened |
 | `file_search` | grep across files |
 | `move_resource` | rename or move a pipeline or file; a live pipeline is deactivated, moved and re-activated |
 | `file_delete` | remove one file or an empty folder (`rel_path`); a folder that still holds files and a `.zf.json` (use `pipeline_delete`) are refused |
+
+**Write only if unchanged.** `file_write`, `file_edit` and `pipeline_register`
+take `expect_hash`: the `hash` from `file_stat`, or `"none"` for a file that
+must not exist yet. If the file changed since, the write is refused, names
+the current hash and writes nothing: read it again and redo the change.
 
 Project docs are files under `docs/` (`file_write rel_path="docs/schema.md"`).
 `AGENTS.md`, `SOUL.md` and `MEMORY.md` are separate: `docs_agent_list`,

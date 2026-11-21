@@ -58,6 +58,8 @@ mod webhook_cors;
 mod change_record;
 #[path = "platform/repo_trigger.rs"]
 mod repo_trigger;
+#[path = "platform/mcp_versions.rs"]
+mod mcp_versions;
 #[path = "platform/zebflow_command.rs"]
 mod zebflow_command;
 #[path = "platform/project_library.rs"]
