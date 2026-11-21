@@ -2270,6 +2270,80 @@ fn is_read_only_refusal(err: &sekejap::Error) -> bool {
     }
 }
 
+/// Most statements one all-or-nothing batch may hold.
+pub const BATCH_MAX_STATEMENTS: usize = 100;
+
+/// Runs `statements` in order in ONE transaction: every write lands, or none
+/// does. A read sees the writes before it in the batch. The first statement
+/// that fails rolls the whole batch back and is named by its index. A schema
+/// change is refused here: it rewrites the project's schema file, which no
+/// rollback can take back.
+pub fn execute_sql_batch(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    statements: &[(String, Vec<Value>)],
+    limit: usize,
+) -> Result<Vec<QueryPayload>, (usize, PlatformError)> {
+    let max_rows = limit.clamp(1, 5_000);
+    for (index, (sql, _)) in statements.iter().enumerate() {
+        let trimmed = sql.trim().trim_end_matches(';').trim();
+        if trimmed.is_empty() {
+            return Err((index, PlatformError::new("PLATFORM_SEKEJAP_QUERY_INVALID", "the statement is empty")));
+        }
+        if statement_changes_schema(trimmed) {
+            return Err((
+                index,
+                PlatformError::new(
+                    "PLATFORM_SEKEJAP_QUERY_INVALID",
+                    "a schema change (CREATE, ALTER, DROP) cannot run inside an all-or-nothing batch; run it on its own first",
+                ),
+            ));
+        }
+    }
+    let db = get_db(data_root, owner, project).map_err(|err| (0, err))?;
+    let mut tx = db.transaction().map_err(|e| (0, store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e)))?;
+    let mut answers = Vec::with_capacity(statements.len());
+    let mut written = 0usize;
+    for (index, (sql, params)) in statements.iter().enumerate() {
+        let started = Instant::now();
+        let trimmed = sql.trim().trim_end_matches(';').trim();
+        let failed = |e| (index, store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e));
+        let answer = if statement_is_write(trimmed) && !statement_has_returning(trimmed) {
+            let affected = tx.execute(trimmed, params).map_err(failed)?;
+            written += affected as usize;
+            QueryPayload {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                row_count: 0,
+                truncated: false,
+                affected_rows: Some(affected),
+                duration_ms: started.elapsed().as_millis() as u64,
+            }
+        } else {
+            let is_write = statement_is_write(trimmed);
+            let rows = tx.query(trimmed, params).map_err(failed)?;
+            let count = rows.len();
+            if is_write {
+                written += count;
+            }
+            let (columns, rows, truncated) = payload_from_rows(rows, max_rows);
+            QueryPayload {
+                columns,
+                row_count: rows.len(),
+                rows,
+                truncated,
+                affected_rows: is_write.then_some(count as u64),
+                duration_ms: started.elapsed().as_millis() as u64,
+            }
+        };
+        answers.push(answer);
+    }
+    tx.commit().map_err(|e| (statements.len().saturating_sub(1), store_error("PLATFORM_SEKEJAP_QUERY_FAILED", e)))?;
+    record_project_write(data_root, owner, project, written.max(1));
+    Ok(answers)
+}
+
 pub fn execute_sql(
     data_root: &Path,
     owner: &str,

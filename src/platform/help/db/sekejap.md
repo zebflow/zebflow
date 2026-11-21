@@ -278,8 +278,24 @@ DELETE FROM contacts WHERE _key = $1
 
 A plain `INSERT` never overwrites: a key that exists is `23505`, and
 `ON CONFLICT` is the upsert. `UNIQUE` keeps any other column unique. Each
-statement is its own transaction; `BEGIN` / `COMMIT` are refused. A batch
-that must land together goes through `sekejap.record.create`.
+statement is its own transaction; `BEGIN` / `COMMIT` as SQL are refused.
+
+**All or nothing** — several statements that must land together go in one
+`--statements` list (with `--write`), run in order in one transaction:
+
+```
+| sekejap.query.run --write --statements "{{ [{ sql: 'DELETE FROM order_items WHERE order_id = $1', params: [$trigger.body.order] }, { sql: 'UPDATE orders SET status = $2 WHERE _key = $1', params: [$trigger.body.order, 'cancelled'] }] }}"
+```
+
+Every write lands, or none does. A statement sees the writes before it. The
+first one that fails rolls the whole list back and is named in the error
+(`statement 2 of 3 failed, so none of the batch was written`). At most 100
+statements; `params` is a list, `$1` first. A schema change (`CREATE`,
+`ALTER`, `DROP`) is refused inside the list: run it on its own first. The
+answer is the last statement's rows as `query.rows`, the total
+`rows_affected`, and each statement's own answer under `query.statements`.
+New records with graph edges in one commit can also go through
+`sekejap.record.create`.
 
 **Claim a row exactly once** — a key and the state it must still be in:
 

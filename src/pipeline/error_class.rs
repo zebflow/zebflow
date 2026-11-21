@@ -370,6 +370,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_SEKEJAP_QUERY_RUN_PARAM", ErrorClass::Refused),
     ("FW_NODE_SEKEJAP_QUERY_RUN_UNAVAILABLE", ErrorClass::Failed),
     ("FW_NODE_SEKEJAP_QUERY_RUN_WRITE", ErrorClass::Refused),
+    ("FW_NODE_SEKEJAP_QUERY_RUN_BATCH", ErrorClass::Failed),
     ("FW_NODE_SEKEJAP_RECORD_CREATE", ErrorClass::Failed),
     ("FW_NODE_SEKEJAP_RECORD_CREATE_CONFIG", ErrorClass::Refused),
     ("FW_NODE_SEKEJAP_RECORD_CREATE_INPUT", ErrorClass::Refused),

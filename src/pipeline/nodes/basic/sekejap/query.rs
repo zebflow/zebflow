@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::pipeline::model::{LayoutItem, NodeCapability, NodeExample, NodeFieldDef, NodeFieldType};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeCapability, NodeExample, NodeFieldDef, NodeFieldType};
 use crate::pipeline::nodes::shared::query::{self, Params};
 use crate::pipeline::nodes::shared::util::{metadata_scope, with_answer};
 use crate::pipeline::{
@@ -37,6 +37,8 @@ const PARAM_CODE: &str = "FW_NODE_SEKEJAP_QUERY_RUN_PARAM";
 const LIMIT_CODE: &str = "FW_NODE_SEKEJAP_QUERY_RUN_LIMIT";
 /// A write without `--write`.
 pub const WRITE_CODE: &str = "FW_NODE_SEKEJAP_QUERY_RUN_WRITE";
+/// A `--statements` batch that failed: nothing of it was written.
+pub const BATCH_CODE: &str = "FW_NODE_SEKEJAP_QUERY_RUN_BATCH";
 
 pub fn definition() -> NodeDefinition {
     let answer = |columns: &[&str], rows: Value, affected: Option<u64>| {
@@ -62,7 +64,11 @@ pub fn definition() -> NodeDefinition {
              EXCLUDED.c`. Sekejap's SQL is PostgreSQL's outside graphs: `LIKE`/`ILIKE`, `UNIQUE`, `REFERENCES`, `DEFAULT`, `NOT NULL`; \
              relations between rows are graph walks, not JOINs — `GRAPH_TABLE (g MATCH (a)-[e:knows]->(b) RETURN b.name AS name)`; pages \
              continue after the last row (`WHERE (name, _key) > ($1, $2) ORDER BY name, _key LIMIT 20`), there is no OFFSET. See help topic \
-             `db/sekejap`. An unknown table or column fails at run time, not at register."
+             `db/sekejap`. An unknown table or column fails at run time, not at register. All or nothing: `--write --statements \
+             \"{{ [ { sql: 'DELETE FROM order_items WHERE order_id = $1', params: [id] }, { sql: 'UPDATE orders SET status = $2 WHERE _key = $1', params: [id, 'cancelled'] } ] }}\"` \
+             runs up to 100 statements in order in one transaction — every write lands or none does, a read sees the writes before it, \
+             the first failure rolls everything back and names its statement; schema changes run on their own. It answers the last \
+             statement's rows as `query.rows`, the total `rows_affected`, and each statement's answer under `query.statements`."
                 .to_string(),
         input_schema: json!({
             "type": "object",
@@ -79,6 +85,14 @@ pub fn definition() -> NodeDefinition {
             query::param_flag("`1=…` binds $1, `2=…` binds $2"),
             query::write_flag(),
             query::limit_flag(),
+            DslFlag {
+                flag: "--statements".to_string(),
+                config_key: "statements".to_string(),
+                description: "All or nothing, with --write: a list of { sql, params } run in order in one transaction (at most 100); `params` is a list binding $1, $2, …. Instead of --query and --param.".to_string(),
+                kind: DslFlagKind::Scalar,
+                value: "expression".to_string(),
+                ..Default::default()
+            },
         ],
         fields: {
             let mut fields = vec![NodeFieldDef {
@@ -162,6 +176,9 @@ pub struct Config {
     /// Rows answered.
     #[serde(default)]
     pub limit: Value,
+    /// All or nothing: `[{ sql, params }]`, run in one transaction.
+    #[serde(default)]
+    pub statements: Value,
 }
 
 pub struct Node {
@@ -171,6 +188,15 @@ pub struct Node {
 
 impl Node {
     pub fn new(config: Config, data_root: PathBuf) -> Result<Self, PipelineError> {
+        if !config.statements.is_null() {
+            if !config.query.trim().is_empty() || !config.param.is_null() {
+                return Err(PipelineError::new(CONFIG_CODE, "--statements carries its own SQL and params: drop --query and --param"));
+            }
+            if !config.write {
+                return Err(PipelineError::new(WRITE_CODE, "--statements writes all or nothing: add --write"));
+            }
+            return Ok(Self { config, data_root });
+        }
         if config.query.trim().is_empty() {
             return Err(PipelineError::new(CONFIG_CODE, "--query (or the body after --) must not be empty"));
         }
@@ -197,6 +223,9 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
+        if !self.config.statements.is_null() {
+            return self.run_batch(owner, project, input.payload).await;
+        }
         // Arrives final — `{{ }}` resolved engine-side before this ran.
         let sql = self.config.query.trim().to_string();
         if sql.is_empty() {
@@ -241,6 +270,70 @@ impl NodeHandler for Node {
             ],
         })
     }
+}
+
+impl Node {
+    /// `--statements`: every statement in one transaction, all or nothing.
+    async fn run_batch(&self, owner: &str, project: &str, payload: Value) -> Result<NodeExecutionOutput, PipelineError> {
+        let statements = batch_statements(&self.config.statements)?;
+        let limit = query::limit(&self.config.limit, LIMIT_CODE)?;
+        let data_root = self.data_root.clone();
+        let (owner, project) = (owner.to_string(), project.to_string());
+        let count = statements.len();
+        let answers = tokio::task::spawn_blocking(move || sekejap::execute_sql_batch(&data_root, &owner, &project, &statements, limit))
+            .await
+            .map_err(|err| PipelineError::new(CODE, format!("sekejap batch task failed: {err}")))?
+            .map_err(|(index, err)| {
+                PipelineError::new(
+                    BATCH_CODE,
+                    format!("statement {} of {count} failed, so none of the batch was written: {err}", index + 1),
+                )
+            })?;
+        let each: Vec<Value> = answers
+            .iter()
+            .map(|answer| {
+                let rows = rows_as_objects(&answer.columns, &answer.rows);
+                let columns = answer.columns.iter().map(|column| column.name.clone()).collect();
+                query::answer(columns, rows, answer.truncated, answer.affected_rows)["query"].clone()
+            })
+            .collect();
+        let total: u64 = answers.iter().filter_map(|answer| answer.affected_rows).sum();
+        let mut answer = each.last().cloned().unwrap_or_else(|| json!({ "rows": [], "columns": [], "row_count": 0, "truncated": false }));
+        answer["rows_affected"] = json!(total);
+        answer["statements"] = json!(each);
+        Ok(NodeExecutionOutput {
+            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+            payload: with_answer(payload, json!({ "query": answer })),
+            trace: vec![format!("node_kind={NODE_KIND}"), format!("statements={count}"), format!("rows_affected={total}")],
+        })
+    }
+}
+
+/// `--statements` as `(sql, params)`: a list of 1..=100 `{ sql, params }`,
+/// `params` a list (`$1` first) or absent.
+fn batch_statements(value: &Value) -> Result<Vec<(String, Vec<Value>)>, PipelineError> {
+    let refuse = |why: String| PipelineError::new(CONFIG_CODE, format!("--statements: {why}"));
+    let Some(list) = value.as_array() else {
+        return Err(refuse("must be a list of { sql, params }".to_string()));
+    };
+    if list.is_empty() || list.len() > sekejap::BATCH_MAX_STATEMENTS {
+        return Err(refuse(format!("holds {} statements; give 1 to {}", list.len(), sekejap::BATCH_MAX_STATEMENTS)));
+    }
+    list.iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let sql = item.get("sql").and_then(Value::as_str).map(str::trim).filter(|sql| !sql.is_empty());
+            let Some(sql) = sql else {
+                return Err(refuse(format!("statement {} has no `sql`", index + 1)));
+            };
+            let params = match item.get("params") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(values)) => values.clone(),
+                Some(_) => return Err(refuse(format!("statement {}: `params` must be a list, $1 first", index + 1))),
+            };
+            Ok((sql.to_string(), params))
+        })
+        .collect()
 }
 
 /// A failed `CREATE TABLE` points at the grammar: which column clauses
@@ -329,7 +422,7 @@ mod node_tests {
     fn the_signature_is_the_shared_query_shape() {
         assert_eq!(
             crate::pipeline::nodes::node_signature(&definition()),
-            "sekejap.query.run [--query TEXT] [--param KEY=EXPR…] [--write] [--limit N] → query"
+            "sekejap.query.run [--query TEXT] [--param KEY=EXPR…] [--write] [--limit N] [--statements EXPR] → query"
         );
     }
 
@@ -381,6 +474,58 @@ mod node_tests {
         for param in [json!({ "1": 1, "3": 3 }), json!({ "1": 1, "n": 2 }), json!({ "n": 2 })] {
             let err = exec(tmp.path(), json!({ "query": "SELECT $1", "param": param }), json!({})).await.unwrap_err();
             assert_eq!(err.code, PARAM_CODE, "{}", err.message);
+        }
+    }
+
+    /// `--statements`: every write lands, or none does; a read sees the
+    /// writes before it; the failing statement is named.
+    #[tokio::test]
+    async fn statements_are_all_or_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        exec(tmp.path(), json!({ "query": "CREATE TABLE posts (_key TEXT PRIMARY KEY, n INT)", "write": true }), json!({}))
+            .await
+            .expect("create");
+        let batch = |statements: Value| json!({ "statements": statements, "write": true });
+
+        let done = exec(
+            tmp.path(),
+            batch(json!([
+                { "sql": "INSERT INTO posts (_key, n) VALUES ($1, $2)", "params": ["a", 1] },
+                { "sql": "INSERT INTO posts (_key, n) VALUES ($1, $2)", "params": ["b", 2] },
+                { "sql": "UPDATE posts SET n = $2 WHERE _key = $1", "params": ["a", 10] },
+                { "sql": "SELECT _key, n FROM posts ORDER BY _key" }
+            ])),
+            json!({}),
+        )
+        .await
+        .expect("batch");
+        assert_eq!(done["query"]["rows"], json!([{ "_key": "a", "n": 10 }, { "_key": "b", "n": 2 }]), "the read saw the batch's writes");
+        assert_eq!(done["query"]["rows_affected"], 3);
+        assert_eq!(done["query"]["statements"].as_array().map(Vec::len), Some(4));
+
+        let err = exec(
+            tmp.path(),
+            batch(json!([
+                { "sql": "DELETE FROM posts WHERE _key = $1", "params": ["b"] },
+                { "sql": "INSERT INTO posts (_key, n) VALUES ($1, $2)", "params": ["c", 3] },
+                { "sql": "INSERT INTO posts (_key, n) VALUES ($1, $2)", "params": ["a", 4] }
+            ])),
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, BATCH_CODE);
+        assert!(err.message.contains("statement 3 of 3"), "{}", err.message);
+        let after = exec(tmp.path(), json!({ "query": "SELECT _key, n FROM posts ORDER BY _key" }), json!({})).await.unwrap();
+        assert_eq!(after["query"]["rows"], json!([{ "_key": "a", "n": 10 }, { "_key": "b", "n": 2 }]), "nothing of the failed batch remains");
+
+        let ddl = exec(tmp.path(), batch(json!([{ "sql": "CREATE TABLE more (_key TEXT PRIMARY KEY)" }])), json!({})).await.unwrap_err();
+        assert!(ddl.message.contains("schema change"), "{}", ddl.message);
+        let unwritable = Node::new(serde_json::from_value(json!({ "statements": [{ "sql": "SELECT 1" }] })).unwrap(), tmp.path().to_path_buf());
+        assert_eq!(unwritable.err().map(|e| e.code), Some(WRITE_CODE));
+        for bad in [json!([]), json!("SELECT 1"), json!([{ "params": [1] }]), json!([{ "sql": "SELECT $1", "params": { "1": 1 } }])] {
+            let err = exec(tmp.path(), batch(bad.clone()), json!({})).await.unwrap_err();
+            assert_eq!(err.code, CONFIG_CODE, "{bad}: {}", err.message);
         }
     }
 }
