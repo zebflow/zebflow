@@ -47,6 +47,22 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # The release's notes are its section of CHANGELOG.md: the text from
+      # `## <version>` to the next `## `. A version with no section gets an
+      # empty one and the generated compare link only.
+      - name: Release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          VERSION="${VERSION#v}"
+          awk -v v="$VERSION" '
+            /^## / { if (found) exit; if (index($0, "## " v " ") == 1 || $0 == "## " v) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          cat release-notes.md
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -65,6 +81,7 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.version }}
           name: Zebflow ${{ needs.prepare.outputs.version }}
+          body_path: release-notes.md
           generate_release_notes: true
           files: |
             artifacts/zebflow-linux-amd64.tar.gz
