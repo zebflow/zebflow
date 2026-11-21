@@ -48,6 +48,7 @@ use crate::contracts::kinds::decode_pipeline_graph;
 use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacementTarget};
 use crate::infra::mem::subscriber::KvSubscriber;
+use crate::infra::repo_watch::RepoWatcher;
 use crate::infra::scheduler::PipelineScheduler;
 use crate::infra::ws_client::WsClientManager;
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
@@ -353,6 +354,8 @@ pub struct PlatformAppStateInner {
     scheduler: Arc<PipelineScheduler>,
     /// Background KV subscribe listener service.
     kv_subscriber: Arc<KvSubscriber>,
+    /// Background `trigger.repo` listener service.
+    repo_watcher: Arc<RepoWatcher>,
     /// Background WS client connection service.
     ws_client_manager: Arc<WsClientManager>,
     /// Live preview toggle registry. Key: "{owner}/{project}/{file_rel}".
@@ -477,6 +480,16 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     ));
     kv_subscriber.register_all().await;
     println!("✅ KV subscriber started");
+
+    let repo_watcher = Arc::new(RepoWatcher::new(
+        platform.changes.clone(),
+        platform.pipeline_runtime.clone(),
+        sched_engine.clone(),
+        platform.pipeline_hits.clone(),
+        platform.data.clone(),
+        platform.zebflow_cfg.clone(),
+    ));
+    repo_watcher.register_all().await;
 
     let sessions: Arc<std::sync::Mutex<HashMap<String, PlatformWebSession>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -1454,6 +1467,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             platform: platform.clone(),
             scheduler: scheduler.clone(),
             kv_subscriber: kv_subscriber.clone(),
+            repo_watcher: repo_watcher.clone(),
             ws_client_manager: ws_client_manager.clone(),
         });
     platform.projects.attach_pipeline_switch(Arc::downgrade(&pipeline_switch));
@@ -1467,6 +1481,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         template_cache,
         scheduler,
         kv_subscriber,
+        repo_watcher,
         ws_client_manager,
         preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         sessions,
@@ -11459,6 +11474,7 @@ async fn restore_imported_activation(
     {
         state.scheduler.sync_pipeline(owner, project, path).await;
         state.kv_subscriber.sync_pipeline(owner, project, path).await;
+        state.repo_watcher.sync_pipeline(owner, project, path).await;
         state.ws_client_manager.sync_pipeline(owner, project, path).await;
     }
     for path in &report.activated {
@@ -12546,6 +12562,7 @@ async fn api_delete_project(
     for file_rel_path in &unswitched {
         state.scheduler.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
         state.kv_subscriber.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
+        state.repo_watcher.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
         state.ws_client_manager.sync_pipeline(&owner_slug, &project_slug, file_rel_path).await;
     }
 
@@ -14006,6 +14023,7 @@ async fn api_activate_pipeline_definition(
                 .kv_subscriber
                 .sync_pipeline(&owner, &project, &req.file_rel_path)
                 .await;
+            state.repo_watcher.sync_pipeline(&owner, &project, &req.file_rel_path).await;
             state
                 .ws_client_manager
                 .sync_pipeline(&owner, &project, &req.file_rel_path)
@@ -14084,6 +14102,7 @@ async fn api_deactivate_pipeline_definition(
                 .kv_subscriber
                 .sync_pipeline(&owner, &project, &req.file_rel_path)
                 .await;
+            state.repo_watcher.sync_pipeline(&owner, &project, &req.file_rel_path).await;
             state
                 .ws_client_manager
                 .sync_pipeline(&owner, &project, &req.file_rel_path)

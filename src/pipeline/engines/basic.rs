@@ -36,7 +36,7 @@ use crate::pipeline::nodes::basic::{
     ai, auth, browser, crypto, fs, function, geo, http, input, javascript, kv, logic, mail, mapserver, postgres,
     sekejap, sqlite, table, typescript,
     trigger::{
-        function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
+        function as trigger_function, kv_subscribe, manual, mcp_trigger, repo as trigger_repo, schedule, weberror,
         webhook, ws_client as trigger_ws_client,
     },
     linux, web, ws, zebflow,
@@ -1774,6 +1774,11 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_TRIGGER_TOPIC_CONFIG", e.to_string())
                 })?,
             ))),
+            trigger_repo::NODE_KIND => Ok(NodeDispatch::RepoTrigger(trigger_repo::Node::new(
+                crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(|e| {
+                    PipelineError::new("FW_NODE_TRIGGER_REPO_CONFIG", e.to_string())
+                })?,
+            ))),
             trigger_ws_client::NODE_KIND => Ok(NodeDispatch::WsClientTrigger(
                 trigger_ws_client::Node::new(crate::pipeline::nodes::shared::util::typed_config(&node.config).map_err(
                     |e| PipelineError::new("FW_NODE_TRIGGER_SOCKET_CONFIG", e.to_string()),
@@ -2667,6 +2672,7 @@ impl BasicPipelineEngine {
                     NodeDispatch::KvSubscribe(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
+                    NodeDispatch::RepoTrigger(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::WsClientTrigger(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -5951,6 +5957,7 @@ enum NodeDispatch {
     /// Any `input.*` kind — a pass-through validator of one envelope field.
     Input(input::Node),
     KvSubscribe(kv_subscribe::Node),
+    RepoTrigger(trigger_repo::Node),
     WsClientTrigger(trigger_ws_client::Node),
     McpTrigger(mcp_trigger::Node),
     /// A node provided by an installed bundle (`x.*`).

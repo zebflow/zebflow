@@ -119,6 +119,14 @@ pub struct KvSubscribeTriggerSpec {
     pub channel: String,
 }
 
+/// One extracted `trigger.repo` from an active compiled pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepoTriggerSpec {
+    pub node_id: String,
+    /// The watched path, repository-relative; empty for the whole repository.
+    pub path: String,
+}
+
 /// One extracted WS client trigger from an active compiled pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WsClientTriggerSpec {
@@ -193,6 +201,8 @@ pub struct CompiledPipeline {
     pub ws_triggers: Vec<WsTriggerSpec>,
     pub weberror_triggers: Vec<WebErrorTriggerSpec>,
     pub kv_subscribe_triggers: Vec<KvSubscribeTriggerSpec>,
+    #[serde(default)]
+    pub repo_triggers: Vec<RepoTriggerSpec>,
     pub ws_client_triggers: Vec<WsClientTriggerSpec>,
     pub mcp_triggers: Vec<McpTriggerSpec>,
     /// The pipeline compiled for its runs (`engines/basic/compiled.rs`),
@@ -301,6 +311,7 @@ impl CompiledPipeline {
         let mut ws_triggers = Vec::new();
         let mut weberror_triggers = Vec::new();
         let mut kv_subscribe_triggers = Vec::new();
+        let mut repo_triggers = Vec::new();
         let mut ws_client_triggers = Vec::new();
         let mut mcp_triggers = Vec::new();
         for node in &graph.nodes {
@@ -433,6 +444,16 @@ impl CompiledPipeline {
                         channel,
                     });
                 }
+                "trigger.repo" => {
+                    let raw = node.config.get("path").and_then(serde_json::Value::as_str).unwrap_or_default();
+                    let path = crate::pipeline::nodes::basic::trigger::repo::watched_path(raw).map_err(|reason| {
+                        PlatformError::new(
+                            "PIPELINE_REPO_PATH_INVALID",
+                            format!("node '{}' in pipeline '{}': {reason}", node.id, meta.file_rel_path),
+                        )
+                    })?;
+                    repo_triggers.push(RepoTriggerSpec { node_id: node.id.clone(), path });
+                }
                 "trigger.socket" => {
                     let url = node
                         .config
@@ -522,6 +543,7 @@ impl CompiledPipeline {
             ws_triggers,
             weberror_triggers,
             kv_subscribe_triggers,
+            repo_triggers,
             ws_client_triggers,
             mcp_triggers,
             lane: Arc::default(),

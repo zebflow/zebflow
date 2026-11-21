@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use super::{PlatformAppState, internal_error, maybe_forward_project_api_to_worker, require_project_api_capability, run_lifecycle_hooks};
 use crate::infra::mem::subscriber::KvSubscriber;
+use crate::infra::repo_watch::RepoWatcher;
 use crate::infra::scheduler::PipelineScheduler;
 use crate::infra::ws_client::WsClientManager;
 use crate::platform::services::PlatformService;
@@ -38,6 +39,7 @@ pub struct WebSwitch {
     pub platform: Arc<PlatformService>,
     pub scheduler: Arc<PipelineScheduler>,
     pub kv_subscriber: Arc<KvSubscriber>,
+    pub repo_watcher: Arc<RepoWatcher>,
     pub ws_client_manager: Arc<WsClientManager>,
 }
 
@@ -57,6 +59,7 @@ impl PipelineSwitch for WebSwitch {
         self.platform.pipeline_runtime.refresh_pipeline(owner, project, file_rel_path)?;
         self.scheduler.sync_pipeline(owner, project, file_rel_path).await;
         self.kv_subscriber.sync_pipeline(owner, project, file_rel_path).await;
+        self.repo_watcher.sync_pipeline(owner, project, file_rel_path).await;
         self.ws_client_manager.sync_pipeline(owner, project, file_rel_path).await;
         run_lifecycle_hooks(&self.platform, owner, project, file_rel_path, "on_activate").await;
         Ok(())
@@ -67,6 +70,7 @@ impl PipelineSwitch for WebSwitch {
         self.platform.pipeline_runtime.evict(owner, project, file_rel_path);
         self.scheduler.sync_pipeline(owner, project, file_rel_path).await;
         self.kv_subscriber.sync_pipeline(owner, project, file_rel_path).await;
+        self.repo_watcher.sync_pipeline(owner, project, file_rel_path).await;
         self.ws_client_manager.sync_pipeline(owner, project, file_rel_path).await;
         Ok(())
     }

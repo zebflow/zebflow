@@ -221,8 +221,9 @@ committed or not.
 - **`path`**: repository-relative; the branch for `git checkout`; empty for a
   step that touches many files.
 - **`via`**: `studio` (a signed-in person's browser or API call),
-  `mcp · <key name>`, or `system` when no person asked: a pipeline run, a
-  start-up repair.
+  `mcp · <key name>`, `control · <door>` (`zebflow.command.run`),
+  `pipeline · <file>` (a run started by `trigger.repo`), or `system` when no
+  person asked: another pipeline run, a start-up repair.
 - **`person`**: the signed-in person or the MCP key's person; empty for
   `system`.
 - **`before` / `after`**: SHA-256 of the file's bytes, absent for a folder, a
@@ -237,8 +238,13 @@ committed or not.
 - **Kept**: the newest 20,000 lines per project; taken with the project when it
   is deleted, moved with it when it changes owner.
 
+- **Listened to**: each line is also told, as it is recorded, to the
+  `trigger.repo` pipelines of the project. Telling never makes the writer
+  wait. A pipeline's own run is carried with the change, never stored, so a
+  change it made does not start it again.
+
 Evidence: `change_log` unit tests; `tests/platform/smoke.rs`
-`every_change_names_who_made_it_and_how`.
+`every_change_names_who_made_it_and_how`; `tests/platform/repo_trigger.rs`.
 
 ## Data Movement
 

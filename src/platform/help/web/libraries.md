@@ -30,7 +30,11 @@ code and imported as `site-a-lib/<entry>`: `help("web/project-libraries")`.
 
 A project can restrict which libraries its pages may load under
 `rwe.libraries` in `zebflow.yaml` (`POST /api/projects/{o}/{p}/rwe/libraries/enable`);
-with no list, any of them loads on demand.
+with no list, any of them loads on demand. Once the list names any `zeb/*`
+library, the browser loads only the listed ones, plus `zeb/markdown`, which
+always loads. A page that imports an unlisted library still renders on the
+server, but in the browser that import is empty and the page stops when it
+comes to life: list every `zeb/*` library the project's pages import.
 
 | Library | Import | For |
 |---|---|---|

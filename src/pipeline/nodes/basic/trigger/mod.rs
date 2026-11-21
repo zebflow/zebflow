@@ -20,6 +20,7 @@
 //! | `trigger.room` | `room: { room_id, session_id, event, payload, auth? }` |
 //! | `trigger.socket` | `socket: { trigger, url, node_id, message }` |
 //! | `trigger.topic` | `topic: { topic, message, node_id }` |
+//! | `trigger.repo` | `repo: { path, changes, dropped, node_id }` |
 //!
 //! The same envelope is `$trigger` in every expression, for the whole run
 //! (`metadata.trigger`; the engine falls back to the run's input when an
@@ -39,8 +40,8 @@ use crate::pipeline::NodeDefinition;
 /// Every trigger's answer key (its source), in one place for the readers that
 /// must find a trigger's answer in a payload — the render boundary that
 /// filters claims, the Studio's Run form.
-pub const SOURCE_KEYS: [&str; 9] =
-    ["webhook", "manual", "schedule", "function", "mcp", "error", "room", "socket", "topic"];
+pub const SOURCE_KEYS: [&str; 10] =
+    ["webhook", "manual", "schedule", "function", "mcp", "error", "room", "socket", "topic", "repo"];
 
 /// A trigger's answer: the envelope the ingress delivered, nested under the
 /// trigger's `source` — the only root key a trigger adds. The platform's
@@ -76,6 +77,7 @@ pub mod function;
 pub mod kv_subscribe;
 pub mod manual;
 pub mod mcp_trigger;
+pub mod repo;
 pub mod schedule;
 pub mod weberror;
 pub mod webhook;
@@ -91,6 +93,7 @@ pub fn definitions() -> Vec<NodeDefinition> {
         mcp_trigger::definition(),
         ws_client::definition(),
         weberror::definition(),
+        repo::definition(),
     ]
 }
 
@@ -141,6 +144,7 @@ mod answer_tests {
             (Box::new(super::weberror::Node::new(Default::default())), "error"),
             (Box::new(super::ws_client::Node::new(Default::default())), "socket"),
             (Box::new(super::kv_subscribe::Node::new(Default::default())), "topic"),
+            (Box::new(super::repo::Node::new(Default::default())), "repo"),
             (Box::new(crate::pipeline::nodes::basic::ws::trigger::Node::new(Default::default())), "room"),
         ];
         for (node, key) in nodes {

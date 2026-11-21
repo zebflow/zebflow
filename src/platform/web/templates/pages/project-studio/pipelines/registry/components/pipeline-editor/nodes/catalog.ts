@@ -8,6 +8,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "trigger.error": "#7f1d1d",
   "trigger.room": "#064e3b",
   "trigger.socket": "#064e3b",
+  "trigger.repo": "#14532d",
   "javascript.script.run": "#1e3a8a",
   "typescript.script.run": "#1e3a8a",
   "http.response.fetch": "#7c2d12",
@@ -194,6 +195,7 @@ export function normalizeNodePins(
     pinRole === "input" &&
     (canonicalKind === "trigger.webhook" ||
       canonicalKind === "trigger.schedule" ||
+      canonicalKind === "trigger.repo" ||
       canonicalKind === "trigger.manual")
   ) {
     return [];

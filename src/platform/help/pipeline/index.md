@@ -175,6 +175,17 @@ A script's return is added as `script` and the rest of the payload is kept.
 A script cannot set a status or a header: branch with `logic.if` and answer
 with `web.response.send --status`, `--header` or `--body`.
 
+**When files change**
+
+```
+| trigger.repo --path docs/handbook
+| web.site.generate --from handbook --folder handbook-site
+```
+
+`trigger.repo` runs when files under `--path` of the repository change, once
+the repository has been quiet for 2 seconds; a change the pipeline itself made
+never starts it again.
+
 ---
 
 ## `{{ expr }}`

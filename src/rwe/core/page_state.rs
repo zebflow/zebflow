@@ -18,7 +18,7 @@ use serde_json::Value;
 /// The trigger envelopes a payload carries, by their answer key — every
 /// source `pipeline::nodes::basic::trigger::SOURCE_KEYS` lists (a test there
 /// keeps the two lists one).
-pub const TRIGGER_SOURCES: [&str; 9] = ["webhook", "manual", "schedule", "function", "mcp", "error", "room", "socket", "topic"];
+pub const TRIGGER_SOURCES: [&str; 10] = ["webhook", "manual", "schedule", "function", "mcp", "error", "room", "socket", "topic", "repo"];
 
 /// The parts of a trigger envelope that belong to the request, never to a page.
 pub const REQUEST_ONLY_KEYS: [&str; 3] = ["headers", "cookies", "auth"];

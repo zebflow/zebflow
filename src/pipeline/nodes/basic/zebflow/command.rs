@@ -760,7 +760,11 @@ impl NodeHandler for Node {
             Value::Number(number) => number.to_string(),
             _ => String::new(),
         };
-        let actor = ChangeActor { person, via: format!("control · {}", fence.record_as) };
+        let actor = ChangeActor {
+            person,
+            via: format!("control · {}", fence.record_as),
+            run: change_log::carried().and_then(|outer| outer.run),
+        };
 
         let results = change_log::scope(actor, async {
             let mut results = Vec::new();

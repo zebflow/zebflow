@@ -29,22 +29,34 @@ const PRUNE_EVERY: i64 = 500;
 pub struct ChangeActor {
     pub person: String,
     pub via: String,
+    /// The pipeline run doing it, `owner/project/file`; never stored. It is
+    /// how `trigger.repo` knows a change came from its own pipeline.
+    pub run: Option<String>,
 }
 
 impl ChangeActor {
     /// A signed-in person in a browser, or calling the API with their session.
     pub fn studio(person: &str) -> Self {
-        Self { person: slug_segment(person), via: "studio".to_string() }
+        Self { person: slug_segment(person), via: "studio".to_string(), run: None }
     }
 
     /// An agent holding one of the person's MCP keys.
     pub fn mcp(person: &str, key_name: &str) -> Self {
-        Self { person: slug_segment(person), via: format!("mcp · {key_name}") }
+        Self { person: slug_segment(person), via: format!("mcp · {key_name}"), run: None }
     }
 
     /// Nobody asked: a pipeline run, a start-up repair.
     pub fn system() -> Self {
-        Self { person: String::new(), via: "system".to_string() }
+        Self { person: String::new(), via: "system".to_string(), run: None }
+    }
+
+    /// A run of the pipeline `owner/project/file`.
+    pub fn pipeline(owner: &str, project: &str, file: &str) -> Self {
+        Self {
+            person: String::new(),
+            via: format!("pipeline · {file}"),
+            run: Some(format!("{owner}/{project}/{file}")),
+        }
     }
 }
 
@@ -236,14 +248,54 @@ pub fn record_removal_at(data_root: &Path, path: &Path, before: Option<String>) 
     }
 }
 
+/// One change as it is told to listeners, the moment it is recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoChange {
+    pub owner: String,
+    pub project: String,
+    pub action: String,
+    /// Empty for a step that touches many files (`git sync`, `import`).
+    pub path: String,
+    pub to_path: Option<String>,
+    pub person: String,
+    pub via: String,
+    /// The pipeline run that made it, as [`ChangeActor::run`].
+    pub run: Option<String>,
+}
+
+impl RepoChange {
+    /// Whether it touches `folder` (repository-relative; empty is the whole
+    /// repository): the file itself, anything under it, either end of a move,
+    /// or a step over the whole repository. `docs` is not `docs-old`.
+    pub fn touches(&self, folder: &str) -> bool {
+        let folder = folder.trim().trim_matches('/');
+        let within = |path: &str| {
+            folder.is_empty()
+                || path == folder
+                || (path.starts_with(folder) && path.as_bytes().get(folder.len()) == Some(&b'/'))
+        };
+        self.path.is_empty() || within(&self.path) || self.to_path.as_deref().is_some_and(within)
+    }
+}
+
+/// How many changes a slow listener may fall behind before it misses some.
+const LISTENER_BACKLOG: usize = 4096;
+
 /// The record itself, written through to the platform catalog.
 pub struct ChangeLog {
     data: Arc<dyn DataAdapter>,
+    listeners: tokio::sync::broadcast::Sender<RepoChange>,
 }
 
 impl ChangeLog {
     pub fn new(data: Arc<dyn DataAdapter>) -> Self {
-        Self { data }
+        Self { data, listeners: tokio::sync::broadcast::channel(LISTENER_BACKLOG).0 }
+    }
+
+    /// Every change recorded from now on. Telling a listener never waits, so
+    /// a writer is never held up by one.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<RepoChange> {
+        self.listeners.subscribe()
     }
 
     /// Writes one line, stamped with the actor in scope and the time. A failure
@@ -253,6 +305,7 @@ impl ChangeLog {
             return;
         }
         let actor = current_actor();
+        let run = actor.run.clone();
         let line = ProjectChange {
             id: 0,
             owner: slug_segment(owner),
@@ -266,7 +319,20 @@ impl ChangeLog {
             before: change.before,
             after: change.after,
         };
-        match self.data.put_project_change(&line) {
+        let recorded = self.data.put_project_change(&line);
+        if self.listeners.receiver_count() > 0 {
+            let _ = self.listeners.send(RepoChange {
+                owner: line.owner.clone(),
+                project: line.project.clone(),
+                action: line.action.clone(),
+                path: line.path.clone(),
+                to_path: line.to_path.clone(),
+                person: line.person.clone(),
+                via: line.via.clone(),
+                run,
+            });
+        }
+        match recorded {
             Ok(id) if id % PRUNE_EVERY == 0 => {
                 if let Err(err) = self.data.prune_project_changes(&line.owner, &line.project, KEEP_PER_PROJECT) {
                     eprintln!("warning: trimming the change record of {}/{}: {}", line.owner, line.project, err.message);

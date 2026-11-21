@@ -301,9 +301,22 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
 /// This runs in the outer script (a real URL context), so absolute-path
 /// imports like `/assets/libraries/…` resolve correctly. The inner user bundle
 /// (loaded as a `data:` URL) is imported after the whole preamble has run.
-/// The `zeb/*` entries of a project's library list: the only ones that make it strict.
+/// Built-in libraries a page may use whatever its project's list says.
+/// Markdown is text, and every docs site's template is built on it.
+const ALWAYS_LOADED: &[&str] = &["zeb/markdown"];
+
+/// The `zeb/*` entries of a project's library list: the only ones that make it
+/// strict. A strict list also allows [`ALWAYS_LOADED`].
 fn zeb_entries(enabled_libraries: &[String]) -> Vec<String> {
-    enabled_libraries.iter().filter(|name| name.starts_with("zeb/")).cloned().collect()
+    let mut zeb: Vec<String> = enabled_libraries.iter().filter(|name| name.starts_with("zeb/")).cloned().collect();
+    if !zeb.is_empty() {
+        for lib in ALWAYS_LOADED {
+            if !zeb.iter().any(|name| name == lib) {
+                zeb.push((*lib).to_string());
+            }
+        }
+    }
+    zeb
 }
 
 #[cfg(test)]
@@ -1564,6 +1577,17 @@ mod tests {
         let strict = zeb_entries(&["site-a-lib".to_string(), "zeb/use".to_string()]);
         let preamble = build_zeb_preamble(&["zeb/d3".to_string()], &strict);
         assert!(!preamble.contains("zeb/d3/0.1"), "a zeb/* entry still makes it strict: {preamble}");
+    }
+
+    /// A strict list still loads Markdown: a docs page whose project lists
+    /// only another library is not left with text the browser cannot render.
+    #[test]
+    fn a_strict_list_still_loads_markdown() {
+        let strict = zeb_entries(&["zeb/potoru".to_string()]);
+        let preamble = build_zeb_preamble(&["zeb/markdown".to_string(), "zeb/d3".to_string()], &strict);
+        assert!(preamble.contains("const __zebMarkdown = await import("), "{preamble}");
+        assert!(!preamble.contains("zeb/d3/0.1"), "the list is still strict for the rest: {preamble}");
+        assert!(zeb_entries(&[]).is_empty(), "an empty list stays empty: everything loads");
     }
 
     /// `Markdown` is a component the loader builds around the library's own

@@ -14,6 +14,7 @@
 //! | [`mem`] | Current in-process KV/pubsub implementation used as the first `StateBus` backend (`kv.*` nodes) |
 //! | [`transport`] | Real-time transport primitives, currently WebSocket rooms |
 //! | [`scheduler`] | Background cron scheduling for active pipelines |
+//! | [`repo_watch`] | `trigger.repo`: runs active pipelines when files under a repository path change |
 //! | [`secrets`] | Encryption of stored secrets: the AEAD envelopes and the instance keyring |
 //! | [`storage`] | Older storage placeholder area; retained until the new `io/` split fully absorbs it |
 //! | [`table_engine`] | The one bounded DataFusion runtime for SQL over files: shared memory pool, capped partitions, queries at once |
@@ -45,6 +46,7 @@ pub mod execution;
 pub mod health;
 pub mod io;
 pub mod mem;
+pub mod repo_watch;
 pub mod scheduler;
 pub mod secrets;
 pub mod storage;

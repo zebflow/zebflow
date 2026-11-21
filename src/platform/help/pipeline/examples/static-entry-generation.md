@@ -160,9 +160,14 @@ from fenced directives, math, a search index, and the site's machine-readable
 surface.
 
 ```zf
-| trigger.schedule --cron "0 3 * * *"
+| trigger.repo --path docs/handbook
 | web.site.generate --from handbook --folder handbook-site --name "Example Handbook"
 ```
+
+`trigger.repo` rebuilds the site whenever a file under `docs/handbook`
+changes, once the repository has been quiet for 2 seconds, so a burst of
+saves is one build. `trigger.schedule --cron "0 3 * * *"` in its place builds
+it nightly instead.
 
 One order — a folder's `nav` (the names listed come first, in that order),
 then `order` (a folder's in its `_meta.yaml`, a page's in its front matter;

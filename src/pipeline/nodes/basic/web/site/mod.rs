@@ -13,6 +13,7 @@ pub mod docs;
 pub mod docs_blocks;
 pub mod docs_links;
 pub mod docs_math;
+pub mod docs_reference;
 mod docs_scaffold;
 pub mod docs_search;
 mod docs_text;
@@ -98,6 +99,10 @@ pub struct Config {
     /// `<folder>/` — the unversioned address, the only one indexed.
     #[serde(default)]
     pub latest: bool,
+    /// Docs mode: `zebflow` adds the Zebflow reference (every node, the
+    /// worked examples), generated from the running Zebflow (`docs_reference.rs`).
+    #[serde(default)]
+    pub reference: Option<String>,
 }
 
 /// Which site a configuration builds.
@@ -161,8 +166,13 @@ impl Config {
                 CODE_VERSION,
                 "--latest marks a version as the latest: give it --version, e.g. --version 0.11 --latest",
             )),
+            Mode::Page if given(&self.reference).is_some() => Err(PipelineError::new(
+                CODE_MODE,
+                "--reference adds pages to a docs site (--from); a page is one page",
+            )),
             Mode::Docs => {
                 self.version_label()?;
+                docs_reference::wanted(self)?;
                 Ok(mode)
             }
             _ => Ok(mode),
@@ -241,6 +251,9 @@ pub fn definition() -> NodeDefinition {
             (default `docs.template.tsx`); `--name` is the site's name; each folder's `_meta.yaml` sets its title, `order` and `nav` \
             (a page's front matter its `order`), and that one order drives the sidebar, prev/next and the search index; \
             a page whose Markdown is gone is removed from the site on the next build. \
+            `--reference zebflow` adds the Zebflow reference: a page for every node (`nodes/<family>/<kind>`) and the worked examples \
+            (`examples/`), generated from this Zebflow at build time, never files in the repository; a node page lists the examples that use it, \
+            a node named in inline code anywhere on the site links to its page, and an authored page at a generated page's address is added to the bottom of it. \
             A link to another page is written as that page's address. The site answers at its folder's place under the served folder \
             (served `site`, docs written to `site/docs`: pages at `/docs/…`), at `/` until the folder is served. \
             `--version 0.11` makes the build one version: written under `<folder>/0.11/` with its own assets and search index, never indexed, \
@@ -304,6 +317,7 @@ pub fn definition() -> NodeDefinition {
             flag("--folder", "folder", "text", "The site's folder in the store (default: site for a page, docs for a docs site). Every page of one site shares it, with one manifest and one _assets/."),
             flag("--version", "version", "text", "A docs site: this build is one version, e.g. 0.11 — written under <folder>/0.11/ and listed in <folder>/versions.json."),
             DslFlag { kind: DslFlagKind::Bool, ..flag("--latest", "latest", "", "A docs site, with --version: the latest version, written again at <folder>/ — the unversioned address, the only one indexed.") },
+            DslFlag { choices: vec![docs_reference::ZEBFLOW.to_string()], ..flag("--reference", "reference", "text", "A docs site: zebflow adds a page for every node (nodes/<family>/<kind>) and the worked examples (examples/), generated from this Zebflow and linked both ways.") },
             DslFlag {
                 choices: vec!["overwrite".to_string(), "skip".to_string(), "error".to_string()],
                 ..on_conflict_flag(OnConflict::Overwrite)
@@ -322,11 +336,12 @@ pub fn definition() -> NodeDefinition {
             field("folder", "Folder", "site", "The site's folder in the store (default: site for a page, docs for a docs site)."),
             field("version", "Version", "0.11", "A docs site: this build is one version, under <folder>/<version>/."),
             NodeFieldDef { field_type: NodeFieldType::Checkbox, default_value: Some(json!(false)), ..field("latest", "Latest", "", "A docs site, with Version: also written at the unversioned address.") },
+            field("reference", "Reference", "zebflow", "A docs site: zebflow adds every node's page and the worked examples."),
         ]
         .into_iter()
         .chain(store_fields(OnConflict::Overwrite))
         .collect(),
-        layout: ["template", "path", "from", "route", "name", "folder", "version", "latest", "store", "on_conflict"]
+        layout: ["template", "path", "from", "route", "name", "folder", "version", "latest", "reference", "store", "on_conflict"]
             .iter()
             .map(|name| LayoutItem::Field(name.to_string()))
             .collect(),

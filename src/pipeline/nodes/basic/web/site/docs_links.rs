@@ -177,6 +177,13 @@ fn resolve_route(page: &DocPage, path: &str, base_path: &str) -> Option<String> 
 /// Every `](target)` in the Markdown — links and images alike. Reference-style
 /// links are not read: the generator's Markdown does not define them, and a
 /// checker that half-understands a syntax reports noise.
+/// Whether `at` in a line falls inside inline code (`` `[a](b.md)` ``): an
+/// odd number of backticks before it. Text there is shown as written, so it
+/// is never a link to check or rewrite.
+pub(super) fn inside_code_span(line: &str, at: usize) -> bool {
+    line.get(..at).is_some_and(|before| before.matches('`').count() % 2 == 1)
+}
+
 fn link_targets(markdown: &str) -> Vec<String> {
     let bytes = markdown.as_bytes();
     let mut out = Vec::new();
@@ -198,6 +205,10 @@ fn link_targets(markdown: &str) -> Vec<String> {
             let Some(close_rel) = markdown[open..end].find(')') else {
                 break;
             };
+            if inside_code_span(&markdown[start..end], cursor + found - start) {
+                cursor = open + close_rel + 1;
+                continue;
+            }
             let target = &markdown[open..open + close_rel];
             // `[text](url "title")` — the title is not part of the target.
             let target = target.split_whitespace().next().unwrap_or("");
@@ -254,6 +265,16 @@ mod tests {
             page("guides/writing.md", "Back to [home](../index.md).", &["front-matter"]),
         ];
         assert_eq!(check(&pages, "/"), Vec::new());
+    }
+
+    /// Link syntax shown in inline code is text, not a link: a page that
+    /// explains how to write one is not a page with a dead one.
+    #[test]
+    fn a_link_shown_in_inline_code_is_not_a_link() {
+        let pages = vec![page("index.md", "Write `[the guide](../guide/start.md#setup)`, then [gone](gone.md).", &[])];
+        let broken = check(&pages, "/");
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].target, "gone.md");
     }
 
     #[test]

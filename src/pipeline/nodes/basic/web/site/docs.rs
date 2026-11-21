@@ -206,6 +206,9 @@ pub fn load_site(
         &mut folder_meta,
         &mut pages,
     )?;
+    if super::docs_reference::wanted(config)? {
+        super::docs_reference::add_to(&mut pages, &mut folder_meta, &deploy_base_path)?;
+    }
     if pages.is_empty() {
         return Err(PipelineError::new(
             "FW_NODE_WEB_SITE_GENERATE_EMPTY",
@@ -605,45 +608,69 @@ fn collect_docs(
             "FW_NODE_WEB_SITE_GENERATE_READ_PAGE",
         )
         .unwrap_or(None);
-        let (frontmatter, markdown) = split_frontmatter(&raw);
-        let slug_segments = slug_segments_for_markdown(&rel_str);
-        let output_rel_path = output_rel_path_for(&slug_segments);
-        let route_path =
-            static_site::route_path_for_output_path(deploy_base_path, &output_rel_path)?;
-        let headings = extract_headings(&markdown);
-        let title = frontmatter
-            .title
-            .clone()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| headings.first().map(|h| h.text.clone()))
-            .unwrap_or_else(|| titleize_segment(entry.name.trim_end_matches(".md")));
-        let description = frontmatter
-            .description
-            .clone()
-            .unwrap_or_else(|| first_paragraph(&markdown));
-        pages.push(DocPage {
-            slug_segments,
-            title,
-            description,
-            keywords: frontmatter.keywords.clone(),
-            canonical: frontmatter.canonical.clone(),
-            noindex: frontmatter.noindex,
-            // Math is rendered into the blocks the page receives, never into
-            // `markdown`: the twin, llms-full.txt and the search index all
-            // want the author's `$…$`, and the heading slugs are already taken
-            // from the source above.
-            blocks: super::docs_blocks::parse(&super::docs_math::render(&markdown)),
-            markdown,
-            headings,
-            source_rel_path: rel_str,
-            output_rel_path,
-            route_path,
-            order: frontmatter.order,
-            source_modified,
-        });
+        pages.push(doc_page(&rel_str, &raw, source_modified, deploy_base_path)?);
     }
 
     Ok(())
+}
+
+/// The blocks a page's template receives. The template prints the title
+/// itself, so a first `# Heading` that only repeats it is left out — the page
+/// would show its title twice. The Markdown keeps it, for the twin and search.
+pub(super) fn page_blocks(markdown: &str, title: &str) -> Vec<super::docs_blocks::DocBlock> {
+    let mut lines = markdown.lines();
+    let first = lines.by_ref().find(|line| !line.trim().is_empty());
+    let body = match first.and_then(|line| line.trim().strip_prefix("# ")) {
+        Some(heading) if super::docs_text::strip_inline_markdown(heading) == super::docs_text::strip_inline_markdown(title) => {
+            lines.collect::<Vec<_>>().join("\n")
+        }
+        _ => markdown.to_string(),
+    };
+    super::docs_blocks::parse(&super::docs_math::render(&body))
+}
+
+/// One page from its Markdown, `rel_str` its path under the docs folder:
+/// the same for an authored page and a generated one (`docs_reference.rs`).
+pub(super) fn doc_page(
+    rel_str: &str,
+    raw: &str,
+    source_modified: Option<i64>,
+    deploy_base_path: &str,
+) -> Result<DocPage, PipelineError> {
+    let file_name = rel_str.rsplit('/').next().unwrap_or(rel_str);
+    let (frontmatter, markdown) = split_frontmatter(raw);
+    let slug_segments = slug_segments_for_markdown(rel_str);
+    let output_rel_path = output_rel_path_for(&slug_segments);
+    let route_path = static_site::route_path_for_output_path(deploy_base_path, &output_rel_path)?;
+    let headings = extract_headings(&markdown);
+    let title = frontmatter
+        .title
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| headings.first().map(|h| h.text.clone()))
+        .unwrap_or_else(|| titleize_segment(file_name.trim_end_matches(".md")));
+    let description = frontmatter.description.clone().unwrap_or_else(|| first_paragraph(&markdown));
+    let blocks = page_blocks(&markdown, &title);
+    Ok(DocPage {
+        slug_segments,
+        title,
+        description,
+        keywords: frontmatter.keywords.clone(),
+        canonical: frontmatter.canonical.clone(),
+        noindex: frontmatter.noindex,
+        // Math is rendered into the blocks the page receives, never into
+        // `markdown`: the twin, llms-full.txt and the search index all
+        // want the author's `$…$`, and the heading slugs are already taken
+        // from the source above.
+        blocks,
+        markdown,
+        headings,
+        source_rel_path: rel_str.to_string(),
+        output_rel_path,
+        route_path,
+        order: frontmatter.order,
+        source_modified,
+    })
 }
 
 /// The sidebar and the reading order, from one sort: the root page first,
@@ -1020,6 +1047,7 @@ fn route_markdown_links(text: &str, page: &DocPage, base_path: &str) -> String {
         }
         let mut rest = line;
         while let Some(at) = rest.find("](") {
+            let in_code = super::docs_links::inside_code_span(line, line.len() - rest.len() + at);
             let (before, tail) = rest.split_at(at + 2);
             out.push_str(before);
             let Some(close) = tail.find(')') else {
@@ -1027,6 +1055,12 @@ fn route_markdown_links(text: &str, page: &DocPage, base_path: &str) -> String {
                 break;
             };
             let target = &tail[..close];
+            if in_code {
+                out.push_str(target);
+                out.push(')');
+                rest = &tail[close + 1..];
+                continue;
+            }
             let (path, title) = match target.split_once(char::is_whitespace) {
                 Some((path, title)) => (path, Some(title)),
                 None => (target, None),
@@ -1089,29 +1123,48 @@ fn rebase_block_assets(block: &mut super::docs_blocks::DocBlock, base: &str) {
 
 /// Every `](target)` naming a local file, pointed at the project's static
 /// files. A link to another page is a route and is left alone.
+/// Rewrites the files a page's Markdown names to their place beside it —
+/// outside code: a path shown in a code block or in inline code is text, and
+/// rewriting it would ship a file nobody linked.
 fn rebase_markdown_assets(text: &str, base: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find("](") {
-        let (before, tail) = rest.split_at(at + 2);
-        out.push_str(before);
-        let Some(close) = tail.find(')') else {
-            out.push_str(tail);
-            return out;
-        };
-        let target = &tail[..close];
-        match target.split_once(char::is_whitespace) {
-            Some((path, title)) => {
-                out.push_str(&rebase_asset_path(path, base));
-                out.push(' ');
-                out.push_str(title);
-            }
-            None => out.push_str(&rebase_asset_path(target, base)),
+    let mut in_fence = false;
+    for line in text.split_inclusive('\n') {
+        let fence = line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
+        if fence {
+            in_fence = !in_fence;
         }
-        out.push(')');
-        rest = &tail[close + 1..];
+        if fence || in_fence {
+            out.push_str(line);
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("](") {
+            let in_code = super::docs_links::inside_code_span(line, line.len() - rest.len() + at);
+            let (before, tail) = rest.split_at(at + 2);
+            out.push_str(before);
+            let Some(close) = tail.find(')') else {
+                rest = tail;
+                break;
+            };
+            let target = &tail[..close];
+            if in_code {
+                out.push_str(target);
+            } else {
+                match target.split_once(char::is_whitespace) {
+                    Some((path, title)) => {
+                        out.push_str(&rebase_asset_path(path, base));
+                        out.push(' ');
+                        out.push_str(title);
+                    }
+                    None => out.push_str(&rebase_asset_path(target, base)),
+                }
+            }
+            out.push(')');
+            rest = &tail[close + 1..];
+        }
+        out.push_str(rest);
     }
-    out.push_str(rest);
     out
 }
 
@@ -1701,5 +1754,27 @@ mod tests {
         assert!(manifest.contains("\"site_root\": \"docs\""));
         assert!(manifest.contains("\"deploy_base_path\": \"/\""));
         assert!(manifest.contains("\"template\": \"pages/docs/docs.template.tsx\""));
+    }
+
+    /// A file named in code is text: only a real image link is moved beside
+    /// the page.
+    #[test]
+    fn a_path_shown_in_code_is_not_moved() {
+        let text = "![a chart](chart.png) and `[the guide](../guide/start.md#setup)`\n\n```\n![x](y.png)\n```\n";
+        let out = super::rebase_markdown_assets(text, "/docs/_assets/");
+        assert!(out.contains("`[the guide](../guide/start.md#setup)`"), "{out}");
+        assert!(out.contains("```\n![x](y.png)\n```"), "{out}");
+        assert!(!out.starts_with("![a chart](chart.png)"), "a real image is rebased: {out}");
+    }
+
+    /// The template prints the title, so a first heading that only repeats it
+    /// is not printed again; any other first heading is kept.
+    #[test]
+    fn a_first_heading_that_repeats_the_title_is_left_out() {
+        let shown = |markdown: &str, title: &str| serde_json::to_string(&super::page_blocks(markdown, title)).unwrap();
+        assert!(!shown("# Start\n\nHello.\n", "Start").contains("# Start"));
+        assert!(shown("# Start\n\nHello.\n", "Start").contains("Hello."));
+        assert!(shown("# `trigger.repo`\n\nRuns.\n", "trigger.repo").contains("Runs.") && !shown("# `trigger.repo`\n\nRuns.\n", "trigger.repo").contains("# "));
+        assert!(shown("# Another\n\nHello.\n", "Start").contains("# Another"), "a heading that is not the title stays");
     }
 }

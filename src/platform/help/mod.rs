@@ -109,6 +109,21 @@ fn official_nodes_markdown_reference_for_help() -> String {
     s
 }
 
+/// Every official node, sorted by kind: the same definitions `help(…)`
+/// renders, for a public docs site (`web.site.generate --reference zebflow`).
+pub fn official_node_definitions() -> Vec<crate::pipeline::NodeDefinition> {
+    official_node_definitions_for_help()
+}
+
+/// The worked example recipes, `(slug, title, Markdown)`, in the order the
+/// help lists them, with their definition markers already rendered.
+pub fn example_recipes() -> Vec<(&'static str, &'static str, String)> {
+    HELP.iter()
+        .filter_map(|node| node.path.strip_prefix("pipeline/examples/").map(|slug| (slug, node)))
+        .map(|(slug, node)| (slug, node.title, expand_definition_markers(node.content)))
+        .collect()
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Primary help lookup. Returns the rendered content for `path`.

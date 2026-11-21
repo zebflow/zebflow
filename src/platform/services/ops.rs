@@ -3213,6 +3213,10 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
                 .unwrap_or("*");
             format!("trigger.topic {topic}")
         }
+        "trigger.repo" => {
+            let path = node.config.get("path").and_then(Value::as_str).unwrap_or("/");
+            format!("trigger.repo {path}")
+        }
         "trigger.mcp" => {
             let text = |key: &str| node.config.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty());
             let tool_name = text("name").unwrap_or(&meta.name);

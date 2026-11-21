@@ -412,6 +412,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_TRIGGER_SCHEDULE_CONFIG", ErrorClass::Refused),
     ("FW_NODE_TRIGGER_SOCKET_CONFIG", ErrorClass::Refused),
     ("FW_NODE_TRIGGER_TOPIC_CONFIG", ErrorClass::Refused),
+    ("FW_NODE_TRIGGER_REPO_CONFIG", ErrorClass::Refused),
     ("FW_NODE_TRIGGER_WEBHOOK_CONFIG", ErrorClass::Refused),
     ("FW_NODE_WASM_ABI", ErrorClass::Failed),
     ("FW_NODE_WASM_ALLOC", ErrorClass::Failed),
@@ -613,6 +614,7 @@ pub const ERROR_CLASS_REGISTRY: &[(&str, ErrorClass)] = &[
     ("FW_NODE_WEB_SITE_GENERATE_TEMPLATE_WRITE", ErrorClass::Failed),
     ("FW_NODE_WEB_SITE_GENERATE_UNAVAILABLE", ErrorClass::Failed),
     ("FW_NODE_WEB_SITE_GENERATE_VERSION", ErrorClass::Refused),
+    ("FW_NODE_WEB_SITE_GENERATE_REFERENCE", ErrorClass::Refused),
     ("FW_NODE_WEB_SITE_GENERATE_WRITE", ErrorClass::Failed),
 ];
 

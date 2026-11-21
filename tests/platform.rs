@@ -56,6 +56,8 @@ mod webhook_signatures;
 mod webhook_cors;
 #[path = "platform/change_record.rs"]
 mod change_record;
+#[path = "platform/repo_trigger.rs"]
+mod repo_trigger;
 #[path = "platform/zebflow_command.rs"]
 mod zebflow_command;
 #[path = "platform/project_library.rs"]

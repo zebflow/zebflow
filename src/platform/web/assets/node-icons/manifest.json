@@ -729,6 +729,15 @@
       "supports": [
         "ws.session.tag"
       ]
+    },
+    "trigger.repo": {
+      "label": "REPO",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/trigger.repo.svg",
+      "source_url": "",
+      "supports": [
+        "trigger.repo"
+      ]
     }
   },
   "schema": 1
