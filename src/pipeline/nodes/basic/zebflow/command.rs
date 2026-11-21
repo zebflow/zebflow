@@ -800,7 +800,7 @@ impl NodeHandler for Node {
                 match self.run_one(&fence, &owner, &project, tool, arguments).await {
                     Ok(answer) => results.push(json!({ "tool": tool, "ok": true, "answer": answer })),
                     Err(reason) => {
-                        let code = if ["outside", "not opened", "may never", "denies", "allows only", "not delegated", "starts with", "pipeline file", "a link", "own folder", "not a plain path", "expression", "not in the catalogue", "failed the check", "not managed by", "door manages", "may never create", "not an outside address", "its limit", "already exists", "delegated to this door", "plain repository path", "--path is required"].iter().any(|word| reason.contains(word)) {
+                        let code = if ["outside", "not opened", "may never", "denies", "allows only", "not delegated", "starts with", "pipeline file", "a link", "own folder", "not a plain path", "expression", "not in the catalogue", "failed the check", "not managed by", "door manages", "may never create", "not an outside address", "its limit", "already exists", "delegated to this door", "plain repository path", "--path is required", "changed since that version"].iter().any(|word| reason.contains(word)) {
                             REFUSED_CODE
                         } else {
                             CODE

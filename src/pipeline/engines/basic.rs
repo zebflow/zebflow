@@ -73,7 +73,7 @@ pub use compiled::CompiledLane;
 mod page_cache;
 pub use page_cache::{
     CacheEntry, PageRecipe, TemplateCache, compiled_page_files, evict_template_cache_by_path,
-    new_template_cache, project_pages_root, refresh_template_cache_by_path, refresh_template_cache_by_paths,
+    new_template_cache, project_pages_root, refresh_template_cache_by_path, refresh_template_cache_by_paths, spawn_repo_refresh,
 };
 mod scheduler;
 mod web_site;

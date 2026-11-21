@@ -60,6 +60,8 @@ mod change_record;
 mod repo_trigger;
 #[path = "platform/mcp_versions.rs"]
 mod mcp_versions;
+#[path = "platform/page_refresh.rs"]
+mod page_refresh;
 #[path = "platform/zebflow_command.rs"]
 mod zebflow_command;
 #[path = "platform/project_library.rs"]

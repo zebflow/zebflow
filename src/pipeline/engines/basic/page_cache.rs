@@ -290,6 +290,70 @@ fn refresh_now(cache: &TemplateCache, abs_paths: &[String]) -> usize {
     rebuilt
 }
 
+/// Keeps compiled pages in step with the repository whoever changes it.
+///
+/// The writers a person or an agent drives (Zebflow Studio, the Zebflow Studio
+/// MCP) refresh the pages a write touches before they answer. Every other
+/// writer — Zebflow control, a git sync, an import, a pipeline — reaches the
+/// repository without them, and a page that inlined a file it changed kept
+/// serving the old code. This listens to the change record instead, which
+/// hears every change: each changed file refreshes the pages built from it, a
+/// step over the whole repository (git sync, import) refreshes every page of
+/// the project, and a listener that fell behind empties the cache. A burst of
+/// changes is one refresh.
+pub fn spawn_repo_refresh(
+    platform: std::sync::Arc<crate::platform::services::PlatformService>,
+    cache: TemplateCache,
+) {
+    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+    let mut changes = platform.changes.subscribe();
+    tokio::spawn(async move {
+        loop {
+            let first = match changes.recv().await {
+                Ok(change) => change,
+                Err(RecvError::Lagged(_)) => {
+                    cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+                    continue;
+                }
+                Err(RecvError::Closed) => return,
+            };
+            let mut burst = vec![first];
+            loop {
+                match changes.try_recv() {
+                    Ok(change) => burst.push(change),
+                    Err(TryRecvError::Lagged(_)) => {
+                        cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+                        burst.clear();
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+            let mut paths: Vec<String> = Vec::new();
+            for change in &burst {
+                let mut push = |path: Option<std::path::PathBuf>| {
+                    if let Some(path) = path.map(|p| p.to_string_lossy().to_string())
+                        && !paths.contains(&path)
+                    {
+                        paths.push(path);
+                    }
+                };
+                if change.path.is_empty() {
+                    push(platform.projects.resolve_repo_root_abs(&change.owner, &change.project).ok());
+                    continue;
+                }
+                push(platform.projects.resolve_template_abs_path(&change.owner, &change.project, &change.path).ok());
+                if let Some(to) = &change.to_path {
+                    push(platform.projects.resolve_template_abs_path(&change.owner, &change.project, to).ok());
+                }
+            }
+            if !paths.is_empty() {
+                refresh_template_cache_by_paths(&cache, paths).await;
+            }
+        }
+    });
+}
+
 /// A project's repository root as the cache records paths, for evicting
 /// every page of the project.
 pub fn project_pages_root(repo_dir: &Path) -> String {

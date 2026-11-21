@@ -503,6 +503,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     println!("✅ WS client manager started");
 
     let template_cache = crate::pipeline::engines::basic::new_template_cache();
+    crate::pipeline::engines::basic::spawn_repo_refresh(platform.clone(), template_cache.clone());
     let mcp_service =
         crate::platform::mcp::build_mcp_service(platform.clone(), template_cache.clone());
 
