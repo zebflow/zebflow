@@ -88,18 +88,55 @@ fn front_value(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "").replace('"', "'"))
 }
 
+/// A node's public page: its own words from the definition, laid out for a
+/// reader rather than an agent — sections a page can be navigated by, a flag
+/// table of what a reader needs, each example under its own heading.
 fn node_page(def: &NodeDefinition, used_in: &[(&str, &str)]) -> String {
-    let full = crate::pipeline::nodes::format_node_definition_markdown(def);
-    // The definition's own heading is replaced by the page's.
-    let body = full.split_once('\n').map(|(_, rest)| rest).unwrap_or("").trim_start();
     let mut page = format!(
-        "---\ntitle: {}\ndescription: {}\n---\n\n# {}\n\n{body}\n",
+        "---\ntitle: {}\ndescription: {}\n---\n\n# {}\n\n```\n{}\n```\n\n{}\n\n",
         front_value(&def.kind),
-        front_value(&format!("{}. {}", def.title.trim(), first_sentence(&def.description))),
+        front_value(&first_sentence(&def.description)),
         def.kind,
+        crate::pipeline::nodes::node_signature(def),
+        def.description.trim(),
     );
+    let providers = crate::pipeline::nodes::format_provider_profiles_markdown(def);
+    if !providers.trim().is_empty() {
+        page.push_str(&providers);
+        page.push('\n');
+    }
+    // The flags every node has are listed once, on the Nodes page.
+    let common: Vec<String> = crate::pipeline::model::engine_common_dsl_flags().into_iter().map(|flag| flag.flag).collect();
+    let own: Vec<_> = def.dsl_flags.iter().filter(|flag| !common.contains(&flag.flag)).collect();
+    if !own.is_empty() {
+        page.push_str("## Flags\n\n");
+        for flag in own {
+            let required = if flag.required { " (required)" } else { "" };
+            page.push_str(&format!("- `{}`{required}: {}\n", flag.flag, flag.description.trim().replace('\n', " ")));
+        }
+        page.push('\n');
+    }
+    if !def.examples.is_empty() {
+        page.push_str("## Examples\n\n");
+        for (index, example) in def.examples.iter().enumerate() {
+            let title = if example.title.trim().is_empty() { format!("Example {}", index + 1) } else { example.title.trim().to_string() };
+            page.push_str(&format!("### {title}\n\n"));
+            if !example.dsl.is_empty() {
+                page.push_str(&format!("```\n| {}\n```\n\n", example.dsl));
+            }
+            if !example.description.trim().is_empty() {
+                page.push_str(&format!("{}\n\n", example.description.trim()));
+            }
+            if !example.input.is_null() {
+                page.push_str(&format!("Input:\n\n```json\n{}\n```\n\n", serde_json::to_string_pretty(&example.input).unwrap_or_default()));
+            }
+            if !example.output.is_null() {
+                page.push_str(&format!("It answers:\n\n```json\n{}\n```\n\n", serde_json::to_string_pretty(&example.output).unwrap_or_default()));
+            }
+        }
+    }
     if !used_in.is_empty() {
-        page.push_str("\n## Used in\n\n");
+        page.push_str("## Used in\n\n");
         for (slug, title) in used_in {
             page.push_str(&format!("- [{title}](/{})\n", example_rel(slug)));
         }
@@ -115,10 +152,14 @@ fn nodes_index(defs: &[NodeDefinition]) -> String {
     let mut page = format!(
         "---\ntitle: \"Nodes\"\ndescription: \"Every node a Zebflow pipeline is built from, {} in all, grouped by family.\"\n---\n\n# Nodes\n\n\
          A pipeline is a line of nodes: `| trigger.webhook --route /hello | web.response.send --body \"hi\"`. Every node of this Zebflow, \
-         {} in all, grouped by family. Each page is generated from the node itself, so it describes exactly the version this site runs.\n",
+         {} in all, grouped by family. Each page is generated from the node itself, so it describes exactly the version this site runs.\n\n\
+         ## Flags every node takes\n\n",
         defs.len(),
         defs.len()
     );
+    for flag in crate::pipeline::model::engine_common_dsl_flags() {
+        page.push_str(&format!("- `{}`: {}\n", flag.flag, flag.description.trim().replace('\n', " ")));
+    }
     for (family, kinds) in &by_family {
         page.push_str(&format!("\n## {family}\n\n| Node | What it does |\n| --- | --- |\n"));
         for def in kinds {
@@ -298,6 +339,11 @@ mod tests {
         }
         assert!(paths.contains("nodes/index.md") && paths.contains("examples/index.md"));
         let generate = &sources.iter().find(|(rel, _)| rel == "nodes/web/web.site.generate.md").expect("page").1;
+        assert!(generate.contains("\n## Flags\n") && generate.contains("\n## Examples\n") && generate.contains("\n### "), "a node page has sections: {generate}");
+        assert!(!generate.contains("Config key") && !generate.contains("**MCP:**"), "the agent layout stays in help(): {generate}");
+        assert!(!generate.contains("`--preview-in`"), "the flags every node has are on the Nodes page, not on each: {generate}");
+        let index = &sources.iter().find(|(rel, _)| rel == "nodes/index.md").expect("index").1;
+        assert!(index.contains("## Flags every node takes") && index.contains("`--preview-in`"), "{index}");
         assert!(generate.contains("## Used in\n") && generate.contains("(/examples/static-entry-generation.md)"), "{generate}");
     }
 
