@@ -40,8 +40,12 @@ import "@/globals.css";                            // the project's theme tokens
 - The compiler inlines every imported file into **one flat bundle per page**.
   Two consequences: a component must import its own names (it never inherits
   the page's), and two files may not export the same name onto one page
-  (`RWE_BUNDLE_NAME_COLLISION`). Non-exported top-level names are prefixed
-  per file, so they never collide.
+  (`RWE_BUNDLE_NAME_COLLISION`). A component's non-exported top-level names
+  are renamed per file, so they never collide. The page's own are not: a
+  page may not declare a top-level name that a file it imports, however
+  deep, exports. A page with its own `signOut` that also pulls in a file
+  exporting `signOut` is refused; the same `signOut` inside a component is
+  fine.
 - CSS: `import "@/globals.css"` and `import "@/styles/x.css"` work; a directory
   import loads its `index.css`; duplicates are loaded once.
 

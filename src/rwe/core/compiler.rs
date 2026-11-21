@@ -968,6 +968,28 @@ pub(super) fn bundle_for_client(
     Ok((result, libs, visited, inline_styles))
 }
 
+thread_local! {
+    /// Content to compile in place of files on disk, by canonical path, for
+    /// the compile running on this thread ([`with_source_overrides`]).
+    static SOURCE_OVERRIDES: std::cell::RefCell<std::collections::HashMap<String, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Runs `work` — one compile on this thread — reading `overrides` (canonical
+/// path → content) in place of those files on disk: a component checked
+/// unsaved, inlined as a page would inline it. Cleared when `work` returns or
+/// unwinds.
+pub fn with_source_overrides<R>(overrides: std::collections::HashMap<String, String>, work: impl FnOnce() -> R) -> R {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            SOURCE_OVERRIDES.with(|cell| cell.borrow_mut().clear());
+        }
+    }
+    SOURCE_OVERRIDES.with(|cell| *cell.borrow_mut() = overrides);
+    let _clear = Clear;
+    work()
+}
+
 fn name_collision(name: &str, first: &str, second: &str) -> EngineError {
     EngineError::new(
         "RWE_BUNDLE_NAME_COLLISION",
@@ -999,14 +1021,18 @@ fn collect_inlined_module(
     if visited.contains(&visit_key) {
         return Ok(());
     }
+    let overridden = SOURCE_OVERRIDES.with(|cell| cell.borrow().get(&visit_key).cloned());
     visited.insert(visit_key);
 
-    let raw = fs::read_to_string(&canonical_path).map_err(|e| {
-        EngineError::new(
-            "RWE_BUNDLE_READ",
-            format!("cannot read '{}': {e}", canonical_path.display()),
-        )
-    })?;
+    let raw = match overridden {
+        Some(text) => text,
+        None => fs::read_to_string(&canonical_path).map_err(|e| {
+            EngineError::new(
+                "RWE_BUNDLE_READ",
+                format!("cannot read '{}': {e}", canonical_path.display()),
+            )
+        })?,
+    };
 
     // Resolve any remaining @/ alias imports to absolute paths.
     // Component files written via the API may not have been pre-processed by

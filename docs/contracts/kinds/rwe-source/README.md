@@ -119,6 +119,13 @@ These are engine constraints, not house style.
 - **Every file imports its own hooks from `"zeb/react"`.** A component that uses a
   hook without importing it works only when something else happened to import
   it first.
+- **One page, one name for each export.** A page and every file it imports
+  are compiled into one bundle. Two files may not export the same name, and
+  the page's own top-level names may not match a name any of them exports
+  (`RWE_BUNDLE_NAME_COLLISION`). A component's private top-level names are
+  renamed per file and never collide. So a component is checked the way a
+  page uses it: inlined into a stand-in page, never as the page itself
+  (`template_check`, amendment 2026-11-22).
 
 A project may hold further rules — which UI components to prefer, whether to
 write CSS at all. Those live in the project's own guidance, not here.

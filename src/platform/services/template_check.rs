@@ -61,13 +61,35 @@ pub fn check(platform: &PlatformService, owner: &str, project: &str, rel: &str, 
     // what the render would not.
     let options = ReactiveWebOptions::for_project_page(Some(template_root.clone()), platform.library.source_roots())
         .with_runtime_libraries(crate::platform::services::project_library::runtime_libraries(platform, owner, project));
-    let source = TemplateSource {
-        id: format!("platform.editor.{}", rel.replace('/', ".")),
-        source_path: Some(template_root.join(rel)),
-        markup: content.to_string(),
-    };
     let engine = crate::rwe::engines::resolve_engine_or_default(None);
-    Ok(match engine.compile_template(&source, &crate::language::NoopLanguageEngine, &options) {
+    let compile = |source: &TemplateSource| engine.compile_template(source, &crate::language::NoopLanguageEngine, &options);
+
+    // A component is never a page's entry: a page inlines it, renaming its
+    // private names so they cannot clash with what other files export. It is
+    // checked that way — inlined into a stand-in page, its unsaved content in
+    // place of the saved file. Checked as the entry, its private names would
+    // be the page's own and report clashes no page has. A component that is
+    // not saved yet has no place to inline from, and is checked as the entry.
+    let saved_at = std::fs::canonicalize(template_root.join(rel)).ok().filter(|_| kind != "page");
+    let result = match saved_at {
+        Some(path) => {
+            let stand_in = TemplateSource {
+                id: format!("platform.editor.check.{}", rel.replace('/', ".")),
+                source_path: Some(template_root.join("__zeb_component_check__.tsx")),
+                markup: format!(
+                    "import ZebCheckedComponent from \"@/{rel}\";\nexport default function ZebComponentCheck() {{\n  return <ZebCheckedComponent />;\n}}\n"
+                ),
+            };
+            let overrides = std::collections::HashMap::from([(path.to_string_lossy().to_string(), content.to_string())]);
+            crate::rwe::core::compiler::with_source_overrides(overrides, || compile(&stand_in))
+        }
+        None => compile(&TemplateSource {
+            id: format!("platform.editor.{}", rel.replace('/', ".")),
+            source_path: Some(template_root.join(rel)),
+            markup: content.to_string(),
+        }),
+    };
+    Ok(match result {
         Ok(compiled) => TemplateCompileResponse {
             ok: true,
             diagnostics: compiled

@@ -1376,7 +1376,8 @@ impl ZebflowMcpHandler {
 
     #[tool(description = "Check whether a page or component compiles, without saving: the page with every file it imports \
                        as saved now, with the options a render uses. Pass `content` to check an unsaved version; omit it to \
-                       check the file as saved. Answers { ok, diagnostics: [{ code, message, severity }] }; ok false means the \
+                       check the file as saved. A component is checked inlined into a stand-in page, as pages use it. \
+                       Answers { ok, diagnostics: [{ code, message, severity }] }; ok false means the \
                        page would fail when opened. Use it before writing a page that other files import, or after changing a \
                        component many pages use.")]
     async fn template_check(
