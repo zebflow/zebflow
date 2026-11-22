@@ -82,6 +82,17 @@ On Linux the release binary needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12
 and later), OpenSSL 3 and `git`. Each release starts the binary on Debian 12
 before it is published.
 
+### One line (Linux, macOS, Raspberry Pi)
+
+```bash
+curl -fsSL https://zebflow.com/install.sh | sh
+zebflow
+```
+
+It downloads the ready-made program for your computer from the latest GitHub
+release, checks it against the release's checksums and installs it. A
+Raspberry Pi 4 or 5 needs a 64-bit system.
+
 ### npm
 
 Many users already have Node.js installed. This is the shortest path when you want a familiar command:
@@ -117,6 +128,16 @@ the first run, Zebflow generates a strong password and prints the path to its
 private file under the platform data directory. Existing superadmin passwords
 are never replaced during startup.
 
+### cargo
+
+```bash
+cargo install zebflow
+zebflow
+```
+
+Like npm and pip, this installs a small launcher that downloads the ready-made
+program the first time it runs; it does not build Zebflow from source.
+
 ### Docker
 
 Docker is useful for servers and repeatable deployments:
@@ -138,9 +159,11 @@ http://localhost:10610/login
 
 ### Source Build
 
-Rust users can run from source:
+To build Zebflow yourself, clone the repository:
 
 ```bash
+git clone https://github.com/zebflow/zebflow
+cd zebflow
 export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="$(openssl rand -base64 32)"
 cargo run --bin zebflow
 ```

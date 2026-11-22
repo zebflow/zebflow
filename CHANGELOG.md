@@ -9,6 +9,22 @@ From 0.12, a release that adds a capability raises the middle number
 (0.13.0); a release that only fixes raises the last (0.13.4)
 ([versioning](docs/contracts/versioning.md)).
 
+## 0.13.5 (2026-11-22)
+
+### Changed
+
+- `cargo install zebflow` installs Zebflow again. Like `pip install zebflow`
+  and `npm install -g zebflow`, it installs a small launcher that downloads
+  the ready-made program for your computer from the GitHub release, checks it
+  against the release's checksums, and runs it. Zebflow's source is no longer
+  published on crates.io (it had grown past crates.io's size limit); to build
+  Zebflow yourself, clone the repository.
+
+### New
+
+- `curl -fsSL https://zebflow.com/install.sh | sh` installs Zebflow on Linux,
+  macOS and a 64-bit Raspberry Pi in one line.
+
 ## 0.13.4 (2026-11-22)
 
 ### Fixed
