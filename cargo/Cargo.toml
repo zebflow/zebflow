@@ -1,0 +1,18 @@
+[package]
+name = "zebflow"
+# Set from the release tag by the release workflow.
+version = "0.13.5"
+edition = "2021"
+description = "Installs Zebflow: downloads the ready-made Zebflow program for this computer from its GitHub release, then runs it."
+license = "MIT"
+repository = "https://github.com/zebflow/zebflow"
+homepage = "https://zebflow.com"
+readme = "README.md"
+keywords = ["pipeline", "automation", "web", "server", "installer"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "zebflow"
+path = "src/main.rs"
+
+[dependencies]
