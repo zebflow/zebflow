@@ -3,7 +3,7 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
-  "description": "VRM 0.x/1.0 avatar viewer for RWE templates. Three.js r186 + @pixiv/three-vrm 3.5 bundled offline. Auto-mount, expression controls, animation mixer, look-at targeting, spring bone simulation.",
+  "description": "VRM 0.x/1.0 avatar viewer for RWE templates. Three.js r187 + @pixiv/three-vrm 3.5 bundled offline. Auto-mount, expression controls, animation mixer, look-at targeting, spring bone simulation.",
   "source": {
     "provider": "zebflow",
     "package": "@pixiv/three-vrm",
