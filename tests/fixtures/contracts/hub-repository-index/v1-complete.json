@@ -11,6 +11,15 @@
         "asset_kind": "project_bundle",
         "title": "Kids Educational Games",
         "description": "Number and letter games for young children.",
+        "tags": ["games", "education"],
+        "cover": "packages/zebflow.kids-educational-games/media/cover.png",
+        "gallery": [
+          {
+            "path": "packages/zebflow.kids-educational-games/media/pipeline.png",
+            "alt": "The pipeline that scores a round"
+          }
+        ],
+        "readme": "packages/zebflow.kids-educational-games/README.md",
         "latest_version": "1.0.0",
         "releases": [
           {

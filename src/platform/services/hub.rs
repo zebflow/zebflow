@@ -69,7 +69,7 @@ use crate::platform::services::project::{
     derive_trigger_kind_from_source, normalize_pipeline_file_rel_path,
 };
 use crate::platform::services::tsx_outline::extract_import_sources;
-use crate::platform::services::{DependencyLockService, NodeRegistryService, ProjectService};
+use crate::platform::services::{DependencyLockService, NodeRegistryService, ProjectService, hub_repository_publish};
 use crate::platform::sqlite_schema;
 use crate::zebfs::normalize_object_path;
 
@@ -280,6 +280,16 @@ fn prune_empty_hub_dirs(start: Option<&Path>, stop: &Path) {
         };
         current = parent.to_path_buf();
     }
+}
+
+/// What `resolve_project_release_source` hands every publish destination.
+struct ResolvedProjectReleaseSource {
+    preview: HubExportPreview,
+    project_initialization: HubPackageInitialization,
+    layout: Arc<ProjectFileLayout>,
+    resolved_title: String,
+    resolved_description: String,
+    active_pipelines: Vec<String>,
 }
 
 /// Everything the shared publish core needs, prepared by one of its two
@@ -1663,7 +1673,11 @@ impl HubService {
                 let layout = self
                     .projects
                     .project_layout(&slug_segment(source_owner), &slug_segment(source_project))?;
-                hub_cover_webp_from_path(&layout, path, &publisher)?
+                hub_cover_webp_from_path(
+                    &layout,
+                    path,
+                    normalize_limit(publisher.max_image_bytes, DEFAULT_PUBLISHER_MAX_IMAGE_BYTES) as usize,
+                )?
             }
             None => None,
         };
@@ -2626,53 +2640,33 @@ impl HubService {
         // presentation can leave the existing presentation alone. Publishing a
         // fix must not cost the publisher the description they wrote.
         let existing_package = store.data.get_hub_asset_package(&package_id)?;
-        let mut preview =
-            self.preview_publish_source(&source_owner, &source_project, &source_type, source_ref)?;
-        if preview.entries.is_empty() {
-            return Err(PlatformError::new(
-                "HUB_PUBLISH_EMPTY",
-                "nothing to publish for this source",
-            ));
-        }
-        let project_initialization = self.apply_project_bundle_publish_options(
+        let source = self.resolve_project_release_source(
             &source_owner,
             &source_project,
             &source_type,
-            &mut preview,
+            source_ref,
+            title,
+            description,
             project_options,
         )?;
-        sanitize_hub_export_entries(&mut preview.entries)?;
-        let source_layout = self
-            .projects
-            .project_layout(&source_owner, &source_project)?;
         // A cover is presentation, so it never enters the release document: the
         // bytes go into the content-addressed artifact store and the package
         // row records the digest. Reading the bytes is not storing them, and
         // the read happens first so the review below can be told whether this
         // release has a cover without a refused publish having stored one.
-        let cover_source = hub_cover_webp_from_path(&source_layout, image_file_path, &publisher)?;
-        // Resolved before the review rather than inside the manifest below, so
-        // the review here and the preview review read the same two strings: a
-        // blank title falls back to the source's name in both.
-        let resolved_title = if title.trim().is_empty() {
-            preview.name.clone()
-        } else {
-            title.trim().to_string()
-        };
-        let resolved_description = if description.trim().is_empty() {
-            preview.description.clone()
-        } else {
-            description.trim().to_string()
-        };
-        let active_pipelines = if preview.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE {
-            self.projects
-                .list_active_pipeline_meta(&source_owner, &source_project)?
-                .into_iter()
-                .map(|meta| meta.file_rel_path)
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let cover_source = hub_cover_webp_from_path(
+            &source.layout,
+            image_file_path,
+            normalize_limit(publisher.max_image_bytes, DEFAULT_PUBLISHER_MAX_IMAGE_BYTES) as usize,
+        )?;
+        let ResolvedProjectReleaseSource {
+            preview,
+            project_initialization,
+            layout: source_layout,
+            resolved_title,
+            resolved_description,
+            active_pipelines,
+        } = source;
         self.finish_publish(
             store,
             PublishSubmission {
@@ -2702,6 +2696,163 @@ impl HubService {
                 tags,
             },
         )
+    }
+
+    /// Publishes one project source into a Hub-format repository kept in git
+    /// (`github.com/zebflow/hub` by default): the same source resolution, the
+    /// same review and the same release document as a publish to a Hub
+    /// service, written into the repository and pushed with `target`'s token.
+    ///
+    /// A repository has no publisher registry, so the package id is taken as
+    /// given and the token is the permission. The release goes nowhere on
+    /// this instance: nothing is stored here, and a refused review pushes
+    /// nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_to_repository(
+        &self,
+        source_owner: &str,
+        source_project: &str,
+        source_type: &str,
+        source_ref: &str,
+        package_id: &str,
+        version: &str,
+        title: &str,
+        description: &str,
+        image_file_path: &str,
+        readme_file_path: &str,
+        tags: Vec<String>,
+        project_options: HubProjectBundlePublishOptions,
+        target: &hub_repository_publish::RepositoryTarget,
+    ) -> Result<hub_repository_publish::RepositoryPublishReport, PlatformError> {
+        let source_owner = slug_segment(source_owner);
+        let source_project = slug_segment(source_project);
+        let source_type = normalize_source_type(source_type);
+        let package_id = package_id.trim();
+        let version = version.trim();
+        validate_package_version(version)?;
+        let source = self.resolve_project_release_source(
+            &source_owner,
+            &source_project,
+            &source_type,
+            source_ref,
+            title,
+            description,
+            project_options,
+        )?;
+        let cover = hub_cover_webp_from_path(
+            &source.layout,
+            image_file_path,
+            DEFAULT_PUBLISHER_MAX_IMAGE_BYTES as usize,
+        )?;
+        let readme = match readme_file_path.trim() {
+            "" => None,
+            path => Some(self.projects.read_repo_file_text(&source_owner, &source_project, path)?),
+        };
+        let ResolvedProjectReleaseSource {
+            mut preview,
+            project_initialization,
+            layout,
+            resolved_title,
+            resolved_description,
+            active_pipelines,
+        } = source;
+        let artifacts = seal_release(
+            &publish_review_layout(&layout.repo_layout),
+            &mut preview,
+            &resolved_title,
+            &resolved_description,
+            cover.is_some(),
+            &HubArtifactChannel::unresolvable("a publish carries its own files"),
+        )?;
+        let manifest = release_manifest(
+            &preview,
+            resolved_title.clone(),
+            resolved_description.clone(),
+            Some(recorded_publisher_layout(&layout.repo_layout)),
+            active_pipelines,
+            project_initialization,
+        );
+        let document = encode_hub_artifact(package_id, version, &manifest, "HUB_PUBLISH")?;
+        hub_repository_publish::publish_release(
+            &self.data_root,
+            target,
+            &hub_repository_publish::RepositoryRelease {
+                package_id: package_id.to_string(),
+                version: version.to_string(),
+                asset_kind: preview.asset_kind,
+                title: resolved_title,
+                description: resolved_description,
+                tags,
+                document,
+                artifacts,
+                cover,
+                readme,
+            },
+        )
+    }
+
+    /// A project source resolved into what a release is built from, whichever
+    /// hub it is going to: the previewed entries with the bundle options
+    /// applied and sanitized, the title and description a blank field falls
+    /// back on, and the pipelines a project bundle activates.
+    ///
+    /// Resolved before any review, so the review and the preview read the same
+    /// two strings: a blank title falls back to the source's name in both.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_project_release_source(
+        &self,
+        source_owner: &str,
+        source_project: &str,
+        source_type: &str,
+        source_ref: &str,
+        title: &str,
+        description: &str,
+        project_options: HubProjectBundlePublishOptions,
+    ) -> Result<ResolvedProjectReleaseSource, PlatformError> {
+        let mut preview =
+            self.preview_publish_source(source_owner, source_project, source_type, source_ref)?;
+        if preview.entries.is_empty() {
+            return Err(PlatformError::new(
+                "HUB_PUBLISH_EMPTY",
+                "nothing to publish for this source",
+            ));
+        }
+        let project_initialization = self.apply_project_bundle_publish_options(
+            source_owner,
+            source_project,
+            source_type,
+            &mut preview,
+            project_options,
+        )?;
+        sanitize_hub_export_entries(&mut preview.entries)?;
+        let layout = self.projects.project_layout(source_owner, source_project)?;
+        let resolved_title = if title.trim().is_empty() {
+            preview.name.clone()
+        } else {
+            title.trim().to_string()
+        };
+        let resolved_description = if description.trim().is_empty() {
+            preview.description.clone()
+        } else {
+            description.trim().to_string()
+        };
+        let active_pipelines = if preview.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE {
+            self.projects
+                .list_active_pipeline_meta(source_owner, source_project)?
+                .into_iter()
+                .map(|meta| meta.file_rel_path)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(ResolvedProjectReleaseSource {
+            preview,
+            project_initialization,
+            layout,
+            resolved_title,
+            resolved_description,
+            active_pipelines,
+        })
     }
 
     /// The shared back half of every publish: the review gate, the artifact
@@ -2747,23 +2898,14 @@ impl HubService {
         // and nothing durable has been written yet. A violation refuses every
         // install on every channel, so a release carrying one is a version
         // number spent on bytes nobody can use.
-        refuse_publish_violations(
-            "HUB_PUBLISH_REFUSED",
-            &review_publish_entries(
-                &review_layout,
-                &preview.asset_kind,
-                &preview.entries,
-                preview.warnings.clone(),
-                &resolved_title,
-                &resolved_description,
-                cover_source.is_some(),
-                &store.artifact_channel(),
-            ),
+        let referenced_artifacts = seal_release(
+            &review_layout,
+            &mut preview,
+            &resolved_title,
+            &resolved_description,
+            cover_source.is_some(),
+            &store.artifact_channel(),
         )?;
-        // The review has passed, so the release may now be shaped for the store
-        // it is going into. A large binary leaves the document and becomes a
-        // digest; the bytes wait here until the release is fully accepted.
-        let referenced_artifacts = reference_large_publish_entries(&mut preview.entries)?;
         let cover = match cover_source {
             Some((name, bytes)) => {
                 let artifact_sha256 = self.store_artifact_in(&store, &bytes)?;
@@ -2800,20 +2942,14 @@ impl HubService {
         } else {
             publisher_email.trim().to_string()
         };
-        // The release carries what installing it requires, plus the title and
-        // one-line description that keep it self-describing offline. The layout
-        // is part of "what installing it requires": every rel_path below is
-        // relative to it, and a receiver whose own layout differs has no other
-        // way to learn which portion of a path was structure.
-        let manifest = HubPackageSpec {
-            asset_kind: preview.asset_kind.clone(),
-            title: resolved_title,
-            description: resolved_description,
-            layout: recorded_layout,
+        let manifest = release_manifest(
+            &preview,
+            resolved_title,
+            resolved_description,
+            recorded_layout,
             active_pipelines,
             project_initialization,
-            files: preview.entries.clone(),
-        };
+        );
         let artifact_bytes = encode_hub_artifact(&package_id, &version, &manifest, "HUB_PUBLISH")?;
         let artifact_sha256 = sha256_hex(&artifact_bytes);
         // The quota counts what the release costs the hub, not what its JSON
@@ -3153,54 +3289,88 @@ impl HubService {
                 "publisher not found",
             ));
         };
-        let mut preview =
-            self.preview_publish_source(&source_owner, &source_project, &source_type, source_ref)?;
-        let project_initialization = self.apply_project_bundle_publish_options(
+        let source = self.resolve_project_release_source(
             &source_owner,
             &source_project,
             &source_type,
-            &mut preview,
-            project_options,
-        )?;
-        sanitize_hub_export_entries(&mut preview.entries)?;
-        let media = hub_cover_media_review(
-            self
-                .projects
-                .project_layout(&source_owner, &source_project)?
-                .as_ref(),
-            image_file_path,
-            &publisher,
-        )?;
-        let title = if title.trim().is_empty() {
-            preview.name.clone()
-        } else {
-            title.trim().to_string()
-        };
-        let description = if description.trim().is_empty() {
-            preview.description.clone()
-        } else {
-            description.trim().to_string()
-        };
-        review_publish_artifact(
-            &publish_review_layout(
-                &self
-                    .projects
-                    .project_layout(&source_owner, &source_project)?
-                    .repo_layout,
-            ),
-            package_id,
-            version,
-            preview,
+            source_ref,
             title,
             description,
+            project_options,
+        )?;
+        let media = hub_cover_media_review(
+            &source.layout,
+            image_file_path,
+            normalize_limit(publisher.max_image_bytes, DEFAULT_PUBLISHER_MAX_IMAGE_BYTES) as usize,
+        )?;
+        review_publish_artifact(
+            &publish_review_layout(&source.layout.repo_layout),
+            package_id,
+            version,
+            source.preview,
+            source.resolved_title,
+            source.resolved_description,
             normalize_visibility(visibility),
             tags,
             media,
-            project_initialization,
+            source.project_initialization,
             // An export carries every entry inline today, so this channel is the
             // answer for a referenced one: only an artifact already in this
             // instance's store could be published and resolved by a receiver.
             &store.artifact_channel(),
+        )
+    }
+
+    /// The review a publish into a Hub-format repository would pass, without
+    /// pushing anything: the same review as `publish_to_repository` runs, so
+    /// Studio can show it before the token is ever used. A repository is
+    /// public by nature, and has no publisher, so neither is asked.
+    #[allow(clippy::too_many_arguments)]
+    pub fn review_repository_publish(
+        &self,
+        source_owner: &str,
+        source_project: &str,
+        source_type: &str,
+        source_ref: &str,
+        package_id: &str,
+        version: &str,
+        title: &str,
+        description: &str,
+        image_file_path: &str,
+        project_options: HubProjectBundlePublishOptions,
+        tags: Vec<String>,
+    ) -> Result<HubPublishReview, PlatformError> {
+        let source_owner = slug_segment(source_owner);
+        let source_project = slug_segment(source_project);
+        let source_type = normalize_source_type(source_type);
+        let version = version.trim().to_string();
+        validate_package_version(&version)?;
+        let source = self.resolve_project_release_source(
+            &source_owner,
+            &source_project,
+            &source_type,
+            source_ref,
+            title,
+            description,
+            project_options,
+        )?;
+        let media = hub_cover_media_review(
+            &source.layout,
+            image_file_path,
+            DEFAULT_PUBLISHER_MAX_IMAGE_BYTES as usize,
+        )?;
+        review_publish_artifact(
+            &publish_review_layout(&source.layout.repo_layout),
+            package_id.trim().to_string(),
+            version,
+            source.preview,
+            source.resolved_title,
+            source.resolved_description,
+            "public".to_string(),
+            tags,
+            media,
+            source.project_initialization,
+            &HubArtifactChannel::unresolvable("a publish carries its own files"),
         )
     }
 
@@ -5725,7 +5895,7 @@ fn rewrite_project_libraries(
 fn hub_cover_webp_from_path(
     layout: &ProjectFileLayout,
     image_file_path: &str,
-    publisher: &HubPublisher,
+    max_image_bytes: usize,
 ) -> Result<Option<(String, Vec<u8>)>, PlatformError> {
     let image_file_path = image_file_path.trim();
     if image_file_path.is_empty() {
@@ -5738,13 +5908,11 @@ fn hub_cover_webp_from_path(
         .get(&rel)
         .map_err(|err| PlatformError::new("HUB_MEDIA_MISSING", err.to_string()))?;
     image_content_type_from_path(&rel)?;
-    let max_image_bytes =
-        normalize_limit(publisher.max_image_bytes, DEFAULT_PUBLISHER_MAX_IMAGE_BYTES) as usize;
     let webp_bytes = normalize_hub_cover_to_webp(&object.bytes)?;
     if webp_bytes.len() > max_image_bytes {
         return Err(PlatformError::new(
             "HUB_PUBLISHER_QUOTA_EXCEEDED",
-            "webp cover image exceeds publisher max image bytes",
+            "the webp cover image exceeds the max image bytes",
         ));
     }
     Ok(Some((HUB_COVER_MEDIA_NAME.to_string(), webp_bytes)))
@@ -5754,9 +5922,9 @@ fn hub_cover_webp_from_path(
 fn hub_cover_media_review(
     layout: &ProjectFileLayout,
     image_file_path: &str,
-    publisher: &HubPublisher,
+    max_image_bytes: usize,
 ) -> Result<Vec<HubPublishMediaReview>, PlatformError> {
-    let Some((name, bytes)) = hub_cover_webp_from_path(layout, image_file_path, publisher)? else {
+    let Some((name, bytes)) = hub_cover_webp_from_path(layout, image_file_path, max_image_bytes)? else {
         return Ok(Vec::new());
     };
     Ok(vec![HubPublishMediaReview {
@@ -6914,6 +7082,59 @@ fn publisher_layout(payload: &HubPackageSpec) -> ResolvedProjectLayout {
 /// bundle is made of are kilobytes. It is not a rule about text: a megabyte of
 /// SQL is no more diffable than a megabyte of WASM.
 const HUB_PUBLISH_REFERENCE_THRESHOLD_BYTES: usize = 1024 * 1024;
+
+/// The gate every publish passes, whatever hub it goes to: the release is
+/// reviewed exactly as an install would review it, and only then shaped for
+/// storage -- a large binary leaves the document and becomes a digest. The
+/// bytes that left come back, for the destination to store before it writes
+/// the release that names them.
+fn seal_release(
+    review_layout: &ResolvedProjectLayout,
+    preview: &mut HubExportPreview,
+    title: &str,
+    description: &str,
+    has_cover_image: bool,
+    artifacts: &HubArtifactChannel,
+) -> Result<Vec<Vec<u8>>, PlatformError> {
+    refuse_publish_violations(
+        "HUB_PUBLISH_REFUSED",
+        &review_publish_entries(
+            review_layout,
+            &preview.asset_kind,
+            &preview.entries,
+            preview.warnings.clone(),
+            title,
+            description,
+            has_cover_image,
+            artifacts,
+        ),
+    )?;
+    reference_large_publish_entries(&mut preview.entries)
+}
+
+/// The release document's spec: what installing requires, plus the title and
+/// one-line description that keep it self-describing offline. The layout is
+/// part of "what installing requires": every rel_path is relative to it, and a
+/// receiver whose own layout differs has no other way to learn which portion
+/// of a path was structure.
+fn release_manifest(
+    preview: &HubExportPreview,
+    title: String,
+    description: String,
+    layout: Option<HubPackageLayout>,
+    active_pipelines: Vec<String>,
+    project_initialization: HubPackageInitialization,
+) -> HubPackageSpec {
+    HubPackageSpec {
+        asset_kind: preview.asset_kind.clone(),
+        title,
+        description,
+        layout,
+        active_pipelines,
+        project_initialization,
+        files: preview.entries.clone(),
+    }
+}
 
 /// Moves the entries a release should not carry out of the document.
 ///

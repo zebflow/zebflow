@@ -105,6 +105,7 @@ use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
 use crate::platform::services::cluster::local_authority::LOCAL_LOGIN_DISABLED_CODE;
 use crate::platform::services::hub::{HubProjectBundlePublishOptions, RemoteHubPublishRequest};
+use crate::platform::services::hub_repository_publish;
 use crate::platform::services::node_registry::NodeRegistryService;
 use crate::rwe::{
     CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
@@ -1294,6 +1295,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/hub/remote/assets/publish",
             post(api_remote_publish_hub_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/hub/repository/publish",
+            post(api_publish_to_hub_repository),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/hub/repository/review",
+            post(api_review_hub_repository_publish),
         )
         .route(
             "/api/projects/{owner}/{project}/hub/tokens",
@@ -6382,6 +6391,9 @@ async fn project_hub_tab_page(
                     "publish_preview": format!("/api/projects/{owner}/{project}/hub/publish-preview"),
                     "publish_asset": format!("/api/projects/{owner}/{project}/hub/remote/assets/publish"),
                     "publish_review": format!("/api/projects/{owner}/{project}/hub/assets/publish-review"),
+                    "publish_repository": format!("/api/projects/{owner}/{project}/hub/repository/publish"),
+                    "review_repository": format!("/api/projects/{owner}/{project}/hub/repository/review"),
+                    "official_hub_git_url": hub_repository_publish::OFFICIAL_HUB_GIT_URL,
                     "upload": format!("/api/projects/{owner}/{project}/files/upload"),
                     "access": format!("/api/projects/{owner}/{project}/hub/access"),
                     "repositories": format!("/api/projects/{owner}/{project}/hub/repositories"),
@@ -20309,6 +20321,180 @@ struct HubPublishQuery {
     source_ref: String,
 }
 
+/// A whole-project package carries its library versions, so it is refused
+/// while any of them is unresolved: the receiver would install a project that
+/// cannot load its own pages. Every publish destination asks this.
+fn refuse_unresolved_bundle_dependencies(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    source_type: &str,
+) -> Result<(), Response> {
+    if source_type != "project_files" {
+        return Ok(());
+    }
+    let requested = state
+        .platform
+        .zebflow_cfg
+        .get_rwe_libraries(owner, project)
+        .map_err(internal_error)?;
+    let dependencies = state
+        .platform
+        .dependency_lock
+        .status(owner, project, &requested)
+        .map_err(internal_error)?;
+    if dependencies.ok {
+        return Ok(());
+    }
+    Err((
+        StatusCode::CONFLICT,
+        Json(json!({
+            "ok": false,
+            "error": {
+                "code": "HUB_PUBLISH_DEPENDENCIES",
+                "message": "project bundle has unresolved dependencies"
+            },
+            "dependencies": dependencies
+        })),
+    )
+        .into_response())
+}
+
+/// A publish into a Hub-format repository kept in git. The source fields are
+/// the Studio publish form's; `token` is the git host's token for the
+/// repository, used for this one push and never stored. No `Debug`, so the
+/// token cannot reach a log through it.
+#[derive(Deserialize, serde::Serialize)]
+struct PublishToHubRepositoryRequest {
+    #[serde(flatten)]
+    publish: PublishHubAssetRequest,
+    #[serde(default)]
+    repo_url: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    readme_file_path: String,
+    #[serde(default)]
+    token: String,
+}
+
+/// `POST /api/projects/{owner}/{project}/hub/repository/review`: what a
+/// publish into a Hub-format repository would pass, before any push. Takes the
+/// publish body; the token is not needed and not used.
+async fn api_review_hub_repository_publish(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<PublishToHubRepositoryRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_json_to_worker(&state, &uri, &headers, Method::POST, &req, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let platform = state.platform.clone();
+    let reviewed = run_platform_blocking(move || {
+        platform.hub.review_repository_publish(
+            &owner,
+            &project,
+            &req.publish.source_type,
+            &req.publish.source_ref,
+            &req.publish.package_id,
+            &req.publish.version,
+            &req.publish.title,
+            &req.publish.description,
+            &req.publish.image_file_path,
+            project_bundle_publish_options(&req.publish),
+            req.publish.tags.clone(),
+        )
+    })
+    .await;
+    match reviewed {
+        Ok(review) => Json(json!({ "ok": true, "review": review })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+/// `POST /api/projects/{owner}/{project}/hub/repository/publish`
+async fn api_publish_to_hub_repository(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<PublishToHubRepositoryRequest>,
+) -> Response {
+    let subject = match require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        Ok(subject) => subject,
+        Err(response) => return response,
+    };
+    match maybe_forward_project_json_to_worker(&state, &uri, &headers, Method::POST, &req, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    if let Err(response) =
+        refuse_unresolved_bundle_dependencies(&state, &owner, &project, &req.publish.source_type)
+    {
+        return response;
+    }
+    let platform = state.platform.clone();
+    let published = run_platform_blocking(move || {
+        let repo_url = match req.repo_url.trim() {
+            "" => hub_repository_publish::OFFICIAL_HUB_GIT_URL,
+            url => url,
+        };
+        let branch = match req.branch.trim() {
+            "" => hub_repository_publish::DEFAULT_HUB_BRANCH,
+            branch => branch,
+        };
+        // The commit belongs to the platform user who publishes, as every
+        // other commit Zebflow makes (access/git_identity.rs).
+        let author = platform.git_identity.resolve_for_actor(Some(&subject.id), &project);
+        let target = hub_repository_publish::RepositoryTarget { repo_url, branch, token: &req.token, author: &author };
+        platform.hub.publish_to_repository(
+            &owner,
+            &project,
+            &req.publish.source_type,
+            &req.publish.source_ref,
+            &req.publish.package_id,
+            &req.publish.version,
+            &req.publish.title,
+            &req.publish.description,
+            &req.publish.image_file_path,
+            &req.readme_file_path,
+            req.publish.tags.clone(),
+            project_bundle_publish_options(&req.publish),
+            &target,
+        )
+    })
+    .await;
+    match published {
+        Ok(report) => Json(json!({ "ok": true, "report": report })).into_response(),
+        Err(err) if err.code == "HUB_REPOSITORY_PUBLISH" || err.code == "HUB_PUBLISH_REFUSED" => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "ok": false, "error": { "code": err.code, "message": err.message } })),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 fn project_bundle_publish_options(req: &PublishHubAssetRequest) -> HubProjectBundlePublishOptions {
     HubProjectBundlePublishOptions {
         include_sekejap_schema: req.include_sekejap_schema,
@@ -21636,33 +21822,8 @@ fn publish_project_source_to_public_hub(
         Ok(token) => token,
         Err(response) => return response,
     };
-    if req.source_type == "project_files" {
-        let requested = match state.platform.zebflow_cfg.get_rwe_libraries(owner, project) {
-            Ok(value) => value,
-            Err(err) => return internal_error(err),
-        };
-        let dependencies = match state
-            .platform
-            .dependency_lock
-            .status(owner, project, &requested)
-        {
-            Ok(report) => report,
-            Err(err) => return internal_error(err),
-        };
-        if !dependencies.ok {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "ok": false,
-                    "error": {
-                        "code": "HUB_PUBLISH_DEPENDENCIES",
-                        "message": "project bundle has unresolved dependencies"
-                    },
-                    "dependencies": dependencies
-                })),
-            )
-                .into_response();
-        }
+    if let Err(response) = refuse_unresolved_bundle_dependencies(state, owner, project, &req.source_type) {
+        return response;
     }
     match state.platform.hub.publish_asset(
         owner,

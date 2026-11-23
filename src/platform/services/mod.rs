@@ -28,6 +28,7 @@ pub mod fonts;
 pub mod git_sync;
 pub mod hub;
 pub mod hub_repository;
+pub mod hub_repository_publish;
 pub mod instance_settings;
 pub mod library;
 pub mod change_log;

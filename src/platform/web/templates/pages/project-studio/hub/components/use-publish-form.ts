@@ -22,6 +22,11 @@ export function usePublishForm({ input, api, refresh, showStatus }) {
     package_id: "",
     version: "0.1.0",
     publisher_token: "",
+    destination: "hub_repository",
+    repo_url: "",
+    branch: "main",
+    repo_token: "",
+    readme_file_path: "",
     title: "",
     description: "",
     image_file_path: "",
@@ -39,8 +44,15 @@ export function usePublishForm({ input, api, refresh, showStatus }) {
     setPublishReviewDirty(true);
   }
 
+  const toRepository = publishForm.destination === "hub_repository";
+  const credentialReady = toRepository ? !!publishForm.repo_token : !!publishForm.publisher_token;
+
   function publishPayload() {
+    const destination = toRepository
+      ? { repo_url: publishForm.repo_url, branch: publishForm.branch, token: publishForm.repo_token, readme_file_path: publishForm.readme_file_path }
+      : {};
     return {
+      ...destination,
       source_type: publishForm.source_type,
       source_ref: publishForm.source_ref,
       package_id: publishForm.package_id,
@@ -124,7 +136,7 @@ export function usePublishForm({ input, api, refresh, showStatus }) {
     event?.preventDefault?.();
     showStatus("Reviewing package...");
     try {
-      const payload = await requestJson(api.publish_review, {
+      const payload = await requestJson(toRepository ? api.review_repository : api.publish_review, {
         method: "POST",
         body: JSON.stringify(publishPayload()),
       });
@@ -146,14 +158,19 @@ export function usePublishForm({ input, api, refresh, showStatus }) {
     }
     showStatus("Publishing package...");
     try {
-      const payload = await requestJson(api.publish_asset, {
+      const payload = await requestJson(toRepository ? api.publish_repository : api.publish_asset, {
         method: "POST",
         body: JSON.stringify(publishPayload()),
       });
-      await refresh();
+      if (!toRepository) await refresh();
       setPublishReview(null);
       setPublishReviewDirty(true);
-      showStatus(`Published ${payload?.package?.package_id || publishForm.package_id}@${payload?.version?.version || publishForm.version}`);
+      const report = payload?.report;
+      showStatus(report
+        ? (report.changed
+          ? `Published ${report.package_id}@${report.version} to ${report.repository} (commit ${String(report.commit).slice(0, 7)})`
+          : `${report.package_id}@${report.version} is already in ${report.repository}; nothing changed`)
+        : `Published ${payload?.package?.package_id || publishForm.package_id}@${payload?.version?.version || publishForm.version}`);
     } catch (err) {
       showStatus(err?.message || err);
     }
@@ -190,6 +207,8 @@ export function usePublishForm({ input, api, refresh, showStatus }) {
     preview: publishPreview,
     review: publishReview,
     reviewDirty: publishReviewDirty,
+    credentialReady,
+    officialHubGitUrl: api.official_hub_git_url || "",
     imageUploadBusy,
     options: publishOptions,
     facts,

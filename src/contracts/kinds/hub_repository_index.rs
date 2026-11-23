@@ -32,6 +32,12 @@ pub const MAX_HUB_REPOSITORY_INDEX_TEXT_BYTES: usize = 4096;
 /// Maximum length of a package's one-line description.
 pub const MAX_HUB_REPOSITORY_INDEX_DESCRIPTION_BYTES: usize = 64 * 1024;
 
+/// Maximum tags one package may carry.
+pub const MAX_HUB_REPOSITORY_INDEX_TAGS: usize = 32;
+
+/// Maximum gallery images one package may list.
+pub const MAX_HUB_REPOSITORY_INDEX_GALLERY: usize = 32;
+
 /// Decode one bounded canonical HubRepositoryIndex document.
 pub fn decode_hub_repository_index(
     bytes: &[u8],
@@ -99,6 +105,20 @@ pub struct HubRepositoryIndexPackage {
     /// One line saying what it does.
     #[serde(default)]
     pub description: String,
+    /// Words a listing filters by, e.g. `realtime`, `database`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// The image a listing shows before the package is opened, relative to the
+    /// repository base.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cover: String,
+    /// More images for the package's own page, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gallery: Vec<HubRepositoryIndexImage>,
+    /// The package's long description as a Markdown file, relative to the
+    /// repository base.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub readme: String,
     /// Which release a reference with no version resolves to.
     ///
     /// It must name one of `releases`, so an index cannot point a bare
@@ -107,6 +127,21 @@ pub struct HubRepositoryIndexPackage {
     /// Every release of this package, newest first by convention and in no
     /// order this format enforces.
     pub releases: Vec<HubRepositoryIndexRelease>,
+}
+
+/// One gallery image: where it is and what it shows.
+///
+/// Presentation lives in the index, not in a release, for the reason the
+/// `HubPackage` contract moved it out of releases: an index is the mutable half
+/// of a repository, so a new screenshot never costs a version.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HubRepositoryIndexImage {
+    /// The image file, relative to the repository base.
+    pub path: String,
+    /// What the image shows, for a reader who cannot see it.
+    #[serde(default)]
+    pub alt: String,
 }
 
 /// One release: where its document is, and which bytes are the right ones.
@@ -183,6 +218,26 @@ impl PlatformContract for HubRepositoryIndexContract {
                 &package.description,
                 MAX_HUB_REPOSITORY_INDEX_DESCRIPTION_BYTES,
             )?;
+            validate_limit(&format!("{at}.tags"), package.tags.len(), MAX_HUB_REPOSITORY_INDEX_TAGS)?;
+            for (tag_index, tag) in package.tags.iter().enumerate() {
+                validate_tag(&format!("{at}.tags[{tag_index}]"), tag)?;
+            }
+            if !package.cover.is_empty() {
+                validate_relative_file(&format!("{at}.cover"), &package.cover)?;
+            }
+            validate_limit(
+                &format!("{at}.gallery"),
+                package.gallery.len(),
+                MAX_HUB_REPOSITORY_INDEX_GALLERY,
+            )?;
+            for (image_index, image) in package.gallery.iter().enumerate() {
+                let image_at = format!("{at}.gallery[{image_index}]");
+                validate_relative_file(&format!("{image_at}.path"), &image.path)?;
+                validate_single_line(&format!("{image_at}.alt"), &image.alt)?;
+            }
+            if !package.readme.is_empty() {
+                validate_relative_file(&format!("{at}.readme"), &package.readme)?;
+            }
             if package.releases.is_empty() {
                 return Err(ContractError::invalid(format!(
                     "{at}.releases must name at least one release"
@@ -277,6 +332,22 @@ fn validate_asset_kind(path: &str, value: &str) -> Result<(), ContractError> {
     if !ok {
         return Err(ContractError::invalid(format!(
             "{path} '{value}' must be a lowercase token of letters, digits, or '_'"
+        )));
+    }
+    Ok(())
+}
+
+/// A tag is a short lowercase word a listing filters by, so two spellings of
+/// one word cannot split a filter.
+fn validate_tag(path: &str, value: &str) -> Result<(), ContractError> {
+    let ok = !value.is_empty()
+        && value.len() <= 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if !ok {
+        return Err(ContractError::invalid(format!(
+            "{path} '{value}' must be a lowercase word of letters, digits, or '-'"
         )));
     }
     Ok(())
@@ -378,6 +449,42 @@ mod tests {
             value["spec"]["packages"][0]["mirror"] = serde_json::json!("https://elsewhere");
         });
         decode_hub_repository_index(&bytes).expect_err("unknown field");
+    }
+
+    #[test]
+    fn the_reference_index_carries_its_card_and_page() {
+        let document = decode_hub_repository_index(V1_INDEX).expect("decode");
+        let package = &document.spec.packages[0];
+        assert_eq!(package.tags, ["games", "education"]);
+        assert_eq!(package.cover, "packages/zebflow.kids-educational-games/media/cover.png");
+        assert_eq!(package.gallery[0].alt, "The pipeline that scores a round");
+        assert_eq!(package.readme, "packages/zebflow.kids-educational-games/README.md");
+    }
+
+    #[test]
+    fn a_tag_is_one_lowercase_word() {
+        for tag in ["", "Games", "two words", "a_b", &"a".repeat(41)] {
+            let bytes = mutate(V1_INDEX, |value| {
+                value["spec"]["packages"][0]["tags"] = serde_json::json!([tag]);
+            });
+            decode_hub_repository_index(&bytes).expect_err(tag);
+        }
+    }
+
+    #[test]
+    fn a_cover_gallery_or_readme_path_may_not_leave_the_repository_base() {
+        for escape in ["../../etc/passwd", "/etc/passwd", "a//b"] {
+            for field in ["cover", "readme"] {
+                let bytes = mutate(V1_INDEX, |value| {
+                    value["spec"]["packages"][0][field] = serde_json::json!(escape);
+                });
+                decode_hub_repository_index(&bytes).expect_err(field);
+            }
+            let bytes = mutate(V1_INDEX, |value| {
+                value["spec"]["packages"][0]["gallery"][0]["path"] = serde_json::json!(escape);
+            });
+            decode_hub_repository_index(&bytes).expect_err("gallery path");
+        }
     }
 
     #[test]

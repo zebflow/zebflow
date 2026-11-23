@@ -46,7 +46,7 @@ pub fn package_dir_name(name: &str) -> String {
 }
 
 /// `x.y.z` (a `-pre` part sorts below its release) as something comparable.
-fn version_order(version: &str) -> Option<(u64, u64, u64, bool, String)> {
+pub(crate) fn version_order(version: &str) -> Option<(u64, u64, u64, bool, String)> {
     let (core, pre) = match version.split_once('-') {
         Some((core, pre)) => (core, pre.to_string()),
         None => (version, String::new()),

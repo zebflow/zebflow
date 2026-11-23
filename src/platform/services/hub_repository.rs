@@ -20,12 +20,12 @@
 //! package format.
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::contracts::decode_contract_value;
 use crate::contracts::kinds::{
-    HUB_REPOSITORY_INDEX_FILE, HubPackageContract, HubPackageSpec, HubRepositoryIndexSpec,
+    HUB_REPOSITORY_INDEX_FILE, HubPackageContract, HubPackageSpec, HubRepositoryIndexPackage, HubRepositoryIndexSpec,
     MAX_HUB_PACKAGE_BYTES, MAX_HUB_REPOSITORY_INDEX_BYTES, decode_hub_repository_index,
     encode_hub_package, is_hub_package_id, is_hub_package_version,
 };
@@ -171,6 +171,10 @@ pub struct HubRepositoryPackage {
     pub visibility: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Where the package's long description (Markdown) is fetched from. Only a
+    /// static repository names one; an API hub answers it with the release.
+    #[serde(default)]
+    pub readme_url: String,
     #[serde(default)]
     pub latest_version: String,
     #[serde(default)]
@@ -246,20 +250,7 @@ impl HubRepositoryChannel {
                 Ok(index
                     .packages
                     .into_iter()
-                    .map(|package| HubRepositoryPackage {
-                        package_id: package.package_id,
-                        asset_kind: package.asset_kind,
-                        title: package.title,
-                        description: package.description,
-                        latest_version: package.latest_version,
-                        // A static repository has no publisher registry and no
-                        // presentation store. What it does not have it does not
-                        // claim: these stay empty rather than being invented,
-                        // so a listing never shows an identity nobody vouched
-                        // for.
-                        visibility: "public".to_string(),
-                        ..HubRepositoryPackage::default()
-                    })
+                    .map(|package| static_listing_row(repo, package))
                     .collect())
             }
         }
@@ -421,6 +412,40 @@ pub fn validate_remote_sha256(sha256: &str) -> Result<&str, PlatformError> {
 }
 
 /// One index fetch, decoded and validated.
+/// One index entry as a listing row. The index's paths become addresses under
+/// the repository base, which validation already kept inside it.
+fn static_listing_row(repo: &HubRepositoryRef, package: HubRepositoryIndexPackage) -> HubRepositoryPackage {
+    let address = |path: &str| {
+        if path.is_empty() {
+            String::new()
+        } else {
+            static_repository_url(repo, path)
+        }
+    };
+    let items: Vec<Value> = package
+        .gallery
+        .iter()
+        .map(|image| json!({ "kind": "image", "url": address(&image.path), "alt": image.alt }))
+        .collect();
+    let gallery = if items.is_empty() { Value::Null } else { json!({ "items": items }) };
+    HubRepositoryPackage {
+        image_url: address(&package.cover),
+        readme_url: address(&package.readme),
+        gallery,
+        tags: package.tags,
+        package_id: package.package_id,
+        asset_kind: package.asset_kind,
+        title: package.title,
+        description: package.description,
+        latest_version: package.latest_version,
+        // A static repository has no publisher registry. What it does not have
+        // it does not claim: the publisher stays empty rather than being
+        // invented, so a listing never shows an identity nobody vouched for.
+        visibility: "public".to_string(),
+        ..HubRepositoryPackage::default()
+    }
+}
+
 async fn fetch_static_index(
     repo: &HubRepositoryRef,
 ) -> Result<HubRepositoryIndexSpec, PlatformError> {
@@ -671,6 +696,25 @@ mod tests {
             read_token: String::new(),
             priority: 20,
         }
+    }
+
+    #[test]
+    fn a_static_listing_row_turns_index_paths_into_addresses() {
+        let document = crate::contracts::kinds::decode_hub_repository_index(include_bytes!(
+            "../../../tests/fixtures/contracts/hub-repository-index/v1-complete.json"
+        ))
+        .expect("decode");
+        let base = "https://raw.githubusercontent.com/zebflow/hub/main/packages/zebflow.kids-educational-games";
+        let row = static_listing_row(&static_repo(), document.spec.packages[0].clone());
+        assert_eq!(row.image_url, format!("{base}/media/cover.png"));
+        assert_eq!(row.readme_url, format!("{base}/README.md"));
+        assert_eq!(row.gallery["items"][0]["url"], format!("{base}/media/pipeline.png"));
+        assert_eq!(row.tags, ["games", "education"]);
+        assert_eq!(row.publisher_id, "", "a static repository vouches for no publisher");
+
+        let bare = static_listing_row(&static_repo(), document.spec.packages[1].clone());
+        assert_eq!((bare.image_url.as_str(), bare.readme_url.as_str()), ("", ""));
+        assert!(bare.gallery.is_null());
     }
 
     #[test]

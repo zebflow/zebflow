@@ -158,6 +158,33 @@ allowed. Restore belongs to the backup system, not Hub.
 7. review safety effects
 8. add the package into the local project workspace
 
+## Publishing to a Hub repository
+
+A Hub repository is a Hub-format git repository: `zebflow-repository.json`
+plus the package files it lists. The official one, `github.com/zebflow/hub`,
+is read by every Zebflow first, with nothing to configure.
+
+Publishing to one needs no Hub service and no publisher: Studio → Hub →
+Publish → **Publish to: Hub repository**, the repository's git address (the
+official one by default), its branch, and a token the git host accepts for
+writing to it — on GitHub, a fine-grained token with *Contents: read and
+write* on that repository only. The token is used for that push and never
+stored. Whoever holds such a token can publish; that is the whole permission.
+
+The package passes the same review as any publish. Zebflow then commits, in
+one commit to the branch:
+
+- `packages/<id>/<version>/package.json`, the release
+- `packages/<id>/media/cover.webp` and `packages/<id>/README.md`, its card and page
+- its entry in `zebflow-repository.json`: title, description, tags, cover,
+  readme, and the release's digest and size
+
+A version that is already there with the same contents is left alone; with
+other contents it is refused, as on every Hub. Over HTTP:
+`POST /api/projects/{owner}/{project}/hub/repository/review` shows the review,
+`…/hub/repository/publish` (body: the publish fields plus `repo_url`,
+`branch`, `token`, `readme_file_path`) commits and pushes.
+
 ## Access model
 
 Hub access is explicit:

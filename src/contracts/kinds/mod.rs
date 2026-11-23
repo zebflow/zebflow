@@ -32,7 +32,7 @@ pub use hub_package::{
     is_hub_package_version,
 };
 pub use hub_repository_index::{
-    HUB_REPOSITORY_INDEX_FILE, HubRepositoryIndexContract, HubRepositoryIndexPackage,
+    HUB_REPOSITORY_INDEX_FILE, HubRepositoryIndexContract, HubRepositoryIndexImage, HubRepositoryIndexPackage,
     HubRepositoryIndexRelease, HubRepositoryIndexSpec, MAX_HUB_REPOSITORY_INDEX_BYTES,
     MAX_HUB_REPOSITORY_INDEX_PACKAGES, MAX_HUB_REPOSITORY_INDEX_RELEASES,
     decode_hub_repository_index, encode_hub_repository_index,

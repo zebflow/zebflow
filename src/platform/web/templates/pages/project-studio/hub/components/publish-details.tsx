@@ -2,6 +2,7 @@ import Button from "@/components/ui/button";
 import Field from "@/components/ui/field";
 import { Select, SelectOption } from "@/components/ui/select";
 import Input from "@/components/ui/input";
+import PublishDestination from "@/pages/project-studio/hub/components/publish-destination";
 import PublishInitOptions from "@/pages/project-studio/hub/components/publish-init-options";
 import PublishReview from "@/pages/project-studio/hub/components/publish-review";
 
@@ -21,12 +22,10 @@ export default function PublishDetails({ publish }) {
     <div className="rounded-lg border border-border bg-popover p-4 space-y-4">
       <div>
         <p className="project-content-subtitle">4. Publish Package</p>
-        <p className="text-sm text-muted-foreground">Use a publisher token issued from Home &gt; Hub. Project sources can be added on the Browse tab; publishers and tokens stay in Home &gt; Hub.</p>
+        <p className="text-sm text-muted-foreground">Publish into a Hub repository with that repository's git token, or into a Hub service with a publisher token issued from Home &gt; Hub.</p>
       </div>
       {publishForm.source_type === "project_files" ? <PublishInitOptions publish={publish} /> : null}
-      <Field label="Publisher Token">
-        <Input type="password" value={publishForm.publisher_token} onInput={(e) => patchPublishForm({ publisher_token: e.target.value })} placeholder="zfmt_..." />
-      </Field>
+      <PublishDestination publish={publish} />
       <div className="grid gap-3 md:grid-cols-2">
         <Field label="Package ID">
           <Input value={publishForm.package_id} onInput={(e) => patchPublishForm({ package_id: e.target.value })} placeholder="site-a-catalog" />
@@ -54,22 +53,24 @@ export default function PublishDetails({ publish }) {
         </div>
       </Field>
       <div className="grid gap-3 md:grid-cols-2">
-        <Field label="Visibility">
-          <Select value={publishForm.visibility} onChange={(e) => patchPublishForm({ visibility: e.target.value })}>
-            <SelectOption value="private" label="private" />
-            <SelectOption value="public" label="public" />
-            <SelectOption value="unlisted" label="unlisted" />
-          </Select>
-        </Field>
+        {publishForm.destination === "hub_service" ? (
+          <Field label="Visibility">
+            <Select value={publishForm.visibility} onChange={(e) => patchPublishForm({ visibility: e.target.value })}>
+              <SelectOption value="private" label="private" />
+              <SelectOption value="public" label="public" />
+              <SelectOption value="unlisted" label="unlisted" />
+            </Select>
+          </Field>
+        ) : null}
         <Field label="Tags">
           <Input value={publishForm.tags_csv} onInput={(e) => patchPublishForm({ tags_csv: e.target.value })} placeholder="catalog, demo" />
         </Field>
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button type="button" variant="outline" onClick={publish.reviewPublish} disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token}>
+        <Button type="button" variant="outline" onClick={publish.reviewPublish} disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publish.credentialReady}>
           {publishReviewDirty ? "Review Package" : "Review Again"}
         </Button>
-        <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token || !publishReview || publishReviewDirty || !!publishReview?.violations?.length}>{publishReview?.violations?.length ? "Blocked" : "Publish Package"}</Button>
+        <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publish.credentialReady || !publishReview || publishReviewDirty || !!publishReview?.violations?.length}>{publishReview?.violations?.length ? "Blocked" : "Publish Package"}</Button>
       </div>
       {publishReview ? <PublishReview publishReview={publishReview} publishReviewDirty={publishReviewDirty} /> : null}
     </div>

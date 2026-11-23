@@ -412,7 +412,9 @@ directed at chosen projects.
 
 **Static** — the same content as plain read-only files at any HTTPS URL:
 `zebflow-repository.json` ([`HubRepositoryIndex`](./kinds/hub-repository-index/README.md))
-plus package documents and artifacts. Publish is committing files. Trust is the
+plus package documents and artifacts. Publish is committing files: Studio
+commits the release, its cover and README, and its index entry in one commit
+and pushes it with the git host's token. Trust is the
 URL the user named plus locked digests; the host (GitHub or anyone) is pure
 transport — substituted bytes fail the digest, and the install review refuses
 smuggled executables regardless of origin. Official: `github.com/zebflow/hub`.
@@ -421,6 +423,7 @@ smuggled executables regardless of origin. Official: `github.com/zebflow/hub`.
 | --- | --- | --- | --- |
 | Local hub | none — seeded by the release, immutable | everyone on this instance | the release itself |
 | Public Hub | `hub/remote/assets/publish` | per its access rules and exposure | publisher token plus a repository grant |
+| Static repository | `hub/repository/publish` (review: `hub/repository/review`) | everyone who reads the repository | the git host's token for that repository; the same review and release immutability as the Public Hub |
 
 ## 2. Channels
 

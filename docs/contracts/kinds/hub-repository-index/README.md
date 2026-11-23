@@ -41,6 +41,15 @@ Canonical `apiVersion` / `kind` / `metadata` / `spec` envelope.
         "asset_kind": "project_bundle",
         "title": "Kids Educational Games",
         "description": "Number and letter games for young children.",
+        "tags": ["games", "education"],
+        "cover": "packages/zebflow.kids-educational-games/media/cover.png",
+        "gallery": [
+          {
+            "path": "packages/zebflow.kids-educational-games/media/pipeline.png",
+            "alt": "The pipeline that scores a round"
+          }
+        ],
+        "readme": "packages/zebflow.kids-educational-games/README.md",
         "latest_version": "1.0.0",
         "releases": [
           {
@@ -68,8 +77,13 @@ The directory it describes:
 https://<host>/<path>/
   zebflow-repository.json
   packages/<package-id>/<version>/package.json
+  packages/<package-id>/README.md           (optional) the package page
+  packages/<package-id>/media/<file>        (optional) cover and gallery images
   artifacts/<sha256>
 ```
+
+Only the index and the release documents are required. The README and media
+paths are a convention: the index names each file, and a reader never guesses one.
 
 `artifacts/` is the same content-addressed layout every other channel uses, so
 a package that references bytes rather than carrying them installs from a static
@@ -93,11 +107,22 @@ repository as it does from a hub.
 | `spec.packages[].asset_kind` | yes | listing hint. **Advisory** — see below |
 | `spec.packages[].title` | yes | what it is called |
 | `spec.packages[].description` | no | one line saying what it does |
+| `spec.packages[].tags` | no | up to 32 lowercase words a listing filters by (`[a-z0-9-]`, 40 bytes each) |
+| `spec.packages[].cover` | no | the image a listing shows, a path relative to the base |
+| `spec.packages[].gallery[]` | no | up to 32 images for the package page: `path` (relative) and `alt` (one line) |
+| `spec.packages[].readme` | no | the package page's text, a Markdown file relative to the base |
 | `spec.packages[].latest_version` | yes | what a reference with no version resolves to |
 | `spec.packages[].releases[].version` | yes | the release version |
 | `spec.packages[].releases[].path` | yes | where its document is, relative to the base |
 | `spec.packages[].releases[].sha256` | yes | the digest of that document's bytes |
 | `spec.packages[].releases[].size_bytes` | yes | its size, so a reader bounds the read |
+
+`tags`, `cover`, `gallery` and `readme` are the package's presentation. They
+live in the index, never in a release, for the reason
+[`HubPackage`](../hub-package/README.md) moved presentation out of releases:
+the index is the mutable half of a repository, so a new screenshot or a fixed
+sentence costs no version and changes no `zeb.lock`. Like `asset_kind`, they
+change what a listing shows and nothing an install does.
 
 `asset_kind` is **advisory**. The fetched `HubPackage` carries its own, and that
 one decides what the install does. An index that misdescribes a package changes
@@ -132,6 +157,8 @@ The kind's own validator then refuses:
 | a `latest_version` naming no release in `releases` | a bare reference would point at nothing |
 | a `version` containing `/` or `\` or a control character | a version is an opaque token and never a path segment |
 | a `path` that is absolute, contains `..`, `.`, `\`, or `//` | the path is joined onto a URL the user named. Only descending is allowed, or an index could reach outside the location that was trusted. |
+| a `cover`, `readme` or `gallery[].path` that breaks the same rule | the same URL join, the same reason |
+| a tag that is not one lowercase word, over 32 tags, or over 32 gallery images | two spellings of one word would split a filter; the counts bound a listing |
 | a `sha256` that is not 64 lowercase hex digits | it is the release's identity |
 | a `size_bytes` of 0, or over the 25 MB `HubPackage` ceiling | a document that cannot exist |
 
