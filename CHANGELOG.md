@@ -9,6 +9,33 @@ From 0.12, a release that adds a capability raises the middle number
 (0.13.0); a release that only fixes raises the last (0.13.4)
 ([versioning](docs/contracts/versioning.md)).
 
+## 0.14.0 (2026-11-24)
+
+### New
+
+- Studio's Hub page publishes a project release to a Hub kept in a GitHub
+  repository: the official Hub (`github.com/zebflow/hub`) or one of your own.
+  Pick the destination, give the repository, branch and a token that can
+  write to it, review what will change, then publish: Zebflow writes the
+  release files and the Hub's index, commits and pushes. The token is used
+  for that push only and never stored or shown in a log.
+- A Hub entry can carry tags, a cover image, a gallery of images with alt
+  text, and a README.
+- `PotoPlayer` takes `loading`: `"lazy"` (the default) fetches a story, its
+  fonts and its engines only when the player comes within half a screen of
+  view; `"eager"` fetches at once.
+
+### Changed
+
+- `zeb/potoru` 0.1.4 plays stories with Potoru's lean web player. A story
+  that moves something along a path no longer downloads the 1.1 MB drawing
+  engine: path following runs in plain JavaScript, and the engine loads only
+  for text placed on a path. Players on one page share one player module and
+  fetch each font once. On a page with five stories, the bytes downloaded
+  fell from about 1.5 MB to about 0.5 MB.
+- `zeb/threejs` and `zeb/threejs-vrm` carry three.js r187. r187 removed
+  `CubeUVReflectionMapping`; code that names it must drop it.
+
 ## 0.13.5 (2026-11-22)
 
 ### Changed
