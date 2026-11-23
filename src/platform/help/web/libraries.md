@@ -345,7 +345,10 @@ bubble from the container: `zeb:potoru:ready` (`{ id, mode, duration, scenes }`)
 (also `window.__zebPotoru.get(id)`) plays, seeks, moves between slides
 (`next`, `prev`, `goto`), and drives the story's host inputs:
 `set(target, data, value)`, `fire(target, event)`. With `still`, the player
-shows the frame at `time` (seconds) and does not play.
+shows the frame at `time` (seconds) and does not play. A player fetches its
+story, fonts and engines only when it comes within half a viewport of the
+screen (`loading="lazy"`, the default); `loading="eager"` fetches at once.
+Several players on one page share one player module and fetch each font once.
 
 Host data: a story that declares the `host-data` capability is driven by the
 page's own state, e.g. a shared room from a WebSocket. `collections` hands it

@@ -46,6 +46,7 @@ import { PotoPlayer, PotoSnapshot, PotoEditor, compile } from "zeb/potoru";
 | `time` | `number` | `0` | Seconds, with `still` |
 | `voices` | `string` | — | URL of the site's voice catalog: Piper voices a viewer can download (see Voices) |
 | `voiceFallback` | `"browser"` \| `"none"` | `"browser"` | Who speaks a voice the viewer has not chosen: the browser's own voice, or nobody (captions only) |
+| `loading` | `"lazy"` \| `"eager"` | `"lazy"` | `"lazy"`: the story, its fonts and engines are fetched only when the player is within half a viewport of the screen; `"eager"`: at once |
 | `id` | `string` | auto | Container id for `window.__zebPotoru.get(id)` |
 | `className` | `string` | — | Classes on the container |
 
@@ -225,9 +226,9 @@ const player = await mountPotoPlayer(document.getElementById("slot"), { src: "/a
 
 | Property | Value |
 |----------|-------|
-| Sources | Potoru web player 0.1.3, format v4 compiler and authoring API (Apache-2.0) |
+| Sources | Potoru lean web player (`play.js`, player 0.1.1), format v4 compiler and authoring API (Apache-2.0) |
 | Entry | `0.1/runtime/potoru.bundle.mjs` (bridge only) |
-| On demand | `player-*.mjs` + shared `chunk-*.mjs`; `snapshot-*.mjs`; `compiler-*.mjs`; `potoru-authoring-sandbox.js` (Script mode); `*.wasm` (action: interactive stories; score + `score-worker.js`: music; render: path guides; g2p: Indonesian pronunciation for Piper voices); `voices-*.mjs` + `voices-panel-*.mjs` (stories that speak live); `fonts/` |
+| On demand | `player-*.mjs` (bridge) + `play.js`, Potoru's lean player served exactly as built (one module for a linear piece; its lazy `*.js` chunks import from it, so it is never re-bundled); shared `chunk-*.mjs`; `snapshot-*.mjs`; `compiler-*.mjs`; `potoru-authoring-sandbox.js` (Script mode); `*.wasm` (action: interactive stories; score + `score-worker.js`: music; render: text placed on a path (path following itself runs in plain JS); g2p: Indonesian pronunciation for Piper voices); `voices-*.mjs` + `voices-panel-*.mjs` (stories that speak live); `fonts/` |
 | CDN fetches | **None** (voices come only from the catalog a page names, and the viewer's own providers) |
 | Build tool | esbuild (code splitting): `POTORU_SRC=<potoru>/designer/e3 node blessed/rwe-libraries/potoru/build/build.mjs` (also rewrites `FILES-SHA256.txt`, the manifest's size and integrity, and the embedded file list) |
 | Checksums | `FILES-SHA256.txt` |

@@ -1,0 +1,1 @@
+function e(n){return JSON.stringify(o(n))}function o(n){return Array.isArray(n)?n.map(o):!n||typeof n!="object"?n:Object.fromEntries(Object.entries(n).filter(([,r])=>r!==void 0).sort(([r],[t])=>r.localeCompare(t)).map(([r,t])=>[r,o(t)]))}export{e as a};

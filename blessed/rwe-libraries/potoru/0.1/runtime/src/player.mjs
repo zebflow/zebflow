@@ -1,20 +1,27 @@
 /**
- * zeb/potoru — player part (loaded on demand by entry.mjs; bundled into `player-*.mjs` chunks).
+ * zeb/potoru — player part (loaded on demand by entry.mjs).
  *
- * Importing Potoru's web player registers the `<potoru-player>` custom element. Its engines (action
- * wasm for interactive stories, score wasm + Worker for music, render wasm for path guides) and
- * built-in fonts load lazily from next to the bundle (`new URL(…, import.meta.url)`).
+ * Importing Potoru's lean player (`play.js`, served as built next to the bundle; see
+ * build/build.mjs) registers the `<potoru-player>` custom element. Everything a linear piece needs
+ * is in that one module; its engines (action wasm for interactive stories, score wasm + Worker for
+ * music, render wasm only for text placed on a path) and built-in fonts load lazily from next to it.
  * `@potoru-src/` is resolved by build/build.mjs to $POTORU_SRC (the Potoru `designer/e3` folder).
  */
-import { PLAYER_CAPABILITIES, PLAYER_VERSION } from "@potoru-src/app/src/player/index.ts";
+import "potoru-play";
+import { PACKAGE_CAPABILITIES } from "@potoru-src/app/src/runtime/capabilities.ts";
 import { declaredPatch, mergePatch } from "./patch.mjs";
 
-export { PLAYER_CAPABILITIES, PLAYER_VERSION };
+/** The player's version and what it can play, as its source declares them (build/build.mjs). */
+export const PLAYER_VERSION = __POTORU_PLAYER_VERSION__;
+export const PLAYER_CAPABILITIES = PACKAGE_CAPABILITIES;
 
 /** Player events forwarded to the container as `zeb:potoru:<name>` (`status` is left out: chatty). */
 const FORWARDED = ["ready", "play", "pause", "ended", "slide", "scene", "report", "caption", "error", "camera", "voice-needed", "voices"];
 const BOOLEAN_ATTRIBUTES = ["controls", "autoplay", "muted", "loop", "captions"];
-const VALUE_ATTRIBUTES = ["mode", "renderer", "fit", "camera", "voices"];
+const VALUE_ATTRIBUTES = ["mode", "renderer", "fit", "camera", "voices", "loading"];
+/** Values used when the wrapper leaves a prop out. `loading: "lazy"`: nothing is fetched until the
+ * player is within half a viewport; `loading="eager"` loads at once. */
+const DEFAULTS = { loading: "lazy" };
 /** Config keys whose element attribute has another name. */
 const RENAMED_ATTRIBUTES = { voiceFallback: "voice-fallback" };
 const SHADOW_STYLE = ":host{display:block;position:relative}potoru-player{display:block;width:100%}potoru-player[data-fill]{height:100%;aspect-ratio:auto}";
@@ -24,7 +31,7 @@ function applyConfig(element, config, previous = {}) {
   const flag = (name) => Boolean(config[name]) && !(config.still && name === "autoplay");
   for (const name of BOOLEAN_ATTRIBUTES) if (flag(name) !== Boolean(previous[name]) || !(name in previous)) element.toggleAttribute(name, flag(name));
   for (const name of VALUE_ATTRIBUTES) {
-    const value = config[name];
+    const value = config[name] ?? DEFAULTS[name];
     if (value === undefined || value === null || value === "") element.removeAttribute(name);
     else if (element.getAttribute(name) !== String(value)) element.setAttribute(name, String(value));
   }

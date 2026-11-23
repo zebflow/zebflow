@@ -31,7 +31,7 @@
 
 import { mergePatch } from "./src/patch.mjs";
 
-export const VERSION = "0.1.3";
+export const VERSION = "0.1.4";
 
 const PLAYER_LIB = "potoru";
 const PLAYER_WRAPPER = "PotoPlayer";
@@ -93,7 +93,7 @@ function playerConfig(props = {}) {
   const config = { src: props.src || "" };
   if (libraries.length) config.libraries = libraries;
   for (const key of ["controls", "autoplay", "muted", "loop", "captions", "still"]) if (props[key]) config[key] = true;
-  for (const key of ["time", "mode", "renderer", "height", "aspect", "fit", "camera", "voices", "voiceFallback"]) if (props[key] !== undefined && props[key] !== null && props[key] !== "") config[key] = props[key];
+  for (const key of ["time", "mode", "renderer", "height", "aspect", "fit", "camera", "voices", "voiceFallback", "loading"]) if (props[key] !== undefined && props[key] !== null && props[key] !== "") config[key] = props[key];
   return config;
 }
 

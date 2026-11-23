@@ -33,13 +33,28 @@ if (!SOURCE || !existsSync(join(SOURCE, "app/src/player/index.ts"))) {
   process.exit(1);
 }
 const { build } = createRequire(join(SOURCE, "package.json"))("esbuild");
+const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
 // ---- clean: everything generated (sources, wrappers, package.json and legal files stay) ----
 for (const name of readdirSync(RUNTIME)) {
   const path = join(RUNTIME, name);
   if (name === "entry.mjs" || name === "src" || name === "package.json") continue;
-  if (/\.(mjs|js|wasm)$/.test(name) || name === "fonts") rmSync(path, { recursive: true, force: true });
+  if (/\.(mjs|js|wasm)$/.test(name) || name === "fonts" || name === "assets") rmSync(path, { recursive: true, force: true });
 }
+
+// The lean player: Potoru's own `play.js` build (packages/web/dist, `npm run build` there), served
+// exactly as built. It is one module for a linear piece, with lazy chunks that import from it, so it
+// must never be re-bundled: esbuild splitting would move it into a shared chunk and bring back a
+// chain of fetches. The player bridge imports it as `potoru-play`, kept external below.
+const PLAY_DIST = join(SOURCE, "packages/web/dist");
+if (!existsSync(join(PLAY_DIST, "play.js"))) {
+  console.error("No packages/web/dist/play.js under POTORU_SRC: build Potoru's web package first (npm run build in packages/web).");
+  process.exit(1);
+}
+// The player's version, read from its source: play.js does not export it by name.
+const controller = readFileSync(join(SOURCE, "app/src/player/controller.ts"), "utf8");
+const PLAYER_VERSION = controller.match(/export const PLAYER_VERSION = "([^"]+)"/)?.[1];
+if (!PLAYER_VERSION) { console.error("PLAYER_VERSION not found in app/src/player/controller.ts."); process.exit(1); }
 
 const STUB = /^node:|\/folder-fs\.(js|ts)$|^@xmldom\/xmldom$/;
 const stubSource = (path) => `const fail = () => { throw new Error(${JSON.stringify(`${path.replace(/^.*\//, "")} is not available in the browser`)}); };
@@ -51,6 +66,8 @@ const stubs = {
   name: "potoru-src",
   setup(context) {
     context.onResolve({ filter: /^@potoru-src\// }, (args) => ({ path: join(SOURCE, args.path.slice("@potoru-src/".length)) }));
+    // The lean player sits next to the chunks, as built (see PLAY_DIST).
+    context.onResolve({ filter: /^potoru-play$/ }, () => ({ path: "./play.js", external: true }));
     // TypeScript sources import siblings as `./x.js`: resolve them to the `.ts` file.
     context.onResolve({ filter: /^\.\.?\/.*\.js$/ }, (args) => {
       if (!args.importer.startsWith(SOURCE)) return undefined;
@@ -62,7 +79,7 @@ const stubs = {
     context.onLoad({ filter: /.*/, namespace: "node-stub" }, (args) => ({ contents: stubSource(args.path), loader: "js" }));
   }
 };
-const common = { bundle: true, minify: true, target: "es2022", platform: "browser", legalComments: "none", charset: "utf8", logLevel: "warning", define: { __POTORU_BUNDLE__: "true" }, plugins: [stubs] };
+const common = { bundle: true, minify: true, target: "es2022", platform: "browser", legalComments: "none", charset: "utf8", logLevel: "warning", define: { __POTORU_BUNDLE__: "true", __POTORU_PLAYER_VERSION__: JSON.stringify(PLAYER_VERSION) }, plugins: [stubs] };
 
 // 1. Entry and lazy chunks.
 await build({
@@ -89,6 +106,30 @@ for (const engine of ["action", "render", "score", "g2p"]) {
 mkdirSync(join(RUNTIME, "fonts"), { recursive: true });
 for (const file of readdirSync(join(SOURCE, "app/public/fonts"))) copyFileSync(join(SOURCE, "app/public/fonts", file), join(RUNTIME, "fonts", file));
 
+// 4b. The lean player: play.js and every file it reaches, copied as built. Its engines and fonts are
+// the ones copied above (same names, next to it), so they must be the very same bytes.
+const playFiles = new Set();
+const reach = ["play.js"];
+while (reach.length) {
+  const name = reach.pop();
+  if (playFiles.has(name)) continue;
+  const text = readFileSync(join(PLAY_DIST, name), "utf8");
+  playFiles.add(name);
+  for (const [, path] of text.matchAll(/(?:from|import)\s*\(?\s*["']\.\/([^"']+\.js)["']/g)) reach.push(path);
+  for (const [, path] of text.matchAll(/new URL\(\s*["']([^"']+)["']/g)) {
+    if (path.endsWith(".wasm")) {
+      if (sha256(join(PLAY_DIST, path)) !== sha256(join(RUNTIME, path))) {
+        console.error(`play.js wants ${path} from another build than app/src/runtime: rebuild packages/web from the same source.`);
+        process.exit(1);
+      }
+    } else if (path.startsWith("assets/")) playFiles.add(path);
+  }
+}
+for (const name of playFiles) {
+  mkdirSync(dirname(join(RUNTIME, name)), { recursive: true });
+  copyFileSync(join(PLAY_DIST, name), join(RUNTIME, name));
+}
+
 // No local path may ship (home folders, temp folders, toolchains, this machine's checkouts).
 const forbidden = [/\/Users\/[^/\s"']+/, /\/home\/[a-z][^/\s"']*/, /[A-Z]:\\Users\\/, /\/private\/(?:tmp|var)\//, /\/var\/folders\//, /\.cargo\/registry/, /rustup\/toolchains/];
 const files = (folder) => readdirSync(folder).flatMap((name) => { const path = join(folder, name); return statSync(path).isDirectory() ? files(path) : [path]; });
@@ -101,7 +142,6 @@ for (const path of files(RUNTIME)) {
 }
 
 // 5. Checksums, manifest, embedded list.
-const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const listed = files(LIBRARY).map((path) => relative(LIBRARY, path)).filter((path) => path !== "FILES-SHA256.txt" && !path.startsWith("build/")).sort();
 writeFileSync(join(LIBRARY, "FILES-SHA256.txt"), listed.map((path) => `${sha256(join(LIBRARY, path))}  ${path}`).join("\n") + "\n");
 
