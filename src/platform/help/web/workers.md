@@ -41,4 +41,8 @@ self.onmessage = (event: MessageEvent<{ width: number; height: number }>) => {
 - **Talking:** `postMessage` both ways; send large arrays as transferables
   (`postMessage(buffer, [buffer])`) so they move instead of being copied.
 
+Inside a browser module folder a worker is started the standard way,
+`new Worker(new URL("./x.worker.ts", import.meta.url), { type: "module" })`,
+and may import `zeb/*` libraries: `help("web/browser-modules")`.
+
 A worker is not a service worker: it lives with one page and ends with it.

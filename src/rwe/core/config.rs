@@ -52,6 +52,9 @@ pub struct CompileOptions {
     /// specifier (`site-a-lib/world`) mapped to the address its module loads
     /// from. Bound and loaded like a `zeb/*` bundle.
     pub runtime_libraries: std::collections::BTreeMap<String, String>,
+    /// The project's browser module folders (`rwe.browser_modules`). Empty for
+    /// a project that declares none, which then compiles exactly as before.
+    pub browser_modules: Vec<super::browser_modules::ModuleFolder>,
     pub file_path: Option<String>,
     pub security: SecurityPolicy,
     pub runtime_mode: RuntimeMode,
@@ -64,6 +67,7 @@ impl Default for CompileOptions {
             template_root: None,
             library_roots: std::collections::BTreeMap::new(),
             runtime_libraries: std::collections::BTreeMap::new(),
+            browser_modules: Vec::new(),
             file_path: None,
             security: SecurityPolicy::default(),
             runtime_mode: RuntimeMode::Inline,

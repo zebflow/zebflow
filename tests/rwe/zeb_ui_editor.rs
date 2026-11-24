@@ -80,7 +80,7 @@ pub(super) fn render_with_input(page: &str, extra: &[(&str, &str)], input: serde
             &TemplateSource { id: "editor.page".to_string(), source_path: Some(page_path), markup: page.to_string() },
             &language,
             &ReactiveWebOptions {
-                templates: TemplateOptions { runtime_libraries: Default::default(),
+                templates: TemplateOptions { runtime_libraries: Default::default(), browser_modules: Vec::new(),
             library_roots, template_root: Some(root.clone()), style_entries: Vec::new() },
                 ..Default::default()
             },

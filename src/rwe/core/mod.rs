@@ -1,3 +1,4 @@
+pub mod browser_modules;
 pub mod compiler;
 pub mod config;
 pub mod deno_worker;

@@ -205,6 +205,7 @@ imported with `@/scripts/<name>`; see `help("web/custom-scripts")`.
 - `help("web/editor")` — rich text: the editor's extensions (callout, table, figure, embed, mention, citation), writing your own, server-rendered HTML
 - `help("web/tailwind")` — the Tailwind subset, theme tokens, `tw-variants`
 - `help("web/libraries")` — `zeb/*` runtime libraries: d3, deckgl, codemirror, markdown, pdf, prosemirror, threejs, graphui, rooms, world
+- `help("web/browser-modules")` — a folder of real browser modules for large client code (a game, an editor): one script per entry, names per file, loaded on demand, never run on the server
 - `help("web/workers")` — run project TypeScript off the page's thread: `import w from "@/….worker.ts"`, then `new Worker(w, { type: "module" })`
 - `help("web/project-libraries")` — the project's own library: npm packages and its own code, built by zeb-bundler, uploaded, imported as `site-a-lib/<entry>`
 - `help("web/custom-scripts")` — `.ts` modules and the compiler's refusals

@@ -113,6 +113,20 @@ amendment 2026-11-19). It is the requested project state. `zeb.lock` owns resolv
 entry paths and integrity hashes. They may repeat a requested version and source
 for verification, but they do not own the same decision.
 
+`spec.rwe.browser_modules` lists the project's browser module folders
+(`kinds/rwe-source` § Browser modules): each a `path` relative to
+`spec.layout.source` and the `entries` a page may import, as patterns relative
+to the folder (`main.ts`, `islands/*.ts`). Absent, no folder is one and every
+page compiles as before. It is read on every compile, so a change applies on
+the next page load.
+
+```yaml
+rwe:
+  browser_modules:
+    - path: modules/game
+      entries: [main.ts, tools.ts, "islands/*.ts"]
+```
+
 ### spec.layout
 
 Every entry is one directory, relative to `repo/`, and every entry is optional.
@@ -285,7 +299,7 @@ Omitted fields use these v1 meanings:
 | `spec.layout.sqlite_schema` | `schemas/sqlite` |
 | `spec.layout.node_interfaces` | `nodes` |
 | `spec.layout.initial_data` | `initial-data/sekejap`, `initial-data/sqlite`, `init/sekejap`, `init/sqlite`, `seeds/sekejap`, `seeds/sqlite`, each bound to the engine named in its own path |
-| `spec.layout.allowed_extensions` | `css`, `geojson`, `js`, `json`, `jsx`, `md`, `mjs`, `sql`, `ts`, `tsx`, `txt`, `webmanifest`, `xml`, `yaml`, `yml`, `csv`, `gif`, `ico`, `jpeg`, `jpg`, `mp3`, `mp4`, `pdf`, `png`, `svg`, `ttf`, `webp`, `woff`, `woff2`, `poto`, `potolib` |
+| `spec.layout.allowed_extensions` | `css`, `geojson`, `js`, `json`, `jsx`, `md`, `mjs`, `sql`, `ts`, `tsx`, `txt`, `webmanifest`, `xml`, `yaml`, `yml`, `frag`, `glsl`, `vert`, `wgsl`, `csv`, `gif`, `ico`, `jpeg`, `jpg`, `mp3`, `mp4`, `pdf`, `png`, `svg`, `ttf`, `webp`, `woff`, `woff2`, `poto`, `potolib` |
 | `spec.rwe.minify_html` | `false` |
 | `spec.rwe.strict_mode` | `true` |
 | `spec.pipelines.logging.max_invocations` | Runtime default of 20 |
@@ -347,6 +361,9 @@ The reader rejects:
 - repeated initial-data prefixes, and initial-data engines other than `sekejap`
   and `sqlite`
 - a `files.backend` other than `zebfs` or `s3`, refused by name with the accepted list
+- a browser module folder with an empty or non-normalized `path`, no entries, an
+  entry that is empty, absolute or climbs out of the folder, or a folder that
+  repeats or nests inside another
 - URLs with embedded credentials
 - upload, timeout, logging, assistant, replica, or resource values outside their
   documented limits
@@ -410,6 +427,7 @@ schema stops being a draft and starts being a promise.
 | 2026-08-20 | `spec.layout.assets` now defaults inside the resolved `source` | It only differs for a project that declares a different `source` -- a case that could not arise before the declaration was read, and where the previous literal would have scaffolded an asset directory in the tree the project moved out of. |
 | 2026-09-03 | `spec.layout.assets` renamed to `spec.layout.static`, default `static` | `assets` was the wrong word: in Vite, Astro, Rails and Hugo it names files that are processed and content-hashed, while this directory is served byte-for-byte -- which those same projects call `static`. `public` was not taken because it is the *state* the exposure inventory reports, and a folder claiming that word would collide with it. |
 | 2026-11-19 | `spec.rwe.libraries` also takes one lowercase word: a project's own uploaded library | The owner chose plain import names (`site-a-lib/world`). Only widens; every existing configuration stays valid. |
+| 2026-11-24 | Added `spec.rwe.browser_modules`; the platform extension set gains `frag`, `glsl`, `vert`, `wgsl` | Optional; absent stays absent on rewrite and means no folder, so every existing project compiles exactly as before. The shader extensions are source a browser module imports as text (`?raw`); the set only widens, so no existing content is refused. |
 | 2026-09-03 | `spec.layout.source` defaults to the repository itself | It was `pipelines`, and every layout entry was also a directory the platform created on every request -- so a folder an author deleted returned on the next page load. A project now starts as an empty repository and a layout entry only says where a kind is looked for. An empty declaration is legal and names the repository root; `static` is the one entry that may not be empty, because its route serves everything beneath it unauthenticated. |
 
 ## Freeze Evidence

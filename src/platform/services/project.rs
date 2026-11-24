@@ -2183,6 +2183,30 @@ impl ProjectService {
             &mut default_file,
         )?;
 
+        // Rows inside a browser module folder say what they are to it.
+        let config = self.zebflow_cfg.read_or_default(&owner, &project)?;
+        if !config.configs.rwe.browser_modules.is_empty() {
+            let folders: Vec<crate::rwe::core::browser_modules::ModuleFolder> = config
+                .configs
+                .rwe
+                .browser_modules
+                .iter()
+                .map(|folder| crate::rwe::core::browser_modules::ModuleFolder { path: folder.path.clone(), entries: folder.entries.clone() })
+                .collect();
+            let source = layout.repo_layout.source.trim_matches('/').to_string();
+            let source_root = if source.is_empty() { layout.repo_dir.clone() } else { layout.repo_dir.join(&source) };
+            for item in &mut items {
+                let rel = if source.is_empty() {
+                    Some(item.rel_path.as_str())
+                } else {
+                    item.rel_path.strip_prefix(&format!("{source}/"))
+                };
+                if let Some(rel) = rel {
+                    item.module = crate::rwe::core::browser_modules::role_of(&folders, &source_root, rel, item.kind == "folder");
+                }
+            }
+        }
+
         Ok(TemplateWorkspaceListing {
             default_file,
             path: scope.path.clone(),
@@ -3399,6 +3423,7 @@ fn walk_repo_tree(
                 depth,
                 file_kind: "folder".to_string(),
                 is_protected: repo_entry_is_declared_root(&layout.repo_layout, &rel),
+                module: None,
             });
             walk_repo_tree(
                 layout,
@@ -3425,6 +3450,7 @@ fn walk_repo_tree(
                 depth,
                 file_kind,
                 is_protected: false,
+                module: None,
             });
         }
     }

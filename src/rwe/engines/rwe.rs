@@ -37,6 +37,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 .map(|(k, v)| (k.clone(), v.display().to_string()))
                 .collect(),
             runtime_libraries: options.templates.runtime_libraries.clone(),
+            browser_modules: options.templates.browser_modules.clone(),
             file_path: template
                 .source_path
                 .as_ref()
@@ -136,6 +137,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
         _language: &dyn LanguageEngine,
         ctx: &RenderContext,
     ) -> Result<RenderOutput, ReactiveWebError> {
+        let started = std::time::Instant::now();
         let payload = compiled.engine_payload.as_ref().ok_or_else(|| {
             ReactiveWebError::new(
                 "RWE_PAYLOAD_MISSING",
@@ -165,6 +167,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 ReactiveWebError::new("RWE_RENDER", format!("rwe render failed: {}", err.message))
             })?;
 
+        let rendered_at = started.elapsed();
         // Tailwind stays on Zebflow processor pipeline.
         let mut processor_diags: Vec<ReactiveWebDiagnostic> = Vec::new();
         let processed_html = processors::apply_compile_processors(
@@ -188,6 +191,17 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 suggested_file_name: format!("worker-{}.mjs", worker.hash),
             });
         }
+        // The browser module scripts its entries load, stored beside it the same way.
+        for module in &rwe_compiled.module_scripts {
+            scripts.push(CompiledScript {
+                id: format!("rwe.module.{}", &module.hash[..module.hash.len().min(16)]),
+                scope: CompiledScriptScope::Page,
+                content_type: "text/javascript".to_string(),
+                content: module.content.clone(),
+                content_hash: module.hash.clone(),
+                suggested_file_name: format!("module-{}.mjs", module.hash),
+            });
+        }
         if !rendered.js.is_empty() {
             let hash = stable_hash_hex(&rendered.js);
             let script_id = format!("rwe.page.{}", compiled.template_id);
@@ -209,6 +223,11 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 "css": extracted_css,
                 "meta": rendered.meta,
                 "processor_diagnostics": processor_diags,
+                // Milliseconds, for the `Server-Timing` header a page answers with.
+                "timing": {
+                    "ssr": rendered_at.as_secs_f64() * 1000.0,
+                    "styles": (started.elapsed() - rendered_at).as_secs_f64() * 1000.0,
+                },
             }),
             trace: vec!["rwe.render".to_string()],
         })

@@ -39,7 +39,25 @@ fn keep_failed_source(source: &str) -> String {
     }
 }
 
-fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTemplate, EngineError> {
+fn compile_inner(source: &str, mut options: CompileOptions) -> Result<CompiledTemplate, EngineError> {
+    // Browser module folders, built (or answered from their cache) before the
+    // page: each entry becomes a runtime library whose address is its script.
+    // A project that declares none skips this entirely.
+    let module_build = match (options.browser_modules.is_empty(), options.template_root.as_deref()) {
+        (false, Some(root)) => Some(super::browser_modules::build(
+            Path::new(root),
+            &options.browser_modules,
+            &options.runtime_libraries,
+            &options.security,
+        )?),
+        _ => None,
+    };
+    let _module_guard = module_build.as_ref().map(|build| {
+        for (entry, hash) in &build.entries {
+            options.runtime_libraries.insert(entry.clone(), format!("{}{hash}", super::browser_modules::URL_PREFIX));
+        }
+        super::browser_modules::Guard::begin(build.clone())
+    });
     let alloc = Allocator::default();
     let source_type = source_type_from_options(&options);
     let parsed = Parser::new(&alloc, source, source_type).parse();
@@ -108,19 +126,26 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         &options.runtime_libraries,
     )?;
     let transformed_server = format!("{}{}{}", JSX_PRELUDE, server_stand_ins(&server_libs, &options.runtime_libraries), bundled_server);
-    let (bundled_client, detected_zeb_libs, client_deps, _) = bundle_for_client(
-        &normalized_page_source,
-        &imports,
-        options.template_root.as_deref(),
-        &options.library_roots,
-        &options.runtime_libraries,
-    )?;
-    let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
+    // The browser's bundle is the same bundle: bundling it a second time read
+    // and transformed every file again for an identical result.
+    let detected_zeb_libs = server_libs.clone();
+    let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_server);
     let mut dependency_paths = server_deps;
-    dependency_paths.extend(client_deps);
     let (worker_scripts, worker_deps) = workers.finish();
     dependency_paths.extend(worker_deps);
     let hydrate_mode = detect_hydrate_mode(source);
+    // The scripts of the entries this page imports. A page that imports one
+    // depends on every file of the folders and on the folders themselves, so
+    // any save there, a new file included, builds it again.
+    let mut module_scripts = Vec::new();
+    if let Some(build) = &module_build {
+        let used: Vec<String> = detected_zeb_libs.iter().chain(server_libs.iter()).filter(|lib| build.entries.contains_key(*lib)).cloned().collect();
+        if !used.is_empty() {
+            module_scripts = build.scripts_for(&used);
+            dependency_paths.extend(build.files.iter().cloned());
+            dependency_paths.extend(build.folders.iter().map(|folder| folder.trim_end_matches('/').to_string()));
+        }
+    }
 
     Ok(CompiledTemplate {
         engine: "rwe".to_string(),
@@ -137,6 +162,7 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         inline_styles,
         dependency_paths,
         worker_scripts,
+        module_scripts,
     })
 }
 
@@ -555,6 +581,9 @@ fn rewrite_imports(
         }
 
         let resolved = resolve_import(import, options)?;
+        if let Some(path) = resolved.as_deref() {
+            super::browser_modules::refuse_internal(import, path)?;
+        }
         // A worker is not inlined: its import becomes the address of its own
         // script (`super::worker`), built here the first time it is met.
         if let Some(path) = resolved.as_deref().filter(|path| super::worker::is_worker_path(path)) {
@@ -847,6 +876,10 @@ pub(super) fn rewrite_at_imports(
     // library, stripped, and the page would fail at render with no name.
     let mut failure: Option<EngineError> = None;
     let out = replace_import_specifiers(source, |spec| {
+        // A browser module entry is loaded by the page, never inlined.
+        if super::browser_modules::is_entry(spec) {
+            return None;
+        }
         if spec.starts_with("zeb/") {
             return match resolve_library_import(spec, library_roots) {
                 Ok(path) => path,
@@ -877,6 +910,10 @@ pub(super) fn rewrite_at_imports(
         .ok()?;
         let canonical = canonical_or_fallback(&resolved).ok()?;
         let path = normalize_path(&canonical).to_string_lossy().to_string();
+        if let Err(err) = super::browser_modules::refuse_internal(spec, &path) {
+            failure.get_or_insert(err);
+            return None;
+        }
         if super::worker::is_worker_path(&path) {
             return worker(&path);
         }

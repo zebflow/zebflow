@@ -254,6 +254,25 @@ pub fn runtime_libraries(platform: &PlatformService, owner: &str, project: &str)
     out
 }
 
+/// The project's browser module folders (`rwe.browser_modules` in
+/// `zebflow.yaml`), as the page compiler takes them. Read through the
+/// configuration cache, so a change applies on the next compile.
+pub fn browser_modules(platform: &PlatformService, owner: &str, project: &str) -> Vec<crate::rwe::core::browser_modules::ModuleFolder> {
+    platform
+        .zebflow_cfg
+        .read_or_default(owner, project)
+        .map(|config| {
+            config
+                .configs
+                .rwe
+                .browser_modules
+                .iter()
+                .map(|folder| crate::rwe::core::browser_modules::ModuleFolder { path: folder.path.clone(), entries: folder.entries.clone() })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Files already checked, by path: served again without re-hashing while
 /// the expected digest, the length and the modification time are unchanged.
 static VERIFIED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (String, u64, Option<std::time::SystemTime>)>>> =

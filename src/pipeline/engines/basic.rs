@@ -1169,6 +1169,14 @@ impl BasicPipelineEngine {
             .unwrap_or_default()
     }
 
+    /// The project's browser module folders (`rwe.browser_modules`).
+    pub(crate) fn browser_modules(&self, owner: &str, project: &str) -> Vec<crate::rwe::core::browser_modules::ModuleFolder> {
+        self.platform
+            .as_ref()
+            .map(|p| crate::platform::services::project_library::browser_modules(p, owner, project))
+            .unwrap_or_default()
+    }
+
     /// The libraries uploaded to this project, by import specifier.
     pub(crate) fn runtime_libraries(&self, owner: &str, project: &str) -> std::collections::BTreeMap<String, String> {
         self.platform
@@ -2532,13 +2540,16 @@ impl BasicPipelineEngine {
                                 self.template_root.clone(),
                                 self.library_roots(),
                             )
-                            .with_runtime_libraries(self.runtime_libraries(&ctx.owner, &ctx.project));
+                            .with_runtime_libraries(self.runtime_libraries(&ctx.owner, &ctx.project))
+                            .with_browser_modules(self.browser_modules(&ctx.owner, &ctx.project));
 
                             let root = self.template_root.as_deref().map(|r| r.display().to_string()).unwrap_or_default();
+                            let modules = crate::rwe::core::browser_modules::identity(&options.templates.browser_modules);
                             let identity = match &source_path {
-                                Some(path) => format!("page|{root}|{}", path.display()),
-                                None => format!("page|{root}|inline:{node_id}"),
+                                Some(path) => format!("page|{root}|{}{modules}", path.display()),
+                                None => format!("page|{root}|inline:{node_id}{modules}"),
                             };
+                            let compile_started = std::time::Instant::now();
                             let compiled_result = page_cache::compile_cached(
                                 self.template_cache.as_ref(),
                                 &identity,
@@ -2584,6 +2595,10 @@ impl BasicPipelineEngine {
                                     key.to_string(),
                                     render_out.payload.get(key).cloned().unwrap_or(Value::Null),
                                 );
+                            }
+                            // Compile (from the cache, on a hit) and render, for `Server-Timing`.
+                            if let Some(timing) = envelope.get_mut("hydration_payload").and_then(|h| h.get_mut("timing")).and_then(Value::as_object_mut) {
+                                timing.insert("page".to_string(), json!(compile_started.elapsed().as_secs_f64() * 1000.0));
                             }
                             Ok(vec![NodeExecutionOutput {
                                 output_pins: render_out.output_pins,

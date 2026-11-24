@@ -201,7 +201,7 @@ fn token_css_rule_uncached(token: &str) -> Option<String> {
 /// - injects a consolidated `<style data-rwe-tw>` block into `<head>`
 /// - leaves unsupported tokens untouched in markup
 pub fn process_tailwind(html: &str, extra_tokens: &HashSet<String>) -> String {
-    let mut css = tailwind_preflight_css().to_string();
+    let css = tailwind_preflight_css().to_string();
     let variants = collect_tw_variants(html);
 
     let mut tokens = HashSet::new();
@@ -225,17 +225,7 @@ pub fn process_tailwind(html: &str, extra_tokens: &HashSet<String>) -> String {
         tokens.insert(token.clone());
     }
 
-    let mut sorted_tokens: Vec<String> = tokens.into_iter().collect();
-    sorted_tokens.sort_by(|a, b| compare_token_precedence(a, b));
-    for token in sorted_tokens {
-        if let Some(rule) = token_css_rule(&token) {
-            css.push_str(&rule);
-        }
-    }
-    css.push_str(&dynamic_runtime_css_for_patterns(
-        &variants.wildcard_patterns,
-    ));
-    let css = minify_css_lossy(&css);
+    let css = stylesheet_for(tokens, &variants.wildcard_patterns, css);
     if css.is_empty() {
         return html.to_string();
     }
@@ -248,6 +238,47 @@ pub fn process_tailwind(html: &str, extra_tokens: &HashSet<String>) -> String {
         format!("{}{}", style_block, html)
     }
 }
+
+/// The minified stylesheet for `tokens` and `patterns`, after `preflight`.
+///
+/// It depends on nothing else, and a page asks for the same set on every
+/// request (its classes are in its source), so the answer is remembered by the
+/// exact set: a class that differs is a different set and a different entry.
+/// At most [`CACHED_STYLESHEETS`] are kept; past that the cache starts over.
+fn stylesheet_for(tokens: HashSet<String>, patterns: &std::collections::BTreeSet<String>, preflight: String) -> std::sync::Arc<String> {
+    use std::hash::{Hash, Hasher};
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(u64, usize), std::sync::Arc<String>>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut by_name: Vec<&String> = tokens.iter().collect();
+    by_name.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    by_name.hash(&mut hasher);
+    patterns.hash(&mut hasher);
+    preflight.hash(&mut hasher);
+    let key = (hasher.finish(), by_name.len());
+    if let Some(found) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return found.clone();
+    }
+    let mut css = preflight;
+    let mut sorted_tokens: Vec<String> = tokens.into_iter().collect();
+    sorted_tokens.sort_by(|a, b| compare_token_precedence(a, b));
+    for token in sorted_tokens {
+        if let Some(rule) = token_css_rule(&token) {
+            css.push_str(&rule);
+        }
+    }
+    css.push_str(&dynamic_runtime_css_for_patterns(patterns));
+    let css = std::sync::Arc::new(minify_css_lossy(&css));
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= CACHED_STYLESHEETS {
+        cache.clear();
+    }
+    cache.insert(key, css.clone());
+    css
+}
+
+/// How many stylesheets [`stylesheet_for`] keeps.
+const CACHED_STYLESHEETS: usize = 512;
 
 /// Rebuilds the generated Tailwind-like style block from the provided HTML.
 ///

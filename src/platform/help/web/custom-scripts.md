@@ -36,6 +36,10 @@ import { formatAddress } from "@/scripts/format-address";
    is a compile error (`RWE_BUNDLE_NAME_COLLISION`). Non-exported top-level
    names are prefixed per file and never collide, whatever their case.
 4. No module-level side effects — the module also runs on the server.
+
+Large client code that keeps growing (a game, an editor) belongs in a browser
+module folder instead, where every file keeps its own names, may do work when
+it loads, and never runs on the server: `help("web/browser-modules")`.
 5. No credentials, tokens or private URLs; the bundle is delivered to the browser.
 6. `npm:`, `jsr:`, `node:` and `http(s):` specifiers are passed through
    unresolved, not bundled — a browser cannot load them, so a page must not

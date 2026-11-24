@@ -1808,6 +1808,10 @@ pub struct TemplateTreeItem {
     pub file_kind: String,
     /// Whether the entry is protected from destructive actions.
     pub is_protected: bool,
+    /// Its part in the project's browser modules (`rwe.browser_modules`):
+    /// absent outside every declared folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<crate::rwe::core::browser_modules::ModuleRole>,
 }
 
 /// Template workspace listing for one project.
@@ -3249,7 +3253,8 @@ pub const DEFAULT_ALLOWED_FILE_EXTENSIONS: &[&str] = &[
     // Source and project documents. `.zf.json`, the schema exports, node
     // interfaces and library manifests are all `json`.
     "css", "geojson", "js", "json", "jsx", "md", "mjs", "sql", "ts", "tsx", "txt", "webmanifest", "xml",
-    "yaml", "yml", // Assets: what the asset route serves with a content type of its own.
+    "yaml", "yml", // Shaders: text a browser module imports with `?raw`.
+    "frag", "glsl", "vert", "wgsl", // Assets: what the asset route serves with a content type of its own.
     "csv", "gif", "ico", "jpeg", "jpg", "mp3", "mp4", "pdf", "png", "svg", "ttf", "webp", "woff",
     "woff2", // Potoru: a story and a linked library, played by `zeb/potoru`.
     "poto", "potolib",
@@ -3757,6 +3762,21 @@ pub struct ZebflowJsonRwe {
     /// asset paths, or when static assets are hosted at a custom sub-path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_asset_base: Option<String>,
+    /// Folders whose files are browser modules: each entry built, with what it
+    /// imports, into one script the browser loads; never run on the server.
+    /// Read on every compile, so a change applies without a restart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser_modules: Vec<ZebflowJsonBrowserModules>,
+}
+
+/// One `rwe.browser_modules` folder in `zebflow.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ZebflowJsonBrowserModules {
+    /// Relative to the project's source folder, e.g. `modules/game`.
+    pub path: String,
+    /// Patterns relative to the folder: `main.ts`, `islands/*.ts`.
+    pub entries: Vec<String>,
 }
 
 impl Default for ZebflowJsonRwe {
@@ -3767,6 +3787,7 @@ impl Default for ZebflowJsonRwe {
             strict_mode: default_rwe_strict_mode(),
             libraries: HashMap::new(),
             deployment_asset_base: None,
+            browser_modules: Vec::new(),
         }
     }
 }

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "zeb/react";
 import RepoTreeRow from "@/components/ui/repo-tree-row";
+import Alert from "@/components/ui/alert";
 import { ancestorsOf, repoTree } from "@/components/lib/repo-tree";
+import { entryAction, setEntry } from "@/components/lib/browser-modules";
 
 /** The repository itself, drawn as the first row so it is not a special case. */
 function rootItem(label) {
@@ -75,6 +77,8 @@ export default function RepoTree({ owner, project, rootLabel, selected, onSelect
   const [folders, setFolders] = useState({});
   const [expanded, setExpanded] = useState({ "": true });
   const [gitStatus, setGitStatus] = useState({});
+  // Why the last tree action could not be done, shown above the rows.
+  const [notice, setNotice] = useState("");
 
   const root = rootItem(rootLabel);
 
@@ -186,8 +190,27 @@ export default function RepoTree({ owner, project, rootLabel, selected, onSelect
         ];
       }
 
+      // A file of a browser module folder can be made an entry, or stop being one.
+      const entry = entryAction(item);
+      const moduleItems = entry
+        ? [
+            { separator: true },
+            {
+              label: entry.label,
+              onSelect: () =>
+                setEntry(owner, project, item, entry.make)
+                  .then((why) => {
+                    setNotice(why || "");
+                    if (!why) refreshAll();
+                  })
+                  .catch((err) => setNotice(err?.message || String(err))),
+            },
+          ]
+        : [];
+
       return [
         { label: "Open", onSelect: () => onSelect?.(item) },
+        ...moduleItems,
         { separator: true },
         { label: "Rename…", onSelect: () => onAction?.("rename", item) },
         { label: "Duplicate", onSelect: () => onAction?.("duplicate", item) },
@@ -200,6 +223,11 @@ export default function RepoTree({ owner, project, rootLabel, selected, onSelect
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto py-1" data-repo-tree="true">
+      {notice ? (
+        <button type="button" className="mx-2 mb-1 text-left" onClick={() => setNotice("")} title="Dismiss">
+          <Alert variant="warning" className="text-[11px]">{notice}</Alert>
+        </button>
+      ) : null}
       <RepoTreeRow
         item={root}
         depth={0}

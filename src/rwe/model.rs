@@ -81,7 +81,7 @@ impl ReactiveWebOptions {
     /// what the render would not.
     pub fn for_project_page(template_root: Option<PathBuf>, library_roots: BTreeMap<String, PathBuf>) -> Self {
         Self {
-            templates: TemplateOptions { template_root, library_roots, runtime_libraries: Default::default(), style_entries: Vec::new() },
+            templates: TemplateOptions { template_root, library_roots, runtime_libraries: Default::default(), browser_modules: Vec::new(), style_entries: Vec::new() },
             ..Self::default()
         }
     }
@@ -90,6 +90,13 @@ impl ReactiveWebOptions {
     /// (`services::project_library::runtime_libraries`).
     pub fn with_runtime_libraries(mut self, runtime_libraries: BTreeMap<String, String>) -> Self {
         self.templates.runtime_libraries = runtime_libraries;
+        self
+    }
+
+    /// These options with the project's browser module folders
+    /// (`rwe.browser_modules` in `zebflow.yaml`).
+    pub fn with_browser_modules(mut self, browser_modules: Vec<crate::rwe::core::browser_modules::ModuleFolder>) -> Self {
+        self.templates.browser_modules = browser_modules;
         self
     }
 }
@@ -108,6 +115,9 @@ pub struct TemplateOptions {
     /// (`site-a-lib/world`) → the address its entry module loads from.
     #[serde(default)]
     pub runtime_libraries: std::collections::BTreeMap<String, String>,
+    /// Browser module folders (`rwe.browser_modules`); empty for most projects.
+    #[serde(default)]
+    pub browser_modules: Vec<crate::rwe::core::browser_modules::ModuleFolder>,
     /// Optional explicit stylesheet entry paths, relative to `template_root`.
     ///
     /// When empty, RWE probes deterministic defaults:

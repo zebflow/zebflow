@@ -130,6 +130,35 @@ These are engine constraints, not house style.
 A project may hold further rules — which UI components to prefer, whether to
 write CSS at all. Those live in the project's own guidance, not here.
 
+## Browser modules (amendment 2026-11-24)
+
+A folder declared in `spec.rwe.browser_modules` (`kinds/project-configuration`)
+is a second world beside page code. Its files are ES modules that run only in
+the browser:
+
+- **The border.** Page code may import a folder's entries and nothing else
+  inside it (`RWE_IMPORT_MODULE_INTERNAL`, naming the entries). A module may
+  import files of browser module folders (`./`, `../`, `@/`), `zeb/*` runtime
+  libraries and project library entries, and nothing else.
+- **Scripts.** Each entry is built with every file it reaches statically into
+  one script; files reached from the same set of entries share one script.
+  Every file keeps its own names: a name two files of one script declare is
+  renamed in both. A script is named by the SHA-256 of its content and served
+  beside the page's scripts (`_rwe/scripts/<hash>`); scripts import each other
+  as `./<hash>` and libraries as `../lib/…`, so the page and its modules load
+  one instance of a library.
+- **Never on the server.** A page's import of an entry is an inert stand-in
+  during the server render, as a project library's is, and the entry's script
+  is loaded in the browser before the page runs.
+- **Fixed addresses only.** `import()`, a lazy `import.meta.glob` and
+  `new Worker(new URL(…, import.meta.url))` take fixed strings and name
+  entries, so every script a page can load is known when the folder is built.
+  A lazy load whose target imports its loader is refused by name.
+- **Values.** A `.json` file imports as its value; `?raw` imports a file's text.
+
+A folder is rebuilt when one of its files or the setting changes; a page that
+imports an entry depends on the folder's files and on the folder itself.
+
 ## What travels
 
 A distributed set carries the named file and every file it reaches through
@@ -199,6 +228,8 @@ and `cx` do not exist there.
 - **A root layout.** Nothing wraps every rendered page, so "import it once"
   has nowhere to live. Until that exists, a page with no layout repeats the
   stylesheet import.
+- **A page loading an entry lazily.** A page loads the entries it imports when
+  it starts; only modules load one another on demand.
 - **The compiled artifact.** This kind governs the source. The compiled bundle
   and the wire protocol are the other half of `stability-matrix.md` row 13 and
   are still one undivided row.

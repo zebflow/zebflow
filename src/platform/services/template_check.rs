@@ -60,7 +60,8 @@ pub fn check(platform: &PlatformService, owner: &str, project: &str, rel: &str, 
     // The same options a page render uses: the check must not pass or refuse
     // what the render would not.
     let options = ReactiveWebOptions::for_project_page(Some(template_root.clone()), platform.library.source_roots())
-        .with_runtime_libraries(crate::platform::services::project_library::runtime_libraries(platform, owner, project));
+        .with_runtime_libraries(crate::platform::services::project_library::runtime_libraries(platform, owner, project))
+        .with_browser_modules(crate::platform::services::project_library::browser_modules(platform, owner, project));
     let engine = crate::rwe::engines::resolve_engine_or_default(None);
     let compile = |source: &TemplateSource| engine.compile_template(source, &crate::language::NoopLanguageEngine, &options);
 

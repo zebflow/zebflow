@@ -115,9 +115,11 @@ impl BasicPipelineEngine {
             processors,
             ..crate::rwe::ReactiveWebOptions::for_project_page(self.template_root.clone(), self.library_roots())
                 .with_runtime_libraries(self.runtime_libraries(&ctx.owner, &ctx.project))
+                .with_browser_modules(self.browser_modules(&ctx.owner, &ctx.project))
         };
         let root = self.template_root.as_deref().map(|r| r.display().to_string()).unwrap_or_default();
-        let identity = format!("site|{root}|{}|{}", source.id, options.processors.join(","));
+        let modules = crate::rwe::core::browser_modules::identity(&options.templates.browser_modules);
+        let identity = format!("site|{root}|{}|{}{modules}", source.id, options.processors.join(","));
         // The markup is the site's, built from the file, not the file: a save
         // of the entry page recompiles it at the next generation, not before.
         super::page_cache::compile_cached(self.template_cache.as_ref(), &identity, &source.markup, || {

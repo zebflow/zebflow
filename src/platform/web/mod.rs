@@ -9,6 +9,7 @@
 //! (`input.webhook.body`), and it is `$trigger` for the whole run.
 
 pub(crate) mod embedded;
+mod compression;
 mod file_host;
 mod host_verify;
 mod migration;
@@ -1547,6 +1548,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     Router::new()
         .fallback_service(router)
         .layer(axum::middleware::from_fn_with_state(app_state, addressing_gate))
+        // Outermost, so every answer — a page, a script, a library — is seen once, finished.
+        .layer(axum::middleware::from_fn(compression::compress))
 }
 
 /// The host a request arrived on, when it is a project's.
@@ -1861,6 +1864,7 @@ fn build_frontend(
             // studio primitives; nothing else in the studio imports it.
             library_roots: library_roots.clone(),
             runtime_libraries: Default::default(),
+            browser_modules: Vec::new(),
             style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],
@@ -2341,8 +2345,9 @@ fn externalize_rwe_scripts(
             continue;
         }
         // A worker is stored where its page's scripts are, under its own
-        // address, and gets no tag: the page starts it.
-        if script.id.starts_with("rwe.worker.") {
+        // address, and gets no tag: the page starts it. A browser module
+        // script likewise: the page's own script imports it.
+        if script.id.starts_with("rwe.worker.") || script.id.starts_with("rwe.module.") {
             let _ = match project_scope {
                 Some((owner, project)) => cache.store_scoped(owner, project, script),
                 None => cache.store(script),
@@ -3080,6 +3085,13 @@ fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {
     if let Ok(v) = HeaderValue::from_str(content_type) {
         resp.headers_mut().insert(CONTENT_TYPE, v);
     }
+    // A library's path names its packed version, not its bytes (`zeb/threejs/0.1/`
+    // carried r183 and then r187), so it is never cached as immutable: the browser
+    // keeps it and asks whether it is still current, and an unchanged file is a 304.
+    if let Ok(v) = HeaderValue::from_str(&compression::etag_of(bytes)) {
+        resp.headers_mut().insert(axum::http::header::ETAG, v);
+    }
+    resp.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     resp
 }
 
@@ -18703,6 +18715,10 @@ async fn api_upsert_settings_section(
                 strict_mode: bool,
                 #[serde(default)]
                 deployment_asset_base: Option<String>,
+                /// Left out, the folders stay as they are: a panel that does
+                /// not show them never clears them.
+                #[serde(default)]
+                browser_modules: Option<Vec<crate::platform::model::ZebflowJsonBrowserModules>>,
             }
             let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
                 Ok(p) => p,
@@ -18723,6 +18739,9 @@ async fn api_upsert_settings_section(
                         let value = value.trim();
                         (!value.is_empty()).then(|| value.to_string())
                     });
+                if let Some(folders) = payload.browser_modules {
+                    cfg.configs.rwe.browser_modules = folders;
+                }
             });
             match updated {
                 Ok(cfg) => json!(cfg.configs.rwe),
@@ -28381,6 +28400,7 @@ async fn zf_envelope_response(
         {
             html = crate::rwe::core::render::insert_engine_styles(&html, css);
         }
+        let scripts_started = std::time::Instant::now();
         let scripts = resp_cfg
             .get("compiled_scripts")
             .cloned()
@@ -28390,7 +28410,12 @@ async fn zf_envelope_response(
             Ok(html) => html,
             Err(err) => return internal_error(err),
         };
-        Html(externalized).into_response()
+        let mut resp = Html(externalized).into_response();
+        let timing = resp_cfg.get("hydration_payload").and_then(|hp| hp.get("timing"));
+        if let Some(value) = server_timing(timing, scripts_started.elapsed()) {
+            resp.headers_mut().insert(HeaderName::from_static("server-timing"), value);
+        }
+        resp
     } else if let Some(b64) = resp_cfg.get("body_base64").and_then(Value::as_str) {
         // Bytes (`web.response.send --file` on an image, font, pdf): base64 in the
         // envelope because it travels as JSON; the declared header sets the type.
@@ -28408,6 +28433,23 @@ async fn zf_envelope_response(
     *resp.status_mut() = status;
     apply_zf_extras(&mut resp, &zf_headers);
     resp
+}
+
+/// The `Server-Timing` header of a rendered page: how long its compile (a
+/// cache hit when it was compiled before) and render took, the server render
+/// and the styles inside it, and storing its scripts. A browser's developer
+/// tools show it under the request's timing; nothing else reads it.
+fn server_timing(timing: Option<&Value>, scripts: std::time::Duration) -> Option<HeaderValue> {
+    let timing = timing?;
+    let ms = |key: &str| timing.get(key).and_then(Value::as_f64);
+    let mut parts = Vec::new();
+    for (key, label) in [("page", "page"), ("ssr", "ssr"), ("styles", "styles")] {
+        if let Some(value) = ms(key) {
+            parts.push(format!("{label};dur={value:.1}"));
+        }
+    }
+    parts.push(format!("scripts;dur={:.1}", scripts.as_secs_f64() * 1000.0));
+    HeaderValue::from_str(&parts.join(", ")).ok()
 }
 
 /// Every header of a `__zf_response` envelope, in order; a name may repeat.
@@ -29988,6 +30030,7 @@ async fn preview_page(
         processors: vec!["tailwind".to_string()],
         ..crate::rwe::ReactiveWebOptions::for_project_page(Some(layout.repo_source_dir()), state.platform.library.source_roots())
             .with_runtime_libraries(crate::platform::services::project_library::runtime_libraries(&state.platform, &owner_slug, &project_slug))
+            .with_browser_modules(crate::platform::services::project_library::browser_modules(&state.platform, &owner_slug, &project_slug))
     };
 
     let compiled = match state.frontend.rwe.compile_template(

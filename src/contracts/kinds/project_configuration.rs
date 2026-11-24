@@ -120,6 +120,7 @@ impl ProjectConfigurationSpec {
         if let Some(base) = &self.rwe.deployment_asset_base {
             validate_http_or_root_path("spec.rwe.deployment_asset_base", base)?;
         }
+        validate_browser_modules(&self.rwe.browser_modules)?;
         for (name, library) in &self.rwe.libraries {
             // `zeb/<name>`, or one word: a library uploaded to this project
             // (amendment 2026-11-19, `rwe-library-manifest` § Project libraries).
@@ -767,6 +768,45 @@ impl ProjectLayoutSpec {
     }
 }
 
+/// `spec.rwe.browser_modules`: each folder a plain directory, named once and
+/// never inside another, with at least one entry pattern that stays inside it.
+fn validate_browser_modules(folders: &[ProjectRweBrowserModulesSpec]) -> Result<(), ContractError> {
+    for (index, folder) in folders.iter().enumerate() {
+        let path = format!("spec.rwe.browser_modules[{index}]");
+        if folder.path.is_empty() {
+            return Err(ContractError::invalid(format!("{path}.path names a folder")));
+        }
+        validate_layout_dir(&format!("{path}.path"), &folder.path)?;
+        if folder.entries.is_empty() {
+            return Err(ContractError::invalid(format!("{path}.entries names at least one file a page may import")));
+        }
+        for (at, entry) in folder.entries.iter().enumerate() {
+            let bad = entry.is_empty()
+                || entry.len() > 512
+                || entry.starts_with('/')
+                || entry.contains('\\')
+                || entry.split('/').any(|part| part.is_empty() || part == "." || part == "..");
+            if bad {
+                return Err(ContractError::invalid(format!(
+                    "{path}.entries[{at}] must be a pattern inside the folder, such as main.ts or islands/*.ts"
+                )));
+            }
+        }
+        for other in &folders[..index] {
+            let nested = folder.path == other.path
+                || folder.path.starts_with(&format!("{}/", other.path))
+                || other.path.starts_with(&format!("{}/", folder.path));
+            if nested {
+                return Err(ContractError::invalid(format!(
+                    "{path}.path '{}' overlaps '{}'; a file belongs to one browser module folder",
+                    folder.path, other.path
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Accepts one normalized, project-relative directory.
 ///
 /// Layout entries name directories that other paths are built on top of, so a
@@ -819,6 +859,10 @@ pub struct ProjectRweSpec {
     pub libraries: BTreeMap<String, ProjectRweLibrarySpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_asset_base: Option<String>,
+    /// Folders whose files are browser modules (`kinds/rwe-source` § Browser
+    /// modules): built per entry, loaded by the browser, never run on the server.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser_modules: Vec<ProjectRweBrowserModulesSpec>,
 }
 
 impl Default for ProjectRweSpec {
@@ -829,8 +873,20 @@ impl Default for ProjectRweSpec {
             strict_mode: true,
             libraries: BTreeMap::new(),
             deployment_asset_base: None,
+            browser_modules: Vec::new(),
         }
     }
+}
+
+/// One browser module folder: where it is, and which of its files a page may
+/// import (each becomes one script).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectRweBrowserModulesSpec {
+    /// Relative to the project's source folder (`spec.layout.source`).
+    pub path: String,
+    /// Patterns relative to the folder: `main.ts`, `islands/*.ts`.
+    pub entries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1131,6 +1187,13 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
                     })
                     .collect(),
                 deployment_asset_base: value.configs.rwe.deployment_asset_base,
+                browser_modules: value
+                    .configs
+                    .rwe
+                    .browser_modules
+                    .into_iter()
+                    .map(|folder| ProjectRweBrowserModulesSpec { path: folder.path, entries: folder.entries })
+                    .collect(),
             },
             pipelines: ProjectPipelinesSpec {
                 logging: ProjectPipelineLoggingSpec {
@@ -1233,6 +1296,12 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                         })
                         .collect(),
                     deployment_asset_base: value.rwe.deployment_asset_base,
+                    browser_modules: value
+                        .rwe
+                        .browser_modules
+                        .into_iter()
+                        .map(|folder| crate::platform::model::ZebflowJsonBrowserModules { path: folder.path, entries: folder.entries })
+                        .collect(),
                 },
                 pipelines: ZebflowJsonPipelines {
                     logging: ZebflowJsonLogging {

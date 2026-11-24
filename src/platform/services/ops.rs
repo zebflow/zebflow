@@ -1312,6 +1312,22 @@ mod invocation_trace_tests {
 
 // ── Templates ─────────────────────────────────────────────────────────────────
 
+/// A row's part in the project's browser modules, as the text listings show
+/// it: what an agent needs to know before it imports or edits the file.
+fn module_note(item: &TemplateTreeItem) -> String {
+    use crate::rwe::core::browser_modules::ModuleRole;
+    match &item.module {
+        None => String::new(),
+        Some(ModuleRole::Folder { entries }) => format!(" · browser module folder (entries: {})", entries.join(", ")),
+        Some(ModuleRole::Entry { lazy: true, .. }) => " · browser module entry, loaded on demand".to_string(),
+        Some(ModuleRole::Entry { .. }) => " · browser module entry (pages may import it)".to_string(),
+        Some(ModuleRole::Internal { bundled_into, .. }) if !bundled_into.is_empty() => {
+            format!(" · browser module internal, bundled into {}", bundled_into.join(", "))
+        }
+        Some(ModuleRole::Internal { .. }) => " · browser module internal".to_string(),
+    }
+}
+
 impl PlatformOps {
     pub fn file_list(&self, options: FileListOptions<'_>) -> OpsResult {
         match self
@@ -1383,8 +1399,8 @@ impl PlatformOps {
             "compact" => {
                 for (item, meta) in rows {
                     out.push_str(&format!(
-                        "{} | {} | {} | {}\n",
-                        item.rel_path, item.file_kind, meta.title, meta.description
+                        "{} | {}{} | {} | {}\n",
+                        item.rel_path, item.file_kind, module_note(&item), meta.title, meta.description
                     ));
                 }
                 OpsResult::ok(out)
@@ -1392,10 +1408,11 @@ impl PlatformOps {
             "tree" => {
                 for (item, meta) in rows {
                     out.push_str(&format!(
-                        "{}{} | {} | {} | {}\n",
+                        "{}{} | {}{} | {} | {}\n",
                         "  ".repeat(item.depth),
                         item.rel_path,
                         item.file_kind,
+                        module_note(&item),
                         meta.title,
                         meta.description
                     ));

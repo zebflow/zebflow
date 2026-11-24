@@ -1,6 +1,7 @@
 import { cx } from "zeb/react";
 import ContextMenu from "@/components/ui/context-menu";
 import FileKindIcon from "@/components/ui/file-kind-icon";
+import { moduleLook } from "@/components/lib/browser-modules";
 
 /** An open or closed folder. Files get the studio's own technology marks. */
 export function EntryIcon({ kind, name, open }) {
@@ -57,6 +58,9 @@ function Caret({ open, hidden }) {
  */
 export default function RepoTreeRow({ item, depth, open, active, status, menu, onActivate }) {
   const expandable = item.kind === "folder" || item.kind === "root";
+  // A browser module folder, its entries and what is inside are tinted; the
+  // folder and the entries also carry a word, so colour is never the only sign.
+  const look = moduleLook(item);
 
   return (
     <ContextMenu
@@ -66,13 +70,14 @@ export default function RepoTreeRow({ item, depth, open, active, status, menu, o
         "flex w-full items-center gap-1.5 py-[3px] pr-1 text-[12px] transition-colors",
         active
           ? "bg-accent text-foreground"
-          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+          : cx("text-muted-foreground hover:bg-accent/60 hover:text-foreground", look?.tint),
       )}
     >
       <button
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
           type="button"
-          title={item.rel_path || item.name}
+          title={look ? `${item.rel_path}\n${look.hint}` : item.rel_path || item.name}
+          data-module-role={item.module?.role}
           data-repo-tree-row={item.rel_path}
           data-repo-tree-kind={item.kind}
           data-selected={active ? "true" : undefined}
@@ -84,6 +89,11 @@ export default function RepoTreeRow({ item, depth, open, active, status, menu, o
           <span className={cx("truncate", item.kind === "root" && "font-medium text-foreground")}>
             {item.name}
           </span>
+          {look?.mark ? (
+            <span className="shrink-0 rounded bg-primary/10 px-1 text-[9px] font-medium uppercase tracking-wide text-primary">
+              {look.mark}
+            </span>
+          ) : null}
           {status ? (
             <span className="shrink-0 font-mono text-[10px] text-success" title={`git: ${status}`}>
               {status}

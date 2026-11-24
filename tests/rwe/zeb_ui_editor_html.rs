@@ -104,7 +104,7 @@ fn raw_html_on_a_page_stays_refused() {
                 &TemplateSource { id: "raw.page".to_string(), source_path: Some(page_path), markup: page.to_string() },
                 &NoopLanguageEngine,
                 &ReactiveWebOptions {
-                    templates: TemplateOptions { runtime_libraries: Default::default(),
+                    templates: TemplateOptions { runtime_libraries: Default::default(), browser_modules: Vec::new(),
             library_roots, template_root: Some(tmp.path().to_path_buf()), style_entries: Vec::new() },
                     ..Default::default()
                 },

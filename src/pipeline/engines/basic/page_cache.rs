@@ -154,8 +154,11 @@ impl PageRecipe {
     }
 
     fn touches(&self, dependencies: &HashSet<String>, path: &str) -> bool {
+        // A dependency is a file, or a browser module folder: a file saved
+        // inside one (a new file too) touches the pages built from it. For a
+        // file dependency the second test is the first one again.
         self.entry_path.as_deref().is_some_and(|e| is_at_or_under(e, path))
-            || dependencies.iter().any(|d| is_at_or_under(d, path))
+            || dependencies.iter().any(|d| is_at_or_under(d, path) || is_at_or_under(path, d))
     }
 }
 

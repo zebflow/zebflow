@@ -36,7 +36,11 @@ bundle per page. Facts: `help(topic="web")`, `web/hooks`, `web/tailwind`,
    to nothing, silently.
 6. **One bundle per page.** Two imported files may not export the same name
    (`RWE_BUNDLE_NAME_COLLISION`); the platform's own `@/components/ui/*` and
-   `zeb/ui/*` may not share a page.
+   `zeb/ui/*` may not share a page. Large client code that keeps growing (a
+   game, an editor) goes in a browser module folder instead: real browser
+   modules, names per file, loaded on demand, never run on the server; a page
+   imports only its entries (`help("web/browser-modules")`). `file_list` marks
+   those files.
 7. **Runtime libraries are static imports** — `import { d3 } from "zeb/d3"`.
    Dynamic `import()` is refused under the default policy, as are
    `dangerouslySetInnerHTML`, `eval`, and a literal `fetch` to an outside host.

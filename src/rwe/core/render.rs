@@ -267,7 +267,7 @@ pub fn render(
 
 /// Map a `zeb/*` library specifier to its versioned browser bundle URL.
 /// TODO: resolve version from project `zeb.lock` instead of hardcoding.
-fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
+pub(crate) fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
     match lib {
         "zeb/threejs" => Some("/assets/libraries/zeb/threejs/0.1/runtime/threejs.bundle.mjs"),
         "zeb/threejs-vrm" => {
@@ -371,6 +371,11 @@ fn build_zeb_preamble_with(
                  }} }};\n\
                  }}\n"
             ));
+        } else if let Some(hash) = url.strip_prefix(super::browser_modules::URL_PREFIX) {
+            // A browser module entry: its script sits beside this page's own
+            // script, so it is loaded by the page script's own address.
+            let quoted = serde_json::to_string(&format!("./{hash}")).unwrap_or_default();
+            out.push_str(&format!("{registry}[{key}] = await import(new URL({quoted}, import.meta.url).href);\n"));
         } else if project_url.is_some() {
             // A project library's address comes from an uploaded manifest:
             // written as a JSON string, so no character in it ends the string.
@@ -1674,6 +1679,7 @@ mod tests {
             inline_styles: vec![".editor-shell { color: red; }".to_string()],
             dependency_paths: Default::default(),
             worker_scripts: Vec::new(),
+            module_scripts: Vec::new(),
         };
 
         let output = render(&compiled, &json!({}), &[]).expect("render");

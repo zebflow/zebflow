@@ -90,6 +90,7 @@ fn recipe(root: &Path, identity: String, rel: &str, markup: String) -> PageRecip
         templates: TemplateOptions {
             template_root: Some(root.to_path_buf()),
             runtime_libraries: Default::default(),
+            browser_modules: Vec::new(),
             library_roots: Default::default(),
             style_entries: Vec::new(),
         },

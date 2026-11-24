@@ -44,6 +44,35 @@ impl<'a> oxc_ast_visit::Visit<'a> for StringLiteralCollector {
 ///
 /// Gracefully degrades: if OXC cannot parse the source an empty set is returned
 /// and the HTML scanner result remains the sole source of tokens.
+/// [`collect_source_tokens`], remembered by the source's hash.
+///
+/// The tokens depend on the compiled page alone, and a page renders many times
+/// per compile: parsing a Studio page's 600 KB bundle on every request cost
+/// more than rendering it. At most [`CACHED_SOURCES`] bundles are kept; past
+/// that the cache starts over, so memory stays bounded however many pages a
+/// server renders.
+pub fn collect_source_tokens_cached(js_source: &str) -> std::sync::Arc<HashSet<String>> {
+    use std::hash::{Hash, Hasher};
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(u64, usize), std::sync::Arc<HashSet<String>>>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    js_source.hash(&mut hasher);
+    let key = (hasher.finish(), js_source.len());
+    if let Some(found) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return found.clone();
+    }
+    let tokens = std::sync::Arc::new(collect_source_tokens(js_source));
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= CACHED_SOURCES {
+        cache.clear();
+    }
+    cache.insert(key, tokens.clone());
+    tokens
+}
+
+/// How many page bundles' tokens [`collect_source_tokens_cached`] keeps.
+const CACHED_SOURCES: usize = 512;
+
 pub fn collect_source_tokens(js_source: &str) -> HashSet<String> {
     let alloc = Allocator::default();
     let source_type = SourceType::default()

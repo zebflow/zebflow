@@ -59,6 +59,9 @@ pub struct CompiledTemplate {
     /// The workers the page imports (`kinds/rwe-source` § Workers), built.
     #[serde(default)]
     pub worker_scripts: Vec<super::worker::WorkerScript>,
+    /// The browser module scripts the page's entries load, built.
+    #[serde(default)]
+    pub module_scripts: Vec<super::browser_modules::ModuleScript>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
