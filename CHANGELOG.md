@@ -9,6 +9,40 @@ From 0.12, a release that adds a capability raises the middle number
 (0.13.0); a release that only fixes raises the last (0.13.4)
 ([versioning](docs/contracts/versioning.md)).
 
+## 0.15.0 (2026-11-24)
+
+### New
+
+- Browser modules: declare a project folder in the RWE settings
+  (`rwe.browser_modules`) and its files become real browser modules, for
+  large client code such as a game or an editor. Each entry you name is built
+  with everything it imports into one script; code two entries share is
+  stored once; every file keeps its own names, so a hundred files may each
+  export `build`. Modules may use relative imports, `import.meta.glob`,
+  `import()` for parts loaded on demand, JSON and `?raw` text imports, and
+  module workers. They never run on the server, and a change applies on the
+  next page load with no restart. A page imports only the folder's entries.
+  See `help("web/browser-modules")`.
+- Studio's file tree marks browser module folders, entries and the files
+  inside them, and a file's menu can make it an entry or stop it being one.
+  File listings in the API and MCP carry the same information in a `module`
+  field.
+- Project pages answer with a `Server-Timing` header (compile, server render,
+  styles, scripts), shown in the browser's developer tools.
+- Shader files (`.glsl`, `.vert`, `.frag`, `.wgsl`) are accepted project files.
+
+### Changed
+
+- Faster pages. A page is bundled once instead of twice when it compiles;
+  the styles step reuses its work across requests; text responses are sent
+  gzip-compressed when the browser accepts it, each file compressed once;
+  library and asset files carry an `ETag`, so a browser that already has one
+  gets a short "not modified" instead of the whole file. On the dev server,
+  Studio's editor page went from 2.2 s to 1.0 s per request, and the three.js
+  library from 1.7 MB to 0.3 MB on the wire.
+- `zeb/threejs` lists r187 as its version everywhere. The old r183 copy is
+  removed; a project pinned to it uses r187.
+
 ## 0.14.0 (2026-11-24)
 
 ### New
