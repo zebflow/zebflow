@@ -7,6 +7,9 @@
 //!
 //! Bytes move in 64 KiB chunks from a blocking reader through a channel, so a
 //! file of any size costs a fixed buffer, never its size, and never base64.
+//!
+//! The file host (`file_host.rs`) answers ranges with the same rules:
+//! [`parse_range`], [`if_range_holds`] and [`stream_opened`].
 //! The object is opened before the answer starts: a file deleted between the
 //! node and the answer is a 404, and a local file opened stays readable even
 //! if its run's temporary files are swept while it streams.
@@ -84,7 +87,7 @@ pub(super) async fn stored_response(
             return validators_only(StatusCode::NOT_MODIFIED, &stored, last_modified.as_deref(), declared);
         }
         if let Some(range) = text(request, header::RANGE)
-            && if_range_holds(request, &stored, last_modified.as_deref())
+            && if_range_holds(request, &stored.etag, last_modified.as_deref())
         {
             match parse_range(range, stored.size) {
                 RangeAsk::Ignore => {}
@@ -172,11 +175,12 @@ fn not_modified(request: &HeaderMap, stored: &Stored) -> bool {
 }
 
 /// `If-Range` holds when it names this object exactly: a strong tag equal to
-/// ours, or the very `Last-Modified` we send. Otherwise the whole file goes.
-fn if_range_holds(request: &HeaderMap, stored: &Stored, last_modified: Option<&str>) -> bool {
+/// `etag`, or the very `Last-Modified` we send. Otherwise the whole file goes.
+/// A weak tag never names an exact version, so it never holds.
+pub(super) fn if_range_holds(request: &HeaderMap, etag: &str, last_modified: Option<&str>) -> bool {
     match text(request, header::IF_RANGE) {
         None => true,
-        Some(tag) if tag.starts_with('"') => !stored.etag.starts_with("W/") && tag == stored.etag,
+        Some(tag) if tag.starts_with('"') => !etag.starts_with("W/") && tag == etag,
         Some(tag) if tag.starts_with("W/") => false,
         Some(date) => last_modified == Some(date),
     }
@@ -191,7 +195,7 @@ fn parse_http_date(value: &str) -> Option<i64> {
 }
 
 #[derive(Debug, PartialEq)]
-enum RangeAsk {
+pub(super) enum RangeAsk {
     /// Not one range we serve (malformed, another unit, several ranges): the
     /// whole file, as RFC 9110 §14.2 allows.
     Ignore,
@@ -200,7 +204,7 @@ enum RangeAsk {
     Unsatisfiable,
 }
 
-fn parse_range(value: &str, size: u64) -> RangeAsk {
+pub(super) fn parse_range(value: &str, size: u64) -> RangeAsk {
     let Some(spec) = value.trim().strip_prefix("bytes=") else { return RangeAsk::Ignore };
     if spec.contains(',') {
         return RangeAsk::Ignore;
@@ -251,9 +255,26 @@ async fn open(
 
 /// A blocking reader as a response body, a chunk at a time. A caller that
 /// goes away stops the reading.
-fn stream(mut reader: Box<dyn Read + Send>) -> Body {
+fn stream(reader: Box<dyn Read + Send>) -> Body {
+    stream_opened(move || Ok(reader))
+}
+
+/// [`stream`] for a reader opened on the blocking thread itself, so a caller
+/// that is not async never waits on a store. An object that cannot be opened
+/// ends the body with that error.
+pub(super) fn stream_opened<F>(open: F) -> Body
+where
+    F: FnOnce() -> std::io::Result<Box<dyn Read + Send>> + Send + 'static,
+{
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
     tokio::task::spawn_blocking(move || {
+        let mut reader = match open() {
+            Ok(reader) => reader,
+            Err(err) => {
+                let _ = tx.blocking_send(Err(err));
+                return;
+            }
+        };
         let mut buf = vec![0u8; CHUNK];
         loop {
             match reader.read(&mut buf) {

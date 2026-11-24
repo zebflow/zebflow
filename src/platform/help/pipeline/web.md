@@ -271,3 +271,5 @@ It shows inline; `--filename NAME` makes it a download under that name.
   the FileRef without reading the file; then `--file "{{ input.file }}"`.
 - HTML, SVG and XML are sent as downloads and every stored answer is
   `nosniff` and sandboxed, as on the file host.
+- A stored answer and the file host both answer a `Range` request with 206
+  and only those bytes, so a video plays and seeks, on iPhone too.

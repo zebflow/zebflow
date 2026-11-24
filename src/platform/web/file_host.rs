@@ -9,18 +9,27 @@
 //!   may be used by a page, never run as one.
 //! - **A `serve` origin** answers the one `public_execute` folder that names
 //!   it, at `/`, with scripts running. That host answers nothing else.
+//!
+//! Both read a file's size and date first, then stream only the bytes the
+//! answer carries: the whole file, or the one range asked for (206), which
+//! is what lets a browser play a video and skip ahead in it. A file is never
+//! held in memory.
 
 use std::time::UNIX_EPOCH;
 
 use axum::body::Body;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
+use axum::http::header::{
+    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH,
+    LAST_MODIFIED, RANGE,
+};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 
+use super::stored_answer::{RangeAsk, if_range_holds, parse_range, stream_opened};
 use super::{PlatformAppState, content_type_for_path, harden_byte_response, internal_error};
 use crate::platform::error::PlatformError;
 use crate::zebfs::acl::{serve_mount_path, serve_origin_host, serve_origin_port};
-use crate::zebfs::{ZebFsAccess, normalize_object_path};
+use crate::zebfs::{ZebFs, ZebFsAccess, ZebFsEntryKind, ZebFsStat, normalize_object_path};
 
 fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "There is nothing at this address.").into_response()
@@ -116,7 +125,11 @@ fn still_fresh(request: &HeaderMap, etag: &HeaderValue, last_modified: Option<&H
     }
 }
 
-fn object_response(rel: &str, bytes: Vec<u8>, stat: &crate::zebfs::ZebFsStat, request: &HeaderMap) -> Response {
+/// The answer for one stored file, decided from its size and date before any
+/// byte is read: unchanged (304), the one range asked for (206), a range past
+/// its end (416), or the whole file. `body` gives the bytes from an offset for
+/// a length.
+fn object_response(rel: &str, stat: &ZebFsStat, request: &HeaderMap, body: impl FnOnce(u64, u64) -> Body) -> Response {
     let validator = object_validator(stat);
     if let Some((etag, last_modified)) = validator.as_ref()
         && still_fresh(request, etag, last_modified.as_ref())
@@ -127,13 +140,63 @@ fn object_response(rel: &str, bytes: Vec<u8>, stat: &crate::zebfs::ZebFsStat, re
         return resp;
     }
 
-    let mut resp = Response::new(Body::from(bytes));
-    *resp.status_mut() = StatusCode::OK;
-    if let Ok(value) = HeaderValue::from_str(content_type_for_path(std::path::Path::new(rel))) {
-        resp.headers_mut().insert(CONTENT_TYPE, value);
+    let size = stat.size;
+    let (mut status, mut offset, mut len) = (StatusCode::OK, 0, size);
+    let etag = validator.as_ref().and_then(|(etag, _)| etag.to_str().ok()).unwrap_or("");
+    let last_modified = validator.as_ref().and_then(|(_, date)| date.as_ref()).and_then(|date| date.to_str().ok());
+    if let Some(range) = request.get(RANGE).and_then(|value| value.to_str().ok())
+        && if_range_holds(request, etag, last_modified)
+    {
+        match parse_range(range, size) {
+            RangeAsk::Ignore => {}
+            RangeAsk::Bytes(start, end) => (status, offset, len) = (StatusCode::PARTIAL_CONTENT, start, end - start + 1),
+            RangeAsk::Unsatisfiable => {
+                let mut resp = Response::new(Body::empty());
+                *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+                write_cache_headers(resp.headers_mut(), validator.as_ref());
+                if let Ok(value) = HeaderValue::from_str(&format!("bytes */{size}")) {
+                    resp.headers_mut().insert(CONTENT_RANGE, value);
+                }
+                return resp;
+            }
+        }
     }
-    write_cache_headers(resp.headers_mut(), validator.as_ref());
+
+    let mut resp = Response::new(body(offset, len));
+    *resp.status_mut() = status;
+    let headers = resp.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(content_type_for_path(std::path::Path::new(rel))) {
+        headers.insert(CONTENT_TYPE, value);
+    }
+    write_cache_headers(headers, validator.as_ref());
+    headers.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(CONTENT_LENGTH, HeaderValue::from(len));
+    if status == StatusCode::PARTIAL_CONTENT
+        && let Ok(value) = HeaderValue::from_str(&format!("bytes {offset}-{}/{size}", offset + len - 1))
+    {
+        headers.insert(CONTENT_RANGE, value);
+    }
     resp
+}
+
+/// `len` bytes of `rel` from `offset`, streamed from the store.
+fn stored_body(zebfs: &ZebFs, rel: &str) -> impl FnOnce(u64, u64) -> Body {
+    let (zebfs, rel) = (zebfs.clone(), rel.to_string());
+    move |offset, len| {
+        stream_opened(move || {
+            zebfs.open_range(&rel, offset, len).map_err(|err| std::io::Error::other(format!("{}: {}", err.code, err.message)))
+        })
+    }
+}
+
+/// The stat of a stored file; a folder or a missing path is `None`.
+fn file_stat(zebfs: &ZebFs, rel: &str) -> Result<Option<ZebFsStat>, crate::zebfs::ZebFsError> {
+    match zebfs.head(rel) {
+        Ok(stat) if stat.kind == ZebFsEntryKind::Object => Ok(Some(stat)),
+        Ok(_) => Ok(None),
+        Err(err) if err.code == "ZEBFS_NOT_FOUND" || err.code == "ZEBFS_INVALID_PATH" => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 fn write_cache_headers(headers: &mut HeaderMap, validator: Option<&(HeaderValue, Option<HeaderValue>)>) {
@@ -174,9 +237,10 @@ pub(super) async fn file_host_response(
         Ok(_) => return not_found(),
         Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
     }
-    match layout.open_files().get(&rel) {
-        Ok(object) => harden_byte_response(object_response(&rel, object.bytes, &object.stat, request)).await,
-        Err(err) if err.code == "ZEBFS_NOT_FOUND" || err.code == "ZEBFS_INVALID_PATH" => not_found(),
+    let zebfs = layout.open_files();
+    match file_stat(&zebfs, &rel) {
+        Ok(Some(stat)) => harden_byte_response(object_response(&rel, &stat, request, stored_body(&zebfs, &rel))).await,
+        Ok(None) => not_found(),
         Err(err) => internal_error(PlatformError::new(err.code, err.message)),
     }
 }
@@ -300,8 +364,8 @@ pub(super) fn execute_site_response(
             };
             return Some(axum::response::Redirect::permanent(&location).into_response());
         }
-        if let Ok(object) = zebfs.get(&rel) {
-            let mut resp = object_response(&rel, object.bytes, &object.stat, request);
+        if let Ok(Some(stat)) = file_stat(&zebfs, &rel) {
+            let mut resp = object_response(&rel, &stat, request, stored_body(&zebfs, &rel));
             resp.headers_mut().insert(
                 "x-content-type-options",
                 HeaderValue::from_static("nosniff"),
@@ -386,12 +450,33 @@ fn percent_decode(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        hidden_path, http_date, object_response, object_validator, origin_matches, percent_decode,
+        file_stat, hidden_path, http_date, object_response, object_validator, origin_matches, percent_decode,
         site_candidates, still_fresh,
     };
-    use axum::http::header::{CACHE_CONTROL, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
+    use axum::body::Body;
+    use axum::http::header::{
+        ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
+        LAST_MODIFIED, RANGE,
+    };
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use std::time::{Duration, UNIX_EPOCH};
+
+    /// A body cut from `bytes`, as the store would stream it.
+    fn from_bytes(bytes: &'static [u8]) -> impl FnOnce(u64, u64) -> Body {
+        move |offset, len| Body::from(bytes[offset as usize..(offset + len) as usize].to_vec())
+    }
+
+    async fn body_of(response: axum::response::Response) -> Vec<u8> {
+        axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body").to_vec()
+    }
+
+    fn asking(pairs: &[(axum::http::HeaderName, &'static str)]) -> HeaderMap {
+        let mut request = HeaderMap::new();
+        for (name, value) in pairs {
+            request.insert(name.clone(), HeaderValue::from_static(value));
+        }
+        request
+    }
 
     fn stat(size: u64, seconds: u64) -> crate::zebfs::ZebFsStat {
         crate::zebfs::ZebFsStat {
@@ -443,8 +528,9 @@ mod tests {
     /// reused, or a build is invisible to anyone who read the site before it.
     #[test]
     fn a_served_file_carries_a_validator_and_asks_before_it_is_reused() {
+        const PAGE: [u8; 1234] = [b' '; 1234];
         let stat = stat(1234, 1_762_000_000);
-        let response = object_response("site/index.html", b"<html></html>".to_vec(), &stat, &HeaderMap::new());
+        let response = object_response("site/index.html", &stat, &HeaderMap::new(), from_bytes(&PAGE));
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(header(&response, CACHE_CONTROL), "no-cache");
         assert_eq!(header(&response, ETAG), "W/\"1234-1762000000\"");
@@ -456,7 +542,7 @@ mod tests {
         let stat = stat(1234, 1_762_000_000);
         let mut request = HeaderMap::new();
         request.insert(IF_NONE_MATCH, HeaderValue::from_static("W/\"1234-1762000000\""));
-        let response = object_response("site/index.html", b"<html></html>".to_vec(), &stat, &request);
+        let response = object_response("site/index.html", &stat, &request, from_bytes(b"<html></html>"));
         assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(header(&response, ETAG), "W/\"1234-1762000000\"");
     }
@@ -483,6 +569,107 @@ mod tests {
         request.insert(IF_MODIFIED_SINCE, last_modified.clone());
         request.insert(IF_NONE_MATCH, HeaderValue::from_static("W/\"999-1\""));
         assert!(!still_fresh(&request, &etag, Some(&last_modified)));
+    }
+
+    const CLIP: &[u8] = b"0123456789abcdefghij";
+
+    fn clip_stat() -> crate::zebfs::ZebFsStat {
+        crate::zebfs::ZebFsStat { path: "wiki/clip.mp4".to_string(), ..stat(CLIP.len() as u64, 1_762_000_000) }
+    }
+
+    /// A video plays on iPhone Safari, and skips ahead anywhere, only when a
+    /// range is answered with exactly those bytes and a 206.
+    #[tokio::test]
+    async fn a_range_is_answered_with_those_bytes_and_206() {
+        for (asked, content_range, bytes) in [
+            ("bytes=0-1", "bytes 0-1/20", &b"01"[..]),
+            ("bytes=10-", "bytes 10-19/20", &b"abcdefghij"[..]),
+            ("bytes=-3", "bytes 17-19/20", &b"hij"[..]),
+            ("bytes=15-999", "bytes 15-19/20", &b"fghij"[..]),
+        ] {
+            let request = asking(&[(RANGE, asked)]);
+            let response = object_response("wiki/clip.mp4", &clip_stat(), &request, from_bytes(CLIP));
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "{asked}");
+            assert_eq!(header(&response, CONTENT_RANGE), content_range, "{asked}");
+            assert_eq!(header(&response, CONTENT_LENGTH), bytes.len().to_string(), "{asked}");
+            assert_eq!(header(&response, ACCEPT_RANGES), "bytes");
+            assert_eq!(header(&response, ETAG), "W/\"20-1762000000\"");
+            assert_eq!(body_of(response).await, bytes, "{asked}");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_range_is_the_whole_file_and_says_ranges_are_accepted() {
+        let response = object_response("wiki/clip.mp4", &clip_stat(), &HeaderMap::new(), from_bytes(CLIP));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, ACCEPT_RANGES), "bytes");
+        assert_eq!(header(&response, CONTENT_LENGTH), "20");
+        assert!(header(&response, CONTENT_RANGE).is_empty());
+        assert_eq!(body_of(response).await, CLIP);
+    }
+
+    #[test]
+    fn a_range_past_the_end_is_416_naming_the_size() {
+        let request = asking(&[(RANGE, "bytes=20-")]);
+        let response = object_response("wiki/clip.mp4", &clip_stat(), &request, from_bytes(CLIP));
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(header(&response, CONTENT_RANGE), "bytes */20");
+    }
+
+    /// RFC 9110 14.2: a range we do not serve (several ranges, another unit)
+    /// may be answered with the whole file.
+    #[tokio::test]
+    async fn several_ranges_or_another_unit_get_the_whole_file() {
+        for asked in ["bytes=0-1,5-6", "items=0-1"] {
+            let request = asking(&[(RANGE, asked)]);
+            let response = object_response("wiki/clip.mp4", &clip_stat(), &request, from_bytes(CLIP));
+            assert_eq!(response.status(), StatusCode::OK, "{asked}");
+            assert_eq!(body_of(response).await, CLIP, "{asked}");
+        }
+    }
+
+    /// `If-Range` resumes only the exact version: our tag is weak, so a tag
+    /// never qualifies; our very `Last-Modified` does.
+    #[tokio::test]
+    async fn if_range_resumes_only_on_our_exact_date() {
+        let response = object_response(
+            "wiki/clip.mp4",
+            &clip_stat(),
+            &asking(&[(RANGE, "bytes=0-1"), (IF_RANGE, "W/\"20-1762000000\"")]),
+            from_bytes(CLIP),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let date = header(
+            &object_response("wiki/clip.mp4", &clip_stat(), &HeaderMap::new(), from_bytes(CLIP)),
+            LAST_MODIFIED,
+        );
+        let mut request = asking(&[(RANGE, "bytes=0-1")]);
+        request.insert(IF_RANGE, HeaderValue::from_str(&date).expect("date"));
+        let response = object_response("wiki/clip.mp4", &clip_stat(), &request, from_bytes(CLIP));
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        request.insert(IF_RANGE, HeaderValue::from_static("Thu, 01 Jan 1970 00:00:00 GMT"));
+        let response = object_response("wiki/clip.mp4", &clip_stat(), &request, from_bytes(CLIP));
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// An unchanged file is a 304 even when a range is asked: the reader's
+    /// copy is already the whole thing.
+    #[test]
+    fn an_unchanged_file_is_304_before_any_range() {
+        let request = asking(&[(RANGE, "bytes=0-1"), (IF_NONE_MATCH, "W/\"20-1762000000\"")]);
+        let response = object_response("wiki/clip.mp4", &clip_stat(), &request, from_bytes(CLIP));
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    /// The stat comes first now, so a folder must not pass for an empty file.
+    #[test]
+    fn only_a_stored_file_has_a_stat_to_serve() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let zebfs = crate::zebfs::ZebFs::Local(crate::zebfs::LocalZebFs::new(dir.path().to_path_buf()));
+        zebfs.put("wiki/clip.mp4", CLIP).expect("put");
+        assert_eq!(file_stat(&zebfs, "wiki/clip.mp4").expect("stat").map(|s| s.size), Some(20));
+        assert!(file_stat(&zebfs, "wiki").expect("stat").is_none(), "a folder");
+        assert!(file_stat(&zebfs, "wiki/none.mp4").expect("stat").is_none(), "a missing file");
     }
 
     #[test]

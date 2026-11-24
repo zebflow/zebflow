@@ -98,6 +98,11 @@ bucket policy or an anonymous identity.
   the host the request was routed by, never the `Origin` header.
 - A public prefix exposes its objects, not a listing of them.
 - A rule change invalidates every cached response it governs.
+- Every answer, on the file host and on a `serve` origin, honours one byte
+  range (`Range`: 206 with `Content-Range`, 416 past the end, `If-Range` on
+  the exact `Last-Modified`) and says `Accept-Ranges: bytes`; several ranges
+  get the whole file. Only the bytes answered are read from the store. A
+  video plays and seeks only with this (iPhone Safari plays none without it).
 
 ## Authority
 
