@@ -110,12 +110,13 @@
       "REVISION"
     ],
     "versions": {
-      "r183": {
-        "entry": "r183/bundle.min.mjs",
+      "full-r187": {
+        "entry": "0.1/runtime/threejs.bundle.mjs",
         "source": "offline",
-        "package_version": "0.183.2",
-        "size_bytes": 755048,
-        "integrity": "sha256:9c1e385bc9918e55ca7214dd995efbfc73bff14806ba13ee5c3f6ffcb4761eae"
+        "package_version": "0.187.0",
+        "size_bytes": 1731523,
+        "integrity": "sha256:7f7ecfe8dc7dfc0cc6a9c45bad09a19cf145f918e9e9961d55f2b6ebb8c8f7e8",
+        "note": "Three.js r187 (three@0.187.0), the bundle pages load."
       }
     },
     "license": {

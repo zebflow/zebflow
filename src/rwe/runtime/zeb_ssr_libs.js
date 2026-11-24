@@ -128,7 +128,7 @@
       mountThreeScene: function () {},
       ensureThree: function () { return {}; },
       MathUtils: {},
-      REVISION: '183',
+      REVISION: '187',
     };
     three.ThreeCanvas = three.Canvas;
     var _cls = function () {};

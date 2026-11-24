@@ -761,10 +761,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../blessed/rwe-libraries/rooms/manifest.json"),
     },
     EmbeddedAsset {
-        path: "zeb/threejs/r183/bundle.min.mjs",
-        bytes: include_bytes!("../../../blessed/rwe-libraries/threejs/r183/bundle.min.mjs"),
-    },
-    EmbeddedAsset {
         path: "zeb/threejs/0.1/library.json",
         bytes: include_bytes!("../../../blessed/rwe-libraries/threejs/0.1/library.json"),
     },

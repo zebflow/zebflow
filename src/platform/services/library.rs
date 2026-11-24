@@ -107,13 +107,13 @@ pub struct RweLibraryFileSpec {
 /// One available version entry from a library manifest.
 #[derive(Debug, Clone)]
 pub struct LibraryVersion {
-    /// Version key, e.g. `"r183"`.
+    /// Version key, e.g. `"full-r187"`.
     pub key: String,
-    /// Relative path to the bundle within the library dir, e.g. `"r183/bundle.min.mjs"`.
+    /// Relative path to the bundle within the library dir, e.g. `"0.1/runtime/threejs.bundle.mjs"`.
     pub entry: String,
     /// `"offline"` (bytes embedded in this binary) or `"hub"` (installed copy).
     pub source: String,
-    /// Upstream package version, e.g. `"0.183.2"`.
+    /// Upstream package version, e.g. `"0.187.0"`.
     pub package_version: String,
     /// Bundle size in bytes.
     pub size_bytes: u64,
