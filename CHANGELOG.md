@@ -9,6 +9,18 @@ From 0.12, a release that adds a capability raises the middle number
 (0.13.0); a release that only fixes raises the last (0.13.4)
 ([versioning](docs/contracts/versioning.md)).
 
+## 0.15.1 (2026-11-24)
+
+### Fixed
+
+- Videos stored in a project play on iPhone and can be skipped through. The
+  file host (and a `public_execute` site) now answers a byte range request
+  with `206 Partial Content` and only those bytes, `416` for a range past the
+  end, and says `Accept-Ranges: bytes`. Before, it always sent the whole file,
+  which iPhone Safari refuses to play in a video element.
+- The file host no longer reads a whole file into memory to answer it: it
+  reads the file's size and date first, then streams only the bytes it sends.
+
 ## 0.15.0 (2026-11-24)
 
 ### New
