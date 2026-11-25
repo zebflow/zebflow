@@ -127,6 +127,18 @@ rwe:
       entries: [main.ts, tools.ts, "islands/*.ts"]
 ```
 
+`spec.rwe.library_overrides` maps a built-in `zeb/<name>` library to the entry
+of a library uploaded to this project that replaces it in the project's pages
+(`kinds/rwe-library-manifest` § Overrides). Absent, every page loads the
+built-in libraries. It is written only through the override API, which checks
+the replacement first.
+
+```yaml
+rwe:
+  library_overrides:
+    zeb/threejs: { library: threejs-next, entry: three }
+```
+
 ### spec.layout
 
 Every entry is one directory, relative to `repo/`, and every entry is optional.
@@ -428,6 +440,7 @@ schema stops being a draft and starts being a promise.
 | 2026-09-03 | `spec.layout.assets` renamed to `spec.layout.static`, default `static` | `assets` was the wrong word: in Vite, Astro, Rails and Hugo it names files that are processed and content-hashed, while this directory is served byte-for-byte -- which those same projects call `static`. `public` was not taken because it is the *state* the exposure inventory reports, and a folder claiming that word would collide with it. |
 | 2026-11-19 | `spec.rwe.libraries` also takes one lowercase word: a project's own uploaded library | The owner chose plain import names (`site-a-lib/world`). Only widens; every existing configuration stays valid. |
 | 2026-11-24 | Added `spec.rwe.browser_modules`; the platform extension set gains `frag`, `glsl`, `vert`, `wgsl` | Optional; absent stays absent on rewrite and means no folder, so every existing project compiles exactly as before. The shader extensions are source a browser module imports as text (`?raw`); the set only widens, so no existing content is refused. |
+| 2026-11-25 | Added `spec.rwe.library_overrides` | Optional; absent stays absent on rewrite and means every page loads the built-in libraries, so every existing project behaves exactly as before. |
 | 2026-09-03 | `spec.layout.source` defaults to the repository itself | It was `pipelines`, and every layout entry was also a directory the platform created on every request -- so a folder an author deleted returned on the next page load. A project now starts as an empty repository and a layout entry only says where a kind is looked for. An empty declaration is legal and names the repository root; `static` is the one entry that may not be empty, because its route serves everything beneath it unauthenticated. |
 
 ## Freeze Evidence

@@ -22,6 +22,7 @@
 
 mod bundle;
 mod load;
+pub(crate) use load::export_surface;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

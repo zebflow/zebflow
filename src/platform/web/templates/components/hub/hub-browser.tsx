@@ -21,10 +21,13 @@ const STATES = [
 ];
 
 function matchesState(item, state) {
-  if (state === "project") return !!item?.installed;
+  // A built-in library an upload replaces is part of this project too: its
+  // pages load the replacement, and that is where the reader looks for it.
+  const inProject = !!item?.installed || !!item?.overridden_by;
+  if (state === "project") return inProject;
   if (state === "updatable") return !!item?.updatable;
   if (state === "problems") return !!item?.status && item.status !== "resolved";
-  return !item?.installed;
+  return !inProject;
 }
 
 function matchesSearch(item, text) {

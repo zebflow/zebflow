@@ -225,3 +225,143 @@ async fn a_recipe_lives_whole_in_the_repository() {
     let stray = ops.file_write("notes/other.lock", "x");
     assert!(stray.text.starts_with("Error"), "only bun.lock, not every .lock: {}", stray.text);
 }
+
+/// One-entry library standing in for a built-in one: `{v}/runtime/main.mjs`
+/// passes on `parts.mjs`, which exports `names`.
+fn override_library(name: &str, version: &str, names: &[String]) -> Vec<u8> {
+    let v = version;
+    let declared: Vec<String> = names.iter().filter(|n| n.as_str() != "default").map(|n| format!("export const {n} = 1;")).collect();
+    let mut parts = declared.join("\n");
+    if names.iter().any(|n| n == "default") {
+        parts.push_str("\nexport default 1;");
+    }
+    let files: Vec<(String, Vec<u8>)> = vec![
+        (format!("{v}/runtime/main.mjs"), b"export * from \"./parts.mjs\";\nexport const addedByOverride = 2;\n".to_vec()),
+        (format!("{v}/runtime/parts.mjs"), format!("{parts}\n").into_bytes()),
+    ];
+    let record = |path: &str| {
+        let bytes = &files.iter().find(|(p, _)| p == path).unwrap().1;
+        json!({ "size_bytes": bytes.len(), "integrity": digest(bytes) })
+    };
+    let main = format!("{v}/runtime/main.mjs");
+    let manifest = json!({
+        "apiVersion": "zebflow.com/v1",
+        "kind": "RweLibraryManifest",
+        "metadata": { "name": name },
+        "spec": {
+            "name": name,
+            "description": "an override",
+            "exports": names.iter().filter(|n| n.as_str() != "default").collect::<Vec<_>>(),
+            "versions": { v: {
+                "entry": main,
+                "size_bytes": record(&main)["size_bytes"],
+                "integrity": record(&main)["integrity"],
+                "source": "offline",
+                "package_version": v,
+                "entries": { "rooms": { "file": main, "exports": names.iter().filter(|n| n.as_str() != "default").collect::<Vec<_>>() } },
+                "files": files.iter().map(|(p, _)| (p.clone(), record(p))).collect::<serde_json::Map<String, Value>>()
+            } },
+            "license": { "spdx": "MIT", "holders": ["Site A"], "notices": ["THIRD-PARTY-NOTICES.txt"] }
+        }
+    });
+    let mut all: Vec<(&str, Vec<u8>)> = files.iter().map(|(p, b)| (p.as_str(), b.clone())).collect();
+    all.push(("manifest.json", serde_json::to_vec_pretty(&manifest).unwrap()));
+    all.push(("THIRD-PARTY-NOTICES.txt", b"MIT\n".to_vec()));
+    tar_gz(&all)
+}
+
+/// The page script of a published page, as the browser fetches it.
+async fn page_script(app: &axum::Router, cookie: &str, route: &str) -> String {
+    let (status, _, html) = raw(app, cookie, "GET", &format!("/wh/{OWNER}/{PROJECT}/{route}"), "text/html", Vec::new()).await;
+    let html = String::from_utf8_lossy(&html).to_string();
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(!html.contains("RWE component error"), "{html}");
+    let src = html.split("data-rwe-external=\"page\" src=\"").nth(1).and_then(|rest| rest.split('"').next()).expect("page script").to_string();
+    let (_, _, script) = raw(app, cookie, "GET", &src, "", Vec::new()).await;
+    String::from_utf8_lossy(&script).to_string()
+}
+
+/// `rwe-library-manifest` § Overrides: an uploaded library stands in for a
+/// built-in one in this project's pages only when it exports every name the
+/// built-in one does; removing it brings the built-in one back.
+#[tokio::test]
+async fn an_override_replaces_a_built_in_library_only_with_its_whole_interface() {
+    let root = temp_dir("project-library-override");
+    let app = app_at(&root).await;
+    let cookie = login(&app).await;
+    let names: Vec<String> = zebflow::platform::services::project_library::overrides::built_in_names("zeb/rooms")
+        .expect("built-in names")
+        .into_iter()
+        .collect();
+    let some_name = names.iter().find(|n| n.as_str() != "default").expect("a named export").clone();
+    let page = format!("import {{ {some_name} }} from \"zeb/rooms\";\nexport default function Page() {{\n  return <main>rooms page</main>;\n}}\n");
+    let (status, _, _) = raw(&app, &cookie, "PUT", &format!("/api/projects/{OWNER}/{PROJECT}/repo/file?path=pages/rooms.tsx"), "text/plain", page.into_bytes()).await;
+    assert_eq!(status, StatusCode::OK);
+    publish(&app, &cookie, "rooms-page", "| trigger.webhook --route /rooms-page --method GET | web.response.send --template pages/rooms.tsx").await;
+    let built_in = "zeb/rooms/0.1/runtime/rooms.bundle.mjs";
+    assert!(page_script(&app, &cookie, "rooms-page").await.contains(built_in));
+
+    let upload_as = |archive: Vec<u8>| {
+        let (app, cookie) = (app.clone(), cookie.clone());
+        async move {
+            let uri = format!("/api/projects/{OWNER}/{PROJECT}/rwe/libraries/upload?override=zeb/rooms");
+            let (status, _, body) = raw(&app, &cookie, "POST", &uri, "application/gzip", archive).await;
+            (status, serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null))
+        }
+    };
+
+    // One name short: refused, naming it, and nothing is installed.
+    let short: Vec<String> = names.iter().filter(|n| **n != some_name).cloned().collect();
+    let (status, answer) = upload_as(override_library("rooms-short", "0.1.0", &short)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let message = answer["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("does not export 1 of the") && message.contains(&some_name), "{message}");
+    let lock = std::fs::read_to_string(root.0.join("users/superadmin/default/repo/zeb.lock")).unwrap_or_default();
+    assert!(!lock.contains("rooms-short"), "nothing installed: {lock}");
+
+    // Every name, plus one: installed, checked, and the page loads it instead.
+    let (status, answer) = upload_as(override_library("rooms-next", "0.1.0", &names)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["override"]["library"], "zeb/rooms");
+    assert_eq!(answer["override"]["with"], "rooms-next");
+    assert_eq!(answer["override"]["built_in_names"], json!(names.len()));
+    assert_eq!(answer["override"]["added_names"], json!(1));
+    assert_eq!(answer["override"]["files_checked"], json!(["pages/rooms.tsx"]));
+    let (_, _, listed) = raw(&app, &cookie, "GET", &format!("/api/projects/{OWNER}/{PROJECT}/rwe/libraries"), "application/json", Vec::new()).await;
+    let listed: Value = serde_json::from_slice(&listed).unwrap();
+    let rooms = listed.as_array().unwrap().iter().find(|item| item["name"] == "zeb/rooms").cloned().expect("listed");
+    assert_eq!(rooms["overridden_by"], json!({"library": "rooms-next", "entry": "rooms"}));
+    let script = page_script(&app, &cookie, "rooms-page").await;
+    assert!(script.contains("_rwe/lib/rooms-next/0.1.0/runtime/main.mjs") && !script.contains(built_in), "{script}");
+
+    // A new version that drops a name would break the override: refused.
+    let uri = format!("/api/projects/{OWNER}/{PROJECT}/rwe/libraries/upload");
+    let (status, _, body) = raw(&app, &cookie, "POST", &uri, "application/gzip", override_library("rooms-next", "0.2.0", &short)).await;
+    let answer: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert!(answer["error"]["message"].as_str().unwrap_or_default().contains("would break the override of zeb/rooms"), "{answer}");
+
+    // Removed: the built-in library loads again.
+    let override_uri = format!("/api/projects/{OWNER}/{PROJECT}/rwe/libraries/override");
+    let (status, _, body) = raw(&app, &cookie, "DELETE", &format!("{override_uri}?library=zeb/rooms"), "", Vec::new()).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(page_script(&app, &cookie, "rooms-page").await.contains(built_in));
+
+    // Set again on the installed library; removing the library drops it.
+    let set = json!({"library": "zeb/rooms", "with": "rooms-next"}).to_string().into_bytes();
+    let (status, _, body) = raw(&app, &cookie, "POST", &override_uri, "application/json", set).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(page_script(&app, &cookie, "rooms-page").await.contains("rooms-next"));
+    let remove = format!("/api/projects/{OWNER}/{PROJECT}/rwe/libraries/remove?name=rooms-next");
+    let (status, _, body) = raw(&app, &cookie, "DELETE", &remove, "", Vec::new()).await;
+    let answer: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    assert_eq!((status, answer["overrides_removed"].clone()), (StatusCode::OK, json!(["zeb/rooms"])), "{answer}");
+    assert!(page_script(&app, &cookie, "rooms-page").await.contains(built_in));
+
+    // Only a built-in bundle library can be replaced.
+    let set = json!({"library": "zeb/react", "with": "rooms-next"}).to_string().into_bytes();
+    let (status, _, body) = raw(&app, &cookie, "POST", &override_uri, "application/json", set).await;
+    let answer: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert!(answer["error"]["message"].as_str().unwrap_or_default().contains("not a built-in library an override can replace"), "{answer}");
+}

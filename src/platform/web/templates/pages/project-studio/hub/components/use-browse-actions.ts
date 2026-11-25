@@ -43,6 +43,10 @@ export function useBrowseActions({ api, refresh, showStatus }) {
       await removeLibrary(item);
       return;
     }
+    if (item?.intent === "restore-built-in") {
+      await restoreBuiltIn(item);
+      return;
+    }
     const packageId = item?.package_id;
     const version = item?.latest_version;
     if (!packageId || !version) {
@@ -120,6 +124,21 @@ export function useBrowseActions({ api, refresh, showStatus }) {
       showStatus(`Removed ${name} — its lock entry and its files are gone.`);
     } catch (err) {
       showStatus(err?.message || err);
+    }
+  }
+
+  /** Stops an uploaded library replacing this built-in one: pages load it again. */
+  async function restoreBuiltIn(item) {
+    const name = libraryNameOf(item);
+    setBrowseBusy(true);
+    try {
+      await requestJson(`${api.libraries_override}?library=${encodeURIComponent(name)}`, { method: "DELETE" });
+      await refresh();
+      showStatus(`Pages load the built-in ${name} again.`);
+    } catch (err) {
+      showStatus(err?.message || err);
+    } finally {
+      setBrowseBusy(false);
     }
   }
 

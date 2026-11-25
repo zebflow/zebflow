@@ -346,6 +346,45 @@ fn export_name(name: &ModuleExportName) -> String {
     name.name().to_string()
 }
 
+/// What one JavaScript module exports, read without running it: the names it
+/// exports itself (`export * as ns` included), and the modules whose names
+/// `export * from` passes on, left for the caller to read. Type-only exports
+/// are not names a browser sees.
+pub(crate) fn export_surface(source: &str) -> Result<(std::collections::BTreeSet<String>, Vec<String>), String> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, source, SourceType::mjs()).parse();
+    if parsed.panicked || !parsed.errors.is_empty() {
+        let first = parsed.errors.first().map(|error| error.to_string()).unwrap_or_else(|| "it does not parse".to_string());
+        return Err(first);
+    }
+    let (mut names, mut stars) = (std::collections::BTreeSet::new(), Vec::new());
+    for statement in &parsed.program.body {
+        match statement {
+            Statement::ExportNamedDeclaration(export) if !export.export_kind.is_type() => {
+                if let Some(declaration) = &export.declaration {
+                    names.extend(declared_names(declaration));
+                }
+                for specifier in export.specifiers.iter().filter(|specifier| !specifier.export_kind.is_type()) {
+                    names.insert(export_name(&specifier.exported));
+                }
+            }
+            Statement::ExportDefaultDeclaration(export)
+                if !matches!(export.declaration, ExportDefaultDeclarationKind::TSInterfaceDeclaration(_)) =>
+            {
+                names.insert("default".to_string());
+            }
+            Statement::ExportAllDeclaration(export) if !export.export_kind.is_type() => match &export.exported {
+                Some(name) => {
+                    names.insert(export_name(name));
+                }
+                None => stars.push(export.source.value.to_string()),
+            },
+            _ => {}
+        }
+    }
+    Ok((names, stars))
+}
+
 /// The names a declaration binds at the top level.
 fn declared_names(declaration: &Declaration) -> Vec<String> {
     match declaration {

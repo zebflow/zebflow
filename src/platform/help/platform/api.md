@@ -131,7 +131,8 @@ GET|POST /members  ·  /invites                    membership
 GET|PUT  /settings/{section}                       general · git · members · policy · automatons · logs
 GET|PUT  /settings/home   {"data":{"hidden":true}}  Hide from home: off the home list, still reachable; no commit
 GET    /nodes  ·  /nodes/by-kind/{kind}   POST /nodes/install  ·  /nodes/install/review  ·  /nodes/uninstall/{kind}
-GET    /rwe/libraries   POST /rwe/libraries/enable  ·  /rwe/libraries/remove
+GET    /rwe/libraries   POST /rwe/libraries/enable  ·  /rwe/libraries/upload[?override=zeb/x&entry=e]  ·  DELETE /rwe/libraries/remove
+POST|DELETE /rwe/libraries/override                a built-in zeb/* library replaced by an uploaded one: help("web/project-libraries")
 GET    /install/catalog/ui   POST /install/ui   ·  /install/ui/review     the clone-to-own component catalog
 GET    /dependencies  ·  /runtime  ·  /help  ·  /editor/completion-catalog   POST /reindex
 GET|POST /hub/assets …                              help("guide/hub")

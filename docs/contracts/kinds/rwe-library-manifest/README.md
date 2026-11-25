@@ -121,6 +121,32 @@ library; the page loads only the entries it imports. On the server each entry
 is an inert stand-in (callable, constructible, `undefined` for `then`), so a
 library that only runs in effects renders; its real code runs in the browser.
 
+## Overrides (amendment 2026-11-25)
+
+A project may replace a built-in `zeb/*` bundle library in its own pages with
+an entry of a library uploaded to it: `spec.rwe.library_overrides` in
+`ProjectConfiguration`, `zeb/threejs` → `{ library, entry }`. Pages keep
+importing `zeb/threejs`; the browser loads the entry instead. The server keeps
+its own stand-in for the built-in library.
+
+- **Replaceable:** the built-in libraries the browser loads as one bundle
+  (`zeb/threejs`, `zeb/d3`, `zeb/potoru`, …). Not `zeb/react`, not `zeb/ui/*`.
+- **Interface:** the entry exports every name the built-in bundle exports, or
+  the override is refused naming the missing ones. Both are read without
+  running them: the module's own exports and every `export * from "./…"` it
+  passes on inside its package. New names are allowed. An entry that passes on
+  names from outside its package cannot be read and is refused.
+- **Pages:** every page and component that imports the library is checked
+  with the override in place; one that no longer checks refuses the override
+  and leaves the setting as it was.
+- **Upload:** `…/rwe/libraries/upload?override=zeb/threejs&entry=three` checks
+  the names from the archive before anything is installed. A later upload of a
+  library that stands in for a built-in one must keep its entry and every
+  name, or it is refused.
+- **Removal:** removing the override, or the library, loads the built-in
+  library again. What a name does when it runs is the uploader's to keep; the
+  check covers names only.
+
 ## Rejections
 
 Unknown root fields, unknown spec fields, wrong kind, future `apiVersion`,

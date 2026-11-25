@@ -13,7 +13,7 @@ import MyPackagesTable from "@/pages/project-studio/hub/components/my-packages-t
 import PublishPanel from "@/pages/project-studio/hub/components/publish-panel";
 import { useStatus } from "@/pages/project-studio/hub/components/use-status";
 import { useHubData } from "@/pages/project-studio/hub/components/use-hub-data";
-import { useBrowseActions } from "@/pages/project-studio/hub/components/use-browse-actions";
+import { libraryNameOf, useBrowseActions } from "@/pages/project-studio/hub/components/use-browse-actions";
 import { usePublishForm } from "@/pages/project-studio/hub/components/use-publish-form";
 
 export const page = {
@@ -100,6 +100,7 @@ export default function Page(input) {
                     open={uploadOpen}
                     onClose={() => setUploadOpen(false)}
                     api={api}
+                    replaceable={browseItems.filter((item) => item?.replaceable).map(libraryNameOf)}
                     onUploaded={() => refresh().catch(() => {})}
                   />
 

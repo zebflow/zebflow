@@ -205,11 +205,12 @@ pub fn render(
         enabled_libraries,
         &compiled.compile_options.runtime_libraries,
     );
-    zeb_preamble.push_str(&build_markup_loaders(
+    zeb_preamble.push_str(&build_markup_loaders_with(
         &compiled.detected_zeb_libs,
         enabled_libraries,
         &compiled.client_module_source,
         &ssr.html,
+        &compiled.compile_options.runtime_libraries,
     ));
     let transpiled_client =
         transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
@@ -265,29 +266,29 @@ pub fn render(
     })
 }
 
-/// Map a `zeb/*` library specifier to its versioned browser bundle URL.
+/// Every built-in `zeb/*` library the browser loads as a bundle, with its
+/// versioned address. These are also the libraries a project may override
+/// with one it uploaded (`project_library::overrides`).
 /// TODO: resolve version from project `zeb.lock` instead of hardcoding.
+pub(crate) const ZEB_BUNDLES: &[(&str, &str)] = &[
+    ("zeb/threejs", "/assets/libraries/zeb/threejs/0.1/runtime/threejs.bundle.mjs"),
+    ("zeb/threejs-vrm", "/assets/libraries/zeb/threejs-vrm/0.1/runtime/threejs-vrm.bundle.mjs"),
+    ("zeb/d3", "/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
+    ("zeb/deckgl", "/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.patched.mjs"),
+    ("zeb/codemirror", "/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
+    ("zeb/graphui", "/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs"),
+    ("zeb/markdown", "/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
+    ("zeb/prosemirror", "/assets/libraries/zeb/prosemirror/0.1/runtime/prosemirror.bundle.mjs"),
+    ("zeb/use", "/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
+    ("zeb/rooms", "/assets/libraries/zeb/rooms/0.1/runtime/rooms.bundle.mjs"),
+    ("zeb/pdf", "/assets/libraries/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
+    ("zeb/potoru", "/assets/libraries/zeb/potoru/0.1/runtime/potoru.bundle.mjs"),
+    ("zeb/world", "/assets/libraries/zeb/world/0.1/runtime/world.bundle.mjs"),
+];
+
+/// Map a `zeb/*` library specifier to its versioned browser bundle URL.
 pub(crate) fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
-    match lib {
-        "zeb/threejs" => Some("/assets/libraries/zeb/threejs/0.1/runtime/threejs.bundle.mjs"),
-        "zeb/threejs-vrm" => {
-            Some("/assets/libraries/zeb/threejs-vrm/0.1/runtime/threejs-vrm.bundle.mjs")
-        }
-        "zeb/d3" => Some("/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
-        "zeb/deckgl" => Some("/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.patched.mjs"),
-        "zeb/codemirror" => Some("/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
-        "zeb/graphui" => Some("/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs"),
-        "zeb/markdown" => Some("/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
-        "zeb/prosemirror" => {
-            Some("/assets/libraries/zeb/prosemirror/0.1/runtime/prosemirror.bundle.mjs")
-        }
-        "zeb/use" => Some("/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
-        "zeb/rooms" => Some("/assets/libraries/zeb/rooms/0.1/runtime/rooms.bundle.mjs"),
-        "zeb/pdf" => Some("/assets/libraries/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
-        "zeb/potoru" => Some("/assets/libraries/zeb/potoru/0.1/runtime/potoru.bundle.mjs"),
-        "zeb/world" => Some("/assets/libraries/zeb/world/0.1/runtime/world.bundle.mjs"),
-        _ => None,
-    }
+    ZEB_BUNDLES.iter().find(|(name, _)| *name == lib).map(|(_, url)| *url)
 }
 
 /// Build the outer-script preamble that loads each used `zeb/*` library from
@@ -410,11 +411,19 @@ fn mentions_markup_lib(text: &str, marker: &str) -> bool {
 /// imports the bundle the first time such an element is in the DOM — and
 /// never, on a page where none appears. A page that imports the library
 /// already loads it up front; a project that lists its libraries must list it.
-fn build_markup_loaders(
+#[cfg(test)]
+fn build_markup_loaders(detected_libs: &[String], enabled_libraries: &[String], client_source: &str, ssr_html: &str) -> String {
+    build_markup_loaders_with(detected_libs, enabled_libraries, client_source, ssr_html, &Default::default())
+}
+
+/// [`build_markup_loaders`], loading a library the project overrides from the
+/// address its override resolved to.
+fn build_markup_loaders_with(
     detected_libs: &[String],
     enabled_libraries: &[String],
     client_source: &str,
     ssr_html: &str,
+    runtime_libraries: &std::collections::BTreeMap<String, String>,
 ) -> String {
     let mut out = String::new();
     for (marker, lib) in MARKUP_MOUNTED_LIBS {
@@ -427,7 +436,15 @@ fn build_markup_loaders(
         if !mentions_markup_lib(ssr_html, marker) && !mentions_markup_lib(client_source, marker) {
             continue;
         }
-        let Some(url) = zeb_bundle_url(lib) else { continue };
+        // A built-in address is a constant; an override's comes from an uploaded
+        // manifest, so it is written as a JSON string, as the preamble does.
+        let url = match runtime_libraries.get(*lib) {
+            Some(url) => serde_json::to_string(url).unwrap_or_default(),
+            None => match zeb_bundle_url(lib) {
+                Some(url) => format!("'{url}'"),
+                None => continue,
+            },
+        };
         out.push_str(&format!(
             "(function() {{\n\
                var selector = '[data-zeb-lib=\"{marker}\"]';\n\
@@ -437,7 +454,7 @@ fn build_markup_loaders(
                  if (started || !document.querySelector(selector)) return;\n\
                  started = true;\n\
                  observer.disconnect();\n\
-                 import('{url}').catch(function(err) {{ console.error('{lib} could not be loaded', err); }});\n\
+                 import({url}).catch(function(err) {{ console.error('{lib} could not be loaded', err); }});\n\
                }}\n\
                observer.observe(document.documentElement, {{ childList: true, subtree: true }});\n\
                load();\n\
@@ -1647,6 +1664,14 @@ mod tests {
         assert_eq!(build_markup_loaders(&none, &["zeb/prosemirror".to_string()], client, html), "");
         let listed = build_markup_loaders(&none, &["zeb/prosemirror".to_string(), "zeb/potoru".to_string()], client, html);
         assert!(listed.contains(url), "{listed}");
+        // A project that overrides the library loads its override instead.
+        let overridden = std::collections::BTreeMap::from([(
+            "zeb/potoru".to_string(),
+            "/assets/libraries/potoru-next/0.2.0/runtime/potoru.mjs".to_string(),
+        )]);
+        let loaded = build_markup_loaders_with(&none, &none, "", html, &overridden);
+        assert!(loaded.contains("import(\"/assets/libraries/potoru-next/0.2.0/runtime/potoru.mjs\")"), "{loaded}");
+        assert!(!loaded.contains(url), "{loaded}");
     }
 
     #[test]

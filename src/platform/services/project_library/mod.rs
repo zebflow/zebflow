@@ -4,6 +4,7 @@
 //! locked as `direct.file`.
 
 mod archive;
+pub mod overrides;
 mod scan;
 
 use std::collections::BTreeMap;
@@ -145,6 +146,35 @@ fn swap_in(target: &Path, files: &BTreeMap<String, Vec<u8>>, commit: impl FnOnce
 /// file is listed, present and matches; a name already installed is replaced
 /// only by a higher version, or by the same version with the same files.
 pub fn install_upload(platform: &PlatformService, owner: &str, project: &str, upload: &[u8]) -> Result<InstalledProjectLibrary, PlatformError> {
+    let (files, manifest) = read_upload(upload)?;
+    install_read(platform, owner, project, &files, &manifest)
+}
+
+/// [`install_upload`], making the library stand in for the built-in `library`
+/// (`zeb/threejs`) at `entry`: its names are checked from the upload before
+/// anything is installed, the pages after.
+pub fn install_upload_as_override(
+    platform: &PlatformService,
+    owner: &str,
+    project: &str,
+    upload: &[u8],
+    library: &str,
+    entry: Option<&str>,
+) -> Result<(InstalledProjectLibrary, overrides::OverrideReport), PlatformError> {
+    let (files, manifest) = read_upload(upload)?;
+    let (_, release) = checked_release(&manifest, &files)?;
+    let entry = overrides::check_upload(library, &manifest.name, release, &files, entry)?;
+    let installed = install_read(platform, owner, project, &files, &manifest)?;
+    let report = overrides::set(platform, owner, project, library, &manifest.name, Some(&entry)).map_err(|err| {
+        PlatformError::new(
+            err.code,
+            format!("{} {} is installed, but it does not replace {library}: {}", installed.name, installed.version, err.message),
+        )
+    })?;
+    Ok((installed, report))
+}
+
+fn read_upload(upload: &[u8]) -> Result<(BTreeMap<String, Vec<u8>>, RweLibraryManifestSpec), PlatformError> {
     if upload.len() > MAX_UPLOAD_BYTES {
         return Err(refuse(format!("the upload is larger than {} MiB", MAX_UPLOAD_BYTES / 1024 / 1024)));
     }
@@ -153,8 +183,19 @@ pub fn install_upload(platform: &PlatformService, owner: &str, project: &str, up
     let manifest = crate::contracts::decode_contract::<RweLibraryManifestContract>(manifest_bytes)
         .map_err(|err| refuse(format!("manifest.json is not a valid library manifest: {err}")))?
         .spec;
-    let (version, release) = checked_release(&manifest, &files)?;
-    scan::scan(&files, &manifest.license.notices)?;
+    Ok((files, manifest))
+}
+
+fn install_read(
+    platform: &PlatformService,
+    owner: &str,
+    project: &str,
+    files: &BTreeMap<String, Vec<u8>>,
+    manifest: &RweLibraryManifestSpec,
+) -> Result<InstalledProjectLibrary, PlatformError> {
+    let (version, release) = checked_release(manifest, files)?;
+    scan::scan(files, &manifest.license.notices)?;
+    overrides::recheck_upload(platform, owner, project, &manifest.name, release, files)?;
     let lock = platform.dependency_lock.read(owner, project)?;
     let installed = lock.rwe.libraries.get(&manifest.name);
     if let Some(current) = installed {
@@ -175,7 +216,7 @@ pub fn install_upload(platform: &PlatformService, owner: &str, project: &str, up
     }
     let dir_name = package_dir_name(&manifest.name);
     let target = platform.dependency_lock.node_root(owner, project).join(&dir_name);
-    swap_in(&target, &files, || {
+    swap_in(&target, files, || {
         platform.dependency_lock.enable_rwe_library(
             &platform.projects.configuration_service(),
             owner,
@@ -238,6 +279,10 @@ pub fn is_recipe_source(platform: &PlatformService, owner: &str, project: &str, 
 /// project page rewrites to its own host). A library whose installed copy
 /// cannot be read is left out, so its import is refused by name rather than
 /// loaded from nothing.
+///
+/// A built-in library the project overrides (`zeb/threejs`) maps to the entry
+/// standing in for it, so pages load that instead; an override whose library
+/// is gone is left out, and the built-in one loads.
 pub fn runtime_libraries(platform: &PlatformService, owner: &str, project: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let Ok(lock) = platform.dependency_lock.read(owner, project) else { return out };
@@ -249,6 +294,14 @@ pub fn runtime_libraries(platform: &PlatformService, owner: &str, project: &str)
         let Some(release) = manifest.versions.get(&locked.version) else { continue };
         for (subpath, entry) in &release.entries {
             out.insert(format!("{name}/{subpath}"), format!("/assets/libraries/{name}/{}", entry.file));
+        }
+    }
+    let overrides = overrides::current(platform, owner, project).unwrap_or_default();
+    for (library, with) in overrides {
+        if let Some(url) = out.get(&format!("{}/{}", with.library, with.entry)).cloned()
+            && crate::rwe::core::render::zeb_bundle_url(&library).is_some()
+        {
+            out.insert(library, url);
         }
     }
     out

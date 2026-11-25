@@ -67,6 +67,37 @@ The whole upload is refused, naming the file and the reason, when:
 Every file is checked against its fingerprint again before it is served; a file
 changed after upload answers 409.
 
+## Replace a built-in library (override)
+
+A project can load its own build of a built-in library instead of the one
+Zebflow ships, for example a newer three.js, without waiting for a Zebflow
+release. Pages keep importing `zeb/threejs`; only this project changes.
+
+```text
+POST /api/projects/{owner}/{project}/rwe/libraries/upload?override=zeb/threejs&entry=three
+POST /api/projects/{owner}/{project}/rwe/libraries/override   {"library": "zeb/threejs", "with": "threejs-next", "entry": "three"}
+DELETE /api/projects/{owner}/{project}/rwe/libraries/override?library=zeb/threejs
+```
+
+The first uploads and overrides in one step; the second overrides with a
+library already uploaded; the third goes back to the built-in library. In
+Studio: the project's Hub → Upload library → Replace a built-in library, and
+**Use built-in again** on the replaced library.
+`entry` may be left out when the library has one entry.
+
+The replacement must have the same interface: it exports every name the
+built-in library exports, read from both files without running them. Extra
+names are fine; a missing one refuses the override and names it. Then every
+page and component that imports the library is checked with it in place. A
+later upload of the same library must still pass, or it is refused. Removing
+the library also removes its override.
+
+The check covers names, not behaviour: if a name does something different, a
+page can still break when it runs. That is the uploader's to fix, and removing
+the override brings the built-in library back at once. The library list
+(`GET …/rwe/libraries`) shows `overridden_by` on the built-in library and
+`overrides` on yours.
+
 ## On the page
 
 The page loads only the entries it imports, from the page's own host, so a

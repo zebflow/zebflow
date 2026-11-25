@@ -50,6 +50,38 @@ export default function HubItemDetail({ item, owner, project, destination, onDes
         <Fact label="Publisher">{item.publisher_display_name || item.publisher_id || "—"}</Fact>
       </div>
 
+      {item.overridden_by ? (
+        <div className="border border-primary/40 bg-primary/5 px-3 py-2.5">
+          <p className="text-[0.74rem] font-medium text-foreground">Replaced in this project</p>
+          <p className="mt-1 text-[0.72rem] leading-[1.45] text-muted-foreground">
+            Pages here load <code className="font-mono">{item.overridden_by.library}/{item.overridden_by.entry}</code>{" "}
+            instead of this built-in library. It exports every name this one does.
+          </p>
+          <div className="mt-2 flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => onAct({ ...item, intent: "restore-built-in" })}
+            >
+              Use built-in again
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {item.overrides?.length ? (
+        <div className="border border-primary/40 bg-primary/5 px-3 py-2.5">
+          <p className="text-[0.74rem] font-medium text-foreground">
+            Replaces {item.overrides.join(", ")} in this project
+          </p>
+          <p className="mt-1 text-[0.72rem] leading-[1.45] text-muted-foreground">
+            Pages importing it load this library instead. Removing this library brings the built-in one back.
+          </p>
+        </div>
+      ) : null}
+
       {verb === "add" ? (
         <div className="border border-warning/40 bg-warning/5 px-3 py-2.5">
           <p className="text-[0.74rem] font-medium text-warning">

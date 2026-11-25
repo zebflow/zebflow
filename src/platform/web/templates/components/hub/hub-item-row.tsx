@@ -60,6 +60,13 @@ export default function HubItemRow({ item, selected, onSelect }) {
         <span className="mt-0.5 block truncate text-[0.72rem] text-muted-foreground">
           {item?.summary || item?.description || kind.one} · {originLabel(item)}
         </span>
+        {item?.overridden_by ? (
+          <span className="mt-0.5 block truncate text-[0.7rem] text-primary">
+            Replaced here by {item.overridden_by.library}/{item.overridden_by.entry}
+          </span>
+        ) : item?.overrides?.length ? (
+          <span className="mt-0.5 block truncate text-[0.7rem] text-primary">Replaces {item.overrides.join(", ")}</span>
+        ) : null}
       </span>
 
       {problem ? (

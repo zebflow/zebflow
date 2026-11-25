@@ -1088,6 +1088,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             )),
         )
         .route(
+            "/api/projects/{owner}/{project}/rwe/libraries/override",
+            post(api_set_library_override).delete(api_remove_library_override),
+        )
+        .route(
             "/api/projects/{owner}/{project}/dependencies",
             get(api_project_dependency_status).post(api_repair_project_dependencies),
         )
@@ -6416,6 +6420,7 @@ async fn project_hub_tab_page(
                     // Undoing an install: the lock entry and the bytes.
                     "libraries_remove": format!("/api/projects/{owner}/{project}/rwe/libraries/remove"),
                     "libraries_upload": format!("/api/projects/{owner}/{project}/rwe/libraries/upload"),
+                    "libraries_override": format!("/api/projects/{owner}/{project}/rwe/libraries/override"),
                     // Which libraries this project actually has, re-read after a write.
                     "libraries": format!("/api/projects/{owner}/{project}/rwe/libraries"),
                 }
@@ -7881,6 +7886,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
 /// for the Hub page's first render and for its refresh.
 fn rwe_library_inventory(state: &PlatformAppState, owner: &str, project: &str) -> Vec<Value> {
     let rwe_libs = state.platform.zebflow_cfg.get_rwe_libraries(owner, project).unwrap_or_default();
+    let overrides = crate::platform::services::project_library::overrides::current(&state.platform, owner, project).unwrap_or_default();
     let mut items: Vec<Value> = state
         .platform
         .library
@@ -7894,7 +7900,10 @@ fn rwe_library_inventory(state: &PlatformAppState, owner: &str, project: &str) -
                 "packed_kind": m.packed_kind(),
                 "enabled": enabled_entry.is_some(),
                 "installed_version": enabled_entry.map(|e| e.version.clone()),
-                "source": enabled_entry.map(|e| e.source.clone())
+                "source": enabled_entry.map(|e| e.source.clone()),
+                "overridden_by": overrides.get(&m.name).map(|with| json!({"library": with.library, "entry": with.entry})),
+                // Loaded by the browser as one bundle, so an uploaded library may replace it.
+                "replaceable": crate::rwe::core::render::zeb_bundle_url(&m.name).is_some(),
             })
         })
         .collect();
@@ -7915,6 +7924,7 @@ fn rwe_library_inventory(state: &PlatformAppState, owner: &str, project: &str) -
             "source": "upload",
             "project_library": true,
             "imports": imports,
+            "overrides": overrides.iter().filter(|(_, with)| with.library == *name).map(|(library, _)| library).collect::<Vec<_>>(),
         }));
     }
     items
@@ -18719,6 +18729,11 @@ async fn api_upsert_settings_section(
                 /// not show them never clears them.
                 #[serde(default)]
                 browser_modules: Option<Vec<crate::platform::model::ZebflowJsonBrowserModules>>,
+                /// Shown by a GET and sent back by a panel that saves the
+                /// whole section; never written here. An override changes
+                /// only through `…/rwe/libraries/override`, which checks it.
+                #[serde(default, rename = "library_overrides")]
+                _library_overrides: Option<serde_json::Value>,
             }
             let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
                 Ok(p) => p,
@@ -19354,6 +19369,7 @@ async fn api_upload_project_library(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
+    Query(params): Query<LibraryOverrideQuery>,
     body: Bytes,
 ) -> Response {
     if let Err(response) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::LibrariesInstall) {
@@ -19368,24 +19384,141 @@ async fn api_upload_project_library(
     let (o, p) = (owner.clone(), project.clone());
     let actor = crate::platform::services::change_log::carried();
     let installed = tokio::task::spawn_blocking(move || {
-        crate::platform::services::change_log::carry(actor, || {
-            crate::platform::services::project_library::install_upload(&platform, &o, &p, &body)
+        crate::platform::services::change_log::carry(actor, || match params.r#override.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            Some(library) => crate::platform::services::project_library::install_upload_as_override(
+                &platform,
+                &o,
+                &p,
+                &body,
+                library,
+                params.entry.as_deref(),
+            )
+            .map(|(library, report)| (library, Some(report))),
+            None => crate::platform::services::project_library::install_upload(&platform, &o, &p, &body).map(|library| (library, None)),
         })
     })
     .await;
+    // Pages compiled before the upload bound the old library, installed or not.
+    state.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
     match installed {
-        Ok(Ok(library)) => {
-            // Pages compiled before the upload bound the old library.
-            state.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
-            Json(json!({ "ok": true, "library": library })).into_response()
-        }
-        Ok(Err(err)) if err.code == "PROJECT_LIBRARY_INVALID" => (
+        Ok(Ok((library, report))) => Json(json!({ "ok": true, "library": library, "override": report })).into_response(),
+        Ok(Err(err)) if err.code == "PROJECT_LIBRARY_INVALID" || err.code == "PROJECT_LIBRARY_OVERRIDE" => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({ "ok": false, "error": { "code": err.code, "message": err.message } })),
         )
             .into_response(),
         Ok(Err(err)) => internal_error(err),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+/// `?override=zeb/threejs&entry=three` on an upload; `?library=zeb/threejs`
+/// on `DELETE …/rwe/libraries/override`.
+#[derive(serde::Deserialize, Default)]
+struct LibraryOverrideQuery {
+    #[serde(default, rename = "override")]
+    r#override: Option<String>,
+    #[serde(default)]
+    entry: Option<String>,
+    #[serde(default)]
+    library: Option<String>,
+}
+
+/// Body of `POST …/rwe/libraries/override`: the built-in library replaced,
+/// the uploaded library standing in for it, and which of its entries.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetLibraryOverride {
+    library: String,
+    with: String,
+    #[serde(default)]
+    entry: Option<String>,
+}
+
+fn override_refusal(err: PlatformError) -> Response {
+    if err.code == "PROJECT_LIBRARY_OVERRIDE" {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "ok": false, "error": { "code": err.code, "message": err.message } })),
+        )
+            .into_response();
+    }
+    internal_error(err)
+}
+
+/// `POST /api/projects/{owner}/{project}/rwe/libraries/override`
+/// `{"library": "zeb/threejs", "with": "threejs-next", "entry": "three"}`:
+/// a library already uploaded stands in for a built-in one in this project's
+/// pages, once it exports every name the built-in one does and every file
+/// importing it still checks.
+async fn api_set_library_override(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::LibrariesInstall) {
+        return response;
+    }
+    match maybe_forward_project_api_to_worker(&state, &uri, &Method::POST, &headers, body.clone(), &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let request: SetLibraryOverride = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(err) => return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": err.to_string()}))).into_response(),
+    };
+    let platform = state.platform.clone();
+    let (o, p) = (owner.clone(), project.clone());
+    let set = tokio::task::spawn_blocking(move || {
+        crate::platform::services::project_library::overrides::set(&platform, &o, &p, request.library.trim(), request.with.trim(), request.entry.as_deref())
+    })
+    .await;
+    state.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+    match set {
+        Ok(Ok(report)) => {
+            let actor_user = session_owner(&state, &headers);
+            let message = format!("chore(rwe): {} replaces {}", report.with, report.library);
+            let _ = rwe_library_git_commit(&state, actor_user.as_deref(), &owner, &project, &message);
+            Json(json!({ "ok": true, "override": report })).into_response()
+        }
+        Ok(Err(err)) => override_refusal(err),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+/// `DELETE /api/projects/{owner}/{project}/rwe/libraries/override?library=zeb%2Fthreejs`:
+/// the project's pages load the built-in library again.
+async fn api_remove_library_override(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Query(params): Query<LibraryOverrideQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(&state, &headers, &owner, &project, ProjectCapability::LibrariesRemove) {
+        return response;
+    }
+    match maybe_forward_project_api_to_worker(&state, &uri, &Method::DELETE, &headers, Bytes::new(), &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let Some(library) = params.library.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "name the library: ?library=zeb/threejs"}))).into_response();
+    };
+    match crate::platform::services::project_library::overrides::remove(&state.platform, &owner, &project, library) {
+        Ok(removed) => {
+            state.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+            if removed {
+                let actor_user = session_owner(&state, &headers);
+                let _ = rwe_library_git_commit(&state, actor_user.as_deref(), &owner, &project, &format!("chore(rwe): {library} is built-in again"));
+            }
+            Json(json!({ "ok": true, "removed": removed })).into_response()
+        }
+        Err(err) => internal_error(err),
     }
 }
 
@@ -19540,6 +19673,13 @@ async fn api_remove_rwe_library(
     ) {
         return internal_error(err);
     }
+    // A built-in library this one stood in for loads again.
+    let restored = match crate::platform::services::project_library::overrides::forget_library(&state.platform, &owner, &project, params.name.trim()) {
+        Ok(restored) => restored,
+        Err(err) => return internal_error(err),
+    };
+    // Pages compiled before the removal bound the library.
+    state.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
     // Git commit (best-effort).
     let actor_user = session_owner(&state, &headers);
     let _ = rwe_library_git_commit(
@@ -19549,7 +19689,7 @@ async fn api_remove_rwe_library(
         &project,
         &format!("chore(rwe): remove library {}", params.name.trim()),
     );
-    Json(json!({"ok": true})).into_response()
+    Json(json!({"ok": true, "overrides_removed": restored})).into_response()
 }
 
 /// `POST /api/projects/{owner}/{project}/rwe/cache/clear` — flush the shared

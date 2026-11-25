@@ -3767,6 +3767,21 @@ pub struct ZebflowJsonRwe {
     /// Read on every compile, so a change applies without a restart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_modules: Vec<ZebflowJsonBrowserModules>,
+    /// Built-in `zeb/*` libraries this project's pages load from a library
+    /// uploaded to it instead. Set only through the override API, which first
+    /// checks the uploaded entry exports every name the built-in one does.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub library_overrides: std::collections::BTreeMap<String, ZebflowJsonLibraryOverride>,
+}
+
+/// One `rwe.library_overrides` value in `zebflow.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ZebflowJsonLibraryOverride {
+    /// A library uploaded to this project, e.g. `threejs-r188`.
+    pub library: String,
+    /// One of its entries, e.g. `three`.
+    pub entry: String,
 }
 
 /// One `rwe.browser_modules` folder in `zebflow.yaml`.
@@ -3788,6 +3803,7 @@ impl Default for ZebflowJsonRwe {
             libraries: HashMap::new(),
             deployment_asset_base: None,
             browser_modules: Vec::new(),
+            library_overrides: Default::default(),
         }
     }
 }

@@ -121,6 +121,7 @@ impl ProjectConfigurationSpec {
             validate_http_or_root_path("spec.rwe.deployment_asset_base", base)?;
         }
         validate_browser_modules(&self.rwe.browser_modules)?;
+        validate_library_overrides(&self.rwe.library_overrides)?;
         for (name, library) in &self.rwe.libraries {
             // `zeb/<name>`, or one word: a library uploaded to this project
             // (amendment 2026-11-19, `rwe-library-manifest` § Project libraries).
@@ -768,6 +769,29 @@ impl ProjectLayoutSpec {
     }
 }
 
+/// `spec.rwe.library_overrides`: a built-in `zeb/<name>` library, replaced in
+/// this project's pages by an entry of a library uploaded to it.
+fn validate_library_overrides(overrides: &BTreeMap<String, ProjectRweLibraryOverrideSpec>) -> Result<(), ContractError> {
+    for (name, with) in overrides {
+        let path = format!("spec.rwe.library_overrides['{name}']");
+        if !(name.starts_with("zeb/") && is_safe_logical_name(name, true)) {
+            return Err(ContractError::invalid(format!("{path}: the key is the built-in library replaced, zeb/<name>")));
+        }
+        if !is_project_library_name(&with.library) {
+            return Err(ContractError::invalid(format!("{path}.library names a library uploaded to this project")));
+        }
+        let bad_entry = with.entry.is_empty()
+            || with.entry.len() > 256
+            || with.entry.starts_with('/')
+            || with.entry.contains('\\')
+            || with.entry.split('/').any(|part| part.is_empty() || part == "." || part == "..");
+        if bad_entry {
+            return Err(ContractError::invalid(format!("{path}.entry names one entry of that library, such as three")));
+        }
+    }
+    Ok(())
+}
+
 /// `spec.rwe.browser_modules`: each folder a plain directory, named once and
 /// never inside another, with at least one entry pattern that stays inside it.
 fn validate_browser_modules(folders: &[ProjectRweBrowserModulesSpec]) -> Result<(), ContractError> {
@@ -863,6 +887,11 @@ pub struct ProjectRweSpec {
     /// modules): built per entry, loaded by the browser, never run on the server.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub browser_modules: Vec<ProjectRweBrowserModulesSpec>,
+    /// Built-in libraries this project's pages load from a library uploaded to
+    /// it instead (`rwe-library-manifest` § Overrides): `zeb/threejs` → an
+    /// entry exporting every name the built-in one does.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub library_overrides: BTreeMap<String, ProjectRweLibraryOverrideSpec>,
 }
 
 impl Default for ProjectRweSpec {
@@ -874,6 +903,7 @@ impl Default for ProjectRweSpec {
             libraries: BTreeMap::new(),
             deployment_asset_base: None,
             browser_modules: Vec::new(),
+            library_overrides: BTreeMap::new(),
         }
     }
 }
@@ -887,6 +917,17 @@ pub struct ProjectRweBrowserModulesSpec {
     pub path: String,
     /// Patterns relative to the folder: `main.ts`, `islands/*.ts`.
     pub entries: Vec<String>,
+}
+
+/// One `spec.rwe.library_overrides` value: which uploaded library, and which
+/// of its entries, stands in for the built-in library.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectRweLibraryOverrideSpec {
+    /// A library uploaded to this project, e.g. `threejs-r188`.
+    pub library: String,
+    /// One of its entries, e.g. `three`.
+    pub entry: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1194,6 +1235,13 @@ impl From<ZebflowJson> for ProjectConfigurationSpec {
                     .into_iter()
                     .map(|folder| ProjectRweBrowserModulesSpec { path: folder.path, entries: folder.entries })
                     .collect(),
+                library_overrides: value
+                    .configs
+                    .rwe
+                    .library_overrides
+                    .into_iter()
+                    .map(|(name, with)| (name, ProjectRweLibraryOverrideSpec { library: with.library, entry: with.entry }))
+                    .collect(),
             },
             pipelines: ProjectPipelinesSpec {
                 logging: ProjectPipelineLoggingSpec {
@@ -1301,6 +1349,12 @@ impl From<ProjectConfigurationSpec> for ZebflowJson {
                         .browser_modules
                         .into_iter()
                         .map(|folder| crate::platform::model::ZebflowJsonBrowserModules { path: folder.path, entries: folder.entries })
+                        .collect(),
+                    library_overrides: value
+                        .rwe
+                        .library_overrides
+                        .into_iter()
+                        .map(|(name, with)| (name, crate::platform::model::ZebflowJsonLibraryOverride { library: with.library, entry: with.entry }))
                         .collect(),
                 },
                 pipelines: ZebflowJsonPipelines {
@@ -1507,6 +1561,36 @@ mod tests {
         .unwrap();
         let decoded = decode_contract_yaml::<ProjectConfigurationContract>(&bytes).unwrap();
         assert_eq!(decoded.spec.pipelines.logging.trace_capture, Some(capture));
+    }
+
+    /// An override survives the round trip through the runtime settings and
+    /// YAML, and only a built-in name, a project library and an entry pass.
+    #[test]
+    fn library_overrides_roundtrip_and_are_checked() {
+        let mut spec = ProjectConfigurationSpec::default();
+        let with = ProjectRweLibraryOverrideSpec { library: "threejs-next".to_string(), entry: "three".to_string() };
+        spec.rwe.library_overrides.insert("zeb/threejs".to_string(), with.clone());
+        let runtime: ZebflowJson = spec.clone().into();
+        let restored: ProjectConfigurationSpec = runtime.into();
+        assert_eq!(restored.rwe.library_overrides.get("zeb/threejs"), Some(&with));
+        let bytes = encode_contract_yaml::<ProjectConfigurationContract>(ContractMetadata::named("project"), restored).unwrap();
+        let decoded = decode_contract_yaml::<ProjectConfigurationContract>(&bytes).unwrap();
+        assert_eq!(decoded.spec.rwe.library_overrides.get("zeb/threejs"), Some(&with));
+
+        for (key, library, entry) in [
+            ("threejs", "threejs-next", "three"),
+            ("zeb/threejs", "zeb-next", "three"),
+            ("zeb/threejs", "threejs-next", ""),
+            ("zeb/threejs", "threejs-next", "../three"),
+        ] {
+            let mut bad = spec.clone();
+            bad.rwe.library_overrides =
+                BTreeMap::from([(key.to_string(), ProjectRweLibraryOverrideSpec { library: library.to_string(), entry: entry.to_string() })]);
+            assert!(
+                encode_contract::<ProjectConfigurationContract>(ContractMetadata::named("project"), bad).is_err(),
+                "{key} {library} {entry}"
+            );
+        }
     }
 
     #[test]

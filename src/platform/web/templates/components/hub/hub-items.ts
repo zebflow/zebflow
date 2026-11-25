@@ -67,6 +67,11 @@ export function buildHubItems({ assets, libraries, lock }) {
       installed_version: installedVersion,
       updatable: !!lib?.enabled && !!available && !!installedVersion && installedVersion !== available,
       status: existing?.status || "",
+      // A built-in library an uploaded one replaces in this project's pages,
+      // and, on the uploaded one, the built-in libraries it replaces.
+      overridden_by: lib?.overridden_by || null,
+      overrides: Array.isArray(lib?.overrides) ? lib.overrides : [],
+      replaceable: !!lib?.replaceable,
     };
     items.set(id, merged);
   }
