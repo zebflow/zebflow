@@ -9,6 +9,30 @@ From 0.12, a release that adds a capability raises the middle number
 (0.13.0); a release that only fixes raises the last (0.13.4)
 ([versioning](docs/contracts/versioning.md)).
 
+## 0.16.0 (2026-11-25)
+
+### New
+
+- A project can replace a built-in library with its own build, for example a
+  newer three.js, without waiting for a Zebflow release. Upload the library
+  and choose which built-in library it replaces (Studio: the project's Hub →
+  Upload library → Replace a built-in library; or the API). Pages keep
+  importing `zeb/threejs` and load the replacement, in that project only.
+- The replacement must have the same interface: it exports every name the
+  built-in library exports, read from both files without running them, and
+  every page and component that imports the library must still check.
+  Otherwise it is refused, naming what is missing, and nothing changes. A
+  later upload that drops a name is refused too.
+- Use built-in again, or removing the library, brings the built-in library
+  back. The Hub lists which libraries are replaced and by what. See
+  `help("web/project-libraries")`.
+
+### Fixed
+
+- Removing a library now takes effect on pages at once; before, pages that
+  were already compiled kept loading it until the server restarted.
+- Upload library's error message is shown in red; it used a colour the theme does not have.
+
 ## 0.15.1 (2026-11-24)
 
 ### Fixed
