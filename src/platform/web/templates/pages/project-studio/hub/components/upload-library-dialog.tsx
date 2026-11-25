@@ -87,13 +87,23 @@ export default function UploadLibraryDialog({ open, onClose, api, replaceable, o
           </p>
         </DialogHeader>
         <div className="grid gap-3 px-6 py-4">
-          <input
-            type="file"
-            accept=".tar.gz,.tgz,application/gzip"
-            disabled={busy}
-            onChange={(e) => { setFile(e.target.files?.[0] || null); setResult(null); setError(""); }}
-            className="text-sm text-foreground"
-          />
+          <Field label="Library file">
+            <div className="flex items-center gap-3">
+              <Button as="label" type="button" variant="outline" size="sm" disabled={busy}>
+                Choose file
+                <input
+                  type="file"
+                  accept=".tar.gz,.tgz,application/gzip"
+                  disabled={busy}
+                  className="sr-only"
+                  onChange={(e) => { setFile(e.currentTarget.files?.[0] || null); setResult(null); setError(""); }}
+                />
+              </Button>
+              <span className={file ? "min-w-0 truncate text-sm text-foreground" : "text-sm text-muted-foreground"}>
+                {file ? file.name : "No file chosen (.tar.gz)"}
+              </span>
+            </div>
+          </Field>
           <Field
             id="upload-library-replace"
             label="Replace a built-in library"
